@@ -1,0 +1,606 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# gitchecker — report which clones on this host are out of date
+#
+# Scans one or more root dirs for git repos and reports, per repo:
+#   - uncommitted / staged changes and untracked files
+#   - every local branch's ahead / behind / diverged state vs its upstream
+#   - branches whose upstream was deleted on the remote (gone)
+#   - detached HEAD, branches with no upstream, stashed work
+#   - open merge requests (GitLab) / pull requests (GitHub)
+#
+# It already fetches, so it already knows which branches can move without a
+# merge — and it moves them. A branch that is STRICTLY BEHIND its upstream
+# (ahead == 0) fast-forwards; every other state (diverged, ahead, gone, no
+# upstream) is reported and left alone. Branches that are not checked out move
+# via `git fetch . <upstream>:<branch>`, which never touches the working tree
+# and which git itself refuses if the move would not be a fast-forward.
+#
+# A dirty working tree makes even a legal fast-forward a surprise, so that case
+# asks first (`--ff-dirty` for a non-interactive caller) and a diverged branch is
+# never resolved automatically. `--no-ff` restores pure reporting; it still
+# stashes, rebases and checks out nothing in any mode.
+#
+# The network is mandatory — every run fetches and queries the forge, and any
+# failure aborts the whole run rather than printing a stale "current".
+#
+# Two callers, one scan. An operator gets the grouped, coloured report; a
+# non-interactive caller (an agent, a script) passes --json and gets one
+# document on stdout — including on abort, so a parse never has to guess whether
+# silence meant "clean" or "died". --repo narrows the sweep to named repos,
+# because an agent working in one clone has no business fetching a whole tree.
+#
+# Usage:
+#   gitchecker [--repos-dir DIR]... [--repo PATH]... [--max-jobs N]
+#              [--max-depth N] [--dirty-only] [--quiet] [--json] [DIR...]
+#
+# Exit status:
+#   0  every repo current
+#   1  at least one repo needs attention
+#   2  preflight failure, per-repo fetch/forge failure, or usage error
+#
+
+# Shared sweep plumbing: preflight, discovery, forge routing, and (via
+# git-net.zsh, which it sources) the ssh hardening and retry shape. Sibling
+# lookup, so this works both from the nix store copy the wrapper executes and
+# the repo.
+GITSCAN_PROG=gitchecker
+source "${0:A:h}/lib/gitscan.zsh" || exit 2
+
+typeset -a ROOTS=() REPO_ARGS=()
+MAX_JOBS=8
+MAX_DEPTH=6
+DIRTY_ONLY=0
+# Fast-forward strictly-behind branches by default; see the header.
+FF=1
+FF_DIRTY=0
+QUIET=0
+JSON=0
+
+usage() {
+  cat <<'EOF'
+gitchecker — is anything on this host out of date?
+
+Usage: gitchecker [options] [repos-dir...]
+
+Finds every git clone under each root and reports, per repo: uncommitted and
+untracked changes, each local branch's ahead/behind/diverged state against its
+upstream, branches whose remote branch was deleted (gone), detached HEAD,
+branches with no upstream, stashed work, and open MRs/PRs on the forge.
+
+Read-only: it never stashes, rebases or checks anything out. `gitcleaner` is
+the half that removes what this one reports; `clone-repos` is the half that
+updates it.
+
+Every run fetches and queries the forge, and any failure aborts the run rather
+than printing a stale "current". Needs git, jq and an authenticated glab — plus
+gh when a scanned repo has a github.com remote.
+
+Options:
+  --repos-dir <path>  Root dir to scan (repeatable; default: ~/git)
+  --repo <path>       Scan exactly this repo (repeatable; skips root discovery)
+  --max-jobs <N>      Parallel workers (default: 8)
+  --max-depth <N>     Max search depth for nested repos (default: 6)
+  --dirty-only        Only list repos that need attention
+  --no-ff             Report only; do not fast-forward anything
+  --ff-dirty          Also try the fast-forward when the working tree is dirty
+                      (git still refuses if it would overwrite a change).
+                      Without it, an interactive run asks and a piped one skips
+  --quiet             Suppress per-repo rows; print the summary only
+  --json              One JSON document on stdout instead of the report
+  -h, --help          Show this help
+
+Examples:
+  gitchecker                             scan ~/git
+  gitchecker ~/git /mnt/c/Users/me/git   several trees in one run
+  gitchecker --dirty-only                only the repos needing work
+  gitchecker --repo . --json             just this clone, for a script
+
+Exit: 0 all current, 1 attention needed (an open MR counts), 2 failure
+EOF
+}
+
+die() { gitscan_die "$@" }
+
+while (( $# > 0 )); do
+  case $1 in
+    --repos-dir)  ROOTS+=("$2"); shift ;;
+    --repo)       REPO_ARGS+=("$2"); shift ;;
+    --max-jobs)   MAX_JOBS="$2"; shift ;;
+    --max-depth)  MAX_DEPTH="$2"; shift ;;
+    --dirty-only) DIRTY_ONLY=1 ;;
+    --no-ff)      FF=0 ;;
+    --ff-dirty)   FF_DIRTY=1 ;;
+    --quiet)      QUIET=1 ;;
+    --json)       JSON=1 ;;
+    -h|--help)    usage; exit 0 ;;
+    -*)           print -r -u2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
+    *)            ROOTS+=("$1") ;;
+  esac
+  shift
+done
+
+# --repo names repos outright, so root discovery is skipped rather than run and
+# filtered: naming a repo is an answer to "which repos", not a hint about it.
+if (( ${#REPO_ARGS[@]} == 0 && ${#ROOTS[@]} == 0 )); then
+  ROOTS=("${HOME}/git")
+fi
+
+# --json is a contract with a parser, and a colour escape or a stray progress
+# line breaks it. Decided before preflight so even a preflight death obeys it.
+(( JSON )) && { QUIET=1; GITSCAN_DIE_JSON=1 }
+
+gitscan_preflight
+typeset -a ABS_ROOTS=()
+if (( ${#ROOTS[@]} > 0 )); then
+  gitscan_abs_roots "${ROOTS[@]}"
+  ABS_ROOTS=("${GITSCAN_ABS_ROOTS[@]}")
+fi
+gitscan_timeouts
+gitscan_colors
+(( JSON )) && { C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""; C_DIM="" }
+
+WORKDIR="$(mktemp -d)"
+ABORT_FILE="${WORKDIR}/abort"
+trap 'rm -rf "${WORKDIR}"' EXIT
+
+gitscan_ssh_mux "${WORKDIR}"
+
+# A worktree's .git is a file, and gitchecker reports it as its own repo: it has
+# its own HEAD and its own dirty state, which is exactly what this script is
+# asked about.
+typeset -a GITDIRS=() GITDIR_ROOTS=()
+if (( ${#ABS_ROOTS[@]} > 0 )); then
+  gitscan_discover "${MAX_DEPTH}" "${ABS_ROOTS[@]}"
+  GITDIRS=("${GITSCAN_GITDIRS[@]}"); GITDIR_ROOTS=("${GITSCAN_GITDIR_ROOTS[@]}")
+fi
+# A named repo that is not one is a usage error, not an empty result: a caller
+# that mistyped a path must not be told the tree is clean.
+for repo_arg in "${REPO_ARGS[@]}"; do
+  [[ -e "${repo_arg:A}/.git" ]] || die "not a git repo: ${repo_arg}"
+  GITDIRS+=("${repo_arg:A}/.git")
+  GITDIR_ROOTS+=("${repo_arg:A:h}")
+done
+
+if (( ${#GITDIRS[@]} == 0 )); then
+  if (( JSON )); then
+    jq -n --argjson roots "$(print -rn -- "${(F)ABS_ROOTS}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
+      '{ok: true, aborted: null, roots: $roots, scanned: 0, current: 0, attention: 0, open_requests: 0, repos: []}'
+  else
+    print -r -- "No git repos found under: ${(j:, :)ABS_ROOTS}"
+  fi
+  exit 0
+fi
+
+gitscan_require_gh "${GITDIRS[@]}"
+
+# Record one field line into this repo's record file. The `p` flag is what makes
+# the join separator an actual tab — without it zsh joins on a literal `\t`.
+emit() {
+  local rec="$1"; shift
+  print -r -- "${(pj:\t:)@}" >> "${rec}"
+}
+
+# Strip TAB/newline from forge-supplied text so it cannot break the record format.
+sanitize() {
+  local s="${1//$'\t'/ }"
+  print -r -- "${s//$'\n'/ }"
+}
+
+# Abort the whole run on the first hard failure. A half-scanned tree rendered as
+# a report reads as "everything else is fine", which is exactly the lie this
+# script exists to prevent.
+abort_run() {
+  local repo="$1" reason="$2" detail="$3"
+  [[ -e "${ABORT_FILE}" ]] && return
+  {
+    print -r -- "${repo}"
+    print -r -- "${reason}"
+    print -r -- "$(sanitize "${detail}")"
+  } > "${ABORT_FILE}"
+}
+
+# Inspect one repo and write ${WORKDIR}/rec.<index>.
+check_repo() {
+  local idx="$1" gitdir="$2" root="$3"
+  local repo="${gitdir:h}"
+  local rec="${WORKDIR}/rec.${idx}"
+  local rel="${repo#${root}/}"
+  [[ "${rel}" == "${repo}" ]] && rel="${repo:t}"
+  local out line head_branch branch upstream counts label m br_state
+  local remote_url forge_line forge project jq_prog sigil forge_out parsed row
+  local iid title source draft
+  local -i tracked=0 untracked=0 dirty=0 ahead=0 behind=0 stashes=0 attention=0
+  typeset -a marks=() forge_rows=() branch_rows=()
+
+  [[ -e "${ABORT_FILE}" ]] && return
+
+  # Refresh remote-tracking refs. This writes only .git/refs/remotes/*, so
+  # ahead/behind is accurate without touching the index or working tree.
+  # gitnet_retry absorbs a single transient and names a timeout kill; a
+  # persistent failure still aborts the sweep — a partial report is never
+  # printed as though it were complete.
+  if ! gitnet_retry git -C "${repo}" fetch --prune; then
+    abort_run "${repo}" "git fetch --prune failed (after retry, ${GITNET_WHY})" "${GITNET_OUT}"
+    return
+  fi
+
+  # Working tree.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" ]] && continue
+    if [[ "${line}" == '??'* ]]; then
+      (( untracked++ ))
+    else
+      (( tracked++ ))
+    fi
+  done < <(git -C "${repo}" status --porcelain=v1 2>/dev/null)
+  (( dirty = tracked + untracked ))
+  if (( dirty > 0 )); then
+    marks+=("${C_RED}✗ ${dirty} dirty${C_RESET}")
+    attention=1
+  fi
+
+  # HEAD.
+  if ! head_branch="$(git -C "${repo}" symbolic-ref --short -q HEAD 2>/dev/null)"; then
+    head_branch="(detached)"
+    marks+=("${C_RED}detached HEAD${C_RESET}")
+    attention=1
+  fi
+
+  # Every local branch, not just HEAD's — a feature branch must not hide the
+  # fact that main has fallen behind.
+  while IFS= read -r branch || [[ -n "${branch}" ]]; do
+    [[ -z "${branch}" ]] && continue
+
+    if ! upstream="$(git -C "${repo}" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{upstream}" 2>/dev/null)"; then
+      # No upstream at all, or one the prune just removed.
+      if git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null | grep -q 'gone'; then
+        marks+=("${C_RED}gone: ${branch}${C_RESET}")
+        br_state=gone
+      elif [[ "${branch}" == "${head_branch}" ]]; then
+        marks+=("${C_CYAN}no upstream${C_RESET}")
+        br_state=no-upstream
+      else
+        marks+=("${C_CYAN}no upstream: ${branch}${C_RESET}")
+        br_state=no-upstream
+      fi
+      branch_rows+=("${branch}		0	0	${br_state}")
+      attention=1
+      continue
+    fi
+
+    # A swallowed rev-list would normalise to 0/0, i.e. a false "current".
+    if ! counts="$(git -C "${repo}" rev-list --count --left-right "${upstream}...${branch}" 2>/dev/null)"; then
+      abort_run "${repo}" "upstream comparison failed for ${branch}" "rev-list ${upstream}...${branch}"
+      return
+    fi
+    behind="${counts%%[[:space:]]*}"
+    ahead="${counts##*[[:space:]]}"
+    [[ -z "${behind}" ]] && behind=0
+    [[ -z "${ahead}" ]] && ahead=0
+
+    # In-sync branches are recorded but never marked: the report prints only what
+    # needs attention, while a machine reader wants the whole branch inventory.
+    if (( ahead == 0 && behind == 0 )); then
+      branch_rows+=("${branch}	${upstream}	0	0	synced")
+      continue
+    fi
+    # attention is set per-outcome below, not here: a branch this run
+    # fast-forwards ends the run in sync, and a report that still says
+    # "needs attention" would send the reader after work already done.
+
+    label=""
+    [[ "${branch}" != "${head_branch}" ]] && label="${branch}: "
+    if (( ahead > 0 && behind > 0 )); then
+      # Both directions means the upstream was rewritten, not routine drift.
+      marks+=("${C_RED}${label}diverged ↑${ahead}↓${behind}${C_RESET}")
+      br_state=diverged
+      attention=1
+    elif (( ahead > 0 )); then
+      marks+=("${C_YELLOW}${label}↑${ahead}${C_RESET}")
+      br_state=ahead
+      attention=1
+    else
+      # Strictly behind: the one state that fast-forwards.
+      br_state=behind
+      if (( FF )); then
+        local ff_allow=false ff_answer=""
+        if (( FF_DIRTY )); then
+          ff_allow=true
+        elif (( dirty > 0 )) && [[ "${branch}" == "${head_branch}" ]] && [[ -t 0 ]] && (( ! JSON )); then
+          # Only a real terminal is asked. A piped run skips instead, so an
+          # agent never blocks on a prompt it cannot see.
+          print -n -- "  ${repo##*/}: ${branch} is ${behind} behind and the tree is dirty — fast-forward anyway? [y/N] "
+          read -r ff_answer || ff_answer=""
+          [[ "${ff_answer}" == [yY] ]] && ff_allow=true
+        fi
+        if gitscan_ff_branch "${repo}" "${branch}" "${upstream}" "${head_branch}" "${dirty}" "${ff_allow}"; then
+          marks+=("${C_GREEN}${label}fast-forwarded ↓${behind}${C_RESET}")
+          branch_rows+=("${branch}	${upstream}	0	0	fast-forwarded")
+          continue
+        fi
+        marks+=("${C_YELLOW}${label}↓${behind} (not fast-forwarded: ${GITSCAN_FF_OUT%%$'\n'*})${C_RESET}")
+        attention=1
+      else
+        marks+=("${C_YELLOW}${label}↓${behind}${C_RESET}")
+        attention=1
+      fi
+    fi
+    branch_rows+=("${branch}	${upstream}	${ahead}	${behind}	${br_state}")
+  done < <(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+
+  # Stashes — parked work is work that has not landed.
+  stashes="$(git -C "${repo}" stash list 2>/dev/null | wc -l)"
+  if (( stashes > 0 )); then
+    marks+=("${C_YELLOW}${stashes} stashed${C_RESET}")
+    attention=1
+  fi
+
+  # Open MRs/PRs. Work that has not landed is work this repo is waiting on, so
+  # an open MR counts as attention.
+  remote_url="$(git -C "${repo}" config --get remote.origin.url 2>/dev/null)"
+  if [[ -z "${remote_url}" ]]; then
+    abort_run "${repo}" "no origin remote configured" ""
+    return
+  fi
+  if ! forge_line="$(gitscan_forge_of "${remote_url}")"; then
+    abort_run "${repo}" "unsupported remote host" "${remote_url}"
+    return
+  fi
+  IFS=$'\t' read -r forge project <<< "${forge_line}"
+
+  # @tsv, not string interpolation: it escapes tabs and newlines inside a title
+  # instead of emitting them raw, which would shift every later field and split
+  # one MR into two bogus rows.
+  # gitnet_retry on the forge call, matching the fetch path: at four-figure
+  # repo counts the API throttles, and a single transient must not discard an
+  # otherwise complete sweep.
+  if [[ "${forge}" == gitlab ]]; then
+    jq_prog='.[] | [.iid, .title, .source_branch, .draft] | @tsv'
+    sigil="!"
+  else
+    jq_prog='.[] | [.number, .title, .headRefName, .isDraft] | @tsv'
+    sigil="#"
+  fi
+  # Paged, not capped at the first hundred: under-reporting open MRs is the
+  # quiet version of the failure this script exists to prevent.
+  if ! gitscan_open_requests "${forge}" "${project}"; then
+    abort_run "${repo}" "${GITSCAN_FORGE_WHY}" "${GITSCAN_FORGE_JSON}"
+    return
+  fi
+  forge_out="${GITSCAN_FORGE_JSON}"
+
+  # An empty body is a legitimate "no open MRs"; malformed JSON is not, and must
+  # not degrade into the same answer — gitscan_jq keeps those apart.
+  if ! gitscan_jq "${forge_out}" "${jq_prog}"; then
+    abort_run "${repo}" "could not parse ${forge} response" "${GITSCAN_JQ_ERR}"
+    return
+  fi
+  parsed="${GITSCAN_JQ_OUT}"
+  if [[ -n "${parsed}" ]]; then
+    while IFS=$'\t' read -r iid title source draft; do
+      [[ -z "${iid}" ]] && continue
+      # The draft flag rides as its own field rather than a "DRAFT: " prefix
+      # baked into the title: the report re-adds it, and a parser gets a boolean
+      # instead of having to strip English out of the title.
+      [[ "${draft}" == true ]] || draft=false
+      forge_rows+=("${sigil}${iid}	$(sanitize "${title}")	$(sanitize "${source}")	${draft}")
+      attention=1
+    done <<< "${parsed}"
+  fi
+
+  emit "${rec}" ROOT "${root}"
+  emit "${rec}" REL "${rel}"
+  emit "${rec}" PATH "${repo}"
+  emit "${rec}" BRANCH "${head_branch}"
+  emit "${rec}" TRACKED "${tracked}"
+  emit "${rec}" UNTRACKED "${untracked}"
+  emit "${rec}" STASHES "${stashes}"
+  [[ "${head_branch}" == "(detached)" ]] && emit "${rec}" DETACHED 1
+  for m in "${marks[@]}"; do
+    emit "${rec}" MARK "${m}"
+  done
+  for row in "${branch_rows[@]}"; do
+    print -r -- "BR	${row}" >> "${rec}"
+  done
+  for row in "${forge_rows[@]}"; do
+    print -r -- "FORGE	${row}" >> "${rec}"
+  done
+  if (( attention )); then
+    emit "${rec}" STATE ATTENTION
+  else
+    emit "${rec}" STATE CURRENT
+  fi
+}
+
+# Stop the run as soon as a worker records a failure, rather than after the
+# slowest repo finishes.
+check_abort() {
+  [[ -e "${ABORT_FILE}" ]] || return 0
+  local repo reason detail
+  { read -r repo; read -r reason; read -r detail } < "${ABORT_FILE}"
+  local pid
+  for pid in ${${(f)"$(jobs -p 2>/dev/null)"}}; do
+    kill "${pid}" 2>/dev/null
+  done
+  wait 2>/dev/null
+  print -r -u2 -- ""
+  print -r -u2 -- "gitchecker: ${reason} — aborting"
+  print -r -u2 -- "  repo: ${repo}"
+  [[ -n "${detail}" ]] && print -r -u2 -- "  ${detail}"
+  # Diagnostics stay on stderr for the operator; stdout still has to be one
+  # parseable document, because that is what --json promised.
+  (( JSON )) && jq -n --arg repo "${repo}" --arg reason "${reason}" --arg detail "${detail}" \
+    '{ok: false, aborted: {repo: $repo, reason: $reason, detail: $detail}, repos: []}'
+  exit 2
+}
+
+typeset -i i=0
+typeset -a job_pids=()
+for (( i = 1; i <= ${#GITDIRS[@]}; i++ )); do
+  check_repo "$(printf '%04d' ${i})" "${GITDIRS[i]}" "${GITDIR_ROOTS[i]}" &
+  job_pids+=($!)
+  # zsh parses `wait -n` as a job spec and exits 127, so it cannot throttle here.
+  # Waiting on the oldest child keeps concurrency bounded by MAX_JOBS.
+  if (( ${#job_pids[@]} >= MAX_JOBS )); then
+    wait "${job_pids[1]}" 2>/dev/null || true
+    job_pids=("${job_pids[@]:1}")
+    check_abort
+  fi
+done
+wait
+check_abort
+
+# ── Report ──────────────────────────────────────────────────────────
+typeset -i CURRENT=0 ATTENTION=0 FORGE_COUNT=0
+
+# field <record-file> <key> — first value for a single-valued key.
+field() {
+  local rec="$1" key="$2" k v
+  while IFS=$'\t' read -r k v; do
+    [[ "${k}" == "${key}" ]] && { print -r -- "${v}"; return 0 }
+  done < "${rec}"
+  return 1
+}
+
+render() {
+  # Every local is declared once, here: re-running `local` on a name already
+  # declared in this scope makes zsh print it instead of declaring it.
+  local rec state root rel branch group status_col k v iid title source
+  local prev_root="" prev_group=""
+  typeset -a visible=() marks=()
+  typeset -i width=0
+
+  # First pass: tally every repo, and collect the ones the filters keep.
+  for rec in "${WORKDIR}"/rec.*(N); do
+    state="$(field "${rec}" STATE)"
+    if [[ "${state}" == CURRENT ]]; then
+      (( CURRENT++ ))
+    else
+      (( ATTENTION++ ))
+    fi
+    (( FORGE_COUNT += $(grep -c $'^FORGE\t' "${rec}") ))
+    # --quiet is the summary alone; --dirty-only keeps the rows that need work.
+    (( QUIET )) && continue
+    [[ "${state}" == CURRENT ]] && (( DIRTY_ONLY )) && continue
+    visible+=("${rec}")
+  done
+
+  # Column width from the visible rows only, so a filtered run stays tight.
+  for rec in "${visible[@]}"; do
+    rel="$(field "${rec}" REL)"
+    (( ${#rel:t} > width )) && width=${#rel:t}
+  done
+  (( width < 8 )) && width=8
+
+  print -r -- ""
+  for rec in "${visible[@]}"; do
+    root="$(field "${rec}" ROOT)"
+    rel="$(field "${rec}" REL)"
+    branch="$(field "${rec}" BRANCH)"
+
+    if [[ "${root}" != "${prev_root}" ]]; then
+      [[ -n "${prev_root}" ]] && print -r -- ""
+      print -r -- "${root}"
+      prev_root="${root}"
+      prev_group=""
+    fi
+
+    # `:h` yields "." for a repo sitting directly under its root — that is no
+    # group, not a group named ".".
+    group="${rel:h}"
+    [[ "${group}" == "${rel}" || "${group}" == "." ]] && group=""
+    if [[ "${group}" != "${prev_group}" ]]; then
+      print -r -- ""
+      [[ -n "${group}" ]] && print -r -- "  ${C_DIM}${group}/${C_RESET}"
+      prev_group="${group}"
+    fi
+
+    marks=()
+    while IFS=$'\t' read -r k v; do
+      [[ "${k}" == MARK ]] && marks+=("${v}")
+    done < "${rec}"
+    status_col="${C_GREEN}✓ current${C_RESET}"
+    (( ${#marks[@]} > 0 )) && status_col="${(j: :)marks}"
+
+    printf '    %-*s  %s%-18s%s  %s\n' \
+      "${width}" "${rel:t}" "${C_DIM}" "${branch}" "${C_RESET}" "${status_col}"
+
+    # Forge rows, indented under their repo.
+    while IFS=$'\t' read -r k iid title source draft; do
+      [[ "${k}" == FORGE ]] || continue
+      [[ "${draft}" == true ]] && title="DRAFT: ${title}"
+      printf '      %s%-5s%s %s  %s%s%s\n' \
+        "${C_CYAN}" "${iid}" "${C_RESET}" "${title}" "${C_DIM}" "${source}" "${C_RESET}"
+    done < "${rec}"
+  done
+}
+
+# rows_json <record-file> <key> <jq object body> — the record's rows for one key
+# as a JSON array. jq does the splitting and the escaping: a title with a quote,
+# a backslash or a UTF-8 arrow in it must not be able to produce a document the
+# caller cannot parse.
+rows_json() {
+  local rec="$1" key="$2" body="$3"
+  grep $'^'"${key}"$'\t' "${rec}" 2>/dev/null \
+    | cut -f2- \
+    | jq -R -s --arg key "${key}" "split(\"\n\") | map(select(length > 0)) | map(split(\"\t\")) | map(${body})"
+}
+
+# One document, whatever happened. A caller that has to distinguish "clean" from
+# "died" by whether stdout was empty will get that distinction wrong exactly
+# once, and delete something in the process.
+render_json() {
+  local rec f
+  local -i idx=0
+  for rec in "${WORKDIR}"/rec.*(N); do
+    (( idx++ ))
+    jq -n \
+      --arg path "$(field "${rec}" PATH)" \
+      --arg root "$(field "${rec}" ROOT)" \
+      --arg rel "$(field "${rec}" REL)" \
+      --arg branch "$(field "${rec}" BRANCH)" \
+      --arg state "$([[ "$(field "${rec}" STATE)" == CURRENT ]] && print -n current || print -n attention)" \
+      --argjson tracked "$(field "${rec}" TRACKED)" \
+      --argjson untracked "$(field "${rec}" UNTRACKED)" \
+      --argjson stashes "$(field "${rec}" STASHES)" \
+      --argjson detached "$([[ -n "$(field "${rec}" DETACHED)" ]] && print -n true || print -n false)" \
+      --argjson branches "$(rows_json "${rec}" BR '{name: .[0], upstream: (if .[1] == "" then null else .[1] end), ahead: (.[2] | tonumber), behind: (.[3] | tonumber), state: .[4]}')" \
+      --argjson open_requests "$(rows_json "${rec}" FORGE '{id: .[0], title: .[1], source_branch: .[2], draft: (.[3] == "true")}')" \
+      '{path: $path, root: $root, rel: $rel, branch: $branch, state: $state,
+        dirty: {tracked: $tracked, untracked: $untracked},
+        detached: $detached, stashes: $stashes,
+        branches: $branches, open_requests: $open_requests}' \
+      > "${WORKDIR}/json.$(printf '%04d' ${idx})"
+  done
+
+  jq -s \
+    --argjson roots "$(print -rn -- "${(F)ABS_ROOTS}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
+    --argjson scanned "${#GITDIRS[@]}" \
+    --argjson current "${CURRENT}" \
+    --argjson attention "${ATTENTION}" \
+    --argjson open_requests "${FORGE_COUNT}" \
+    '{ok: true, aborted: null, roots: $roots, scanned: $scanned, current: $current,
+      attention: $attention, open_requests: $open_requests, repos: .}' \
+    "${WORKDIR}"/json.*(N)
+}
+
+if (( JSON )); then
+  # render() is still what tallies the counters, and --json forced --quiet, so
+  # it prints nothing here.
+  render
+  render_json
+  (( ATTENTION > 0 )) && exit 1
+  exit 0
+fi
+
+render
+
+print -r -- ""
+print -r -- "Scanned ${#GITDIRS[@]} repos in ${#ABS_ROOTS[@]} roots: ${CURRENT} current, ${ATTENTION} need attention, ${FORGE_COUNT} open MRs"
+
+(( ATTENTION > 0 )) && exit 1
+exit 0

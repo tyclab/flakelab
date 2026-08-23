@@ -1,0 +1,301 @@
+#!/usr/bin/env zsh
+# NEW in this repo - not inherited from the Ansible predecessor, so there is no
+# upstream copy to port fixes to.
+#
+# Update THIS distro to the current flake + overlay: a pre-flight over the
+# configured repo checkout, then `sudo nixos-rebuild switch`.
+#
+# Usage: nix-update [--all] [-h|--help]
+#   --all   after a successful switch, also run nix-clone-repos (this is what
+#           the nix-update-all wrapper passes).
+#
+# Lived in programs.zsh.initContent as a set of zsh functions until this
+# extraction. It was written as functions rather than aliases because an alias
+# body's `;` expands into the caller and discards the check's exit status, so
+# an alias could not gate the rebuild on the pre-flight. A script keeps that
+# gating and adds two things a function could not have: it is callable from a
+# non-interactive shell (`wsl -d … -- zsh -lc nix-update` no longer depends on
+# .zshrc having been sourced), and it stops re-parsing ~160 lines on every
+# interactive shell start.
+#
+# No `set -e`: the pre-flight is built out of `|| return` control flow and
+# interactive `read -k` prompts, both of which errexit would turn into silent
+# aborts.
+set -uo pipefail
+
+_self="${0:t}"
+
+# Destination is set by the nix wrapper (from repoPath, which an overlay points
+# at its own flake). Fallback lets the script run straight from a checkout.
+if [[ -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
+  _repo="${FLAKELAB_REPO_ROOT}"
+elif [[ -f "${0:A:h:h:h}/flake.nix" ]]; then
+  _repo="${0:A:h:h:h}"
+else
+  print -u2 "${_self}: FLAKELAB_REPO_ROOT unset and no flake checkout found."
+  exit 1
+fi
+
+# Shared network-facing git plumbing (ssh hardening, fetch retry shape) — the
+# same lib the sweep scripts source, so the retry behaviour cannot drift
+# between this script and them.
+source "${0:A:h}/lib/git-net.zsh" || exit 1
+
+# _url_path <filesystem path> -> the path as the body of a `path:` flake URL.
+# Duplicated from nix-overlay-generate rather than shared: that script also runs
+# straight from a checkout on a machine with no flakelab installed, so a lib it
+# had to source would be one more thing to ship. Same four substitutions.
+#
+# `path:` is a URL, and nix parses it as one: a raw space makes the parse fail
+# and nix falls back to reading the WHOLE string - scheme included - as a
+# relative filesystem path. `#` and `?` are the fragment and query delimiters,
+# so a directory containing either silently truncates the path. `%` goes FIRST
+# or the escapes added after it are escaped again.
+_url_path() {
+  local s="$1"
+  s="${s//\%/%25}"
+  s="${s// /%20}"
+  s="${s//\#/%23}"
+  s="${s//\?/%3F}"
+  print -r -- "$s"
+}
+
+_run_clone=0
+while (( $# )); do
+  case "$1" in
+    --all) _run_clone=1 ;;
+    -h|--help)
+      print -r -- "${_self} [--all]"
+      print -r -- ""
+      print -r -- "  Rebuild this distro from ${_repo} after a pre-flight that checks the"
+      print -r -- "  checkout against its remote and against the default branch."
+      print -r -- ""
+      print -r -- "  --all   also run nix-clone-repos after a successful switch"
+      print -r -- ""
+      print -r -- "  FLAKELAB_STALE_OK=1  waive the stale/unverified-tree refusal (automation)"
+      exit 0
+      ;;
+    *)
+      print -u2 "${_self}: unknown argument: $1 (try --help)"
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+# Ask, pull, and report honestly. `read -k 1` (not `read -q`) so the answer
+# is bound to a variable we can test: `read -q`'s exit status used to be a
+# link in a bare `&& git pull --rebase || echo` chain, where any non-"y"
+# read silently skipped the pull and the rebuild still ran the stale tree.
+# Without a terminal there is nobody to ask, so a known-stale tree refuses
+# instead of silently rebuilding from it — an agent gets a deterministic
+# failure with the remedy in it, a human gets the prompt. FLAKELAB_STALE_OK=1
+# is the deliberate, per-invocation waiver for automation.
+_nix_offer_pull() {
+  local _dir="${_repo}" _reply=""
+  if [[ ! -t 0 ]]; then
+    [[ "${FLAKELAB_STALE_OK:-}" == 1 ]] && return 0
+    print -P "%F{red}✗ stale flakelab tree and no terminal to ask — git -C ${_repo} pull --rebase, or set FLAKELAB_STALE_OK=1 to rebuild anyway%f"
+    return 1
+  fi
+  read -k 1 "_reply?Pull --rebase now? [y/N] "
+  echo
+  [[ "$_reply" == [yY] ]] || return 0
+  if ! git -C "$_dir" pull --rebase; then
+    print -P "%F{red}✗ flakelab pull failed — refusing to rebuild from a stale tree%f"
+    return 1
+  fi
+}
+
+# Fetch with the reason kept (gitnet_retry). No ControlMaster: this is one
+# fetch, so there is no second connection to reuse. An explicit
+# GIT_SSH_COMMAND from the environment wins.
+_nix_fetch() {
+  local _dir="$1"
+  local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
+  local -a GITNET_TIMEOUT_CMD=(timeout 20)
+  gitnet_retry git -C "$_dir" fetch -q && return 0
+  print -P "%F{yellow}⚠ Could not check for flakelab updates — fetch failed after retry (${GITNET_WHY})%f"
+  [[ -n "$GITNET_OUT" ]] && print -r -- "$GITNET_OUT"
+  return 1
+}
+
+# Repo remote check: warn when the local clone has drifted from origin,
+# with an interactive rebase prompt (ahead/behind/diverged). Uses `git -C`
+# rather than `cd` so it never moves the caller's working directory, and
+# returns non-zero when a requested pull failed so callers can abort
+# instead of rebuilding code the user just asked to replace.
+_nix_check_remote() {
+  local _dir="${_repo}"
+  if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
+    print -P "%F{yellow}⚠ ${_repo} has uncommitted changes%f"
+  fi
+  if ! _nix_fetch "$_dir"; then
+    # An unverified tree is not a current one. Fail closed; a human at a
+    # terminal can waive that, automation only via the same
+    # FLAKELAB_STALE_OK=1 that waives a known-stale tree.
+    if [[ ! -t 0 ]]; then
+      [[ "${FLAKELAB_STALE_OK:-}" == 1 ]] && return 0
+      return 1
+    fi
+    local _reply=""
+    read -k 1 "_reply?Rebuild anyway from the unverified tree? [y/N] "
+    echo
+    [[ "$_reply" == [yY] ]] || return 1
+  fi
+  local _local=$(git -C "$_dir" rev-parse HEAD)
+  local _remote=$(git -C "$_dir" rev-parse @{u} 2>/dev/null) || return 0
+  [[ "$_local" == "$_remote" ]] && return 0
+  local _behind=$(git -C "$_dir" rev-list --count HEAD..@{u} 2>/dev/null)
+  local _ahead=$(git -C "$_dir" rev-list --count @{u}..HEAD 2>/dev/null)
+  if [[ "$_behind" -gt 0 && "$_ahead" -gt 0 ]]; then
+    print -P "%F{yellow}⚠ repo has diverged (${_ahead} ahead, ${_behind} behind)%f"
+    _nix_offer_pull || return 1
+  elif [[ "$_behind" -gt 0 ]]; then
+    print -P "%F{yellow}⚠ repo is ${_behind} commit(s) behind remote%f"
+    _nix_offer_pull || return 1
+  elif [[ "$_ahead" -gt 0 ]]; then
+    print -P "%F{cyan}ℹ repo is ${_ahead} commit(s) ahead of remote (unpushed)%f"
+  fi
+}
+
+# HEAD against the default branch. A feature branch in sync with its own
+# upstream still misses everything that landed on the default branch since
+# it forked, and rebuilding from it reverts that work on this host. The
+# comparison is against the remote ref, so a checkout carrying no local
+# default branch is still measured.
+#
+# The rebase is offered, never automatic; anything that makes it unsafe
+# skips it with the reason named. A conflict is the one case that aborts
+# the run — the tree is restored but still behind, and rebuilding from it
+# is the outcome this check exists to prevent.
+#
+# Declaration and assignment are separate: `local x=$(cmd)` takes `local`'s
+# status, not the command's, so `|| return` on that line never fires.
+_nix_check_base() {
+  local _dir="${_repo}" _default _head _behind _reply="" _out
+  _default="$(git -C "$_dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
+  _default="${_default#origin/}"
+  # Guessing main/master is how the wrong branch becomes the yardstick.
+  if [[ -z "$_default" ]]; then
+    print -P "%F{yellow}⚠ flakelab has no origin/HEAD — run 'git remote set-head origin -a'; skipping the default-branch check%f"
+    return 0
+  fi
+  _head="$(git -C "$_dir" symbolic-ref --short -q HEAD 2>/dev/null)" || {
+    print -P "%F{yellow}⚠ flakelab is on a detached HEAD — not compared against origin/${_default}%f"
+    return 0
+  }
+  [[ "$_head" == "$_default" ]] && return 0
+  # origin/HEAD outliving the branch it names (renamed default) fails here
+  # rather than reporting a branch that is behind as current.
+  if ! _behind="$(git -C "$_dir" rev-list --count "HEAD..origin/${_default}" 2>/dev/null)"; then
+    print -P "%F{yellow}⚠ flakelab cannot be compared against origin/${_default} — run 'git remote set-head origin -a'%f"
+    return 0
+  fi
+  (( _behind > 0 )) || return 0
+
+  print -P "%F{yellow}⚠ flakelab is on ${_head}, ${_behind} commit(s) behind origin/${_default}%f"
+
+  # A rebase refuses a dirty tree outright, so the offer names the
+  # prerequisite instead of failing at it.
+  if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
+    print -P "%F{yellow}  uncommitted changes — not offering a rebase; commit or stash first%f"
+    return 0
+  fi
+  # Nobody to ask without a terminal: warn and rebuild from the branch the
+  # caller chose.
+  if [[ ! -t 0 ]]; then
+    print -P "%F{yellow}  no terminal to ask — rebuilding from it anyway; rebase with: git -C ${_dir} rebase origin/${_default}%f"
+    return 0
+  fi
+
+  read -k 1 "_reply?Rebase onto origin/${_default} now? [y/N] "
+  echo
+  [[ "$_reply" == [yY] ]] || return 0
+  if _out="$(git -C "$_dir" rebase "origin/${_default}" 2>&1)"; then
+    print -P "%F{green}✓ rebased ${_head} onto origin/${_default}%f"
+    return 0
+  fi
+  # Restore the pre-rebase state before bailing, so the abort leaves
+  # nothing half-applied for the next run to trip over.
+  git -C "$_dir" rebase --abort 2>/dev/null || true
+  print -P "%F{red}✗ rebase onto origin/${_default} conflicted — tree restored, refusing to rebuild from a branch behind ${_default}%f"
+  print -r -- "$_out"
+  return 1
+}
+
+# Order matters: an accepted pull moves HEAD, and the default-branch check
+# must measure where that left it.
+_nix_check_remote || exit 1
+_nix_check_base || exit 1
+
+# A `path:` flakelab input is MUTABLE; its lock entry is not. flake.lock pins
+# the checkout's narHash, and nix serves the store path that hash already names
+# for as long as it is there - so a `git pull` in the flakelab checkout leaves
+# this flake locked to the PREVIOUS snapshot and the switch succeeds against
+# the OLD flakelab. Silent, and self-perpetuating: nothing in the rebuild says
+# which flakelab it evaluated. Observed 2026-08-23, when a switch died inside a
+# profiles/merge.nix that had already been fixed on the default branch.
+#
+# Re-locked only when the input IS a `path:` one. A github:/git+ pin is
+# deliberate, and bumping it here would turn every rebuild into an unrequested
+# update of somebody else's flake.
+#
+# `nix eval` rather than jq: nix is the one tool this script cannot run
+# without, and the wrapper's PATH (nix/scripts.nix) carries no jq. The lock
+# path travels in the environment so no quoting of it reaches the expression.
+_nix_relock_flakelab() {
+  local _lock="${_repo}/flake.lock" _ty _out
+  [[ -f "${_lock}" ]] || return 0
+  _ty="$(FLAKELAB_LOCK="${_lock}" nix eval --raw --impure --expr '
+    let
+      l = builtins.fromJSON (builtins.readFile (builtins.getEnv "FLAKELAB_LOCK"));
+      n = l.nodes.${l.root}.inputs.flakelab or null;
+    in if n == null then "" else l.nodes.${n}.locked.type or ""
+  ' 2>/dev/null)"
+  [[ "${_ty}" == path ]] || return 0
+  # Unprivileged on purpose: a lock written by root on the 9p mount is what
+  # makes the operator's next `nix` command in that flake fail on "opening
+  # file flake.lock: Permission denied".
+  if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
+    print -P "%F{cyan}ℹ re-locked the mutable path: flakelab input%f"
+  else
+    print -P "%F{yellow}⚠ could not re-lock the path: flakelab input — the switch may evaluate the previously locked snapshot%f"
+    print -r -- "${_out}"
+  fi
+}
+_nix_relock_flakelab
+
+# `path:`, not a bare path. A bare path to a git repo resolves as
+# `git+file:`, which sees only TRACKED files — and flake.lock is
+# deliberately untracked (a committed lock pins the local `path:` flakelab
+# input's NAR hash and every edit over there then aborts the build). So
+# git+file: finds no lock, rewrites one on every run as root, and the
+# next unprivileged `nix` command in that checkout dies on "opening file
+# flake.lock: Permission denied". `path:` sees the untracked lock and
+# reuses it.
+#
+# sudo and nixos-rebuild resolve from the caller's $PATH on purpose: the
+# rebuild must use the RUNNING system's nixos-rebuild, not a second copy pinned
+# by this script's wrapper (same rule as build-dev-wsl-nix, nix/scripts.nix).
+#
+# nix-clone-repos used to follow that rule and no longer does. The flakelab CLI
+# took it off PATH under its own name, so the wrapper now pins the derivation
+# (nix/scripts.nix, the nix-update / nix-update-all PATH lists). The call below
+# is unchanged and still guards with `command -v` — the pin is what keeps that
+# guard from firing on every --all run.
+#
+# `exit $?`, not `exit 1`: the rebuild was the last statement of the old
+# nix-update() function, so its status WAS the command's. nixos-rebuild's own
+# codes (100 for a build failure, say) must survive the move.
+# The path is encoded, the `#` that follows it is NOT: that one is the flake
+# URL's fragment, which is how `default` is selected at all.
+sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#default" || exit $?
+
+(( _run_clone )) || exit 0
+
+if ! command -v nix-clone-repos > /dev/null 2>&1; then
+  print -P "%F{red}✗ --all: nix-clone-repos is not on PATH — the switch succeeded, the clone sweep did not run%f"
+  exit 1
+fi
+nix-clone-repos

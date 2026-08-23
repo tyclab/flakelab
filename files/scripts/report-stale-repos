@@ -1,0 +1,108 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# report-stale-repos — report archived / deletion-scheduled projects that still
+# have a local checkout.
+#
+# Discovery skips these projects, so a local copy is never fetched again: frozen
+# while still looking current. Read-only by design — each checkout is classified
+# by whether it holds local work, so removal needs no interactive prompt.
+#
+# Usage:
+#   report-stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]
+#
+
+REPOS_DIR=""
+MEMBER=0
+typeset -a GROUPS=()
+
+while (( $# > 0 )); do
+  case $1 in
+    --repos-dir)
+      REPOS_DIR="$2"; shift ;;
+    --group)
+      GROUPS+=("$2"); shift ;;
+    --member)
+      MEMBER=1 ;;
+    --help|-h)
+      echo "Usage: report-stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]"
+      exit 0 ;;
+    *)
+      echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z "${REPOS_DIR}" ]]; then
+  echo "Error: --repos-dir is required" >&2
+  exit 1
+fi
+if (( ${#GROUPS[@]} == 0 )); then
+  exit 0
+fi
+
+# Sibling lookup, so this works from the Nix store regardless of install prefix.
+LIST="${0:h}/glab-group-projects"
+if [[ ! -x "${LIST}" ]]; then
+  echo "Error: ${LIST} not found or not executable" >&2
+  exit 1
+fi
+
+typeset -a member_flag=()
+if (( MEMBER )); then
+  member_flag=(--member)
+fi
+
+ENTRIES="$(mktemp)"
+trap 'rm -f "${ENTRIES}"' EXIT
+
+typeset group=""
+for group in "${GROUPS[@]}"; do
+  # Groups overlap (a parent group contains its subgroups), so the same project
+  # arrives more than once; deduplicated below before reporting.
+  if ! "${LIST}" --group "${group}" "${member_flag[@]}" \
+       | jq -r --arg grp "${group}" \
+           'select(.path_with_namespace | startswith($grp + "/"))
+            | select(.archived == true or .marked_for_deletion_on != null or .marked_for_deletion_at != null)
+            | (if .archived == true then "archived" else "deletion-scheduled" end)
+              + "|" + .path_with_namespace' >> "${ENTRIES}"; then
+    echo "Error: could not list projects for ${group}" >&2
+    exit 1
+  fi
+done
+
+typeset -i checked_out=0 remote_only=0 removable=0
+typeset reason="" repo_path="" repo="" work=""
+
+while IFS='|' read -r reason repo_path; do
+  [[ -z "${repo_path}" ]] && continue
+  repo="${REPOS_DIR}/${repo_path}"
+
+  if [[ ! -d "${repo}/.git" ]]; then
+    (( remote_only++ ))
+    continue
+  fi
+  (( checked_out++ ))
+
+  work=""
+  git -C "${repo}" diff --quiet 2>/dev/null || work="${work} uncommitted"
+  git -C "${repo}" diff --cached --quiet 2>/dev/null || work="${work} staged"
+  [[ -n "$(git -C "${repo}" ls-files --others --exclude-standard 2>/dev/null)" ]] && work="${work} untracked"
+  [[ -n "$(git -C "${repo}" log --branches --not --remotes --oneline 2>/dev/null)" ]] && work="${work} unpushed-commits"
+  [[ -n "$(git -C "${repo}" stash list 2>/dev/null)" ]] && work="${work} stash"
+
+  if [[ -z "${work}" ]]; then
+    (( removable++ ))
+    echo "  SAFE TO REMOVE  ${reason}  ${repo}"
+  else
+    echo "  KEEP —${work}  ${reason}  ${repo}"
+  fi
+done < <(sort -u "${ENTRIES}")
+
+echo "SUMMARY archived/deletion-scheduled: ${checked_out} checked out locally (${removable} with no local work), ${remote_only} remote-only"
+if (( checked_out > 0 )); then
+  echo "Excluded from clone/fetch — these never update again."
+  echo "Move aside when confirmed stale: mkdir -p ~/.stale-repos && mv <path> ~/.stale-repos/"
+fi

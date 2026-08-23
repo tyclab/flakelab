@@ -1,0 +1,353 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline test suite for gitpublisher.
+#
+# Same shape as test-gitcleaner: a real repo against a bare "remote" on disk,
+# glab stubbed, so the whole suite runs without network or credentials. The
+# remote URL is a gitlab.com address (which is what forge routing reads) while
+# url.<path>.insteadOf redirects the actual fetch and push to the local bare
+# repo. Hooks come per test via core.hooksPath, from a directory OUTSIDE the
+# worktree — the tool stages with `add -A`, and a hook inside the tree would
+# publish itself.
+#
+# Usage: files/scripts/test-gitpublisher
+#
+
+SCRIPT_DIR="${0:A:h}"
+PUBLISHER="${SCRIPT_DIR}/gitpublisher"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the value BEFORE the increment,
+# so the first call returns 1 and an `&& ok || bad` chain would run both arms.
+ok()   { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()  { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check() { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains()  { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes()  { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# Stub glab. Every invocation is appended to the log, so a test can assert not
+# just the outcome but the exact flags that produced it — the no-squash-flags
+# rule is a claim about argv, and only the log can prove it. GITPUB_MR_LIST
+# steers the open-MR answer per test.
+mkdir -p "${BASE}/bin"
+STUB_LOG="${BASE}/stub.log"
+export GITPUB_STUB_LOG="${STUB_LOG}"
+export GITPUB_MR_LIST="[]"
+cat > "${BASE}/bin/glab" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "cwd=${PWD:A} glab $*" >> "${GITPUB_STUB_LOG:-/dev/null}"
+case "${1-} ${2-}" in
+  "auth status") exit 0 ;;
+  "mr list")     print -r -- "${GITPUB_MR_LIST:-[]}"; exit 0 ;;
+  "mr create")   print -r -- "https://gitlab.com/test/repo/-/merge_requests/7"; exit 0 ;;
+  "mr view")     print -r -- '{"web_url":"https://gitlab.com/test/repo/-/merge_requests/7","iid":7}'; exit 0 ;;
+esac
+exit 1
+STUB
+chmod +x "${BASE}/bin/glab"
+export PATH="${BASE}/bin:${PATH}"
+
+# build_fixture <name> — a fresh clone against a fresh bare remote; sets
+# FIXTURE_REPO and FIXTURE_DIR and resets the stub state. Setup output is
+# swallowed wholesale, as in test-gitcleaner.
+build_fixture() {
+  local name="$1"
+  local dir="${BASE}/${name}" bare="${BASE}/${name}/remote.git" repo="${BASE}/${name}/repo"
+  mkdir -p "${dir}"
+  {
+  git init -q --bare "${bare}"
+  git init -q -b main "${repo}"
+  git -C "${repo}" config user.email t@e; git -C "${repo}" config user.name t
+  print -r -- base > "${repo}/f"
+  git -C "${repo}" add -A; git -C "${repo}" commit -qm base
+  git -C "${repo}" remote add origin "git@gitlab.com:test/repo.git"
+  git -C "${repo}" config "url.${bare}.insteadOf" "git@gitlab.com:test/repo.git"
+  git -C "${repo}" push -q origin main
+  git -C "${bare}" symbolic-ref HEAD refs/heads/main
+  git -C "${repo}" fetch -q origin
+  git -C "${repo}" remote set-head origin main
+  } >/dev/null 2>&1
+  FIXTURE_DIR="${dir}"
+  FIXTURE_REPO="${repo}"
+  : > "${STUB_LOG}"
+  export GITPUB_MR_LIST="[]"
+}
+
+# set_hook <body> — a pre-commit hook for the current fixture, outside the tree.
+set_hook() {
+  mkdir -p "${FIXTURE_DIR}/hooks"
+  { print -r -- "#!/usr/bin/env zsh"; print -r -- "$1" } > "${FIXTURE_DIR}/hooks/pre-commit"
+  chmod +x "${FIXTURE_DIR}/hooks/pre-commit"
+  git -C "${FIXTURE_REPO}" config core.hooksPath "${FIXTURE_DIR}/hooks"
+}
+
+remote_has() { git -C "${BASE}/$1/remote.git" rev-parse --verify -q "refs/heads/$2" >/dev/null 2>&1 && print -r -- yes || print -r -- no }
+
+print -r -- "── the default branch is refused, not branched from silently ─────"
+build_fixture defguard
+print -r -- change > "${FIXTURE_REPO}/f"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --json 2>&1)"; RC=$?
+check "dirty tree on main without --branch exits 2" "${RC}" "2"
+contains "and names the missing flag" "${OUT}" "--branch"
+check "nothing was committed" "$(git -C "${FIXTURE_REPO}" rev-list --count HEAD)" "1"
+contains "the changes are still in the tree" "$(git -C "${FIXTURE_REPO}" status --porcelain)" "f"
+
+print -r -- "── happy path: branch, commit, push, open ─────────────────────────"
+build_fixture happy
+print -r -- change > "${FIXTURE_REPO}/f"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat(x): y" --branch feat/x --json 2>/dev/null)"; RC=$?
+check "exits 0" "${RC}" "0"
+print -r -- "${OUT}" | jq -e . >/dev/null 2>&1 \
+  && ok "--json emits parseable JSON" || bad "--json emits parseable JSON"
+check "ok is true" "$(print -r -- "${OUT}" | jq -r '.ok')" "true"
+check "action is opened" "$(print -r -- "${OUT}" | jq -r '.action')" "opened"
+check "reports the URL the forge confirmed" \
+  "$(print -r -- "${OUT}" | jq -r '.url')" "https://gitlab.com/test/repo/-/merge_requests/7"
+check "a commit was made, without a retry" \
+  "$(print -r -- "${OUT}" | jq -r '"\(.commit.made) \(.commit.retried)"')" "true false"
+check "the title is the commit subject" \
+  "$(git -C "${FIXTURE_REPO}" log -1 --format=%s)" "feat(x): y"
+check "the branch reached the remote" "$(remote_has happy feat/x)" "yes"
+LOG="$(<"${STUB_LOG}")"
+contains "an MR was created" "${LOG}" "mr create"
+contains "assigned to the caller" "${LOG}" "--assignee @me"
+# The suite runs from outside the fixture; glab must still be asked from
+# inside it, because the real one prompts (and hangs) anywhere else.
+contains "glab is asked from inside the repo" "${LOG}" "cwd=${FIXTURE_REPO:A} glab mr create"
+excludes "no squash flag ever" "${LOG}" "squash"
+excludes "no remove-source-branch flag ever" "${LOG}" "remove-source-branch"
+excludes "no merge subcommand ever" "${LOG}" "mr merge"
+
+print -r -- "── a formatter failure gets exactly one restage-and-retry ────────"
+build_fixture fixer
+print -r -- change > "${FIXTURE_REPO}/f"
+set_hook "if [[ ! -e ${FIXTURE_DIR}/fixed ]]; then : > ${FIXTURE_DIR}/fixed; print -r -- formatted >> f; print -r -- 'prettier rewrote files'; exit 1; fi; exit 0"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: fmt" --branch feat/fmt --json 2>/dev/null)"; RC=$?
+check "exits 0 after the retry" "${RC}" "0"
+check "the retry is reported" "$(print -r -- "${OUT}" | jq -r '.commit.retried')" "true"
+contains "the formatter's rewrite is in the commit" \
+  "$(git -C "${FIXTURE_REPO}" show HEAD:f)" "formatted"
+
+print -r -- "── a failure the hooks cannot fix is a stop, not a puzzle ────────"
+build_fixture hardlint
+print -r -- change > "${FIXTURE_REPO}/f"
+set_hook "print -r -- 'yamllint: boom' >&2; exit 1"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: bad" --branch feat/bad --json 2>/dev/null)"; RC=$?
+check "exits 1 at the gate" "${RC}" "1"
+check "the gate is named" "$(print -r -- "${OUT}" | jq -r '.gate.name')" "lint"
+contains "the hook output rides out verbatim" \
+  "$(print -r -- "${OUT}" | jq -r '.gate.output')" "yamllint: boom"
+check "nothing left the host" "$(remote_has hardlint feat/bad)" "no"
+
+print -r -- "── a secret finding is terminal: no retry, no push ───────────────"
+build_fixture secret
+print -r -- change > "${FIXTURE_REPO}/f"
+# The hook rewrites a file AND reports a leak: the rewrite would qualify for
+# the formatter retry, and the leak must win. The attempt count proves it.
+# pre-commit's real red output: the failing hook is named by a `- hook id:`
+# line, which is what the tool keys on.
+set_hook "print -r -- attempt >> ${FIXTURE_DIR}/count; print -r -- oops >> f; print -r -- 'Detect hardcoded secrets................Failed'; print -r -- '- hook id: gitleaks'; print -r -- '- exit code: 1'; exit 1"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: leak" --branch feat/leak --json 2>/dev/null)"; RC=$?
+check "exits 1 at the gate" "${RC}" "1"
+check "the gate is the secret gate" "$(print -r -- "${OUT}" | jq -r '.gate.name')" "secret"
+check "the hooks ran exactly once" "$(wc -l < "${FIXTURE_DIR}/count" | tr -d ' ')" "1"
+check "nothing left the host" "$(remote_has secret feat/leak)" "no"
+LOG="$(<"${STUB_LOG}")"
+excludes "no MR was touched" "${LOG}" "mr create"
+
+print -r -- "── a leak stays a leak in a report too long for one pipe ────────"
+build_fixture bigleak
+print -r -- change > "${FIXTURE_REPO}/f"
+# The finding comes FIRST and half a megabyte of hook chatter after it — the
+# shape a real pre-commit run has, and the one that used to be misread: a matcher
+# reading the report through a pipe is closed by `grep -q` at that first line, the
+# writer takes SIGPIPE, and under `pipefail` the leak was reported as a lint stop.
+set_hook "print -r -- attempt >> ${FIXTURE_DIR}/count; print -r -- 'Detect hardcoded secrets................Failed'; print -r -- '- hook id: gitleaks'; print -r -- '- exit code: 1'; repeat 8000 print -r -- '  ..............................................................'; exit 1"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: bigleak" --branch feat/bigleak --json 2>/dev/null)"; RC=$?
+check "exits 1 at the gate" "${RC}" "1"
+check "the gate is still the secret gate" "$(print -r -- "${OUT}" | jq -r '.gate.name')" "secret"
+check "the hooks ran exactly once" "$(wc -l < "${FIXTURE_DIR}/count" | tr -d ' ')" "1"
+# Every padding line is still there: classifying the stop correctly is half of
+# it, handing the caller the whole report is the other half. Counting the lines
+# the hook generated rather than bytes, because git frames the hook output with
+# lines of its own.
+check "the report rode out whole" \
+  "$(print -r -- "${OUT}" | jq -r '.gate.output' | grep -c '^  \.\.')" "8000"
+check "nothing left the host" "$(remote_has bigleak feat/bigleak)" "no"
+
+print -r -- "── a cold pre-commit cache is not a leak ─────────────────────────"
+build_fixture coldcache
+print -r -- change > "${FIXTURE_REPO}/f"
+# The first commit in a fresh clone: pre-commit installs each hook environment
+# and SAYS so, gitleaks among them, then a DIFFERENT hook fails. Naming the
+# word is not a finding — the run below must stop at the lint gate, or a green
+# secret scanner blocks every publish on a cold cache.
+set_hook "print -r -- '[INFO] Initializing environment for https://github.com/gitleaks/gitleaks.'; print -r -- '[INFO] Installing environment for https://github.com/gitleaks/gitleaks.'; print -r -- '[INFO] Once installed this environment will be reused.'; print -r -- 'Detect hardcoded secrets................Passed'; print -r -- 'yamllint................................Failed'; print -r -- '- hook id: yamllint'; exit 1"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: cold" --branch feat/cold --json 2>/dev/null)"; RC=$?
+check "exits 1 at the gate" "${RC}" "1"
+check "the gate is lint, not secret" "$(print -r -- "${OUT}" | jq -r '.gate.name')" "lint"
+contains "the install line is still in the report" \
+  "$(print -r -- "${OUT}" | jq -r '.gate.output')" "Installing environment"
+check "nothing left the host" "$(remote_has coldcache feat/cold)" "no"
+
+print -r -- "── a clean branch with commits publishes as it stands ────────────"
+build_fixture ready
+{
+git -C "${FIXTURE_REPO}" switch -qc feat/ready
+print -r -- r > "${FIXTURE_REPO}/r"
+git -C "${FIXTURE_REPO}" add -A; git -C "${FIXTURE_REPO}" commit -qm "feat: ready"
+} >/dev/null 2>&1
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: ready" --json 2>/dev/null)"; RC=$?
+check "exits 0" "${RC}" "0"
+check "no new commit was made" "$(print -r -- "${OUT}" | jq -r '.commit.made')" "false"
+check "the branch reached the remote" "$(remote_has ready feat/ready)" "yes"
+check "the MR was opened" "$(print -r -- "${OUT}" | jq -r '.action')" "opened"
+
+print -r -- "── nothing to publish is a refusal, not an empty MR ──────────────"
+build_fixture idle
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: none" --json 2>&1)"; RC=$?
+check "a clean default branch exits 2" "${RC}" "2"
+contains "and says why" "${OUT}" "nothing to publish"
+git -C "${FIXTURE_REPO}" switch -qc feat/idle >/dev/null 2>&1
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: none" --json 2>&1)"; RC=$?
+check "a branch with no commits beyond origin exits 2" "${RC}" "2"
+contains "for the same reason" "${OUT}" "nothing to publish"
+LOG="$(<"${STUB_LOG}")"
+excludes "no MR was touched" "${LOG}" "mr create"
+
+print -r -- "── an open MR is updated, never duplicated ───────────────────────"
+build_fixture update
+{
+git -C "${FIXTURE_REPO}" switch -qc feat/x
+print -r -- u > "${FIXTURE_REPO}/u"
+} >/dev/null 2>&1
+export GITPUB_MR_LIST='[{"iid":7,"source_branch":"feat/x"}]'
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: more" --json 2>/dev/null)"; RC=$?
+check "exits 0" "${RC}" "0"
+check "action is updated" "$(print -r -- "${OUT}" | jq -r '.action')" "updated"
+check "the push happened" "$(remote_has update feat/x)" "yes"
+LOG="$(<"${STUB_LOG}")"
+excludes "and no second MR was created" "${LOG}" "mr create"
+
+print -r -- "── guards ─────────────────────────────────────────────────────────"
+build_fixture wrongforge
+git -C "${FIXTURE_REPO}" remote set-url origin "git@github.com:test/repo.git" >/dev/null 2>&1
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --json 2>&1)"; RC=$?
+check "a non-GitLab remote exits 2" "${RC}" "2"
+contains "and says so" "${OUT}" "gitlab remotes only"
+
+build_fixture mismatch
+git -C "${FIXTURE_REPO}" switch -qc feat/a >/dev/null 2>&1
+print -r -- change > "${FIXTURE_REPO}/f"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --branch feat/b --json 2>&1)"; RC=$?
+check "--branch against a different checked-out branch exits 2" "${RC}" "2"
+contains "and names the conflict" "${OUT}" "drop --branch"
+
+OUT="$(zsh "${PUBLISHER}" --repo "${BASE}/nope" --title "feat: x" 2>&1)"; RC=$?
+check "--repo on a non-repo exits 2" "${RC}" "2"
+contains "and says which path" "${OUT}" "not a git repo"
+
+OUT="$(zsh "${PUBLISHER}" 2>&1)"; RC=$?
+check "a missing --title exits 2" "${RC}" "2"
+contains "and says what it is for" "${OUT}" "commit subject and the MR title"
+
+OUT="$(zsh "${PUBLISHER}" --nonsense 2>&1)"; RC=$?
+check "an unknown option exits 2" "${RC}" "2"
+
+build_fixture descfile
+print -r -- change > "${FIXTURE_REPO}/f"
+print -r -- "## Summary body from file" > "${BASE}/desc.md"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: desc" --branch feat/d \
+  --description-file "${BASE}/desc.md" --json 2>/dev/null)"; RC=$?
+check "a description file is accepted" "${RC}" "0"
+LOG="$(<"${STUB_LOG}")"
+contains "and its body reaches the MR" "${LOG}" "## Summary body from file"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --description-file "${BASE}/absent.md" 2>&1)"; RC=$?
+check "a missing description file exits 2" "${RC}" "2"
+
+print -r -- "── --message-file writes a commit body ────────────────────────────"
+build_fixture msgfile
+print -r -- change > "${FIXTURE_REPO}/f"
+cat > "${BASE}/msg.txt" <<'MSG'
+fix(scope): the subject from the file
+
+The reasoning that belongs in a commit body, which --title alone has nowhere
+to put.
+MSG
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "fix(scope): the MR title" \
+  --branch fix/msg --message-file "${BASE}/msg.txt" --json 2>/dev/null)"; RC=$?
+check "exits 0" "${RC}" "0"
+check "the file's subject is the commit subject" \
+  "$(git -C "${FIXTURE_REPO}" log -1 --format=%s)" "fix(scope): the subject from the file"
+contains "and its body is the commit body" \
+  "$(git -C "${FIXTURE_REPO}" log -1 --format=%b)" "nowhere"
+LOG="$(<"${STUB_LOG}")"
+contains "--title is still the MR title" "${LOG}" "--title fix(scope): the MR title"
+
+# The retry re-commits, and a retry that dropped the body would leave the two
+# attempts authoring different history for the same run.
+print -r -- "── the formatter retry commits the same message ───────────────────"
+build_fixture msgretry
+print -r -- change > "${FIXTURE_REPO}/f"
+set_hook "if [[ ! -e ${FIXTURE_DIR}/fixed ]]; then : > ${FIXTURE_DIR}/fixed; print -r -- formatted >> f; print -r -- 'prettier rewrote files'; exit 1; fi; exit 0"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "fix: retry" --branch fix/retry \
+  --message-file "${BASE}/msg.txt" --json 2>/dev/null)"; RC=$?
+check "exits 0 after the retry" "${RC}" "0"
+check "the retry is reported" "$(print -r -- "${OUT}" | jq -r '.commit.retried')" "true"
+check "the subject survived the retry" \
+  "$(git -C "${FIXTURE_REPO}" log -1 --format=%s)" "fix(scope): the subject from the file"
+contains "and so did the body" \
+  "$(git -C "${FIXTURE_REPO}" log -1 --format=%b)" "nowhere"
+
+build_fixture msgguards
+print -r -- change > "${FIXTURE_REPO}/f"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --branch feat/m \
+  --message-file "${BASE}/absent.txt" 2>&1)"; RC=$?
+check "a missing message file exits 2" "${RC}" "2"
+contains "and says which path" "${OUT}" "message file not readable"
+
+: > "${BASE}/empty.txt"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --branch feat/m \
+  --message-file "${BASE}/empty.txt" 2>&1)"; RC=$?
+check "an empty message file exits 2" "${RC}" "2"
+contains "and says it is empty" "${OUT}" "message file is empty"
+check "nothing was committed behind the guard" \
+  "$(git -C "${FIXTURE_REPO}" rev-list --count HEAD)" "1"
+
+print -r -- "── a whitespace-only message file is a usage error, not a gate ────"
+print -r -- "" > "${BASE}/blank.txt"
+print -r -- "   " >> "${BASE}/blank.txt"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: x" --branch feat/m \
+  --message-file "${BASE}/blank.txt" 2>&1)"; RC=$?
+check    "exits 2, not 1"                 "${RC}"  "2"
+contains "and says the file is blank"     "${OUT}" "message file is blank"
+excludes "not reported as a gate stop"    "${OUT}" "gate"
+
+# The run `cd`s into --repo and `git -C` resolves -F from there, so a relative
+# path checked against the caller's cwd and read against the clone are two
+# different files. Read from the wrong side, the commit fails and the retry
+# logic reports it as a lint gate.
+print -r -- "── a relative --message-file resolves against the caller's cwd ────"
+build_fixture msgrel
+print -r -- change > "${FIXTURE_REPO}/f"
+mkdir -p "${BASE}/elsewhere"
+cat > "${BASE}/elsewhere/rel.txt" <<'MSG'
+fix(scope): subject from a relative path
+
+Body that has to survive the cwd change.
+MSG
+OUT="$(cd "${BASE}/elsewhere" && zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" \
+  --title "fix: rel" --branch fix/rel --message-file rel.txt 2>&1)"; RC=$?
+check "exits 0" "${RC}" "0"
+check "the relative file's subject is the commit subject" \
+  "$(git -C "${FIXTURE_REPO}" log -1 --format=%s)" "fix(scope): subject from a relative path"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

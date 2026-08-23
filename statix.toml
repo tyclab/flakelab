@@ -1,0 +1,11 @@
+# statix config. Read by `checks.statix` in flake.nix, which runs from the
+# source root so this file applies; `checks.deadnix` beside it and `nix fmt`
+# (nixfmt-tree, the CI `lint` job) run unrestricted.
+#
+# repeated_keys: home-manager's idiomatic form assigns `home.*` and
+# `programs.<name>` at the top level, one block per concern — 19 `home.*` and 4
+# `programs.*` blocks here, which is what statix flags. Collapsing them would
+# nest most of this ~1170-line module under two attrsets and force
+# `services.ssh-agent` out from beside `programs.ssh`, which it documents.
+# Readability loses more than the lint gains.
+disabled = ["repeated_keys"]

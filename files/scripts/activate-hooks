@@ -1,0 +1,224 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Activate pre-commit hooks across cloned repos.
+#
+# Two passes:
+#   1. Repos shipping a top-level hooks/ directory that holds actual git hooks
+#      (an executable named pre-commit, pre-push, …) → core.hooksPath=hooks.
+#      Without this a repo whose only gate is hooks/ (no .pre-commit-config.yaml)
+#      is never visited at all and ships unhooked. A hooks/ of application code
+#      is left alone, as is a hooksPath already pointing at a live directory.
+#   2. Repos holding a .pre-commit-config.yaml:
+#        - core.hooksPath set and pointing at a directory that exists → skipped;
+#          that repo's own hooks/ is the gate (pass 1 winner). pre-commit itself
+#          refuses to coexist ("Cowardly refusing to install hooks with
+#          core.hooksPath set"), and unsetting it to force the shims in would
+#          disable the hook that actually gates commits there.
+#        - core.hooksPath set but dangling → cleared, then installed as below.
+#        - both framework shims present, recorded interpreter still there → left alone
+#        - shims present but the interpreter they recorded is gone → both repointed
+#        - otherwise → `make install-hooks` if the repo has that target, else
+#          pre-commit install of the pre-commit and pre-push types
+#
+# Mirrors the clone-repos pattern: one shell process, all iteration internal.
+# The stdout markers (HOOKSPATH_SET / SHIM_INSTALLED / SHIM_REPOINTED /
+# SHIM_FAILED / SUMMARY) report what happened; the exit status is the gate — a
+# repo left unhooked fails the run rather than being reported as success.
+#
+# Usage:
+#   activate-hooks --repos-dir ~/git
+#
+
+REPOS_DIR=""
+
+while (( $# > 0 )); do
+  case $1 in
+    --repos-dir) REPOS_DIR="$2"; shift ;;
+    --help|-h)
+      echo "Usage: activate-hooks --repos-dir <path>"
+      exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z "$REPOS_DIR" ]]; then
+  echo "Missing --repos-dir argument" >&2
+  exit 1
+fi
+
+if [[ ! -d "$REPOS_DIR" ]]; then
+  echo "SUMMARY repos-dir $REPOS_DIR does not exist yet, nothing to do"
+  exit 0
+fi
+
+# Locate pre-commit. PATH first: on NixOS it lives in ~/.nix-profile/bin (or is
+# injected by the nix/scripts.nix wrapper), which no hardcoded path below covers —
+# probing only those left every flakelab box silently unhooked. The explicit list
+# stays as the fallback for callers with a stripped PATH.
+PRECOMMIT="$(command -v pre-commit 2>/dev/null || true)"
+for pc in "$HOME/.local/bin/pre-commit" /usr/bin/pre-commit /usr/local/bin/pre-commit /home/linuxbrew/.linuxbrew/bin/pre-commit; do
+  [[ -n "$PRECOMMIT" ]] && break
+  if [[ -x "$pc" ]]; then
+    PRECOMMIT="$pc"
+    break
+  fi
+done
+
+shim_count=0
+shim_installed=0
+shim_skipped=0
+shim_failed=0
+pc_missing_count=0
+hooksdir_count=0
+hooksdir_set=0
+
+# Pass 1: repos shipping their own hooks/ directory.
+while IFS= read -r hooks_dir; do
+  repo="${hooks_dir%/hooks}"
+  [[ -d "$repo/.git" ]] || continue
+  # Only claim a hooks/ that actually holds git hooks. A top-level hooks/ full
+  # of application code (React hooks, deploy hooks) is not a gate, and pointing
+  # core.hooksPath at it would silently disable every hook in that repo.
+  has_git_hook=0
+  for hook_name in pre-commit pre-push commit-msg prepare-commit-msg pre-rebase \
+                   pre-merge-commit post-checkout post-merge post-commit post-rewrite; do
+    [[ -x "$hooks_dir/$hook_name" ]] && { has_git_hook=1; break; }
+  done
+  (( has_git_hook )) || continue
+  hooksdir_count=$((hooksdir_count + 1))
+  current=$(git -C "$repo" config --local --get core.hooksPath 2>/dev/null || true)
+  if [[ "$current" != "hooks" ]]; then
+    # An existing hooksPath that resolves to a live directory is that repo's own
+    # gate — pass 2 honours it, so pass 1 must not overwrite it either.
+    if [[ -n "$current" ]]; then
+      cur_target="$current"
+      [[ "$cur_target" == /* ]] || cur_target="$repo/$cur_target"
+      [[ -d "$cur_target" ]] && continue
+    fi
+    git -C "$repo" config --local core.hooksPath hooks
+    hooksdir_set=$((hooksdir_set + 1))
+    echo "HOOKSPATH_SET $repo"
+  fi
+done < <(find "$REPOS_DIR" -type d -name hooks -not -path '*/.git/*' 2>/dev/null)
+
+# Pass 2: repos with .pre-commit-config.yaml
+while IFS= read -r config; do
+  shim_count=$((shim_count + 1))
+  repo="${config%/.pre-commit-config.yaml}"
+  [[ -d "$repo/.git" ]] || continue
+
+  current_hooks_path=$(git -C "$repo" config --local --get core.hooksPath 2>/dev/null || true)
+
+  # A repo shipping its own hooks/ owns its gate. pre-commit refuses to install
+  # while core.hooksPath is set, and taking its hint to unset it would disable
+  # that repo's real hook — for some repos the .pre-commit-config.yaml exists
+  # only for `pre-commit run --all-files` and explicitly must NOT be installed.
+  # Only a dangling hooksPath (gates nothing, blocks the shims) is cleared.
+  if [[ -n "$current_hooks_path" ]]; then
+    hooks_target="$current_hooks_path"
+    [[ "$hooks_target" == /* ]] || hooks_target="$repo/$hooks_target"
+    if [[ -d "$hooks_target" ]]; then
+      shim_skipped=$((shim_skipped + 1))
+      continue
+    fi
+  fi
+
+  shim_exists=0
+  if grep -q 'pre-commit.com' "$repo/.git/hooks/pre-commit" 2>/dev/null; then
+    shim_exists=1
+  fi
+  push_shim_exists=0
+  if grep -q 'pre-commit.com' "$repo/.git/hooks/pre-push" 2>/dev/null; then
+    push_shim_exists=1
+  fi
+
+  # Leave a healthy shim; repoint a dead one instead of trusting it. Both types
+  # must be in place — a clone shimmed before pre-push was adopted needs the
+  # install below, or a `stages: [pre-push]` hook silently never runs there.
+  #
+  # "Stale" is tested by whether the interpreter the shim recorded still EXISTS.
+  # Comparing it against the pre-commit entry point's own shebang does not work
+  # here: that entry point is a bash wrapper around the python script, so the
+  # comparison never matches and every repo gets repointed on every run. A
+  # recorded /nix/store python that a garbage collection has since removed is the
+  # failure worth catching — the hook dies on every commit until it is repointed.
+  if [[ $shim_exists -eq 1 && $push_shim_exists -eq 1 && -z "$current_hooks_path" ]]; then
+    cur_py=$(sed -n 's/^INSTALL_PYTHON=//p' "$repo/.git/hooks/pre-commit" 2>/dev/null | head -1)
+    if [[ -z "$cur_py" || -x "$cur_py" ]]; then
+      continue
+    fi
+    if [[ -z "$PRECOMMIT" ]]; then
+      pc_missing_count=$((pc_missing_count + 1))
+      echo "PRECOMMIT_NOT_FOUND cannot repoint dead shim in $repo"
+      continue
+    fi
+    if ( cd "$repo" && "$PRECOMMIT" install --overwrite -t pre-commit -t pre-push >/dev/null ); then
+      shim_installed=$((shim_installed + 1))
+      echo "SHIM_REPOINTED $repo"
+    else
+      shim_failed=$((shim_failed + 1))
+      echo "SHIM_FAILED $repo (repoint)"
+    fi
+    continue
+  fi
+
+  if [[ -z "$PRECOMMIT" ]]; then
+    pc_missing_count=$((pc_missing_count + 1))
+    echo "PRECOMMIT_NOT_FOUND skipping $repo"
+    continue
+  fi
+
+  # Only reachable with a dangling hooksPath (the live-directory case continued
+  # above): it gates nothing and would block the shim install, so clear it.
+  if [[ -n "$current_hooks_path" ]]; then
+    git -C "$repo" config --local --unset-all core.hooksPath 2>/dev/null || true
+  fi
+
+  # Install shim: use Makefile target if available, fallback to pre-commit install
+  # Keep stderr and the exit status: a swallowed failure here leaves the repo
+  # with no gitleaks/lint hook while the run still reports "changed".
+  if [[ -f "$repo/Makefile" ]] && grep -q '^install-hooks:' "$repo/Makefile"; then
+    # Run make install-hooks, injecting the pre-commit path into PATH
+    ( PATH="$(dirname "$PRECOMMIT"):$PATH" make -C "$repo" install-hooks >/dev/null )
+    install_rc=$?
+    # An install-hooks target predating the pre-push type leaves that hook out;
+    # converge here rather than re-running make on every provision.
+    if (( install_rc == 0 )) && [[ ! -f "$repo/.git/hooks/pre-push" ]]; then
+      ( cd "$repo" && "$PRECOMMIT" install -t pre-push >/dev/null )
+      install_rc=$?
+    fi
+  else
+    # Fallback to direct pre-commit install
+    ( cd "$repo" && "$PRECOMMIT" install -t pre-commit -t pre-push >/dev/null )
+    install_rc=$?
+  fi
+
+  if (( install_rc == 0 )); then
+    shim_installed=$((shim_installed + 1))
+    echo "SHIM_INSTALLED $repo"
+  else
+    shim_failed=$((shim_failed + 1))
+    echo "SHIM_FAILED $repo (rc=$install_rc)"
+  fi
+done < <(find "$REPOS_DIR" -type f -name '.pre-commit-config.yaml' -not -path '*/.git/*' 2>/dev/null)
+
+echo "SUMMARY hooks/=$hooksdir_count set=$hooksdir_set precommit-config=$shim_count installed=$shim_installed skipped(hooksPath)=$shim_skipped skipped(already_ok)=$((shim_count - shim_installed - shim_failed - pc_missing_count - shim_skipped)) failed=$shim_failed pc_missing=$pc_missing_count"
+
+# Repos left unhooked by a missing binary are the same false-green as a failed
+# install. Key on the count, not on $PRECOMMIT: an already-shimmed repo takes the
+# skip above without incrementing it, so a fully-hooked box must still pass.
+if (( pc_missing_count > 0 )); then
+  echo "ERROR: pre-commit binary not found; $pc_missing_count repo(s) left without hooks" >&2
+  exit 1
+fi
+
+if (( shim_failed > 0 )); then
+  echo "ERROR: pre-commit hook install failed for $shim_failed repo(s)" >&2
+  exit 1
+fi
+
+exit 0

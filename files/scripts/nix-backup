@@ -1,0 +1,1191 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+# Back up home-dir state to the Windows mount, and restore it. Two roots:
+#   FLAKELAB_BACKUP_ROOT  the provisioning payload — secrets, keys, per-host config
+#   FLAKELAB_STATE_ROOT   optional shareable state — merged history, Claude memory,
+#                         opt-in transcripts — in a folder a sync client replicates
+# Exit status is non-zero when any file failed to copy or failed verification.
+
+if [[ -n "${FLAKELAB_BACKUP_ROOT:-}" ]]; then
+  BACKUP_ROOT="${FLAKELAB_BACKUP_ROOT}"
+elif [[ -d "${0:A:h:h:h}/files/config" ]]; then
+  BACKUP_ROOT="${0:A:h:h:h}/files/config"
+else
+  echo "Error: FLAKELAB_BACKUP_ROOT unset and no repo checkout found." >&2
+  exit 1
+fi
+# Test seam: nothing in production sets FLAKELAB_HOME_DIR.
+HOME_DIR="${FLAKELAB_HOME_DIR:-/home/${SUDO_USER:-${USER}}}"
+
+# Configured is not usable: check_state_root decides once, before any write, and
+# an unusable root SKIPS the state categories rather than writing them to the payload.
+STATE_ROOT="${FLAKELAB_STATE_ROOT:-}"
+STATE_CONFIGURED=false
+[[ -n "${STATE_ROOT}" ]] && STATE_CONFIGURED=true
+STATE_USABLE=false
+STATE_TRANSCRIPTS=false
+case "${FLAKELAB_STATE_TRANSCRIPTS:-}" in
+  1|true|yes) STATE_TRANSCRIPTS=true ;;
+esac
+state_enabled() { ${STATE_CONFIGURED} && ${STATE_USABLE} }
+state_unavailable() { ${STATE_CONFIGURED} && ! ${STATE_USABLE} }
+# Set once history or transcripts reached the state root; the closing warning reads it.
+STATE_WROTE=false
+
+source "${0:A:h}/lib/state-sync.zsh" || exit 1
+source "${0:A:h}/lib/state-gate.zsh" || exit 1
+
+# Sync-client conflict copies and metadata litter, plus place_atomically's own
+# temps: excluded from mirrors, verification and restore. The merged history,
+# MEMORY.md and the decisions file read their conflict copies before removing them.
+SYNC_ARTIFACT_GLOBS=(
+  '*_Conflict'
+  '*_Conflict.*'
+  '*.sync-conflict-*'
+  '*conflicted copy*'
+  '.*.flakelab-tmp.*'
+  '@eaDir'
+  '.DS_Store'
+  'Thumbs.db'
+  'desktop.ini'
+)
+
+is_sync_artifact() {
+  local name="$1" g
+  for g in "${SYNC_ARTIFACT_GLOBS[@]}"; do
+    [[ "${name}" == ${~g} ]] && return 0
+  done
+  return 1
+}
+
+# find(1) arguments that prune every artifact name: `-name a -o -name b ...`
+# wrapped so the caller can `\( "${reply[@]}" \) -prune -o <real test>`.
+sync_artifact_find_args() {
+  reply=()
+  local g first=true
+  for g in "${SYNC_ARTIFACT_GLOBS[@]}"; do
+    ${first} || reply+=(-o)
+    reply+=(-name "${g}")
+    first=false
+  done
+}
+
+DISTRO_NAME="${WSL_DISTRO_NAME:-unknown}"
+if [[ "${DISTRO_NAME}" == "unknown" ]]; then
+  script_dir="${0:A:h}"
+  if [[ -x "${script_dir}/get_current_wsl_distro_name" ]]; then
+    DISTRO_NAME="$("${script_dir}/get_current_wsl_distro_name")"
+  fi
+fi
+
+SHARED_ROOT="${BACKUP_ROOT}/shared"
+INSTANCE_ROOT="${BACKUP_ROOT}/instances/${DISTRO_NAME}"
+
+SHARED_CATEGORIES=(ssh gitconfig secrets)
+# Everything else is per-instance: .gitignore names the shared/ categories one by
+# one, so a new shared category stays committable until .gitignore learns about it.
+INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude helm)
+
+resolve_backup_path() {
+  local category="$1"
+  if (( ${SHARED_CATEGORIES[(Ie)${category}]} )); then
+    print "${SHARED_ROOT}/${category}"
+  else
+    print "${INSTANCE_ROOT}/${category}"
+  fi
+}
+
+recompute_backup_paths() {
+  BACKUP_SSH="$(resolve_backup_path ssh)/keys"
+  BACKUP_SSH_ROOT="$(resolve_backup_path ssh)"
+  BACKUP_GIT="$(resolve_backup_path gitconfig)"
+  BACKUP_SECRETS="$(resolve_backup_path secrets)"
+  BACKUP_SHELL="$(resolve_backup_path shell)"
+  BACKUP_KUBE="$(resolve_backup_path kube)"
+
+  BACKUP_K9S="$(resolve_backup_path k9s)"
+  BACKUP_GLAB="$(resolve_backup_path glab-cli)"
+  BACKUP_CLAUDE="$(resolve_backup_path claude)"
+  BACKUP_HELM="$(resolve_backup_path helm)"
+}
+
+recompute_backup_paths
+
+FORCE=false
+DRY_RUN=false
+RESTORE=false
+REVIEW_SECRETS=false
+SRC_FROM=""
+SRC_INSTANCE=""
+
+# Keep a differing file without a TTY instead of failing: activation-rewritten
+# files conflict on every unattended migrate, and setup-wsl-nix.ps1 needs exit 0.
+SKIP_CONFLICTS=false
+typeset -a CONFLICTS_KEPT=()
+
+KEEP=5
+
+# Copies that did not happen or landed corrupt; skips and declines are not failures.
+FAILURES=0
+
+while (( $# > 0 )); do
+  case $1 in
+    --force)   FORCE=true ;;
+    --dry-run) DRY_RUN=true ;;
+    --restore) RESTORE=true ;;
+    --review-secrets) REVIEW_SECRETS=true ;;
+    --skip-conflicts) SKIP_CONFLICTS=true ;;
+    --keep)
+      if [[ "${2:-}" != <-> ]]; then
+        echo "Error: --keep requires a non-negative integer" >&2
+        exit 1
+      fi
+      KEEP="$2"
+      shift
+      ;;
+    --from)    SRC_FROM="$2"; shift ;;
+    --instance) SRC_INSTANCE="$2"; shift ;;
+    --help|-h)
+      echo "Usage: nix-backup [options]"
+      echo ""
+      echo "Options:"
+      echo "  --force              overwrite existing backups without prompting"
+      echo "  --dry-run            show what would be backed up without copying"
+      echo "  --restore            restore files from backup into home directory"
+      echo "  --review-secrets     decide per finding the secret gate held back: delete, keep local, allow (needs a terminal)"
+      echo "  --skip-conflicts     on restore without a TTY, keep a differing file instead of failing"
+      echo "  --keep <n>           rollback snapshots to retain (default ${KEEP}); the newest is never pruned"
+      echo "  --from <repo>        restore FROM another repo's backup (a repo root or its files/config dir)"
+      echo "  --instance <name>    per-instance files come from this SOURCE instance, not the current"
+      echo "                       distro; the shared categories restore either way"
+      echo "  --help               show this help message"
+      echo ""
+      echo "Environment:"
+      echo "  FLAKELAB_BACKUP_ROOT        payload root (set by the nix wrapper from repoPath)"
+      echo "  FLAKELAB_STATE_ROOT         optional shared-state root (a synced folder, never a git checkout)"
+      echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts in the state root"
+      echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
+      echo ""
+      echo "Exits non-zero if any file failed to copy or failed verification."
+      echo ""
+      echo "Migrate a wslkube environment into this distro:"
+      echo "  nix-backup --restore --from /mnt/c/Users/<you>/git/wslkube --instance <distro>"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+# A read-only SOURCE override; the destination stays this distro's HOME_DIR.
+if [[ -n "${SRC_FROM}" || -n "${SRC_INSTANCE}" ]]; then
+  if ! ${RESTORE}; then
+    echo "Error: --from/--instance are only valid with --restore" >&2; exit 1
+  fi
+  if [[ -n "${SRC_FROM}" ]]; then
+    if [[ -d "${SRC_FROM}/files/config" ]]; then
+      BACKUP_ROOT="${SRC_FROM%/}/files/config"
+    elif [[ -d "${SRC_FROM}/shared" || -d "${SRC_FROM}/instances" ]]; then
+      BACKUP_ROOT="${SRC_FROM%/}"
+    else
+      echo "Error: no backup data under '${SRC_FROM}' (expected files/config/ or shared/+instances/)" >&2
+      exit 1
+    fi
+  fi
+  [[ -n "${SRC_INSTANCE}" ]] && DISTRO_NAME="${SRC_INSTANCE}"
+  SHARED_ROOT="${BACKUP_ROOT}/shared"
+  INSTANCE_ROOT="${BACKUP_ROOT}/instances/${DISTRO_NAME}"
+  recompute_backup_paths
+fi
+
+# Beside the payload, not /tmp: every WSL instance has its own /tmp, so a /tmp
+# lock cannot serialise two distros writing one SHARED_ROOT. After the --from
+# override, so a migration read locks the payload it reads.
+SNAPSHOT_ROOT="${BACKUP_ROOT}/snapshots/${DISTRO_NAME}"
+LOCK_FILE="${BACKUP_ROOT}/.backup.lock"
+LOCK_WAIT=300
+
+# With a state root this is a read-only INPUT to the merge (the union of every
+# run before the state root existed), so turning the root on loses nothing.
+LEGACY_MERGED="${SHARED_ROOT}/shell/.zsh_history_merged"
+
+merged_history_path() {
+  if state_enabled; then
+    print "${STATE_ROOT}/shell/.zsh_history_merged"
+  else
+    print "${LEGACY_MERGED}"
+  fi
+}
+
+# With a state root, THAT root only: the stale payload copy from before the
+# root existed must not restore over the shared one.
+memory_root() {
+  if state_enabled; then
+    print "${STATE_ROOT}/claude/projects"
+  else
+    print "${BACKUP_CLAUDE}/projects"
+  fi
+}
+
+# Refused outright (exit 1): a root in a git checkout — sync clients write
+# conflict copies of .git internals. Recorded failure, state categories skipped:
+# a missing PARENT, i.e. the sync folder is not mounted. The root itself is created.
+check_state_root() {
+  ${STATE_CONFIGURED} || return 0
+
+  # `:a` is textual and works for a root that does not exist yet; `:A` follows
+  # links, and without it a root that IS a symlink into a checkout walks a path
+  # with no .git anywhere and is accepted.
+  local -a probe_roots=("${STATE_ROOT:a}")
+  if [[ -e "${STATE_ROOT}" ]]; then
+    probe_roots+=("${STATE_ROOT:A}")
+  fi
+  local probe probe_root
+  for probe_root in "${probe_roots[@]}"; do
+    probe="${probe_root}"
+    while [[ -n "${probe}" && "${probe}" != "/" ]]; do
+      if [[ -e "${probe}/.git" ]]; then
+        log_error "State root ${STATE_ROOT} is inside a git checkout (${probe}/.git)."
+        log_error "A synced directory must never hold a repository: point FLAKELAB_STATE_ROOT / flakelab.stateRoot at a plain folder."
+        exit 1
+      fi
+      probe="${probe:h}"
+    done
+  done
+
+  if [[ ! -d "${STATE_ROOT:h}" ]]; then
+    record_failure "State root parent not present (sync folder not mounted?): ${STATE_ROOT:h} — shared-state categories skipped this run"
+    return 0
+  fi
+  if ${DRY_RUN}; then
+    # A preview cannot find out by trying, so it probes where the real run's mkdir would fail.
+    if [[ ! -d "${STATE_ROOT:h}" || ! -w "${STATE_ROOT:h}" ]]; then
+      log_dry "State root parent is not writable: ${STATE_ROOT:h} — a real run would fail to create ${STATE_ROOT}; shared-state categories skipped"
+      return 0
+    fi
+    [[ -d "${STATE_ROOT}" ]] || log_dry "Would create state root: ${STATE_ROOT}"
+    STATE_USABLE=true
+    return 0
+  fi
+  if ! mkdir -p "${STATE_ROOT}"; then
+    record_failure "Cannot create state root ${STATE_ROOT} — shared-state categories skipped this run"
+    return 0
+  fi
+  STATE_USABLE=true
+}
+
+GREEN="%F{green}"
+YELLOW="%F{yellow}"
+RED="%F{red}"
+CYAN="%F{cyan}"
+RESET="%f"
+
+log_info()  { print -P "${CYAN}[INFO]${RESET}  $1" }
+log_ok()    { print -P "${GREEN}[OK]${RESET}    $1" }
+log_warn()  { print -P "${YELLOW}[WARN]${RESET}  $1" }
+log_error() { print -P "${RED}[ERROR]${RESET} $1" }
+log_dry()   { print -P "${YELLOW}[DRY]${RESET}   $1" }
+
+log_state_root() {
+  ${STATE_CONFIGURED} || return 0
+  log_info "State:    ${STATE_ROOT}$( ${STATE_USABLE} || print -n ' (UNAVAILABLE this run)')"
+}
+
+# ---------------------------------------------------------------------------
+# Failure accounting
+# ---------------------------------------------------------------------------
+
+# Callers `return 0` after this: under `set -e` a non-zero return aborts the run
+# with no summary, which is also why every mkdir/chmod/read below is guarded.
+# Assignment, not `(( FAILURES++ ))`: that yields 0 first, which ERREXIT treats as failure.
+record_failure() {
+  log_error "$1"
+  FAILURES=$(( FAILURES + 1 ))
+}
+
+# ---------------------------------------------------------------------------
+# Concurrency
+# ---------------------------------------------------------------------------
+
+# The fd is opened with `exec` so it lives as long as the process and the kernel
+# drops the lock on exit, signals included. A missing flock (checkout runs) warns.
+acquire_lock() {
+  # A preview must not create the lock file in the payload.
+  if ${DRY_RUN}; then
+    return 0
+  fi
+
+  if ! command -v flock > /dev/null 2>&1; then
+    log_warn "flock not found (util-linux); concurrent runs are not serialised"
+    return 0
+  fi
+
+  mkdir -p "${BACKUP_ROOT}"
+  if ! touch "${LOCK_FILE}" 2> /dev/null; then
+    log_warn "Cannot create ${LOCK_FILE}; concurrent runs are not serialised"
+    return 0
+  fi
+
+  local lock_fd
+  exec {lock_fd}> "${LOCK_FILE}"
+  if ! flock -w "${LOCK_WAIT}" "${lock_fd}"; then
+    log_error "Another nix-backup holds ${LOCK_FILE}; gave up after ${LOCK_WAIT}s"
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Integrity verification
+# ---------------------------------------------------------------------------
+
+# Re-read: on the Windows mount a truncated copy still exits 0 from cp.
+verify_copy() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ ! -f "${dst}" ]]; then
+    return 1
+  fi
+  cmp -s "${src}" "${dst}"
+}
+
+verify_tree() {
+  local src="$1"
+  local dst="$2"
+  local mismatches=0
+  local rel
+
+  # Files AND symlinks: a `-type f` walk never sees a link that did not survive
+  # the copy. A missing entry is its own finding. The link itself is not compared:
+  # cmp follows it, so a link and its target are the same bytes whatever it points at.
+  while IFS= read -r rel; do
+    if [[ ! -e "${dst}/${rel}" && ! -L "${dst}/${rel}" ]]; then
+      mismatches=$(( mismatches + 1 ))
+      log_warn "Verify missing: ${dst}/${rel}"
+      continue
+    fi
+    [[ -L "${src}/${rel}" ]] && continue
+    if ! cmp -s "${src}/${rel}" "${dst}/${rel}"; then
+      mismatches=$(( mismatches + 1 ))
+      log_warn "Verify mismatch: ${dst}/${rel}"
+    fi
+  done < <(cd "${src}" && sync_artifact_find_args && \
+    find . \( "${reply[@]}" \) -prune -o \( -type f -o -type l \) -printf '%P\n' 2> /dev/null)
+
+  (( mismatches == 0 ))
+}
+
+# ---------------------------------------------------------------------------
+# Rollback snapshots
+# ---------------------------------------------------------------------------
+
+# The rollback point, taken before this run overwrites the payload and read back
+# before it is accepted.
+snapshot_payload() {
+  local -a members=()
+  [[ -d "${SHARED_ROOT}" ]] && members+=("shared")
+  [[ -d "${INSTANCE_ROOT}" ]] && members+=("instances/${DISTRO_NAME}")
+
+  if (( ${#members[@]} == 0 )); then
+    log_info "No existing payload to snapshot (first run)"
+    return 0
+  fi
+
+  local archive="${SNAPSHOT_ROOT}/backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+  if ${DRY_RUN}; then
+    log_dry "Would snapshot ${members[*]} -> ${archive}"
+    return 0
+  fi
+
+  # Holds secrets.env and private keys, so owner-only.
+  ensure_private_dir "${SNAPSHOT_ROOT}"
+
+  if ! tar -C "${BACKUP_ROOT}" -czf "${archive}.tmp" "${members[@]}" 2> /dev/null; then
+    rm -f "${archive}.tmp"
+    record_failure "Snapshot failed: ${archive}"
+    return 0
+  fi
+
+  # An archive that cannot be listed is not a rollback point.
+  if ! tar -tzf "${archive}.tmp" > /dev/null 2>&1; then
+    rm -f "${archive}.tmp"
+    record_failure "Snapshot unreadable, discarded: ${archive}"
+    return 0
+  fi
+
+  if ! mv "${archive}.tmp" "${archive}"; then
+    rm -f "${archive}.tmp"
+    record_failure "Could not place snapshot: ${archive}"
+    return 0
+  fi
+  chmod 600 "${archive}" 2> /dev/null || record_failure "Cannot set mode 600 on ${archive}"
+
+  # Sidecar digest so a later restore can detect bit-rot on the mount:
+  #   sha256sum -c backup-<stamp>.tar.gz.sha256
+  if command -v sha256sum > /dev/null 2>&1; then
+    ( cd "${SNAPSHOT_ROOT}" && sha256sum "${archive:t}" > "${archive:t}.sha256" )
+  fi
+
+  log_ok "Snapshot: ${archive}"
+}
+
+# Oldest-first glob, leading slice removed: the newest survives even at --keep 0.
+prune_snapshots() {
+  [[ -d "${SNAPSHOT_ROOT}" ]] || return 0
+
+  local -a archives
+  archives=( "${SNAPSHOT_ROOT}"/backup-*.tar.gz(N) )
+  local total=${#archives[@]}
+  (( total == 0 )) && return 0
+
+  local keep=${KEEP}
+  (( keep < 1 )) && keep=1
+
+  if (( total <= keep )); then
+    log_info "Snapshots: ${total} kept (limit ${keep})"
+    return 0
+  fi
+
+  local drop=$(( total - keep ))
+  local archive
+  for archive in "${archives[@]:0:${drop}}"; do
+    if ${DRY_RUN}; then
+      log_dry "Would prune snapshot: ${archive}"
+      continue
+    fi
+    if ! rm -f "${archive}" "${archive}.sha256"; then
+      record_failure "Could not prune snapshot: ${archive}"
+      continue
+    fi
+    log_ok "Pruned snapshot: ${archive:t}"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+ensure_dir() {
+  local dir="$1"
+  if [[ ! -d "${dir}" ]]; then
+    if ${DRY_RUN}; then
+      log_dry "Would create directory: ${dir}"
+    else
+      if ! mkdir -p "${dir}"; then
+        record_failure "Cannot create directory: ${dir}"
+        return 0
+      fi
+      chmod 755 "${dir}" 2> /dev/null || log_warn "Could not set mode 755 on ${dir}"
+    fi
+  fi
+}
+
+# Cleartext secrets on the Windows mount: owner-only, re-applied on every run.
+# On a DrvFs mount without `metadata` chmod is a no-op — the gitignore rule and
+# token rotation are the load-bearing defences there.
+ensure_private_dir() {
+  local dir="$1"
+  if ${DRY_RUN}; then
+    log_dry "Would create private directory (0700): ${dir}"
+    return 0
+  fi
+  if ! mkdir -p "${dir}"; then
+    record_failure "Cannot create directory: ${dir}"
+    return 0
+  fi
+  chmod 700 "${dir}" 2> /dev/null || record_failure "Cannot set mode 700 on ${dir}"
+}
+
+# Copy <src> onto <dst> via a temp BESIDE dst and one rename, so a sync client
+# never replicates a half-written file; the temp is a SYNC_ARTIFACT_GLOBS name,
+# so a killed run leaves nothing that is mirrored, verified or restored.
+place_atomically() {
+  local src="$1" dst="$2" tmp
+  tmp="$(mktemp "${dst:h}/.${dst:t}.flakelab-tmp.XXXXXX")" || return 1
+  if cp "${src}" "${tmp}" && mv "${tmp}" "${dst}"; then
+    return 0
+  fi
+  rm -f "${tmp}"
+  return 1
+}
+
+# backup_file hands plain files 0644. Secrets get 0600 instead.
+backup_private_file() {
+  local src="$1"
+  local dst="$2"
+  backup_file "${src}" "${dst}"
+  if ! ${DRY_RUN} && [[ -f "${dst}" ]]; then
+    chmod 600 "${dst}" 2> /dev/null || record_failure "Cannot set mode 600 on ${dst}"
+  fi
+}
+
+# restore_file's bare `cp` lands at the umask default; secrets must be 0600 in $HOME too.
+restore_private_file() {
+  local src="$1"
+  local dst="$2"
+  restore_file "${src}" "${dst}"
+  if ! ${DRY_RUN} && [[ -f "${dst}" ]] && ! is_nix_managed "${dst}"; then
+    chmod 600 "${dst}" 2> /dev/null || record_failure "Cannot set mode 600 on ${dst}"
+  fi
+}
+
+backup_file() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ ! -f "${src}" ]]; then
+    log_warn "Source not found, skipping: ${src}"
+    return 0
+  fi
+
+  if ${DRY_RUN}; then
+    log_dry "${src} -> ${dst}"
+    return 0
+  fi
+
+  if [[ -f "${dst}" ]]; then
+    if ! ${FORCE}; then
+      if ! diff -q "${src}" "${dst}" > /dev/null 2>&1; then
+        # No TTY: a bare `read` would abort the run. A failure, unlike an
+        # interactive decline — the file asked for is not in the backup.
+        if [[ ! -t 0 ]]; then
+          record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite): ${dst}"
+          return 0
+        fi
+        print -Pn "${YELLOW}Overwrite ${dst}? [y/N] ${RESET}"
+        local answer=""
+        read -r answer || answer=""
+        if [[ "${answer}" != [yY] ]]; then
+          log_warn "Skipped: ${dst}"
+          return 0
+        fi
+      else
+        log_ok "Unchanged: ${dst##*/}"
+        return 0
+      fi
+    fi
+  fi
+
+  if ! cp -f "${src}" "${dst}"; then
+    record_failure "Copy failed: ${src} -> ${dst}"
+    return 0
+  fi
+  local mode=644 mode_ok=true
+  [[ -x "${src}" ]] && mode=755
+  if ! chmod "${mode}" "${dst}" 2> /dev/null; then
+    record_failure "Cannot set mode ${mode} on: ${dst}"
+    mode_ok=false
+  fi
+  # Verified even when the mode could not be set: a mount that rejects chmod
+  # is exactly the kind that also truncates a copy.
+  if ! verify_copy "${src}" "${dst}"; then
+    record_failure "Verification failed, backup differs from source: ${dst}"
+    return 0
+  fi
+  ${mode_ok} && log_ok "Backed up: ${src} -> ${dst}"
+  return 0
+}
+
+# A symlink into the Nix store is flake-owned and read-only; never write through
+# it. The immediate target is checked first: `readlink -f` returns nothing for a
+# dangling store link. The local is not named `path` — zsh ties that to $PATH.
+is_nix_managed() {
+  local dest="$1"
+
+  [[ -L "${dest}" ]] || return 1
+
+  local target resolved
+  target="$(readlink "${dest}" 2>/dev/null || true)"
+  [[ "${target}" == /nix/store/* ]] && return 0
+
+  resolved="$(readlink -f "${dest}" 2>/dev/null || true)"
+  [[ "${resolved}" == /nix/store/* ]]
+}
+
+# tar, not `cp -r`: cp cannot replace an entry whose TYPE changed and aborts the
+# run. Only vanish-class tar diagnostics are tolerated (a running k9s rewrites
+# its trees mid-read); anything else fails the mirror. $3 = purge: a restore
+# must never delete a live home's files because the backup lacks them.
+mirror_tree() {
+  local src="$1"
+  local dst="$2"
+  local purge="${3:-true}"
+
+  local -a xopts=(--overwrite)
+  ${purge} && xopts+=(--recursive-unlink)
+  local -a excl=() g
+  for g in "${SYNC_ARTIFACT_GLOBS[@]}"; do excl+=(--exclude="${g}"); done
+
+  local err
+  err="$(mktemp)"
+  # LC_ALL=C: the classification below matches tar's diagnostics as text.
+  LC_ALL=C tar -C "${src}" "${excl[@]}" -cf - . 2>"${err}" \
+    | tar -C "${dst}" -xf - "${xopts[@]}"
+  # Declared and assigned in one statement: `local` is itself a command and
+  # resets pipestatus before it could be read.
+  local -a st=("${pipestatus[@]}")
+
+  local vanish='Cannot stat: No such file or directory|File removed before we read it|file changed as we read it|Directory renamed before its status could be extracted'
+  local raced other
+  raced="$(grep -cE "${vanish}" "${err}" || true)"
+  other="$(grep -vE "${vanish}|Exiting with failure status" "${err}" | grep -c . || true)"
+
+  if (( other > 0 )); then
+    cat "${err}" >&2
+  elif (( st[1] != 0 )); then
+    log_warn "Source mutated while reading ${src}: ${raced} entr(ies) vanished or changed mid-read, skipped."
+    st[1]=0
+  fi
+  rm -f "${err}"
+
+  (( st[1] == 0 && st[2] == 0 ))
+}
+
+# $3 = purge; false = additive, for a destination several machines write into.
+backup_dir() {
+  local src="$1"
+  local dst="$2"
+  local purge="${3:-true}"
+
+  if [[ ! -d "${src}" ]]; then
+    log_warn "Source directory not found, skipping: ${src}"
+    return 0
+  fi
+
+  if ${DRY_RUN}; then
+    log_dry "${src}/ -> ${dst}/"
+    return 0
+  fi
+
+  ensure_dir "${dst}"
+  local mirror_ok=true
+  if ! mirror_tree "${src}" "${dst}" "${purge}"; then
+    record_failure "Partial copy, continuing: ${src} -> ${dst}"
+    mirror_ok=false
+  fi
+  find "${dst}" -type d -exec chmod 755 {} + 2> /dev/null \
+    || log_warn "Some directory modes could not be set under ${dst}"
+  local rel
+  find "${dst}" -type f | while IFS= read -r file; do
+    rel="${file#${dst}/}"
+    if [[ -x "${src}/${rel}" ]]; then
+      chmod 755 "${file}" 2> /dev/null || true
+    else
+      chmod 644 "${file}" 2> /dev/null || true
+    fi
+  done
+  # A tar that exited 0 can still have written short files onto the 9p mount.
+  if ! verify_tree "${src}" "${dst}"; then
+    record_failure "Verification failed, backup tree differs from source: ${dst}"
+    return 0
+  fi
+  ${mirror_ok} && log_ok "Backed up directory: ${src} -> ${dst}"
+  return 0
+}
+
+backup_glob() {
+  local src_dir="$1"
+  local pattern="$2"
+  local dst_dir="$3"
+
+  ensure_dir "${dst_dir}"
+
+  local found=false
+  for file in ${src_dir}/${~pattern}(N); do
+    found=true
+    backup_file "${file}" "${dst_dir}/${file:t}"
+  done
+
+  if ! ${found}; then
+    log_warn "No files matching '${pattern}' in ${src_dir}"
+  fi
+}
+
+# $3 = local_wins: activation rewrites the destination on this box, so the source
+# box's copy is wrong. Real files, not store symlinks, so is_nix_managed cannot see them.
+restore_file() {
+  local src="$1"
+  local dst="$2"
+  local local_wins="${3:-false}"
+
+  if [[ ! -f "${src}" ]]; then
+    return 0
+  fi
+
+  if ${DRY_RUN}; then
+    log_dry "${src} -> ${dst}"
+    return 0
+  fi
+
+  # A plain `cp` through a store symlink dies with EROFS. Checked before --force.
+  if is_nix_managed "${dst}"; then
+    log_warn "Owned by the flake, not restoring: ${dst}"
+    return 0
+  fi
+
+  if [[ -f "${dst}" ]] && ! ${FORCE}; then
+    # After --force: overwriting one of these is merely undone by the next rebuild.
+    if ${local_wins}; then
+      diff -q "${src}" "${dst}" > /dev/null 2>&1 \
+        || log_warn "Rewritten by activation here, keeping local: ${dst}"
+      return 0
+    fi
+    if ! diff -q "${src}" "${dst}" > /dev/null 2>&1; then
+      # No TTY (setup-wsl-nix.ps1 over wsl.exe): a bare `read` would abort the
+      # restore. A failure unless --skip-conflicts made keeping the file intended.
+      if [[ ! -t 0 ]]; then
+        if ${SKIP_CONFLICTS}; then
+          CONFLICTS_KEPT+=("${dst}")
+          log_warn "Differs, kept existing (--skip-conflicts): ${dst}"
+          return 0
+        fi
+        record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite, or --skip-conflicts to keep): ${dst}"
+        return 0
+      fi
+      print -Pn "${YELLOW}Overwrite ${dst}? [y/N] ${RESET}"
+      local answer=""
+      read -r answer || answer=""
+      if [[ "${answer}" != [yY] ]]; then
+        log_warn "Skipped: ${dst}"
+        return 0
+      fi
+    else
+      return 0
+    fi
+  fi
+
+  # cp without -p: owned by the current user, not the UID that wrote the backup.
+  if ! cp "${src}" "${dst}"; then
+    record_failure "Restore failed: ${src} -> ${dst}"
+    return 0
+  fi
+  if ! verify_copy "${src}" "${dst}"; then
+    record_failure "Verification failed, restored file differs from backup: ${dst}"
+    return 0
+  fi
+  log_ok "Restored: ${src} -> ${dst}"
+}
+
+restore_dir() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ ! -d "${src}" ]]; then
+    return 0
+  fi
+
+  if ${DRY_RUN}; then
+    log_dry "${src}/ -> ${dst}/"
+    return 0
+  fi
+
+  if is_nix_managed "${dst}"; then
+    log_warn "Owned by the flake, not restoring: ${dst}"
+    return 0
+  fi
+
+  mkdir -p "${dst}"
+  # No -p/--same-owner: extracted files belong to the current user.
+  local mirror_ok=true
+  if ! mirror_tree "${src}" "${dst}" false; then
+    record_failure "Partial restore, continuing: ${src} -> ${dst}"
+    mirror_ok=false
+  fi
+  if ! verify_tree "${src}" "${dst}"; then
+    record_failure "Verification failed, restored tree differs from backup: ${dst}"
+    return 0
+  fi
+  ${mirror_ok} && log_ok "Restored directory: ${src} -> ${dst}"
+  return 0
+}
+
+restore_glob() {
+  local src_dir="$1"
+  local pattern="$2"
+  local dst_dir="$3"
+
+  # ensure_dir, not `mkdir -p`: a preview must not create the directory, and it
+  # only chmods on create, so a pre-tightened 700 (ssh, glab-cli) stays.
+  ensure_dir "${dst_dir}"
+
+  for file in ${src_dir}/${~pattern}(N); do
+    restore_file "${file}" "${dst_dir}/${file:t}"
+  done
+}
+
+# The mount carries no Unix modes, so everything restores 644; credential trees
+# need 700/600. Depth-1 like restore_glob: recursing would re-mode caches this
+# script never wrote.
+harden_restored_files() {
+  local dir="$1"
+  local pattern="${2:-*}"
+
+  [[ -d "${dir}" ]] || return 0
+  if ${DRY_RUN}; then
+    log_dry "Would tighten ${dir} to 700 and its ${pattern} files to 600"
+    return 0
+  fi
+
+  chmod 700 "${dir}" 2> /dev/null || record_failure "Cannot set mode 700 on ${dir}"
+  local file
+  local count=0
+  # `.`: regular files only, never through a flake-owned store symlink.
+  for file in ${dir}/${~pattern}(N.); do
+    if ! chmod 600 "${file}" 2> /dev/null; then
+      record_failure "Cannot set mode 600 on ${file}"
+      continue
+    fi
+    count=$(( count + 1 ))
+  done
+  if (( count > 0 )); then
+    log_ok "Tightened ${count} file(s) to 600 in ${dir}"
+  fi
+  return 0
+}
+
+fix_script_permissions() {
+  local dir="$1"
+  [[ ! -d "${dir}" ]] && return 0
+
+  if ${DRY_RUN}; then
+    log_dry "Would fix execute permissions on scripts in ${dir}"
+    return 0
+  fi
+
+  local count=0
+  local file
+  while IFS= read -r file; do
+    if ! chmod +x "${file}" 2> /dev/null; then
+      record_failure "Cannot set the execute bit on: ${file}"
+      continue
+    fi
+    count=$(( count + 1 ))
+  done < <(find "${dir}" -type f \( -name "*.py" -o -name "*.sh" \) -exec grep -l '^#!' {} + 2>/dev/null)
+
+  if (( count > 0 )); then
+    log_ok "Fixed execute permissions on ${count} script(s) in ${dir}"
+  fi
+}
+
+check_dirty_repos() {
+  local git_root="${HOME_DIR}/git"
+  [[ -d "${git_root}" ]] || return 0
+  [[ -t 1 ]] || return 0
+
+  local -a dirty_repos=()
+  local gitdir repo_dir
+
+  while IFS= read -r gitdir; do
+    repo_dir="${gitdir:h}"
+    if [[ -n "$(git -C "${repo_dir}" status --porcelain 2>/dev/null)" ]]; then
+      dirty_repos+=("${repo_dir}")
+    fi
+  done < <(find "${git_root}" -maxdepth 10 -name .git -type d 2>/dev/null)
+
+  if (( ${#dirty_repos[@]} > 0 )); then
+    echo ""
+    log_warn "--- Repos with uncommitted changes (not backed up) ---"
+    for repo_dir in "${dirty_repos[@]}"; do
+      log_warn "  ~/${repo_dir#${HOME_DIR}/}"
+    done
+    log_warn "${#dirty_repos[@]} repo(s) have uncommitted changes"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Restore mode
+# ---------------------------------------------------------------------------
+
+do_restore() {
+  log_info "=== Restoring WSL environment [${DISTRO_NAME}] ==="
+  log_info "Instance: ${INSTANCE_ROOT}"
+  log_info "Shared:   ${SHARED_ROOT}"
+  log_state_root
+  echo ""
+
+  log_info "--- Shell history ---"
+  restore_zsh_history
+
+  log_info "--- Kubernetes configuration ---"
+  # kubeconfigs and their client certs are credentials: the same 700/600 every
+  # other credential tree gets, and no bare `mkdir -p`, which created the
+  # directory 0755 even under --dry-run.
+  ensure_private_dir "${HOME_DIR}/.kube"
+  restore_glob "${BACKUP_KUBE}" "kubeconfig_*" "${HOME_DIR}/.kube"
+  restore_glob "${BACKUP_KUBE}" "cert-*"       "${HOME_DIR}/.kube"
+  restore_glob "${BACKUP_KUBE}" "ca-*"         "${HOME_DIR}/.kube"
+  restore_file "${BACKUP_KUBE}/config"         "${HOME_DIR}/.kube/config"
+  restore_file "${BACKUP_KUBE}/kubectx"        "${HOME_DIR}/.kube/kubectx"
+  # The Windows mount carries no Unix modes, so everything lands 644.
+  harden_restored_files "${HOME_DIR}/.kube"
+
+  log_info "--- SSH keys and config ---"
+  # Keys off the Windows mount land 644 and ssh refuses a group-readable private
+  # key; re-derive 600/644 per file, since the public halves must stay readable.
+  ensure_private_dir "${HOME_DIR}/.ssh"
+  restore_glob "${BACKUP_SSH}" "id_*" "${HOME_DIR}/.ssh"
+  if ! ${DRY_RUN}; then
+    local key
+    for key in "${HOME_DIR}"/.ssh/id_*(N.); do
+      if [[ "${key}" == *.pub ]]; then
+        chmod 644 "${key}"
+      else
+        chmod 600 "${key}"
+      fi
+    done
+  fi
+  # Home Manager owns ~/.ssh/config as a store symlink when programs.ssh is on; is_nix_managed skips it.
+  restore_file "${BACKUP_SSH_ROOT}/config" "${HOME_DIR}/.ssh/config"
+
+  log_info "--- Git configuration ---"
+  restore_file "${BACKUP_GIT}/.gitconfig"  "${HOME_DIR}/.gitconfig"
+  mkdir -p "${HOME_DIR}/.config/git"
+  restore_file "${BACKUP_GIT}/ignore"      "${HOME_DIR}/.config/git/ignore"
+
+  log_info "--- secrets.env ---"
+  mkdir -p "${HOME_DIR}/.config/tyc" && chmod 700 "${HOME_DIR}/.config/tyc"
+  restore_private_file "${BACKUP_SECRETS}/secrets.env" "${HOME_DIR}/.config/tyc/secrets.env"
+
+  log_info "--- k9s ---"
+  restore_dir "${BACKUP_K9S}/config"   "${HOME_DIR}/.config/k9s"
+  restore_dir "${BACKUP_K9S}/clusters" "${HOME_DIR}/.local/share/k9s/clusters"
+
+  log_info "--- GitLab CLI ---"
+  if [[ -d "${BACKUP_GLAB}" ]]; then
+    # glab refuses any *.yml it reads at a mode other than 600, which kills nix-clone-repos.
+    ensure_private_dir "${HOME_DIR}/.config/glab-cli"
+    restore_glob "${BACKUP_GLAB}" "*" "${HOME_DIR}/.config/glab-cli"
+    harden_restored_files "${HOME_DIR}/.config/glab-cli" "*.yml"
+  fi
+
+  log_info "--- Helm ---"
+  if [[ -d "${BACKUP_HELM}" ]]; then
+    mkdir -p "${HOME_DIR}/.config/helm"
+    restore_glob "${BACKUP_HELM}" "*" "${HOME_DIR}/.config/helm"
+    # repositories.yaml can hold plaintext repo credentials, 644 off the mount.
+    harden_restored_files "${HOME_DIR}/.config/helm"
+  fi
+
+  log_info "--- Claude Code ---"
+  if [[ -d "${BACKUP_CLAUDE}" ]] || ${STATE_CONFIGURED}; then
+    ensure_dir "${HOME_DIR}/.claude"
+    # settings.json is activation-rewritten (a real file, not a store symlink): local wins.
+    restore_file "${BACKUP_CLAUDE}/settings.json"        "${HOME_DIR}/.claude/settings.json" true
+    restore_file "${BACKUP_CLAUDE}/settings.local.json"  "${HOME_DIR}/.claude/settings.local.json"
+    # No transcript restore: the payload holds none. Memory goes back under its slug.
+    local mem_dir
+    if state_unavailable; then
+      log_warn "State root unavailable; Claude memory not restored this run"
+    else
+      for mem_dir in "$(memory_root)"/*/memory(N/); do
+        sync_memory_dir restore "${mem_dir}" "${HOME_DIR}/.claude/projects/${mem_dir:h:t}/memory"
+      done
+    fi
+    if state_enabled && ${STATE_TRANSCRIPTS}; then
+      local transcript
+      for transcript in "${STATE_ROOT}"/claude/projects/*/*.jsonl(N.); do
+        is_sync_artifact "${transcript:t}" && continue
+        sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${transcript:h:t}/${transcript:t}"
+      done
+    fi
+    ensure_dir "${HOME_DIR}/.claude/plugins"
+    restore_file "${BACKUP_CLAUDE}/plugins/known_marketplaces.json" "${HOME_DIR}/.claude/plugins/known_marketplaces.json"
+    # Rewritten from claudePlugins on every activation: local wins.
+    restore_file "${BACKUP_CLAUDE}/plugins/installed_plugins.json"  "${HOME_DIR}/.claude/plugins/installed_plugins.json" true
+    restore_file "${BACKUP_CLAUDE}/plugins/blocklist.json"          "${HOME_DIR}/.claude/plugins/blocklist.json"
+    restore_file "${BACKUP_CLAUDE}/CLAUDE.md"             "${HOME_DIR}/.claude/CLAUDE.md"
+    restore_file "${BACKUP_CLAUDE}/statusline-command.sh" "${HOME_DIR}/.claude/statusline-command.sh"
+    # settings*.json carry env blocks; the pattern leaves statusline-command.sh executable.
+    harden_restored_files "${HOME_DIR}/.claude" "settings*"
+    # The mount drops the execute bit; the statusline hook must come back executable.
+    fix_script_permissions "${HOME_DIR}/.claude"
+  fi
+
+  echo ""
+  # Also written to a file: setup-wsl-nix.ps1 streams this output, and "Migration
+  # done." must not be the last word when files were kept. Truncated even when empty.
+  local keptFile="${BACKUP_ROOT}/.last-restore-kept"
+  : > "${keptFile}" 2> /dev/null || true
+  if (( ${#CONFLICTS_KEPT} > 0 )); then
+    log_warn "Kept ${#CONFLICTS_KEPT} existing file(s) (--skip-conflicts):"
+    local kept
+    for kept in "${CONFLICTS_KEPT[@]}"; do
+      log_warn "  ${kept}"
+      print -r -- "${kept}" >> "${keptFile}" 2> /dev/null || true
+    done
+  fi
+  if (( FAILURES > 0 )); then
+    log_error "=== Restore completed with ${FAILURES} failure(s) ==="
+  else
+    log_ok "=== Restore complete ==="
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Backup mode
+# ---------------------------------------------------------------------------
+
+do_backup() {
+  log_info "=== Backing up WSL environment [${DISTRO_NAME}] ==="
+  log_info "Instance: ${INSTANCE_ROOT}"
+  log_info "Shared:   ${SHARED_ROOT}"
+  echo ""
+
+  log_info "--- Rollback snapshot ---"
+  snapshot_payload
+  prune_snapshots
+  echo ""
+
+  # Decisions taken while the root was unavailable go out before anything consults them.
+  gate_decisions_replay
+
+  log_info "--- Shell history ---"
+  ensure_dir "${BACKUP_SHELL}"
+  backup_file "${HOME_DIR}/.zsh_history"  "${BACKUP_SHELL}/.zsh_history"
+  merge_zsh_history
+
+  log_info "--- Kubernetes configuration ---"
+  ensure_dir "${BACKUP_KUBE}"
+  backup_glob "${HOME_DIR}/.kube" "kubeconfig_*" "${BACKUP_KUBE}"
+  backup_glob "${HOME_DIR}/.kube" "cert-*" "${BACKUP_KUBE}"
+  backup_glob "${HOME_DIR}/.kube" "ca-*"   "${BACKUP_KUBE}"
+  backup_file "${HOME_DIR}/.kube/config"  "${BACKUP_KUBE}/config"
+  backup_file "${HOME_DIR}/.kube/kubectx" "${BACKUP_KUBE}/kubectx"
+
+  log_info "--- SSH keys and config ---"
+  # Private keys: 700 like secrets; the files' modes are re-derived on restore.
+  ensure_private_dir "${BACKUP_SSH}"
+  backup_glob "${HOME_DIR}/.ssh" "id_*" "${BACKUP_SSH}"
+  backup_file "${HOME_DIR}/.ssh/config" "${BACKUP_SSH_ROOT}/config"
+
+  log_info "--- Git configuration ---"
+  ensure_dir "${BACKUP_GIT}"
+  backup_file "${HOME_DIR}/.gitconfig"        "${BACKUP_GIT}/.gitconfig"
+  backup_file "${HOME_DIR}/.config/git/ignore" "${BACKUP_GIT}/ignore"
+
+  log_info "--- secrets.env ---"
+  ensure_private_dir "${BACKUP_SECRETS}"
+  backup_private_file "${HOME_DIR}/.config/tyc/secrets.env" "${BACKUP_SECRETS}/secrets.env"
+
+  log_info "--- k9s ---"
+  backup_dir "${HOME_DIR}/.config/k9s"              "${BACKUP_K9S}/config"
+  backup_dir "${HOME_DIR}/.local/share/k9s/clusters" "${BACKUP_K9S}/clusters"
+
+  log_info "--- GitLab CLI ---"
+  if [[ -d "${HOME_DIR}/.config/glab-cli" ]]; then
+    ensure_dir "${BACKUP_GLAB}"
+    backup_glob "${HOME_DIR}/.config/glab-cli" "*" "${BACKUP_GLAB}"
+  else
+    log_warn "No ~/.config/glab-cli directory found, skipping"
+  fi
+
+  log_info "--- Helm ---"
+  if [[ -d "${HOME_DIR}/.config/helm" ]]; then
+    ensure_dir "${BACKUP_HELM}"
+    backup_glob "${HOME_DIR}/.config/helm" "*" "${BACKUP_HELM}"
+  else
+    log_warn "No ~/.config/helm directory found, skipping"
+  fi
+
+  log_info "--- Claude Code ---"
+  ensure_dir "${BACKUP_CLAUDE}"
+  backup_file "${HOME_DIR}/.claude/settings.json"        "${BACKUP_CLAUDE}/settings.json"
+  backup_file "${HOME_DIR}/.claude/settings.local.json"  "${BACKUP_CLAUDE}/settings.local.json"
+  # Transcripts are NOT payload: the Windows mount is readable by any process
+  # running as the Windows user; they go to the state root only, opt-in. <slug>/memory/
+  # is the one projects/ subtree that is not a transcript; slugs encode the checkout path.
+  local mem_dir
+  if state_unavailable; then
+    log_warn "State root unavailable; Claude memory not backed up this run"
+  else
+    for mem_dir in "${HOME_DIR}"/.claude/projects/*/memory(N/); do
+      if state_enabled; then
+        sync_memory_dir backup "${mem_dir}" "$(memory_root)/${mem_dir:h:t}/memory"
+      else
+        backup_dir "${mem_dir}" "$(memory_root)/${mem_dir:h:t}/memory"
+      fi
+    done
+  fi
+  if state_enabled && ${STATE_TRANSCRIPTS}; then
+    backup_transcripts
+  fi
+  ensure_dir "${BACKUP_CLAUDE}/plugins"
+  backup_file "${HOME_DIR}/.claude/plugins/known_marketplaces.json" "${BACKUP_CLAUDE}/plugins/known_marketplaces.json"
+  backup_file "${HOME_DIR}/.claude/plugins/installed_plugins.json"  "${BACKUP_CLAUDE}/plugins/installed_plugins.json"
+  backup_file "${HOME_DIR}/.claude/plugins/blocklist.json"          "${BACKUP_CLAUDE}/plugins/blocklist.json"
+  backup_file "${HOME_DIR}/.claude/CLAUDE.md"             "${BACKUP_CLAUDE}/CLAUDE.md"
+  backup_file "${HOME_DIR}/.claude/statusline-command.sh" "${BACKUP_CLAUDE}/statusline-command.sh"
+
+  check_dirty_repos
+
+  echo ""
+  # Held back is not failed; the count sits last so it is not lost mid-log.
+  if (( GATE_HELD_COUNT > 0 )); then
+    log_warn "${GATE_HELD_COUNT} secret record(s) held back from the state root; review with: flakelab backup --review-secrets"
+  fi
+  if (( FAILURES > 0 )); then
+    log_error "=== Backup completed with ${FAILURES} failure(s) ==="
+  else
+    log_ok "=== Backup complete ==="
+  fi
+  echo ""
+  log_info "Instance: ${INSTANCE_ROOT}"
+  log_info "Shared:   ${SHARED_ROOT}"
+  log_state_root
+  log_info "Snapshots: ${SNAPSHOT_ROOT} (keeping ${KEEP})"
+  log_warn "Backups hold cleartext credentials (secrets.env, SSH private keys,"
+  log_warn "         kubeconfigs, glab tokens) on the Windows mount, including"
+  log_warn "         inside the rollback snapshots. They are gitignored, but the"
+  log_warn "         mount is unencrypted — treat ${BACKUP_ROOT} as secret."
+  log_warn "         claude/settings.json carries an env block, so it counts too."
+  log_warn "         Verify nothing is staged: git -C <repo> status --short files/config/"
+  # STATE_USABLE too: a run that never reached the root must not claim it holds the transcripts.
+  if ${STATE_CONFIGURED} && ${STATE_USABLE} && ${STATE_WROTE}; then
+    log_warn "The state root holds the merged shell history$( ${STATE_TRANSCRIPTS} && print -n ' and session transcripts')"
+    log_warn "         — everything ever typed at a prompt. Whatever replicates that folder"
+    log_warn "         sees it too; treat ${STATE_ROOT} as secret."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+# Before the lock: a refused state root is a configuration error and should not
+# wait 300s on another run to say so.
+check_state_root
+
+# --review-secrets rewrites local files, so a preview of it is a contradiction —
+# and acquire_lock skips a dry run, so it would rewrite a live history unlocked.
+if ${REVIEW_SECRETS}; then
+  if ${DRY_RUN}; then
+    log_error "--review-secrets rewrites local files; run it without --dry-run"
+    exit 1
+  fi
+  if ${RESTORE}; then
+    log_error "--review-secrets and --restore are separate runs; pick one"
+    exit 1
+  fi
+fi
+
+acquire_lock
+
+if ${REVIEW_SECRETS}; then
+  # Under the backup's lock: it rewrites the payload's history copy.
+  do_review_secrets
+elif ${RESTORE}; then
+  do_restore
+else
+  do_backup
+fi
+
+# A partial run must not report success: callers see only the exit status.
+if (( FAILURES > 0 )); then
+  exit 1
+fi

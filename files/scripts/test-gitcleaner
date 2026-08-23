@@ -1,0 +1,343 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline test suite for gitcleaner.
+#
+# Builds a real repo against a bare "remote" on disk and stubs glab/gh, so the
+# whole suite runs without network or credentials. The remote URL is set to a
+# gitlab.com address (which is what forge routing reads) while
+# url.<path>.insteadOf redirects the actual fetch to the local bare repo.
+#
+# Usage: files/scripts/test-gitcleaner
+#
+
+SCRIPT_DIR="${0:A:h}"
+CLEANER="${SCRIPT_DIR}/gitcleaner"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the value BEFORE the increment,
+# so the first call returns 1 and an `&& ok || bad` chain would run both arms.
+ok()   { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()  { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check() { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains()  { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes()  { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# Stub forge CLIs: `in-review` has an open MR, `squashed` has a merged one.
+# The merged query is per branch, so the stub answers per branch too — a stub
+# that says "merged" to every question cannot catch a script that asks the
+# wrong one.
+mkdir -p "${BASE}/bin"
+# A function, not a one-off: a later test swaps in a misbehaving stub and has to
+# restore this exact one, and two copies of it drift.
+write_forge_stubs() {
+cat > "${BASE}/bin/glab" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == auth ]] && exit 0
+if [[ "$1" == mr && "$2" == list ]]; then
+  if [[ "$*" == *--merged* ]]; then
+    if [[ "$*" == *"--source-branch squashed"* || "$*" == *"--source-branch=squashed"* ]]; then
+      print -r -- '[{"source_branch":"squashed"}]'
+    else
+      print -r -- '[]'
+    fi
+  # Page 2 and beyond are empty: one page holds every open MR in the fixture.
+  elif [[ "$*" == *"--page 1"* || "$*" != *--page* ]]; then
+    print -r -- '[{"source_branch":"in-review"}]'
+  else
+    print -r -- '[]'
+  fi
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "${BASE}/bin/glab"
+cp "${BASE}/bin/glab" "${BASE}/bin/gh"
+}
+write_forge_stubs
+export PATH="${BASE}/bin:${PATH}"
+
+# build_fixture <name> — a fresh repo tree; sets FIXTURE_ROOTS. Setup output is
+# swallowed wholesale: `git branch --track` and friends chatter on stdout, and a
+# captured fixture path with git's chatter in it fails every later assertion.
+build_fixture() {
+  local name="$1"
+  local dir="${BASE}/${name}" bare="${BASE}/${name}/remote.git"
+  local seed="${BASE}/${name}/seed" repo="${BASE}/${name}/roots/repo"
+  mkdir -p "${dir}/roots"
+  {
+  git init -q --bare "${bare}"
+
+  git init -q -b main "${seed}"
+  git -C "${seed}" config user.email t@e; git -C "${seed}" config user.name t
+  print -r -- base > "${seed}/f"
+  git -C "${seed}" add -A; git -C "${seed}" commit -qm base
+  git -C "${seed}" remote add origin "${bare}"; git -C "${seed}" push -q origin main
+
+  git -C "${seed}" checkout -qb merged-branch
+  print -r -- m > "${seed}/m"; git -C "${seed}" add -A; git -C "${seed}" commit -qm merged
+  git -C "${seed}" checkout -q main
+  git -C "${seed}" merge -q --no-ff -m merge merged-branch
+  git -C "${seed}" push -q origin main
+
+  git -C "${seed}" checkout -qb in-review
+  print -r -- r > "${seed}/r"; git -C "${seed}" add -A; git -C "${seed}" commit -qm review
+  git -C "${seed}" push -q origin in-review
+
+  git -C "${seed}" checkout -qb squashed main
+  print -r -- s > "${seed}/s"; git -C "${seed}" add -A; git -C "${seed}" commit -qm squashed
+  git -C "${seed}" push -q origin squashed
+  git -C "${seed}" checkout -q main
+  git -C "${bare}" symbolic-ref HEAD refs/heads/main
+
+  git clone -q "${bare}" "${repo}"
+  git -C "${repo}" config user.email t@e; git -C "${repo}" config user.name t
+  git -C "${repo}" remote set-url origin "git@gitlab.com:test/repo.git"
+  git -C "${repo}" config "url.${bare}.insteadOf" "git@gitlab.com:test/repo.git"
+  git -C "${repo}" fetch -q origin
+  git -C "${repo}" remote set-head origin main >/dev/null 2>&1
+
+  git -C "${repo}" branch merged-branch "$(git -C "${seed}" rev-parse merged-branch)" 2>/dev/null
+  git -C "${repo}" branch in-review origin/in-review 2>/dev/null
+  git -C "${repo}" branch squashed origin/squashed 2>/dev/null
+  # unpushed work that exists nowhere else
+  git -C "${repo}" checkout -qb local-only main
+  print -r -- u > "${repo}/u"; git -C "${repo}" add -A; git -C "${repo}" commit -qm unpushed
+  git -C "${repo}" checkout -q main
+
+  # the squash case: remote branch deleted after the MR merged
+  git -C "${bare}" branch -D squashed >/dev/null 2>&1
+
+  # An abandoned branch: pushed, then the remote branch deleted with nothing
+  # merged. Identical to the squash case locally — only the forge can tell them
+  # apart, which is exactly what the per-branch merged query is for.
+  git -C "${seed}" checkout -qb abandoned main
+  print -r -- a > "${seed}/a"; git -C "${seed}" add -A; git -C "${seed}" commit -qm abandoned
+  git -C "${seed}" push -q origin abandoned
+  git -C "${seed}" checkout -q main
+  git -C "${repo}" fetch -q origin
+  git -C "${repo}" branch abandoned origin/abandoned 2>/dev/null
+  git -C "${bare}" branch -D abandoned >/dev/null 2>&1
+
+  # a worktree whose checkout directory is gone
+  git -C "${repo}" worktree add -q "${dir}/wt-gone" -b wt-branch >/dev/null 2>&1
+  rm -rf "${dir}/wt-gone"
+
+  } >/dev/null 2>&1
+  FIXTURE_ROOTS="${dir}/roots"
+}
+
+branches_of() { git -C "$1/repo" for-each-ref --format='%(refname:short)' refs/heads/ | sort | tr '\n' ' ' }
+
+print -r -- "── no terminal: report, change nothing ────────────────────────────"
+build_fixture notty; ROOTS="${FIXTURE_ROOTS}"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" < /dev/null 2>&1)"; RC=$?
+check "exits 1 when there is work to do" "${RC}" "1"
+contains "reports the merged branch" "${OUT}" "stale merged-branch"
+contains "reports the squash-merged branch" "${OUT}" "stale squashed"
+contains "reports the stale worktree" "${OUT}" "stale worktree"
+excludes "never reports unpushed work as stale" "${OUT}" "stale local-only"
+excludes "never reports a branch with an open MR" "${OUT}" "stale in-review"
+contains "says why it did not act" "${OUT}" "No terminal to ask at"
+# `abandoned` and `squashed` are indistinguishable locally: both have a pruned
+# upstream and commits that are ancestors of nothing. Only the forge separates
+# them, and it is asked about each branch by name.
+excludes "a pruned upstream alone never makes a branch stale" "${OUT}" "stale abandoned"
+check "nothing is deleted without a terminal" "$(branches_of "${ROOTS}")" \
+  "abandoned in-review local-only main merged-branch squashed wt-branch "
+
+print -r -- "── --dry-run overrides the terminal ───────────────────────────────"
+build_fixture dryrun; ROOTS="${FIXTURE_ROOTS}"
+if command -v script >/dev/null 2>&1; then
+  OUT="$(printf 'yyy' | script -qec "zsh ${CLEANER} --repos-dir ${ROOTS} --dry-run" /dev/null 2>&1)"
+  contains "--dry-run says how to proceed" "${OUT}" "Drop --dry-run"
+  check "--dry-run deletes nothing even when told yes" "$(branches_of "${ROOTS}")" \
+    "abandoned in-review local-only main merged-branch squashed wt-branch "
+else
+  print -r -- "  skip (no script(1) for a pty)"
+fi
+
+print -r -- "── interactive: y / n / q ─────────────────────────────────────────"
+build_fixture interactive; ROOTS="${FIXTURE_ROOTS}"
+if command -v script >/dev/null 2>&1; then
+  # y deletes the first candidate, n keeps the second, q stops the run.
+  OUT="$(printf 'ynq' | script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"
+  contains "asks before each delete" "${OUT}" "[y/N/a/q]"
+  contains "prints the SHA to restore from" "${OUT}" "restore: git -C"
+  contains "q reports that it stopped early" "${OUT}" "Stopped at your request"
+  contains "n keeps the branch it was asked about" "${OUT}" "kept"
+  check "exactly one branch went" \
+    "$(git -C "${ROOTS}/repo" for-each-ref refs/heads/ | wc -l)" "6"
+else
+  print -r -- "  skip (no script(1) for a pty)"
+fi
+
+print -r -- "── keeping everything is still a run that found work ──────────────"
+build_fixture keepall; ROOTS="${FIXTURE_ROOTS}"
+# The worktree entry is pruned without a prompt, so it is removed first — a
+# branch-only repo is what exposes a summary counting removals as findings.
+git -C "${ROOTS}/repo" worktree prune >/dev/null 2>&1
+if command -v script >/dev/null 2>&1; then
+  OUT="$(printf 'nnnn' | script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"; RC=$?
+  check "answering n to everything still exits 1" "${RC}" "1"
+  excludes "does not claim the tree was clean" "${OUT}" "Nothing to clean"
+  contains "counts what was removed against what was found" "${OUT}" "Removed 0 of 3 branches"
+  contains "says how many were kept" "${OUT}" "3 branches kept at your request"
+  check "and kept every one of them" "$(branches_of "${ROOTS}")" \
+    "abandoned in-review local-only main merged-branch squashed wt-branch "
+else
+  print -r -- "  skip (no script(1) for a pty)"
+fi
+
+print -r -- "── an unparsable forge reply must not disarm the guard ───────────"
+build_fixture badjson; ROOTS="${FIXTURE_ROOTS}"
+# Exit 0 with a body that is not JSON — a login page, a proxy error, an API
+# change. Swallowing the parse failure empties the open-MR list, and an empty
+# list is indistinguishable from "no MR protects this branch".
+cat > "${BASE}/bin/glab" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == auth ]] && exit 0
+print -r -- '<html>rate limited</html>'
+exit 0
+STUB
+chmod +x "${BASE}/bin/glab"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "a garbled forge reply exits 2" "${RC}" "2"
+contains "names the parse failure" "${OUT}" "could not parse"
+contains "counts the repo as skipped" "${OUT}" "skipped"
+check "and deletes nothing at all" "$(branches_of "${ROOTS}")" \
+  "abandoned in-review local-only main merged-branch squashed wt-branch "
+# Restore the well-behaved stubs for the suites that follow.
+write_forge_stubs
+
+print -r -- "── --yes ──────────────────────────────────────────────────────────"
+build_fixture apply; ROOTS="${FIXTURE_ROOTS}"
+git -C "${ROOTS}/repo" worktree add -q "${BASE}/apply/wt-live" -b live-branch >/dev/null 2>&1
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "--yes exits 1 after removing" "${RC}" "1"
+contains "deletes the merged branch" "${OUT}" "deleted merged-branch"
+contains "deletes the squash-merged branch" "${OUT}" "deleted squashed"
+contains "prunes the stale worktree" "${OUT}" "pruned worktree"
+contains "every delete carries its restore command" "${OUT}" "restore: git -C"
+check "keeps unpushed, open-MR, live-worktree, default" "$(branches_of "${ROOTS}")" \
+  "abandoned in-review live-branch local-only main "
+check "the live worktree survives" \
+  "$(git -C "${ROOTS}/repo" worktree list | grep -c wt-live)" "1"
+
+print -r -- "── idempotence ────────────────────────────────────────────────────"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "a second run finds nothing" "${RC}" "0"
+contains "says so plainly" "${OUT}" "Nothing to clean"
+
+print -r -- "── plan then act: --json, --only, --repo ──────────────────────────"
+build_fixture agent; ROOTS="${FIXTURE_ROOTS}"
+
+# The plan. --json reports and never deletes, so an agent can decide from it.
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --json < /dev/null 2>/dev/null)"; RC=$?
+check "--json exits 1 when there is work" "${RC}" "1"
+print -r -- "${OUT}" | jq -e . >/dev/null 2>&1 \
+  && ok "--json emits parseable JSON" || bad "--json emits parseable JSON"
+check "the plan is report mode" "$(print -r -- "${OUT}" | jq -r '.mode')" "report"
+check "every candidate is listed" "$(print -r -- "${OUT}" | jq -r '.found.branches')" "3"
+check "and none of them acted on" "$(print -r -- "${OUT}" | jq -r '.removed.branches')" "0"
+check "each candidate carries its reason" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].branches[] | select(.name == "squashed") | .reason')" \
+  "MR merged, upstream pruned"
+check "and the SHA that would restore it" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].branches[0].sha | length > 0')" "true"
+check "the plan changed nothing" "$(branches_of "${ROOTS}")" \
+  "abandoned in-review local-only main merged-branch squashed wt-branch "
+
+# The act. --only is the whole point: an agent removes what it decided on, not
+# whatever the sweep happens to find on a second pass.
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only merged-branch --yes --json < /dev/null 2>/dev/null)"; RC=$?
+check "--only --yes exits 1 after removing" "${RC}" "1"
+check "exactly one branch went" "$(print -r -- "${OUT}" | jq -r '.removed.branches')" "1"
+check "and it was the named one" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].branches[] | select(.action == "deleted") | .name')" \
+  "merged-branch"
+check "the other candidates are untouched" "$(branches_of "${ROOTS}")" \
+  "abandoned in-review local-only main squashed wt-branch "
+
+# A name that is not a candidate must fail loudly: an agent that reads exit 0
+# will believe it deleted something.
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only in-review --yes --json < /dev/null 2>&1)"; RC=$?
+check "--only on a guarded branch exits 2" "${RC}" "2"
+contains "and names it" "${OUT}" "in-review"
+check "the guarded branch survives" \
+  "$(git -C "${ROOTS}/repo" for-each-ref --format='%(refname:short)' refs/heads/in-review)" "in-review"
+
+OUT="$(zsh "${CLEANER}" --repo "${BASE}/nope" --json < /dev/null 2>&1)"; RC=$?
+check "--repo on a non-repo exits 2" "${RC}" "2"
+contains "and says which path" "${OUT}" "not a git repo"
+
+print -r -- "── HEAD parked on an older branch ─────────────────────────────────"
+# -d would judge against this HEAD and refuse a branch provably in origin/main.
+build_fixture parked; ROOTS="${FIXTURE_ROOTS}"
+git -C "${ROOTS}/repo" checkout -qb parked "$(git -C "${ROOTS}/repo" rev-parse origin/main~1)" >/dev/null 2>&1
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only merged-branch --yes < /dev/null 2>&1)"; RC=$?
+check "exits 1 after removing" "${RC}" "1"
+contains "deletes the merged branch despite the parked HEAD" "${OUT}" "deleted merged-branch"
+excludes "no refused delete" "${OUT}" "FAILED to delete"
+
+print -r -- "── guards ─────────────────────────────────────────────────────────"
+build_fixture guards; ROOTS="${FIXTURE_ROOTS}"
+# The local ref is NOT how to simulate this. gitcleaner fetches before it reads
+# origin/HEAD, and since git learned to adopt the remote's advertised symref, a
+# fetch re-creates a deleted refs/remotes/origin/HEAD from the server — verified
+# on git 2.54.0. Deleting it locally therefore tests nothing: the sweep proceeds,
+# correctly, against the default branch the server just told it about.
+#
+# The condition the guard actually protects against is a remote that offers no
+# usable HEAD at all, which no fetch can repair. Point the bare repo's HEAD at a
+# branch that does not exist and origin/HEAD stays absent through the fetch,
+# which is the only state in which gitcleaner has to refuse to guess.
+git -C "${BASE}/guards/remote.git" symbolic-ref HEAD refs/heads/nonexistent
+git -C "${ROOTS}/repo" symbolic-ref -d refs/remotes/origin/HEAD 2>/dev/null
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "a repo whose remote offers no usable HEAD is skipped, not guessed at" "${RC}" "2"
+contains "names the remedy" "${OUT}" "git remote set-head origin -a"
+contains "does not claim a clean sweep" "${OUT}" "skipped"
+check "nothing was deleted in the skipped repo" "$(branches_of "${ROOTS}")" \
+  "abandoned in-review local-only main merged-branch squashed wt-branch "
+
+OUT="$(zsh "${CLEANER}" --repos-dir "${BASE}/does-not-exist" < /dev/null 2>&1)"; RC=$?
+check "a missing root exits 2" "${RC}" "2"
+contains "names the missing root" "${OUT}" "repos dir not found"
+
+OUT="$(zsh "${CLEANER}" --nonsense < /dev/null 2>&1)"; RC=$?
+check "an unknown option exits 2" "${RC}" "2"
+
+print -r -- "── fast-forward before judging what landed ──────────────────────"
+build_fixture ffwd; ROOTS="${FIXTURE_ROOTS}"
+# Put the local default branch behind its upstream. "Merged into the default
+# branch" is answered against the LOCAL ref, so without the fast-forward this
+# run judges against a stale default.
+git -C "${ROOTS}/repo" fetch -q origin 2>/dev/null
+git -C "${ROOTS}/repo" reset -q --hard HEAD~1 2>/dev/null
+
+BEHIND_BEFORE="$(git -C "${ROOTS}/repo" rev-list --count HEAD..@{upstream} 2>/dev/null)"
+
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --no-ff < /dev/null 2>/dev/null)"
+[[ "${OUT}" != *"fast-forwarded"* ]] \
+  && ok "--no-ff moves nothing" || bad "--no-ff moves nothing"
+check "and the branch is still behind" \
+  "$(git -C "${ROOTS}/repo" rev-list --count HEAD..@{upstream} 2>/dev/null)" "${BEHIND_BEFORE}"
+
+# --dry-run promises to change nothing, and a fast-forward is a change.
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --dry-run < /dev/null 2>/dev/null)"
+check "--dry-run does not fast-forward either" \
+  "$(git -C "${ROOTS}/repo" rev-list --count HEAD..@{upstream} 2>/dev/null)" "${BEHIND_BEFORE}"
+
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" < /dev/null 2>/dev/null)"
+check "the default run fast-forwards it" \
+  "$(git -C "${ROOTS}/repo" rev-list --count HEAD..@{upstream} 2>/dev/null)" "0"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

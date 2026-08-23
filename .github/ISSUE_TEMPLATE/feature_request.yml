@@ -1,0 +1,31 @@
+---
+name: Feature request
+description: Suggest something the flake or the CLI should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do that is awkward or impossible today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: >-
+        A rough shape is fine — a new option, a subcommand, a doc section.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds you are using, and why they are not enough.
+  - type: markdown
+    attributes:
+      value: >-
+        This is a personal framework published as a reference rather than a
+        supported product, so features are considered on a best-effort basis
+        and a well-scoped pull request is the fastest route.

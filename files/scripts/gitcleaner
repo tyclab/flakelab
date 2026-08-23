@@ -1,0 +1,627 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# gitcleaner — retire local branches and worktrees whose work has landed
+#
+# The mutating counterpart to `gitchecker`'s "gone:" and stash reporting: that
+# script names what is stale, this one removes it. Scans the same roots and,
+# per repo:
+#   - fast-forwards every strictly-behind branch first, because "merged into the
+#     default branch" is answered against the LOCAL default ref: a default that
+#     trails origin under-reports merged branches (--no-ff opts out)
+#   - prunes worktree admin entries whose checkout directory is gone
+#   - deletes local branches merged into the default branch
+#   - deletes local branches whose remote branch was pruned AND whose forge
+#     MR/PR is merged (the squash-merge case, where the commits are not
+#     ancestors of the default branch and `git branch -d` refuses)
+#
+# Never touched: the current branch, the default branch, a branch with an open
+# MR/PR, a branch with commits the remote has never seen, and any worktree that
+# still exists on disk.
+#
+# At a terminal it asks per branch and deletes what you confirm — that prompt is
+# the safe point to confirm a delete, which a provisioning play does not have.
+# Without a terminal there is nobody to ask, so it reports and changes nothing
+# unless --yes says otherwise.
+#
+# Every deletion prints the SHA it removed, so an undo is
+# `git branch <name> <sha>` against the line already on screen. Nothing is moved
+# to a holding pen: a directory of branches nobody ever empties is the same
+# rubbish one level down, and it rots out of sync with the forge.
+#
+# Two callers, one set of guards. An operator gets the prompt; a non-interactive
+# caller (an agent, a script) gets plan-then-act: `--json` lists the candidates
+# and changes nothing, and `--only <branch> --yes` removes exactly the named
+# ones — still subject to every guard, and a name that is not a candidate is a
+# failure rather than a no-op. `--yes` alone remains the sweep-the-lot form, and
+# is the blunt one.
+#
+# Usage:
+#   gitcleaner [--repos-dir DIR]... [--repo PATH]... [--dry-run|--yes]
+#              [--only BRANCH]... [--json] [--max-depth N] [DIR...]
+#
+# Exit status:
+#   0  nothing to clean
+#   1  stale items found — removed, reported, or kept at the prompt
+#   2  preflight failure, per-repo fetch/forge/parse failure, a refused delete,
+#      or a usage error
+#
+
+# Shared sweep plumbing: preflight, discovery, forge routing, and (via
+# git-net.zsh, which it sources) the ssh hardening and retry shape. The scope
+# this agrees on with gitchecker is the point — the reporter and the deleter
+# must never disagree about which repos are in it. Sibling lookup, so this works
+# both from the nix store copy the wrapper executes and the repo.
+GITSCAN_PROG=gitcleaner
+source "${0:A:h}/lib/gitscan.zsh" || exit 2
+
+typeset -a ROOTS=() REPO_ARGS=() ONLY=()
+MAX_DEPTH=6
+DRY_RUN=0
+# Fast-forward strictly-behind branches before judging what has landed.
+FF=1
+FF_DIRTY=0
+ASSUME_YES=0
+QUIT_ALL=0
+JSON=0
+
+usage() {
+  cat <<'EOF'
+gitcleaner — retire the branches and worktrees whose work has landed
+
+Usage: gitcleaner [options] [repos-dir...]
+
+The mutating half of `gitchecker`: where that reports a branch as stale, this
+one removes it. Per repo it prunes worktree entries whose checkout directory is
+gone, deletes local branches merged into the default branch, and deletes
+branches whose remote branch was pruned AND whose MR/PR the forge reports as
+merged — the squash-merge case, where `git branch -d` refuses because the
+commits are not ancestors of anything.
+
+Never touched: the branch you are on, the default branch, a branch with an open
+MR/PR, a branch holding commits the remote has never seen, and any branch a
+live worktree has checked out. A repo without origin/HEAD is skipped rather
+than guessed at.
+
+Every deletion prints the SHA it removed, so the undo is the
+`git branch <name> <sha>` already on your screen.
+
+At a terminal each candidate is shown and confirmed one at a time (y/N/a/q):
+y delete, n keep, a the rest of this repo, q stop. That prompt IS the
+confirmation — there is no separate apply step. With no terminal there is
+nobody to ask, so it reports and changes nothing unless --yes.
+
+Options:
+  --repos-dir <path>  Root dir to scan (repeatable; default: ~/git)
+  --repo <path>       Clean exactly this repo (repeatable; skips discovery)
+  --max-depth <N>     Max search depth for nested repos (default: 6)
+  --dry-run           Report only; never delete or fast-forward, even at a terminal
+  --no-ff             Do not fast-forward strictly-behind branches first
+  --ff-dirty          Also try that fast-forward when the working tree is dirty
+  --yes               Delete without asking (for scripts; needs no terminal)
+  --only <branch>     Restrict deletion to this branch (repeatable). A name
+                      that is not a candidate is an error, not a no-op.
+  --json              One JSON document on stdout; never prompts
+  -h, --help          Show this help
+
+Examples:
+  gitcleaner                             walk every candidate, confirm each
+  gitcleaner --dry-run                   list them, change nothing
+  gitcleaner --repo . --json             what would go here, machine-readable
+  gitcleaner --repo . --only old/feat --yes
+                                         remove exactly that one, guards intact
+
+Exit: 0 nothing to clean, 1 items found (removed, reported or kept), 2 failure
+EOF
+}
+
+die() { gitscan_die "$@" }
+
+while (( $# > 0 )); do
+  case $1 in
+    --repos-dir) ROOTS+=("$2"); shift ;;
+    --repo)      REPO_ARGS+=("$2"); shift ;;
+    --max-depth) MAX_DEPTH="$2"; shift ;;
+    # --dry-run is the "change nothing" flag; a fast-forward is a change, so it
+    # opts out of that too. --ff-dirty after --dry-run does not re-enable it.
+    --dry-run)   DRY_RUN=1; FF=0 ;;
+    --no-ff)     FF=0 ;;
+    --ff-dirty)  FF_DIRTY=1 ;;
+    --yes|-y)    ASSUME_YES=1 ;;
+    --only)      ONLY+=("$2"); shift ;;
+    --json)      JSON=1 ;;
+    -h|--help)   usage; exit 0 ;;
+    -*)          print -r -u2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
+    *)           ROOTS+=("$1") ;;
+  esac
+  shift
+done
+
+if (( ${#REPO_ARGS[@]} == 0 && ${#ROOTS[@]} == 0 )); then
+  ROOTS=("${HOME}/git")
+fi
+
+# Three modes, decided once: ask (a terminal to ask at), delete (--yes), or
+# report (no terminal, --dry-run, or --json without --yes). Reading the tty here
+# rather than per prompt keeps the summary honest about what the run was allowed
+# to do. --json never prompts even at a terminal: a half-written document with a
+# question in the middle of it is not a document.
+MODE=report
+if (( DRY_RUN )); then
+  MODE=report
+elif (( ASSUME_YES )); then
+  MODE=delete
+elif (( JSON )); then
+  MODE=report
+elif [[ -t 0 ]]; then
+  MODE=ask
+fi
+
+(( JSON )) && GITSCAN_DIE_JSON=1
+
+gitscan_preflight
+typeset -a ABS_ROOTS=()
+if (( ${#ROOTS[@]} > 0 )); then
+  gitscan_abs_roots "${ROOTS[@]}"
+  ABS_ROOTS=("${GITSCAN_ABS_ROOTS[@]}")
+fi
+gitscan_timeouts
+gitscan_colors
+(( JSON )) && { C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_CYAN=""; C_DIM="" }
+
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "${WORKDIR}"' EXIT
+
+gitscan_ssh_mux "${WORKDIR}"
+
+# Unlike gitchecker, a worktree is not its own repo here: deleting through it
+# writes the parent's ref store while a checkout of one of those branches is
+# live. Only real repos are swept; the worktrees they hold are handled from
+# inside the parent.
+GITSCAN_SKIP_WORKTREES=1
+typeset -a GITDIRS=()
+if (( ${#ABS_ROOTS[@]} > 0 )); then
+  gitscan_discover "${MAX_DEPTH}" "${ABS_ROOTS[@]}"
+  GITDIRS=("${GITSCAN_GITDIRS[@]}")
+fi
+# A named repo that is not one is a usage error: a caller that mistyped a path
+# must not be told there was nothing to clean.
+for repo_arg in "${REPO_ARGS[@]}"; do
+  [[ -d "${repo_arg:A}/.git" ]] || die "not a git repo: ${repo_arg}"
+  GITDIRS+=("${repo_arg:A}/.git")
+done
+
+if (( ${#GITDIRS[@]} == 0 )); then
+  if (( JSON )); then
+    jq -n '{ok: true, aborted: null, mode: "report", scanned: 0, repos: [],
+            found: {branches: 0, worktrees: 0}, removed: {branches: 0, worktrees: 0},
+            kept: 0, failed: 0, skipped: 0}'
+  else
+    print -r -- "No git repos found under: ${(j:, :)ABS_ROOTS}"
+  fi
+  exit 0
+fi
+
+gitscan_require_gh "${GITDIRS[@]}"
+
+# Found and removed are separate counts. "Nothing to clean" is a claim about the
+# tree; what the operator declined to delete says nothing about it.
+typeset -i FOUND_BRANCHES=0 FOUND_WORKTREES=0
+typeset -i GONE_BRANCHES=0 GONE_WORKTREES=0 KEPT_BRANCHES=0 FAILED_BRANCHES=0
+typeset -i REPOS_TOUCHED=0 SKIPPED=0
+typeset -i REC_IDX=0
+typeset -a ONLY_MATCHED=()
+LAST_SKIP=""
+
+# The report is for the operator; --json owns stdout when it is on, so every
+# human line goes through here and every machine fact through rec_line. One
+# run produces one of the two, never a blend.
+say() { (( JSON )) || print -r -- "$@" }
+
+rec_line() { print -r -- "${(pj:\t:)@}" >> "${REC}" }
+
+# skip <reason> [detail] — this repo goes unexamined. The reason reaches both
+# the operator and the JSON: "skipped" without a why is the silence this script
+# exists to avoid.
+skip() {
+  LAST_SKIP="$1"
+  print -r -u2 -- "gitcleaner: $1"
+  [[ -n "${2-}" ]] && print -r -u2 -- "  $2"
+  return 2
+}
+
+clean_repo() {
+  local repo="$1"
+  local default_branch head_branch branch upstream_track remote_url forge_line forge project
+  local open_srcs="" wt_out
+  # A remote on a host neither CLI can query leaves the forge unasked. The
+  # ancestor test still stands on its own; the squash case cannot, so it is
+  # skipped rather than guessed at.
+  local -i have_forge=0
+  typeset -a to_delete_safe=() to_delete_squashed=() pruned_worktrees=() held_branches=()
+  # "all" is per repo: agreeing to sweep one repo is not agreeing to the rest.
+  typeset -i REPO_ALL=0
+
+  # Accurate "merged" and "gone" both depend on current remote refs.
+  if ! gitnet_retry git -C "${repo}" fetch --prune; then
+    skip "fetch failed in ${repo} (after retry, ${GITNET_WHY}) — skipping" "${GITNET_OUT}"
+    return 2
+  fi
+
+  default_branch="$(git -C "${repo}" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
+  default_branch="${default_branch#origin/}"
+  # Without origin/HEAD there is no answer to "merged into what", and guessing
+  # main/master is how the wrong branch gets deleted.
+  #
+  # Read AFTER the fetch above, deliberately. Git adopts the remote's advertised
+  # symref, so a fetch re-creates a locally-missing refs/remotes/origin/HEAD from
+  # the server (verified, git 2.54.0) — and a value the server just stated is not
+  # a guess, it is the answer. Checking before the fetch would refuse to sweep
+  # repos whose only problem is a stale local ref that the fetch already fixed.
+  # What survives the fetch is the case worth refusing: a remote offering no
+  # usable HEAD, which no fetch can repair.
+  [[ -z "${default_branch}" ]] && {
+    skip "${repo}: no origin/HEAD — run 'git remote set-head origin -a'; skipping"
+    return 2
+  }
+  head_branch="$(git -C "${repo}" symbolic-ref --short -q HEAD 2>/dev/null)"
+
+  # Fast-forward before deciding what has landed. "Merged into the default
+  # branch" is answered against the LOCAL default ref, so a local default that
+  # trails origin under-reports merged branches and this run holds work it
+  # should have retired. Only strictly-behind branches move, and a branch that
+  # is not checked out moves without touching the working tree. --no-ff opts out.
+  if (( FF )); then
+    local -i ff_dirty_count=0
+    ff_dirty_count="$(git -C "${repo}" status --porcelain=v1 2>/dev/null | grep -c . || true)"
+    # Declared once, outside the loop: a bare `local x` for an already-declared
+    # name LISTS it (`x=value` on stdout), which corrupts --json from iteration
+    # two onward.
+    local ffb ffu ff_allow ffcounts ffahead ffbehind
+    while IFS= read -r ffb || [[ -n "${ffb}" ]]; do
+      [[ -z "${ffb}" ]] && continue
+      ffu="$(git -C "${repo}" rev-parse --abbrev-ref --symbolic-full-name "${ffb}@{upstream}" 2>/dev/null)" || continue
+      # Strictly behind only: left-right count is ahead on the right.
+      ffcounts="$(git -C "${repo}" rev-list --count --left-right "${ffu}...${ffb}" 2>/dev/null)" || continue
+      ffbehind="${ffcounts%%[[:space:]]*}"; ffahead="${ffcounts##*[[:space:]]}"
+      (( ffahead != 0 || ffbehind == 0 )) && continue
+      ff_allow=false
+      (( FF_DIRTY )) && ff_allow=true
+      if gitscan_ff_branch "${repo}" "${ffb}" "${ffu}" "${head_branch}" "${ff_dirty_count}" "${ff_allow}"; then
+        say "  fast-forwarded ${ffb} (${ffbehind} behind)"
+      fi
+    done < <(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+  fi
+
+  # Worktrees whose checkout directory is gone leave admin entries behind that
+  # keep their branch "checked out" and therefore undeletable. `--dry-run`
+  # reports on stderr, not stdout. Checked, not assumed: a failed command's
+  # error text would otherwise be read back as a list of stale entries.
+  local -i wt_rc=0
+  wt_out="$(git -C "${repo}" worktree prune --dry-run --verbose 2>&1)" || wt_rc=$?
+  if (( wt_rc != 0 )); then
+    skip "worktree prune --dry-run failed in ${repo} — skipping" "${wt_out}"
+    return 2
+  fi
+  if [[ -n "${wt_out}" ]]; then
+    while IFS= read -r line; do
+      [[ -z "${line}" ]] && continue
+      pruned_worktrees+=("${line}")
+    done <<< "${wt_out}"
+  fi
+
+  # Prune before deleting anything: a stale entry still holds its branch, and
+  # `git branch -d` refuses a branch any worktree claims. A directory that is
+  # gone has no work in it to lose, so this needs no prompt. A refused prune is
+  # a skip — reporting those entries as pruned would be the false green.
+  if [[ "${MODE}" != report ]] && (( ${#pruned_worktrees[@]} > 0 )); then
+    if ! wt_out="$(git -C "${repo}" worktree prune 2>&1)"; then
+      skip "worktree prune failed in ${repo} — skipping" "${wt_out}"
+      return 2
+    fi
+  fi
+
+  # A worktree that still exists is someone's live checkout. Its branch is off
+  # limits however merged it looks — that is a working tree with a HEAD.
+  local wt_path=""
+  while IFS= read -r line; do
+    case "${line}" in
+      worktree\ *) wt_path="${line#worktree }" ;;
+      branch\ *)   [[ -d "${wt_path}" ]] && held_branches+=("${${line#branch }#refs/heads/}") ;;
+    esac
+  done < <(git -C "${repo}" worktree list --porcelain 2>/dev/null)
+
+  remote_url="$(git -C "${repo}" config --get remote.origin.url 2>/dev/null)"
+  if [[ -n "${remote_url}" ]] && forge_line="$(gitscan_forge_of "${remote_url}")"; then
+    IFS=$'\t' read -r forge project <<< "${forge_line}"
+    have_forge=1
+    # Open MRs pin their source branch: work still under review is not stale,
+    # however merged its base looks. Every page of them — a guard that only
+    # covers the first hundred is not a guard.
+    if ! gitscan_open_requests "${forge}" "${project}"; then
+      skip "${GITSCAN_FORGE_WHY} for ${project} — skipping ${repo}" "${GITSCAN_FORGE_JSON}"
+      return 2
+    fi
+    if [[ "${forge}" == gitlab ]]; then
+      if ! gitscan_jq "${GITSCAN_FORGE_JSON}" '.[].source_branch'; then
+        skip "could not parse the open MR list for ${project} — skipping ${repo}" "${GITSCAN_JQ_ERR}"
+        return 2
+      fi
+    else
+      if ! gitscan_jq "${GITSCAN_FORGE_JSON}" '.[].headRefName'; then
+        skip "could not parse the open PR list for ${project} — skipping ${repo}" "${GITSCAN_JQ_ERR}"
+        return 2
+      fi
+    fi
+    open_srcs="${GITSCAN_JQ_OUT}"
+  fi
+
+  while IFS= read -r branch || [[ -n "${branch}" ]]; do
+    [[ -z "${branch}" ]] && continue
+    [[ "${branch}" == "${default_branch}" ]] && continue
+    [[ "${branch}" == "${head_branch}" ]] && continue
+    # An open MR means the work is in flight, whatever the ref graph says.
+    print -r -- "${open_srcs}" | grep -qxF -- "${branch}" && continue
+    (( ${held_branches[(Ie)${branch}]} )) && continue
+
+    if git -C "${repo}" merge-base --is-ancestor \
+         "refs/heads/${branch}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
+      # Every commit is already reachable from origin/<default>: nothing is
+      # lost even if the forge knows nothing about it.
+      to_delete_safe+=("${branch}")
+      continue
+    fi
+
+    # Squash and rebase merges rewrite the commits, so the branch is not an
+    # ancestor of anything. Only the forge can say the work landed, and only a
+    # pruned upstream proves this local ref is the leftover rather than the
+    # branch someone is still pushing to.
+    #
+    # The forge is asked about this one branch. Listing merged MRs and searching
+    # the list meant searching one page of an unbounded history, so a branch
+    # whose MR merged a while ago simply looked unmerged. The gone-upstream test
+    # comes first because it is local and free.
+    upstream_track="$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)"
+    [[ "${upstream_track}" == *gone* ]] || continue
+    (( have_forge )) || continue
+    gitscan_branch_merged "${forge}" "${project}" "${branch}"
+    case $? in
+      0) to_delete_squashed+=("${branch}") ;;
+      1) ;;
+      *) skip "${GITSCAN_FORGE_WHY} — skipping ${repo}"; return 2 ;;
+    esac
+  done < <(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
+
+  # --only narrows the *deletions* to named branches. A stale worktree entry is
+  # not narrowed: its checkout directory is already gone, so there is nothing to
+  # lose, and pruning it is what makes a named branch deletable at all.
+  if (( ${#ONLY[@]} > 0 )); then
+    typeset -a keep_safe=() keep_squashed=()
+    for branch in "${to_delete_safe[@]}"; do
+      (( ${ONLY[(Ie)${branch}]} )) && { keep_safe+=("${branch}"); ONLY_MATCHED+=("${branch}") }
+    done
+    for branch in "${to_delete_squashed[@]}"; do
+      (( ${ONLY[(Ie)${branch}]} )) && { keep_squashed+=("${branch}"); ONLY_MATCHED+=("${branch}") }
+    done
+    to_delete_safe=("${keep_safe[@]}")
+    to_delete_squashed=("${keep_squashed[@]}")
+  fi
+
+  (( ${#to_delete_safe[@]} + ${#to_delete_squashed[@]} + ${#pruned_worktrees[@]} == 0 )) && return 0
+
+  (( REC_IDX++ ))
+  REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
+  rec_line REPO "${repo}" "${default_branch}"
+
+  say ""
+  say "${C_CYAN}${repo}${C_RESET} ${C_DIM}(default: ${default_branch})${C_RESET}"
+  (( REPOS_TOUCHED++ ))
+
+  local b line sha reason
+  for line in "${pruned_worktrees[@]}"; do
+    (( FOUND_WORKTREES++ ))
+    if [[ "${MODE}" == report ]]; then
+      say "  ${C_YELLOW}stale worktree${C_RESET} ${C_DIM}${line}${C_RESET}"
+      rec_line WT "${line}" reported
+    else
+      say "  ${C_GREEN}pruned worktree${C_RESET} ${C_DIM}${line}${C_RESET}"
+      rec_line WT "${line}" pruned
+      (( GONE_WORKTREES++ ))
+    fi
+  done
+
+  # confirm <prompt> — y delete, n keep, a rest of this repo, q stop the run.
+  # `read -k 1`, not `read -q`: binding the answer to a variable is what lets
+  # anything other than y/n be handled instead of collapsing into "not yes".
+  confirm() {
+    local _p="$1" _r=""
+    [[ "${MODE}" == delete ]] && return 0
+    [[ "${MODE}" == report ]] && return 1
+    (( REPO_ALL )) && return 0
+    read -k 1 "_r?  ${_p} [y/N/a/q] "
+    print -r -- ""
+    case "${_r}" in
+      [yY]) return 0 ;;
+      [aA]) REPO_ALL=1; return 0 ;;
+      [qQ]) QUIT_ALL=1; return 1 ;;
+      *)    return 1 ;;
+    esac
+  }
+
+  # delete_branch <branch> <flag> <why> — prints the SHA it removed, because
+  # that line is the whole undo procedure.
+  delete_branch() {
+    local _b="$1" _flag="$2" _why="$3" _sha
+    _sha="$(git -C "${repo}" rev-parse --short "refs/heads/${_b}" 2>/dev/null)"
+    if git -C "${repo}" branch "${_flag}" "${_b}" >/dev/null 2>&1; then
+      say "  ${C_GREEN}deleted${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} branch ${_b} ${_sha}${C_RESET}"
+      rec_line BRANCH "${_b}" "${_why}" "${_sha}" deleted
+      (( GONE_BRANCHES++ ))
+    else
+      # A refused delete is a failure, not a quiet no-op: the summary must not
+      # count this branch as handled either way.
+      print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b}"
+      rec_line BRANCH "${_b}" "${_why}" "${_sha}" failed
+      (( FAILED_BRANCHES++ ))
+    fi
+  }
+
+  for b in "${to_delete_safe[@]}"; do
+    (( QUIT_ALL )) && break
+    (( FOUND_BRANCHES++ ))
+    reason="merged into ${default_branch}"
+    if [[ "${MODE}" == report ]]; then
+      say "  ${C_YELLOW}stale${C_RESET} ${b} ${C_DIM}(${reason})${C_RESET}"
+      rec_line BRANCH "${b}" "${reason}" \
+        "$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)" reported
+      continue
+    fi
+    if confirm "delete ${b} (${reason})?"; then
+      # -D: ancestry vs origin/<default> is already proved above; -d re-judges
+      # against HEAD and refuses when the checkout is parked on an older branch.
+      delete_branch "${b}" -D "${reason}"
+    else
+      (( KEPT_BRANCHES++ ))
+      rec_line BRANCH "${b}" "${reason}" \
+        "$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)" kept
+      (( QUIT_ALL )) || say "  ${C_DIM}kept${C_RESET} ${b}"
+    fi
+  done
+
+  for b in "${to_delete_squashed[@]}"; do
+    (( QUIT_ALL )) && break
+    (( FOUND_BRANCHES++ ))
+    reason="MR merged, upstream pruned"
+    if [[ "${MODE}" == report ]]; then
+      say "  ${C_YELLOW}stale${C_RESET} ${b} ${C_DIM}(${reason})${C_RESET}"
+      rec_line BRANCH "${b}" "${reason}" \
+        "$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)" reported
+      continue
+    fi
+    # -D, not -d: the squashed commits are not ancestors, so -d refuses. The
+    # forge said this branch's MR merged and its remote is gone, which is the
+    # evidence -d cannot see.
+    if confirm "delete ${b} (${reason})?"; then
+      delete_branch "${b}" -D "${reason}"
+    else
+      (( KEPT_BRANCHES++ ))
+      rec_line BRANCH "${b}" "${reason}" \
+        "$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)" kept
+      (( QUIT_ALL )) || say "  ${C_DIM}kept${C_RESET} ${b}"
+    fi
+  done
+
+  return 0
+}
+
+# Sequential on purpose: this deletes, and interleaved output from parallel
+# workers is unreadable exactly when someone needs to audit what went.
+typeset -i rc=0 repo_rc=0
+for gitdir in "${GITDIRS[@]}"; do
+  (( QUIT_ALL )) && break
+  clean_repo "${gitdir:h}"
+  repo_rc=$?
+  if (( repo_rc == 2 )); then
+    rc=2
+    (( SKIPPED++ ))
+    (( REC_IDX++ ))
+    REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
+    rec_line SKIP "${gitdir:h}" "${LAST_SKIP}"
+  fi
+done
+
+# A named branch that matched nothing is the caller's mistake, and answering it
+# with a clean exit would let an agent believe it deleted something it did not.
+typeset -a ONLY_MISSED=()
+for only_branch in "${ONLY[@]}"; do
+  (( ${ONLY_MATCHED[(Ie)${only_branch}]} )) || ONLY_MISSED+=("${only_branch}")
+done
+if (( ${#ONLY_MISSED[@]} > 0 )); then
+  print -r -u2 -- "gitcleaner: --only named branches that are not candidates: ${(j:, :)ONLY_MISSED}"
+  print -r -u2 -- "  a branch is a candidate only when every guard clears it; run --json to see the list"
+  rc=2
+fi
+
+# render_json — the whole run as one document. Built with jq so a branch name
+# with a quote in it cannot produce something the caller has to repair.
+render_json() {
+  local rec
+  local -i idx=0
+  for rec in "${WORKDIR}"/rec.*(N); do
+    (( idx++ ))
+    jq -n \
+      --arg path "$(cut -f2 <<< "$(grep -m1 $'^REPO\t' "${rec}" 2>/dev/null || grep -m1 $'^SKIP\t' "${rec}")")" \
+      --arg default_branch "$(grep -m1 $'^REPO\t' "${rec}" 2>/dev/null | cut -f3)" \
+      --arg skipped "$(grep -m1 $'^SKIP\t' "${rec}" 2>/dev/null | cut -f3)" \
+      --argjson branches "$(grep $'^BRANCH\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({name: .[0], reason: .[1], sha: .[2], action: .[3]})')" \
+      --argjson worktrees "$(grep $'^WT\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({entry: .[0], action: .[1]})')" \
+      '{path: $path,
+        default_branch: (if $default_branch == "" then null else $default_branch end),
+        skipped: (if $skipped == "" then null else $skipped end),
+        branches: $branches, worktrees: $worktrees}' \
+      > "${WORKDIR}/json.$(printf '%04d' ${idx})"
+  done
+
+  # `< /dev/null`: with zero per-repo documents jq -s would read stdin instead,
+  # which at an interactive terminal is a hang until EOF.
+  jq -s \
+    --arg mode "${MODE}" \
+    --argjson scanned "${#GITDIRS[@]}" \
+    --argjson found_b "${FOUND_BRANCHES}" --argjson found_w "${FOUND_WORKTREES}" \
+    --argjson gone_b "${GONE_BRANCHES}" --argjson gone_w "${GONE_WORKTREES}" \
+    --argjson kept "${KEPT_BRANCHES}" --argjson failed "${FAILED_BRANCHES}" \
+    --argjson skipped "${SKIPPED}" \
+    --argjson only_missed "$(print -rn -- "${(F)ONLY_MISSED}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
+    '{ok: ($failed == 0 and $skipped == 0 and ($only_missed | length) == 0),
+      aborted: null,
+      mode: $mode, scanned: $scanned, repos: .,
+      found: {branches: $found_b, worktrees: $found_w},
+      removed: {branches: $gone_b, worktrees: $gone_w},
+      kept: $kept, failed: $failed, skipped: $skipped,
+      only_not_found: $only_missed}' \
+    "${WORKDIR}"/json.*(N) < /dev/null
+}
+
+if (( JSON )); then
+  render_json
+  (( rc == 2 )) && exit 2
+  (( FOUND_BRANCHES + FOUND_WORKTREES == 0 )) && exit 0
+  exit 1
+fi
+
+print -r -- ""
+# Gated on what was found, not on what went: keeping every candidate is still a
+# run that found work.
+if (( FOUND_BRANCHES + FOUND_WORKTREES == 0 )); then
+  # A skip leaves that repo unread, so "nothing to clean" cannot cover it.
+  if (( rc == 2 )); then
+    print -r -- "Nothing to clean in the repos that were readable; ${SKIPPED} skipped (see errors above)."
+    exit 2
+  fi
+  print -r -- "Nothing to clean in ${#GITDIRS[@]} repos."
+  exit 0
+fi
+
+if [[ "${MODE}" == report ]]; then
+  print -r -- "${FOUND_BRANCHES} branches and ${FOUND_WORKTREES} worktree entries are stale in ${REPOS_TOUCHED} repos."
+  if (( DRY_RUN )); then
+    print -r -- "Drop --dry-run to work through them one at a time."
+  else
+    print -r -- "No terminal to ask at — run this from a shell, or pass --yes."
+  fi
+else
+  print -r -- "Removed ${GONE_BRANCHES} of ${FOUND_BRANCHES} branches and ${GONE_WORKTREES} of ${FOUND_WORKTREES} worktree entries in ${REPOS_TOUCHED} repos."
+  (( KEPT_BRANCHES > 0 )) && print -r -- "${KEPT_BRANCHES} branches kept at your request."
+  (( QUIT_ALL )) && print -r -- "Stopped at your request; the rest were left alone."
+fi
+(( SKIPPED > 0 )) && print -r -- "${SKIPPED} repos skipped (see errors above)."
+# A refused delete leaves the tree other than the run reported, which is the
+# failure direction nothing downstream can detect.
+if (( FAILED_BRANCHES > 0 )); then
+  print -r -- "${FAILED_BRANCHES} branches could not be deleted (see errors above)."
+  rc=2
+fi
+(( rc == 2 )) && exit 2
+exit 1

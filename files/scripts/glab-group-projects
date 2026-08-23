@@ -1,0 +1,104 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# glab-group-projects — list every project in a GitLab group as NDJSON
+#
+# One project object per line, filtering left to the caller's jq. Archived and
+# deletion-scheduled projects are deliberately INCLUDED by default:
+# report-stale-repos consumes this same stream and selects exactly those, so
+# filtering them out here would silently empty its report. nix-clone-repos passes
+# --no-archived to drop archived ones server-side and keeps its jq for the
+# deletion-scheduled markers the flag does not cover.
+#
+# Usage:
+#   glab-group-projects --group <path> [--member] [--no-archived] [--per-page N]
+#
+
+GROUP=""
+MEMBER=0
+NO_ARCHIVED=0
+PER_PAGE=100
+
+while (( $# > 0 )); do
+  case $1 in
+    --group)
+      GROUP="$2"; shift ;;
+    --member)
+      MEMBER=1 ;;
+    --no-archived)
+      NO_ARCHIVED=1 ;;
+    --per-page)
+      PER_PAGE="$2"; shift ;;
+    --help|-h)
+      echo "Usage: glab-group-projects --group <path> [--member] [--no-archived] [--per-page N]"
+      echo "Emits one project JSON object per line, across all pages."
+      echo "  --no-archived  let GitLab drop archived projects (archived=false)"
+      exit 0 ;;
+    *)
+      echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z "${GROUP}" ]]; then
+  echo "Error: --group is required" >&2
+  exit 1
+fi
+# GitLab caps per_page at 100 and silently returns 100 for anything larger.
+if (( PER_PAGE < 1 || PER_PAGE > 100 )); then
+  echo "Error: --per-page must be between 1 and 100 (GitLab's maximum)" >&2
+  exit 1
+fi
+
+# `glab api` with `--paginate --output ndjson`: glab's own page walker and NDJSON
+# emitter, so there is no hand-rolled page loop to get wrong. A short-page
+# heuristic, a page cap and array-length probing only reimplement this, and each
+# one silently truncates a group when it gets the edge case wrong.
+#
+# The group path is a path segment, so every "/" in a subgroup path must be
+# percent-encoded.
+typeset GROUP_ENC="${GROUP//\//%2F}"
+typeset QUERY="groups/${GROUP_ENC}/projects?include_subgroups=true&per_page=${PER_PAGE}"
+# --member restricts to projects the caller belongs to, as `--member` did before.
+if (( MEMBER )); then
+  QUERY="${QUERY}&membership=true"
+fi
+# Opt-in: the default result set still contains archived projects
+# (report-stale-repos needs them).
+if (( NO_ARCHIVED )); then
+  QUERY="${QUERY}&archived=false"
+fi
+
+ERR_FILE="$(mktemp)"
+# A second mktemp, not "${ERR_FILE}.out": the trap cleans only what it names, so
+# the payload needed a manual `rm` at each exit — one per path, and one more for
+# every path added later. Naming both files here makes cleanup single-owner.
+# stderr stays a separate file from the payload: glab writes update notices
+# there, and merging them into the stream makes valid JSON unparsable.
+OUT_FILE="$(mktemp)"
+# INT/TERM as well as EXIT: the EXIT trap does not fire when the script is
+# signalled, and both files exist from the moment the redirection below opens
+# them, so a cancelled or timed-out run left both behind.
+trap 'rm -f "${ERR_FILE}" "${OUT_FILE}"' EXIT INT TERM
+
+if ! glab api --paginate --output ndjson "${QUERY}" > "${OUT_FILE}" 2>"${ERR_FILE}"; then
+  echo "Error: glab api groups/${GROUP}/projects failed: $(tr '\n' ' ' < "${ERR_FILE}")" >&2
+  exit 1
+fi
+
+typeset -i emitted=0
+emitted=$(grep -c . < "${OUT_FILE}")
+cat "${OUT_FILE}"
+
+# A CONFIGURED group that yields nothing is almost always a wrong path, a
+# permissions gap or a discovery fault — not an empty group — and the caller
+# cannot tell the two apart, because both look like empty stdout. That is exactly
+# how a subgroup-only group contributed zero repos with no error anywhere. Report
+# it on stderr, which clone-repos does not capture, so it reaches the operator;
+# still exit 0, because one unreachable group must not abort the whole clone. A
+# nonexistent group still fails hard above (404).
+if (( emitted == 0 )); then
+  echo "WARNING: ${GROUP} returned 0 projects — check the group path, your membership, and that the group is not empty." >&2
+fi

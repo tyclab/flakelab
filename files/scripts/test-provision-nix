@@ -1,0 +1,144 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+#
+# NixOS-WSL provisioning validator (Task 11). Modeled on files/scripts/test-provision
+# but drops the Ubuntu/Ansible machinery — NixOS bakes the user, packages, locale,
+# Docker and wsl.conf into the image, so there is no base-image systemd-patch,
+# user-creation, ansible-install, or SSH-agent re-run dance.
+#
+# Reused verbatim from test-provision (WSL-level, see known-issues.md):
+#   - wsl_clean(): strip UTF-16 null bytes from wsl.exe output
+#   - interop precheck before any lifecycle op
+#   - check()/check_contains() verification framework (no tee pipes)
+#
+# UNTESTED in the planning sandbox — run/refine from inside a WSL distro that has Nix.
+# Watch: login-shell PATH for Nix profile bins; exact package binary names; PID1 comm string.
+#
+# Usage: test-provision-nix [--tarball /path/to/nixos.wsl] [--keep]
+
+DISTRO_NAME="FlakeLabTest"
+KEEP=false
+TARBALL=""
+
+while (( $# > 0 )); do
+  case $1 in
+    --keep)    KEEP=true ;;
+    --tarball) TARBALL="$2"; shift ;;
+    --help|-h) print "Usage: test-provision-nix [--tarball nixos.wsl] [--keep]"; exit 0 ;;
+    *) print -P "%F{red}Unknown option: $1%f" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+# Repo root: set by the nix wrapper (from repoPath), because ${0:A:h:h:h} from a
+# flat store directory resolves to the store's parent - /nix - so the flake ref
+# and the expected-user lookup both pointed there. The fallback keeps the script
+# runnable straight from a checkout.
+_repo_root="${FLAKELAB_REPO_ROOT:-${0:A:h:h:h}}"
+# Expected user/locale (from the flake's user config; fall back to placeholders).
+_username="$(grep -oP 'username\s*=\s*"\K[^"]+' "${_repo_root}/nix/users/default.nix" 2>/dev/null || echo youruser)"
+_locale="$(grep -oP 'locale\s*=\s*"\K[^"]+' "${_repo_root}/nix/users/default.nix" 2>/dev/null || echo en_US.UTF-8)"
+_WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
+[[ -x ${_WSL_BIN} ]] || { print -P "%F{red}wsl.exe not found%f" >&2; exit 1; }
+
+# Interop must be healthy before any lifecycle op (known-issues.md). systemd-binfmt
+# names the entry WSLInterop-late (microsoft/WSL#13449), so both spellings count.
+[[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]] || {
+  print -P "%F{red}WSL interop broken — run 'wsl --shutdown' from a Windows terminal, then retry%f" >&2; exit 1; }
+
+wsl_clean() { ${_WSL_BIN} "$@" | tr -d '\0\r'; }
+_win() { local p="$1"; [[ "$p" == /mnt/[a-z]/* ]] && p="${(U)p[6]}:${p#/mnt/?}"; print -r -- "${p//\//\\}"; }
+
+_install_win="$(_win "${_repo_root}/files/.wsl-nix-test-instance")"
+
+# --- Build the tarball if one wasn't supplied ---
+if [[ -z "${TARBALL}" ]]; then
+  command -v nix >/dev/null || { print -P "%F{red}nix not found; pass --tarball%f" >&2; exit 1; }
+  print -P "%F{cyan}Building wslImage (sudo: tarballBuilder sets ownership)...%f"
+  ( cd "${_repo_root}" && sudo nix run ".#wslImage" >/dev/null )
+  TARBALL="${_repo_root}/nixos.wsl"
+fi
+_tarball_win="$(_win "${TARBALL}")"
+
+# --- (Re)import throwaway distro ---
+if wsl_clean --list --quiet 2>/dev/null | grep -qx "${DISTRO_NAME}"; then
+  ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
+fi
+print -P "%F{cyan}Importing ${DISTRO_NAME}...%f"
+_tmp=$(mktemp)
+${_WSL_BIN} --import "${DISTRO_NAME}" "${_install_win}" "${_tarball_win}" --version 2 >"$_tmp" 2>&1
+tr -d '\0\r' <"$_tmp"; rm -f "$_tmp"
+
+# --- Verification framework (ported from test-provision) ---
+_pass=0; _fail=0
+check() {
+  local d="$1"; shift; local o
+  if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -- "$@" 2>&1); then
+    print -P "  %F{green}[PASS]%f ${d}"; (( ++_pass ))
+  else
+    print -P "  %F{red}[FAIL]%f ${d}"; [[ -n "$o" ]] && print "         ${o}" | head -3; (( ++_fail ))
+  fi
+}
+check_contains() {
+  local d="$1" e="$2"; shift 2; local o
+  if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -- "$@" 2>&1) && [[ "$o" == *"$e"* ]]; then
+    print -P "  %F{green}[PASS]%f ${d}"; (( ++_pass ))
+  else
+    print -P "  %F{red}[FAIL]%f ${d} (want '${e}', got '${o}')"; (( ++_fail ))
+  fi
+}
+
+print -P "%F{cyan}=== Verification ===%f"
+# The migration's core premise: systemd IS PID 1 now (inverts the Ubuntu test),
+# and WSL interop survives it (WSL 2.5.7+ binfmt generator).
+check_contains "PID 1 is systemd"               "systemd"     zsh -lc "ps -p 1 -o comm="
+check "WSLInterop handler present under systemd" test -e /proc/sys/fs/binfmt_misc/WSLInterop
+check "powershell.exe interop works"             zsh -lc "powershell.exe -NoProfile -Command exit"
+check_contains "default user is ${_username}"    "${_username}" zsh -lc "whoami"
+check_contains "locale ${_locale}"               "${_locale}"   zsh -lc "locale | head -1"
+# Docker as a managed service (no manual start script)
+check "docker service active"   zsh -lc "systemctl is-active docker"
+check "user in docker group"    zsh -lc "id -nG | tr ' ' '\n' | grep -qx docker"
+# Toolchain resolves via the Nix profile PATH
+for t in kubectl helm k9s kubectx kubens yq jq go node bun uv glab gh gitleaks tofu trivy tflint bw gitchecker; do
+  check "$t on PATH" zsh -lc "command -v $t >/dev/null"
+done
+# The CLI itself, and one deprecation shim. Without these a broken dispatch
+# (a router entry with no matching wrapper in nix/cli.nix's symlinkJoin) would
+# ship green through this e2e: every check above resolves a command the CLI
+# does not own.
+check "flakelab on PATH"           zsh -lc "command -v flakelab >/dev/null"
+check "flakelab --help lists subcommands" zsh -lc "flakelab --help | grep -q '^  update '"
+check "flakelab lists all 14 subcommands" zsh -lc "[ \"\$(flakelab --help | sed -n 's/^  \\([a-z-]*\\)  .*/\\1/p' | wc -l)\" -eq 14 ]"
+check "an unknown subcommand exits 2"     zsh -lc "flakelab definitely-not-a-command >/dev/null 2>&1; [ \$? -eq 2 ]"
+check "the nix-update shim still answers" zsh -lc "nix-update --help >/dev/null 2>&1"
+# Home Manager activation is a oneshot service at first boot — wait for its
+# artifacts before checking files it provisions (~/.zshrc is HM-managed).
+check "home-manager activation completed" zsh -lc 'for i in {1..60}; do [ -e ~/.zshrc ] && exit 0; sleep 2; done; exit 1'
+# Extras beyond the base system
+# claude is installed by activation (network download) — allow it time to land.
+check "claude installed via activation"       zsh -lc 'for i in {1..90}; do [ -x ~/.local/bin/claude ] && exit 0; sleep 2; done; exit 1'
+# `alias (-- )?`: Home Manager emits programs.zsh.shellAliases as
+# `alias -- kk='…'`, while a hand-written `alias kk=…` in initContent has no
+# `--`. These aliases moved from initContent into shellAliases, so the pattern
+# has to accept both spellings or the move alone turns the check red.
+check "kiro aliases in .zshrc"                zsh -lc 'grep -qE "alias (-- )?kk=" ~/.zshrc'
+check "gitcheck aliases in .zshrc"            zsh -lc 'grep -qE "alias (-- )?gitcheck=" ~/.zshrc'
+check "pinned npm wins over bundled npm 11"   zsh -lc '[ "$(npm --version | cut -d. -f1)" -ge 12 ]'
+
+print ""
+_total=$(( _pass + _fail ))
+(( _fail == 0 )) && print -P "%F{green}All ${_total} checks passed.%f" \
+                 || print -P "%F{red}${_fail}/${_total} checks failed.%f"
+
+# --- Cleanup ---
+if ${KEEP}; then
+  print -P "%F{yellow}Retained ${DISTRO_NAME} (--keep). Remove: wsl --unregister ${DISTRO_NAME}%f"
+else
+  ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
+  # Unregistering the (systemd) test distro wipes WSLInterop fleet-wide
+  # (known-issues.md) — there is no in-place heal.
+  [[ -e /proc/sys/fs/binfmt_misc/WSLInterop ]] || print -P \
+    "%F{yellow}⚠ WSLInterop wiped by test-distro shutdown — run 'wsl --shutdown' from a Windows terminal before the next interop-dependent command.%f"
+fi
+(( _fail == 0 ))

@@ -1,0 +1,35 @@
+*.log
+
+# WSL base image cache and test instance (see test-provision)
+files/.wsl-*
+
+# Never commit private keys (defensive; the ssh keys dir is also scoped below)
+id_ed25519
+id_rsa
+*.pem
+
+# Backup data — do not commit
+files/config/instances/
+
+# Rollback snapshots written by nix-backup: tarballs of the whole payload, so
+# they hold secrets.env, SSH private keys and kubeconfigs. Plus its lock.
+files/config/snapshots/
+files/config/.backup.lock
+
+# Shared backup data
+files/config/shared/gitconfig/
+files/config/shared/shell/
+# Cleartext tokens copied here by `nix-backup` (see files/config/secrets.env.example)
+files/config/shared/secrets/
+# A filled-in provisioning config carries the same tokens in cleartext; only the
+# example (placeholders) is tracked. `provision -Config` reads it from wherever it
+# lives, so ignoring it here costs nothing.
+files/config/user_data.yaml
+files/config/shared/ssh/*
+!files/config/shared/ssh/keys/
+files/config/shared/ssh/keys/*
+!files/config/shared/ssh/keys/.gitkeep
+
+# Claude Code agent scratch (local settings, agent worktrees) — never commit
+.claude/
+nixos.wsl

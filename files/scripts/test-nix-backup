@@ -1,0 +1,1826 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for nix-backup: the real script against a throwaway backup root,
+# home and state root (FLAKELAB_BACKUP_ROOT / FLAKELAB_HOME_DIR / FLAKELAB_STATE_ROOT).
+#
+# Usage: files/scripts/test-nix-backup
+
+SCRIPT_DIR="${0:A:h}"
+BACKUP="${SCRIPT_DIR}/nix-backup"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the value BEFORE the increment,
+# so the first call would return 1 and an `&& ok || bad` chain run both arms.
+ok()   { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()  { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check() { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+exists()   { [[ -e "$2" ]] && ok "$1" || bad "$1" }
+is_file()  { [[ -f "$2" ]] && ok "$1" || bad "$1" }
+is_link()  { [[ -L "$2" ]] && ok "$1" || bad "$1" }
+absent()   { [[ ! -e "$2" ]] && ok "$1" || bad "$1" }
+same()     { cmp -s "$2" "$3" && ok "$1" || bad "$1" }
+# <label> <dir> <glob>: the glob matches something / nothing.
+has_match() { local -a m=("$2"/${~3}(N)); (( ${#m} > 0 )) && ok "$1" || bad "$1" }
+no_match()  { local -a m=("$2"/${~3}(N)); (( ${#m} == 0 )) && ok "$1" || bad "$1" }
+no_scratch() { [[ -z "$(cd "$2" && find . -name '*.flakelab-tmp.*')" ]] && ok "$1" || bad "$1" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# ---------------------------------------------------------------------------
+# The secret gate's scanner, faked
+# ---------------------------------------------------------------------------
+# A `gitleaks` of our own, first on PATH for EVERY scenario, so no assertion
+# depends on a third party's regexes:
+#   FAKE_GITLEAKS_SECRET=<literal>  every line containing it is one finding (rule fake-rule)
+#   FAKE_GITLEAKS_SECRET2=<literal> a SECOND literal, found the same way
+#   FAKE_GITLEAKS_SPAN=<literal>    one finding per adjacent line PAIR whose join
+#                                   contains it — the reported Secret is then the
+#                                   flattened form, literal nowhere in the file
+#   FAKE_GITLEAKS_BROKEN=1          exit 2 and write nothing
+#   FAKE_GITLEAKS_RELPATH=1         report basenames instead of the staged paths
+if ! command -v jq > /dev/null 2>&1; then
+  print -r -u2 -- "  FAIL jq is required to run this suite"
+  exit 1
+fi
+
+mkdir -p "${BASE}/bin"
+cat > "${BASE}/bin/gitleaks" <<'FAKE_GITLEAKS'
+#!/usr/bin/env zsh
+# Test double for gitleaks — see test-nix-backup.
+set -uo pipefail
+target=""
+report=""
+while (( $# > 0 )); do
+  case "$1" in
+    --report-path|-r)   report="${2:-}"; shift ;;
+    --report-format|-f) shift ;;
+    --config|-c)        shift ;;
+    --log-level|-l)     shift ;;
+    --exit-code)        shift ;;
+    dir|file|directory) ;;
+    -*)                 ;;
+    *)                  target="$1" ;;
+  esac
+  shift
+done
+if [[ "${FAKE_GITLEAKS_BROKEN:-}" == 1 ]]; then
+  print -r -u2 -- "fake gitleaks: scanner failed"
+  exit 2
+fi
+[[ -n "${report}" ]] || report=/dev/stdout
+typeset -a needles=()
+[[ -n "${FAKE_GITLEAKS_SECRET:-}" ]]  && needles+=("${FAKE_GITLEAKS_SECRET}")
+[[ -n "${FAKE_GITLEAKS_SECRET2:-}" ]] && needles+=("${FAKE_GITLEAKS_SECRET2}")
+span="${FAKE_GITLEAKS_SPAN:-}"
+typeset -a findings=()
+if (( ${#needles} > 0 )) && [[ -n "${target}" ]]; then
+  # (D): the merged history is staged under a dotted name.
+  for f in ${target}/**/*(ND.); do
+    n=0
+    # `|| [[ -n ... ]]`: a last line without a newline is what a live transcript looks like.
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      n=$(( n + 1 ))
+      for s in "${needles[@]}"; do
+        [[ "${line}" == *"${s}"* ]] || continue
+        reported="${f}"
+        [[ "${FAKE_GITLEAKS_RELPATH:-}" == 1 ]] && reported="${f:t}"
+        findings+=("$(jq -c -n --arg f "${reported}" --argjson n "${n}" \
+          --arg m "${line}" --arg s "${s}" \
+          '{Description:"fake secret",StartLine:$n,EndLine:$n,File:$f,RuleID:"fake-rule",Match:$m,Secret:$s}')")
+      done
+    done < "${f}"
+  done
+fi
+# A match the real scanner reports across a line break: Match and Secret are
+# flattened with gsub("[\n\r]"; " "), so neither is literal in the file.
+if [[ -n "${span}" && -n "${target}" ]]; then
+  for f in ${target}/**/*(ND.); do
+    typeset -a fl=("${(@f)$(< "${f}")}")
+    for (( i = 1; i < ${#fl}; i++ )); do
+      pair="${fl[i]} ${fl[i+1]}"
+      pair="${pair//[$'\r']/ }"
+      [[ "${pair}" == *"${span}"* ]] || continue
+      reported="${f}"
+      [[ "${FAKE_GITLEAKS_RELPATH:-}" == 1 ]] && reported="${f:t}"
+      findings+=("$(jq -c -n --arg f "${reported}" --argjson a "${i}" --argjson b "$(( i + 1 ))" \
+        --arg m "${pair}" --arg s "${span}" \
+        '{Description:"fake secret",StartLine:$a,EndLine:$b,File:$f,RuleID:"fake-rule",Match:$m,Secret:$s}')")
+    done
+  done
+fi
+{
+  print -rn -- "["
+  first=1
+  for j in "${findings[@]}"; do
+    (( first )) || print -rn -- ","
+    print -rn -- "${j}"
+    first=0
+  done
+  print -rn -- "]"
+} > "${report}"
+exit 0
+FAKE_GITLEAKS
+chmod +x "${BASE}/bin/gitleaks"
+
+# Per-scenario knobs, reset by fixture: STATE/TRANSCRIPTS feed FLAKELAB_STATE_*,
+# FAKE_* steer the scanner, ANSWERS feeds FLAKELAB_GATE_ANSWERS, NO_GITLEAKS
+# runs on a PATH without any gitleaks.
+STATE=""
+TRANSCRIPTS=""
+FAKE_SECRET=""
+FAKE_SECRET2=""
+FAKE_SPAN=""
+FAKE_BROKEN=""
+FAKE_RELPATH=""
+ANSWERS=""
+NO_GITLEAKS=""
+
+# A PATH on which `gitleaks` cannot be resolved while everything else still can:
+# every directory carrying one is replaced by a shadow of symlinks to its other entries.
+NOGL_BIN="${BASE}/no-gitleaks"
+nogl_path() {
+  local -a parts=()
+  local d f
+  mkdir -p "${NOGL_BIN}"
+  for d in ${(s.:.)PATH}; do
+    if [[ -x "${d}/gitleaks" ]]; then
+      for f in "${d}"/*(N); do
+        [[ "${f:t}" == gitleaks ]] && continue
+        [[ -e "${NOGL_BIN}/${f:t}" ]] || ln -s "${f}" "${NOGL_BIN}/${f:t}" 2> /dev/null
+      done
+      continue
+    fi
+    parts+=("${d}")
+  done
+  print -r -- "${NOGL_BIN}:${(j.:.)parts}"
+}
+
+# fixture <name>: a fresh backup root + home pair. FIX_STATE is NOT created —
+# a scenario that wants it creates it, one that wants its parent missing does not.
+fixture() {
+  local name="$1"
+  FIX_ROOT="${BASE}/${name}/config"
+  FIX_HOME="${BASE}/${name}/home"
+  FIX_STATE="${BASE}/${name}/state"
+  FIX_SHELL="${FIX_ROOT}/instances/TestDistro/shell"
+  FIX_MERGED="${FIX_ROOT}/shared/shell/.zsh_history_merged"
+  FIX_HELD="${FIX_HOME}/.local/state/flakelab/state-gate/held.jsonl"
+  FIX_DECISIONS="${FIX_STATE}/.flakelab-state-gate/decisions.jsonl"
+  STATE=""
+  TRANSCRIPTS=""
+  FAKE_SECRET=""
+  FAKE_SECRET2=""
+  FAKE_SPAN=""
+  FAKE_BROKEN=""
+  FAKE_RELPATH=""
+  ANSWERS=""
+  NO_GITLEAKS=""
+  rm -rf "${BASE}/${name}"
+  mkdir -p "${FIX_SHELL}" "${FIX_ROOT}/shared/shell" "${FIX_HOME}"
+}
+# ... with the state root created and selected.
+state_fixture() {
+  fixture "$1"
+  mkdir -p "${FIX_STATE}"
+  STATE="${FIX_STATE}"
+}
+# ... plus one memory directory on each side (MEM_STATE / MEM_HOME).
+memory_fixture() {
+  state_fixture "$1"
+  MEM_STATE="${FIX_STATE}/claude/projects/some-slug/memory"
+  MEM_HOME="${FIX_HOME}/.claude/projects/some-slug/memory"
+  mkdir -p "${MEM_STATE}" "${MEM_HOME}"
+}
+# ... plus transcripts on, one project slug in the home (SLUG_HOME) and its
+# state-root twin named but not created (SLUG_STATE).
+transcript_fixture() {
+  state_fixture "$1"
+  SLUG_HOME="${FIX_HOME}/.claude/projects/some-slug"
+  SLUG_STATE="${FIX_STATE}/claude/projects/some-slug"
+  mkdir -p "${SLUG_HOME}"
+  TRANSCRIPTS=1
+}
+
+# run_backup / run_restore: the real script, sandboxed; set OUT and RC. stdin is
+# /dev/null so prompts are reached only through the seams, under a terminal or not.
+typeset -i RC=0
+OUT=""
+run_backup() {
+  local run_path="${BASE}/bin:${PATH}"
+  [[ -n "${NO_GITLEAKS}" ]] && run_path="$(nogl_path)"
+  OUT="$(FLAKELAB_BACKUP_ROOT="${FIX_ROOT}" FLAKELAB_HOME_DIR="${FIX_HOME}" \
+    FLAKELAB_STATE_ROOT="${STATE}" FLAKELAB_STATE_TRANSCRIPTS="${TRANSCRIPTS}" \
+    PATH="${run_path}" \
+    FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}" \
+    FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
+    FAKE_GITLEAKS_RELPATH="${FAKE_RELPATH}" \
+    FLAKELAB_GATE_ANSWERS="${ANSWERS}" \
+    WSL_DISTRO_NAME=TestDistro "${BACKUP}" "$@" < /dev/null 2>&1)"
+  RC=$?
+}
+run_restore() { run_backup --restore "$@" }
+
+# A history record as zsh writes it: `: <epoch>:<elapsed>;<command>`.
+rec() { print -r -- ": $1:$2;$3" }
+
+# Lines in the held list, 0 when it does not exist yet.
+grep_c_held() {
+  [[ -f "${FIX_HELD}" ]] || { print -r -- 0; return 0 }
+  grep -c . "${FIX_HELD}"
+  return 0
+}
+
+# The identity the script computes for a fake-rule finding: rule:sha256(secret).
+fingerprint() { print -r -- "fake-rule:$(print -rn -- "$1" | sha256sum | cut -d' ' -f1)" }
+
+# A live history holding one secret record and one clean one, and the scanner set to find it.
+secret_history() {
+  FAKE_SECRET="hunter2-secret"
+  {
+    rec 1000 0 "export TOKEN=hunter2-secret"
+    rec 2000 0 "ls"
+  } > "${FIX_HOME}/.zsh_history"
+}
+# A live transcript (LIVE) holding a secret LONGER than `[REDACTED:fake-rule]`,
+# so redacting shrinks the synced copy and grow-only cannot pass by accident.
+secret_transcript() {
+  FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+  LIVE="${SLUG_HOME}/abc.jsonl"
+  rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+  print -r -- '{"type":"user","text":"token hunter2-secret-and-a-good-deal-more here"}' > "${LIVE}"
+}
+# The other machine ruled <decision> on <secret>; only the decision travelled.
+foreign_decision() {
+  mkdir -p "${FIX_DECISIONS:h}"
+  jq -c -n --arg f "$(fingerprint "$2")" --arg d "$1" \
+    '{fingerprint:$f,decision:$d,epoch:2,host:"other-box"}' > "${FIX_DECISIONS}"
+}
+
+print -r -- "test-nix-backup"
+
+print -r -- "restore merges instead of overwriting"
+fixture additive
+rec 1000 0 "from-the-backup" > "${FIX_MERGED}"
+rec 2000 0 "typed-since-the-backup" > "${FIX_HOME}/.zsh_history"
+
+run_restore
+out="${OUT}"
+live="$(< "${FIX_HOME}/.zsh_history")"
+contains "keeps the command typed since the last backup" "${live}" "typed-since-the-backup"
+contains "brings in the command from the backup"         "${live}" "from-the-backup"
+check    "restore exits clean"                           "${RC}"   "0"
+contains "says the history was merged, not copied"       "${out}"  "merged with existing"
+
+# The slow command gets the EARLIER timestamp and comes second: read as its own
+# record it sorts to the front, read as a continuation line it stays welded behind.
+print -r -- "non-zero elapsed times stay their own records"
+fixture elapsed
+{
+  rec 3000 0  "later-quick-command"
+  rec 1000 42 "earlier-slow-command"
+} > "${FIX_MERGED}"
+: > "${FIX_HOME}/.zsh_history"
+
+run_restore
+live="$(< "${FIX_HOME}/.zsh_history")"
+contains "keeps the slow command's own header" "${live}" ": 1000:42;earlier-slow-command"
+check    "and sorts it by its own timestamp"   "${${(f)live}[1]}" ": 1000:42;earlier-slow-command"
+
+print -r -- "multi-line commands survive"
+fixture multiline
+{
+  rec 1000 0 "first"
+  rec 2000 0 'for f in *; do\'
+  print -r -- '  echo "$f"\'
+  print -r -- 'done'
+  rec 3000 0 "last"
+} > "${FIX_MERGED}"
+: > "${FIX_HOME}/.zsh_history"
+
+run_restore
+live="$(< "${FIX_HOME}/.zsh_history")"
+contains "the body stays under its header" "${live}" ': 2000:0;for f in *; do\
+  echo "$f"\
+done'
+
+print -r -- "orphaned continuation lines are dropped"
+fixture orphans
+{
+  print -r -- "orphan-body-with-no-header"
+  rec 1000 0 "real-command"
+} > "${FIX_MERGED}"
+: > "${FIX_HOME}/.zsh_history"
+
+run_restore
+live="$(< "${FIX_HOME}/.zsh_history")"
+contains "the real command survives"      "${live}" "real-command"
+excludes "the orphaned body is not kept"  "${live}" "orphan-body-with-no-header"
+
+print -r -- "a second restore changes nothing"
+fixture stable
+{
+  rec 1000 0 "alpha"
+  rec 1000 0 "beta-same-timestamp"
+  rec 900  7 "earlier-but-slower"
+} > "${FIX_MERGED}"
+: > "${FIX_HOME}/.zsh_history"
+
+run_restore
+first="$(< "${FIX_HOME}/.zsh_history")"
+run_restore
+second="$(< "${FIX_HOME}/.zsh_history")"
+check "the second run reproduces the first byte for byte" "${second}" "${first}"
+contains "entries sharing a timestamp both survive" "${first}" "beta-same-timestamp"
+
+print -r -- "the restored history is 0600"
+check "mode" "$(stat -c '%a' "${FIX_HOME}/.zsh_history")" "600"
+
+print -r -- "--dry-run leaves the home file alone"
+fixture dryrun
+rec 1000 0 "from-the-backup" > "${FIX_MERGED}"
+rec 2000 0 "live-only" > "${FIX_HOME}/.zsh_history"
+before="$(< "${FIX_HOME}/.zsh_history")"
+run_restore --dry-run
+out="${OUT}"
+check    "the home file is untouched" "$(< "${FIX_HOME}/.zsh_history")" "${before}"
+contains "it says what it would do"   "${out}" "Would merge"
+
+print -r -- "backup merges the instance history into the shared payload"
+fixture backup
+rec 1000 0 "already-in-the-payload" > "${FIX_MERGED}"
+rec 2000 0 "new-on-this-machine"    > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+merged="$(< "${FIX_MERGED}")"
+contains "the older payload entry survives" "${merged}" "already-in-the-payload"
+contains "the new entry is folded in"       "${merged}" "new-on-this-machine"
+
+print -r -- "restored kubeconfigs come back with credential modes"
+fixture kube
+mkdir -p "${FIX_ROOT}/instances/TestDistro/kube"
+print -r -- "apiVersion: v1"  > "${FIX_ROOT}/instances/TestDistro/kube/config"
+print -r -- "apiVersion: v1"  > "${FIX_ROOT}/instances/TestDistro/kube/kubeconfig_prod"
+print -r -- "-----BEGIN-----" > "${FIX_ROOT}/instances/TestDistro/kube/cert-prod.pem"
+
+run_restore
+check "the run is clean"          "${RC}" "0"
+check "~/.kube is 700"            "$(stat -c '%a' "${FIX_HOME}/.kube")"                 "700"
+check "config is 600"             "$(stat -c '%a' "${FIX_HOME}/.kube/config")"          "600"
+check "the extra kubeconfig is 600" "$(stat -c '%a' "${FIX_HOME}/.kube/kubeconfig_prod")" "600"
+check "the client cert is 600"    "$(stat -c '%a' "${FIX_HOME}/.kube/cert-prod.pem")"   "600"
+
+print -r -- "--dry-run does not create ~/.kube"
+fixture kubedry
+mkdir -p "${FIX_ROOT}/instances/TestDistro/kube"
+print -r -- "apiVersion: v1" > "${FIX_ROOT}/instances/TestDistro/kube/config"
+
+run_restore --dry-run
+absent "no ~/.kube was created" "${FIX_HOME}/.kube"
+
+print -r -- "a restore with scripts under ~/.claude reaches its summary"
+fixture claude
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude" "${FIX_HOME}/.claude"
+print -r -- '{}' > "${FIX_ROOT}/instances/TestDistro/claude/settings.json"
+print -r -- '#!/usr/bin/env bash' > "${FIX_HOME}/.claude/hook.sh"
+chmod 644 "${FIX_HOME}/.claude/hook.sh"
+
+run_restore
+out="${OUT}"
+contains "the summary is printed"        "${out}" "Restore complete"
+check    "and the exit status is clean"  "${RC}"  "0"
+check    "the hook came back executable" "$(stat -c '%a' "${FIX_HOME}/.claude/hook.sh")" "755"
+
+# settings.local.json, not settings.json: the latter is activation-owned and keeps local without failing.
+print -r -- "an unattended restore that keeps a differing file fails"
+fixture notty
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude" "${FIX_HOME}/.claude"
+print -r -- '{"from":"backup"}' > "${FIX_ROOT}/instances/TestDistro/claude/settings.local.json"
+print -r -- '{"from":"home"}'   > "${FIX_HOME}/.claude/settings.local.json"
+
+run_restore
+check    "the run reports failure"           "${RC}"  "1"
+contains "and says nobody could be asked"    "${OUT}" "no TTY to confirm"
+check    "the existing file is kept, not clobbered" \
+  "$(< "${FIX_HOME}/.claude/settings.local.json")" '{"from":"home"}'
+
+run_restore --force
+check    "--force takes the incoming copy"   "${RC}"  "0"
+check    "and the home file is the backup's" \
+  "$(< "${FIX_HOME}/.claude/settings.local.json")" '{"from":"backup"}'
+
+print -r -- "a tree containing a symlink restores and verifies"
+fixture symlink
+mkdir -p "${FIX_ROOT}/instances/TestDistro/k9s/config"
+print -r -- "skin: dracula" > "${FIX_ROOT}/instances/TestDistro/k9s/config/config.yaml"
+ln -sf config.yaml "${FIX_ROOT}/instances/TestDistro/k9s/config/alias.yaml"
+
+run_restore
+check    "the restore exits clean"         "${RC}"  "0"
+excludes "nothing is reported missing"     "${OUT}" "Verify missing"
+excludes "and nothing mismatched"          "${OUT}" "Verify mismatch"
+is_link  "the symlink arrived as a symlink" "${FIX_HOME}/.config/k9s/alias.yaml"
+
+print -r -- "a restore never deletes local files the backup lacks"
+fixture additive-dirs
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory" \
+         "${FIX_HOME}/.claude/projects/some-slug/memory"
+print -r -- "local only" > "${FIX_HOME}/.claude/projects/some-slug/memory/local.md"
+
+run_restore
+is_file "the local file survives an empty source directory" "${FIX_HOME}/.claude/projects/some-slug/memory/local.md"
+check "the restore still exits clean" "${RC}" "0"
+
+# CLAUDE.md, not settings.json: the latter is activation-owned and never reaches the conflict branch.
+print -r -- "a conflicting file without a TTY"
+fixture conflicts
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude" "${FIX_HOME}/.claude"
+print -r -- "from the backup" > "${FIX_ROOT}/instances/TestDistro/claude/CLAUDE.md"
+print -r -- "rewritten here"  > "${FIX_HOME}/.claude/CLAUDE.md"
+
+run_restore
+check    "fails the run by default"        "${RC}"  "1"
+contains "and says why"                    "${OUT}" "no TTY to confirm"
+
+run_restore --skip-conflicts
+check    "exits clean with --skip-conflicts"    "${RC}"  "0"
+contains "warns that it kept the local copy"    "${OUT}" "--skip-conflicts"
+contains "and lists it in the summary"          "${OUT}" "Kept 1 existing file"
+live="$(< "${FIX_HOME}/.claude/CLAUDE.md")"
+contains "the local copy is the one still there" "${live}" "rewritten here"
+contains "and the kept list is written for the caller" \
+  "$(< "${FIX_ROOT}/.last-restore-kept")" ".claude/CLAUDE.md"
+
+print -r -- "an activation-owned file keeps the local copy on its own"
+fixture activation-owned
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/plugins" "${FIX_HOME}/.claude/plugins"
+print -r -- '{"from":"the other box"}' > "${FIX_ROOT}/instances/TestDistro/claude/plugins/installed_plugins.json"
+print -r -- '{"from":"this box"}'      > "${FIX_HOME}/.claude/plugins/installed_plugins.json"
+
+run_restore
+check    "the restore exits clean without --skip-conflicts" "${RC}"  "0"
+contains "and says it kept the local copy"                  "${OUT}" "keeping local"
+live="$(< "${FIX_HOME}/.claude/plugins/installed_plugins.json")"
+contains "this box's list is untouched" "${live}" "this box"
+excludes "it is not counted as a skipped conflict" \
+  "$(< "${FIX_ROOT}/.last-restore-kept")" "installed_plugins.json"
+
+run_restore --force
+check "--force still overrides activation ownership" \
+  "$(< "${FIX_HOME}/.claude/plugins/installed_plugins.json")" '{"from":"the other box"}'
+
+# ===========================================================================
+# Shared state root (FLAKELAB_STATE_ROOT)
+# ===========================================================================
+
+print -r -- "with a state root, the merged history lives there and seeds from the payload"
+state_fixture state-history
+rec 1000 0 "from-the-old-payload-merge" > "${FIX_MERGED}"
+rec 2000 0 "typed-on-this-box"          > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+merged="$(< "${FIX_STATE}/shell/.zsh_history_merged")"
+check    "the run exits clean"                          "${RC}" "0"
+contains "the payload's old merge is folded in"         "${merged}" "from-the-old-payload-merge"
+contains "and so is what this box typed"                "${merged}" "typed-on-this-box"
+excludes "the payload's merged copy is not rewritten"   "$(< "${FIX_MERGED}")" "typed-on-this-box"
+contains "the summary names the state root"             "${OUT}" "State:    ${FIX_STATE}"
+
+# The payload's merge is an input, not a fallback: `--restore --from` repoints it
+# at another repo's payload, which a populated state root would otherwise never read.
+print -r -- "a restore with a state root reads the merged history from there"
+state_fixture state-restore
+mkdir -p "${FIX_STATE}/shell"
+rec 1000 0 "only-in-the-state-root"    > "${FIX_STATE}/shell/.zsh_history_merged"
+rec 1500 0 "also-in-the-payload-merge" > "${FIX_MERGED}"
+: > "${FIX_HOME}/.zsh_history"
+
+run_restore
+live="$(< "${FIX_HOME}/.zsh_history")"
+check    "the restore exits clean"                 "${RC}" "0"
+contains "the state-root entry arrives"            "${live}" "only-in-the-state-root"
+contains "the payload's merge is folded in too"    "${live}" "also-in-the-payload-merge"
+
+print -r -- "history conflict copies are merged and then removed"
+state_fixture state-conflict
+mkdir -p "${FIX_STATE}/shell"
+rec 1000 0 "in-the-merged-file"   > "${FIX_STATE}/shell/.zsh_history_merged"
+rec 1100 0 "only-in-the-conflict" > "${FIX_STATE}/shell/.zsh_history_merged_OTHERBOX_Jan-09-003137-2026_Conflict"
+rec 1200 0 "only-in-syncthing"    > "${FIX_STATE}/shell/.zsh_history_merged.sync-conflict-20260109-003137-ABCDEF"
+rec 2000 0 "typed-here"           > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+merged="$(< "${FIX_STATE}/shell/.zsh_history_merged")"
+check    "the run exits clean"                          "${RC}" "0"
+contains "the first conflict copy's command survives"   "${merged}" "only-in-the-conflict"
+contains "and the second's"                             "${merged}" "only-in-syncthing"
+contains "and the live entry"                           "${merged}" "typed-here"
+absent   "the folded conflict copy is removed" "${FIX_STATE}/shell/.zsh_history_merged_OTHERBOX_Jan-09-003137-2026_Conflict"
+absent   "and so is the other one"             "${FIX_STATE}/shell/.zsh_history_merged.sync-conflict-20260109-003137-ABCDEF"
+# "conflict cop" alone also matches "Could not remove folded history conflict copy".
+contains "the removal is logged" "${OUT}" "Removed folded history conflict copy"
+
+print -r -- "a restore also reads a history conflict copy, without removing it"
+state_fixture state-conflict-restore
+mkdir -p "${FIX_STATE}/shell"
+rec 1000 0 "in-the-merged-file"   > "${FIX_STATE}/shell/.zsh_history_merged"
+rec 1100 0 "only-in-the-conflict" > "${FIX_STATE}/shell/.zsh_history_merged_OTHERBOX_Jan-09-003137-2026_Conflict"
+: > "${FIX_HOME}/.zsh_history"
+
+run_restore
+live="$(< "${FIX_HOME}/.zsh_history")"
+check    "the restore exits clean"                 "${RC}" "0"
+contains "the conflict copy's command arrives"     "${live}" "only-in-the-conflict"
+exists   "the conflict copy is still there" "${FIX_STATE}/shell/.zsh_history_merged_OTHERBOX_Jan-09-003137-2026_Conflict"
+
+print -r -- "a state root inside a git checkout is refused"
+fixture state-git
+mkdir -p "${BASE}/state-git/checkout/.git" "${BASE}/state-git/checkout/state"
+STATE="${BASE}/state-git/checkout/state"
+rec 1000 0 "x" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run fails"                              "${RC}" "1"
+contains "and says why"                               "${OUT}" "git checkout"
+absent   "nothing was written there"                  "${STATE}/shell"
+
+print -r -- "a state root that is a symlink into a git checkout is refused too"
+fixture state-git-symlink
+mkdir -p "${BASE}/state-git-symlink/checkout/.git" \
+         "${BASE}/state-git-symlink/checkout/inner"
+ln -s "${BASE}/state-git-symlink/checkout/inner" "${BASE}/state-git-symlink/state"
+STATE="${BASE}/state-git-symlink/state"
+rec 1000 0 "x" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run fails"                              "${RC}" "1"
+contains "and says why"                               "${OUT}" "git checkout"
+absent   "nothing was written through the link"       "${BASE}/state-git-symlink/checkout/inner/shell"
+
+print -r -- "an unmounted state root is reported, and the state categories are skipped"
+fixture state-unmounted
+STATE="${BASE}/state-unmounted/no-such-parent/state"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run reports failure"                    "${RC}" "1"
+contains "and names the missing parent"               "${OUT}" "no-such-parent"
+is_file  "the per-instance copy still went to the backup root" "${FIX_SHELL}/.zsh_history"
+absent   "the merged history was NOT written to the backup root instead" "${FIX_MERGED}"
+
+print -r -- "an unusable state root with transcripts on writes none of them"
+fixture state-unmounted-transcripts
+mkdir -p "${FIX_HOME}/.claude/projects/some-slug"
+STATE="${BASE}/state-unmounted-transcripts/no-such-parent/state"
+TRANSCRIPTS=1
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user"}' > "${FIX_HOME}/.claude/projects/some-slug/abc.jsonl"
+
+run_backup --force
+check    "the run reports failure"                    "${RC}" "1"
+absent   "the state root was not created"             "${BASE}/state-unmounted-transcripts/no-such-parent"
+absent   "and no transcript leaked into the payload instead" "${FIX_ROOT}/instances/TestDistro/claude/projects"
+excludes "the summary does not claim the state root holds the sessions" \
+  "${OUT}" "session transcripts"
+
+print -r -- "--dry-run with a state root writes nothing"
+fixture state-dryrun
+STATE="${FIX_STATE}"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --dry-run
+check "the run exits clean"                   "${RC}" "0"
+absent "the state root was not created"       "${FIX_STATE}"
+
+print -r -- "--dry-run says so when the real run could not create the state root"
+fixture state-dryrun-unwritable
+mkdir -p "${BASE}/state-dryrun-unwritable/read-only"
+chmod 500 "${BASE}/state-dryrun-unwritable/read-only"
+STATE="${BASE}/state-dryrun-unwritable/read-only/state"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+if [[ -w "${BASE}/state-dryrun-unwritable/read-only" ]]; then
+  # Running as root, where mode 500 stops nothing.
+  print -r -- "  skip an unwritable parent cannot be simulated as this user"
+else
+  run_backup --dry-run
+  check    "the preview exits clean"                   "${RC}" "0"
+  contains "and says the real run would fail there"    "${OUT}" "a real run would fail to create"
+fi
+chmod 700 "${BASE}/state-dryrun-unwritable/read-only"
+
+print -r -- "with a state root, only shareable state goes there and nothing else"
+state_fixture state-split
+mkdir -p "${FIX_HOME}/.ssh" "${FIX_HOME}/.config/tyc" "${FIX_HOME}/.config/glab-cli" \
+         "${FIX_HOME}/.kube" "${FIX_HOME}/.claude/projects/some-slug/memory"
+print -r -- "PRIVATE KEY"              > "${FIX_HOME}/.ssh/id_ed25519"
+print -r -- "GITLAB_TOKEN='x'"         > "${FIX_HOME}/.config/tyc/secrets.env"
+print -r -- "token: y"                 > "${FIX_HOME}/.config/glab-cli/config.yml"
+print -r -- "apiVersion: v1"           > "${FIX_HOME}/.kube/config"
+print -r -- '{"env":{"A":"b"}}'        > "${FIX_HOME}/.claude/settings.json"
+print -r -- "- [x](x.md)"              > "${FIX_HOME}/.claude/projects/some-slug/memory/MEMORY.md"
+rec 1000 0 "typed-here"                > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+state_files="$(cd "${FIX_STATE}" && find . -type f | sort)"
+# The EXACT file list, so nothing else being there needs no per-file exclude.
+check "the state root holds exactly the history and the memory" "${state_files}" \
+"./claude/projects/some-slug/memory/MEMORY.md
+./shell/.zsh_history_merged"
+is_file "the seed is still in the backup root" "${FIX_ROOT}/shared/secrets/secrets.env"
+is_file "host-specific claude settings are still in the backup root" "${FIX_ROOT}/instances/TestDistro/claude/settings.json"
+absent  "memory is not ALSO written to the backup root" "${FIX_ROOT}/instances/TestDistro/claude/projects"
+
+print -r -- "a memory backup into the state root never deletes the other box's files"
+memory_fixture state-memory-additive
+print -r -- "theirs" > "${MEM_STATE}/other-box.md"
+print -r -- "ours"   > "${MEM_HOME}/this-box.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+is_file "the other box's memory file survives" "${MEM_STATE}/other-box.md"
+is_file "and this box's arrived"               "${MEM_STATE}/this-box.md"
+
+print -r -- "without a state root the payload memory copy is still a mirror"
+fixture payload-memory-mirror
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory" \
+         "${FIX_HOME}/.claude/projects/some-slug/memory"
+print -r -- "gone locally" > "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory/stale.md"
+print -r -- "current"      > "${FIX_HOME}/.claude/projects/some-slug/memory/live.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+absent "the stale payload file is purged" "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory/stale.md"
+
+print -r -- "a restore with a state root reads memory from there, minus artifacts"
+memory_fixture state-memory-restore
+mkdir -p "${MEM_STATE}/@eaDir" "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory"
+print -r -- "- [notes](notes.md)"  > "${MEM_STATE}/MEMORY.md"
+print -r -- "shared notes"         > "${MEM_STATE}/notes.md"
+print -r -- "conflict"             > "${MEM_STATE}/notes_OTHERBOX_Jan-09-003137-2026_Conflict.md"
+print -r -- "conflict"             > "${MEM_STATE}/notes.sync-conflict-20260109-003137-ABCDEF.md"
+print -r -- "junk"                 > "${MEM_STATE}/@eaDir/thumb"
+print -r -- "stale"                > "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory/stale.md"
+
+run_restore
+check    "the restore exits clean"                          "${RC}" "0"
+excludes "nothing is reported missing"                      "${OUT}" "Verify missing"
+is_file  "the shared memory file arrives"                   "${MEM_HOME}/notes.md"
+absent   "the NAS-style conflict copy does not"             "${MEM_HOME}/notes_OTHERBOX_Jan-09-003137-2026_Conflict.md"
+absent   "nor the Syncthing-style one"                      "${MEM_HOME}/notes.sync-conflict-20260109-003137-ABCDEF.md"
+absent   "nor the metadata directory"                       "${MEM_HOME}/@eaDir"
+absent   "and the payload's stale memory copy is not read"  "${MEM_HOME}/stale.md"
+
+print -r -- "the memory index restores as a union, local order first"
+memory_fixture state-memory-index
+{
+  print -r -- "- [shared](shared.md) — both have this"
+  print -r -- "- [theirs](theirs.md) — only the other box"
+} > "${MEM_STATE}/MEMORY.md"
+print -r -- "their topic" > "${MEM_STATE}/theirs.md"
+{
+  print -r -- "- [ours](ours.md) — only this box"
+  print -r -- "- [shared](shared.md) — both have this"
+} > "${MEM_HOME}/MEMORY.md"
+
+run_restore
+check "the restore exits clean" "${RC}" "0"
+check "the index is the union, local lines first, no duplicate" \
+  "$(< "${MEM_HOME}/MEMORY.md")" \
+"- [ours](ours.md) — only this box
+- [shared](shared.md) — both have this
+- [theirs](theirs.md) — only the other box"
+contains "and it says so" "${OUT}" "Merged memory index"
+is_file  "the other box's topic file arrived too" "${MEM_HOME}/theirs.md"
+
+run_restore
+check "the second restore exits clean" "${RC}" "0"
+check "a second restore reproduces the same index" \
+  "$(< "${MEM_HOME}/MEMORY.md")" \
+"- [ours](ours.md) — only this box
+- [shared](shared.md) — both have this
+- [theirs](theirs.md) — only the other box"
+
+print -r -- "an unusable state root skips the memory instead of falling back"
+fixture state-memory-unusable
+mkdir -p "${FIX_HOME}/.claude/projects/some-slug/memory"
+STATE="${BASE}/state-memory-unusable/no-such-parent/state"
+print -r -- "- [ours](ours.md)" > "${FIX_HOME}/.claude/projects/some-slug/memory/MEMORY.md"
+
+run_backup --force
+check    "the backup reports failure"                "${RC}" "1"
+contains "and says the memory was not backed up"     "${OUT}" \
+  "State root unavailable; Claude memory not backed up"
+absent   "no fallback copy in the backup root"       "${FIX_ROOT}/instances/TestDistro/claude/projects"
+absent   "and nothing in the unusable state root"    "${STATE}"
+
+# The payload still holds a memory copy from before the state root was set.
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory"
+print -r -- "stale" > "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory/stale.md"
+
+run_restore
+contains "the restore says the memory was not restored" "${OUT}" \
+  "State root unavailable; Claude memory not restored"
+contains "and the history warning names the way out"    "${OUT}" \
+  "FLAKELAB_STATE_ROOT unset"
+absent   "and the payload copy is not read instead"     "${FIX_HOME}/.claude/projects/some-slug/memory/stale.md"
+
+print -r -- "the skip is reported even with no payload claude directory"
+fixture state-memory-unusable-empty
+STATE="${BASE}/state-memory-unusable-empty/no-such-parent/state"
+
+run_restore
+check    "the restore reports the failure"                    "${RC}" "1"
+contains "the restore still says the memory was not restored" "${OUT}" \
+  "State root unavailable; Claude memory not restored"
+absent   "and wrote nothing under the home's projects directory" "${FIX_HOME}/.claude/projects"
+
+print -r -- "a backup unions the state root's memory index instead of replacing it"
+memory_fixture state-memory-backup-union
+print -r -- "- [theirs](theirs.md) — only the other box" > "${MEM_STATE}/MEMORY.md"
+print -r -- "- [ours](ours.md) — only this box"          > "${MEM_HOME}/MEMORY.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+check "the shared index holds both lines, the existing one first" \
+  "$(< "${MEM_STATE}/MEMORY.md")" \
+"- [theirs](theirs.md) — only the other box
+- [ours](ours.md) — only this box"
+
+run_backup --force
+check "the second backup exits clean" "${RC}" "0"
+check "and reproduces the index byte for byte" \
+  "$(< "${MEM_STATE}/MEMORY.md")" \
+"- [theirs](theirs.md) — only the other box
+- [ours](ours.md) — only this box"
+no_match   "and leaves no merge temp file behind"          "${MEM_STATE}" '*.tmp'
+no_scratch "and no scratch file anywhere in the state root" "${FIX_STATE}"
+
+print -r -- "a backup folds a memory index conflict copy in and then removes it"
+memory_fixture state-memory-index-conflict
+copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -r -- "- [theirs](theirs.md) — only the other box" > "${MEM_STATE}/MEMORY.md"
+print -r -- "- [raced](raced.md) — only the conflict copy" > "${copy}"
+print -r -- "- [ours](ours.md) — only this box"          > "${MEM_HOME}/MEMORY.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+check "the shared index holds all three sets, the existing one first" \
+  "$(< "${MEM_STATE}/MEMORY.md")" \
+"- [theirs](theirs.md) — only the other box
+- [raced](raced.md) — only the conflict copy
+- [ours](ours.md) — only this box"
+absent   "the folded copy is gone"       "${copy}"
+contains "and its removal is logged" "${OUT}" "Removed folded memory index conflict copy"
+
+print -r -- "a lone memory index conflict copy is promoted, not skipped"
+memory_fixture state-memory-index-conflict-only
+copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -r -- "- [raced](raced.md) — only the conflict copy" > "${copy}"
+print -r -- "a topic"                                      > "${MEM_HOME}/raced.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+check "the copy became the shared index" \
+  "$(< "${MEM_STATE}/MEMORY.md")" "- [raced](raced.md) — only the conflict copy"
+absent "and the copy is gone" "${copy}"
+
+print -r -- "a restore reads a memory index conflict copy without removing it"
+memory_fixture state-memory-index-conflict-restore
+copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -r -- "- [theirs](theirs.md) — only the other box" > "${MEM_STATE}/MEMORY.md"
+print -r -- "- [raced](raced.md) — only the conflict copy" > "${copy}"
+print -r -- "- [ours](ours.md) — only this box"          > "${MEM_HOME}/MEMORY.md"
+
+run_restore
+check "the restore exits clean" "${RC}" "0"
+check "the local index holds all three sets, local lines first" \
+  "$(< "${MEM_HOME}/MEMORY.md")" \
+"- [ours](ours.md) — only this box
+- [theirs](theirs.md) — only the other box
+- [raced](raced.md) — only the conflict copy"
+is_file "and the copy is still in the state root" "${copy}"
+absent  "but was not restored as a file"          "${MEM_HOME}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
+
+print -r -- "transcripts stay home unless asked for"
+state_fixture state-transcripts-off
+mkdir -p "${FIX_HOME}/.claude/projects/some-slug"
+print -r -- '{"type":"user"}' > "${FIX_HOME}/.claude/projects/some-slug/abc.jsonl"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+absent "the transcript is not in the state root" "${FIX_STATE}/claude/projects/some-slug/abc.jsonl"
+
+print -r -- "transcripts are copied grow-only when enabled"
+transcript_fixture state-transcripts-on
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"n":1}'                     > "${SLUG_HOME}/new.jsonl"
+print -r -- '{"n":1}'                     > "${SLUG_HOME}/stale.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' } > "${SLUG_STATE}/stale.jsonl"
+print -r -- '{"n":1}'                     > "${SLUG_STATE}/other-box.jsonl"
+print -r -- 'junk'                        > "${SLUG_STATE}/other-box_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+is_file "a transcript the state root lacks is copied" "${SLUG_STATE}/new.jsonl"
+check "a LARGER state-root copy is not overwritten by a smaller local one, even with --force" \
+  "$(wc -l < "${SLUG_STATE}/stale.jsonl")" "2"
+check "the copy is owner-only" "$(stat -c '%a' "${SLUG_STATE}/new.jsonl")" "600"
+no_scratch "and no scratch file is left beside it" "${FIX_STATE}"
+
+run_restore
+check "the restore exits clean" "${RC}" "0"
+is_file "the other box's transcript arrives" "${SLUG_HOME}/other-box.jsonl"
+check "the larger state-root copy replaces the smaller local one" \
+  "$(wc -l < "${SLUG_HOME}/stale.jsonl")" "2"
+absent "a conflict copy is not restored" "${SLUG_HOME}/other-box_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+
+print -r -- '{"n":1}{"n":2}{"n":3}' > "${SLUG_HOME}/new.jsonl"
+run_restore
+check "a larger local transcript survives a restore" \
+  "$(< "${SLUG_HOME}/new.jsonl")" '{"n":1}{"n":2}{"n":3}'
+
+# Grow-only is `<=`: on a tie neither side is provably newer.
+print -r -- "a transcript the size of the synced copy is left alone"
+transcript_fixture state-transcripts-equal
+mkdir -p "${SLUG_STATE}"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"n":"local"}' > "${SLUG_HOME}/abc.jsonl"
+print -r -- '{"n":"other"}' > "${SLUG_STATE}/abc.jsonl"
+
+run_backup --force
+check    "the backup exits clean"        "${RC}" "0"
+check    "the synced copy keeps its own bytes" \
+  "$(< "${SLUG_STATE}/abc.jsonl")" '{"n":"other"}'
+excludes "and nothing was copied"        "${OUT}" "Synced transcript"
+
+print -r -- "--dry-run previews the transcript copy without making it"
+transcript_fixture state-transcripts-dryrun
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user"}' > "${SLUG_HOME}/abc.jsonl"
+bytes="$(wc -c < "${SLUG_HOME}/abc.jsonl")"
+
+run_backup --dry-run
+check    "the preview exits clean" "${RC}" "0"
+contains "and names the destination and the size it would write" "${OUT}" \
+  "-> ${SLUG_STATE}/abc.jsonl (${bytes}B)"
+absent   "nothing was written into the state root"    "${FIX_STATE}/claude"
+absent   "and no gate state was created in the home"  "${FIX_HOME}/.local/state/flakelab"
+
+print -r -- "transcripts asked for with no state root are left alone"
+fixture transcripts-no-state
+mkdir -p "${FIX_HOME}/.claude/projects/some-slug"
+TRANSCRIPTS=1
+print -r -- '{"n":1}' > "${FIX_HOME}/.claude/projects/some-slug/abc.jsonl"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+absent "no transcript reached the payload" "${FIX_ROOT}/instances/TestDistro/claude/projects"
+check "the local transcript is untouched" \
+  "$(< "${FIX_HOME}/.claude/projects/some-slug/abc.jsonl")" '{"n":1}'
+
+run_restore
+check "the restore exits clean" "${RC}" "0"
+check "and the local transcript is still untouched" \
+  "$(< "${FIX_HOME}/.claude/projects/some-slug/abc.jsonl")" '{"n":1}'
+
+# ===========================================================================
+# The secret gate
+# ===========================================================================
+
+print -r -- "a history record holding a secret is held back from the state root"
+state_fixture gate-history
+secret_history
+
+run_backup --force
+merged="$(< "${FIX_STATE}/shell/.zsh_history_merged")"
+check    "a held finding is not a failure"        "${RC}" "0"
+contains "the clean record still syncs"           "${merged}" "ls"
+excludes "the secret never reaches the state root" "${merged}" "hunter2-secret"
+contains "and the run says so"                    "${OUT}" "held back"
+contains "the summary points at the review flag"  "${OUT}" "--review-secrets"
+is_file  "a held entry was recorded"              "${FIX_HELD}"
+held="$(< "${FIX_HELD}")"
+check    "one entry"                              "$(print -r -- "${held}" | grep -c .)" "1"
+contains "and it is a history finding"            "${held}" '"kind":"history"'
+excludes "the held list never holds the secret"   "${held}" "hunter2"
+contains "the local history is left alone"        "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+
+print -r -- "a multi-line record is held as a unit"
+state_fixture gate-history-multiline
+FAKE_SECRET="hunter2-secret"
+{
+  rec 1000 0 'cat <<EOF\'
+  print -r -- 'TOKEN=hunter2-secret'
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+merged="$(< "${FIX_STATE}/shell/.zsh_history_merged")"
+check    "the run exits clean"                    "${RC}" "0"
+excludes "the flagged continuation line is gone"  "${merged}" "hunter2-secret"
+excludes "and so is the header above it"          "${merged}" "cat <<EOF"
+contains "the untouched record still syncs"       "${merged}" "ls"
+
+print -r -- "a finding the operator allowed syncs unredacted"
+state_fixture gate-history-allow
+mkdir -p "${FIX_STATE}/.flakelab-state-gate"
+FAKE_SECRET="hunter2-secret"
+jq -c -n --arg f "$(fingerprint hunter2-secret)" \
+  '{fingerprint:$f,decision:"allow",epoch:1}' > "${FIX_DECISIONS}"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run exits clean"                    "${RC}" "0"
+contains "the allowed record reaches the state root" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+excludes "and nothing is reported held"           "${OUT}" "held back"
+
+print -r -- "a transcript secret is redacted in the synced copy only"
+transcript_fixture gate-transcript
+secret_transcript
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the transcript is synced"               "${synced}"
+contains "with the secret replaced"               "$(< "${synced}")" "[REDACTED:fake-rule]"
+excludes "and the secret gone"                    "$(< "${synced}")" "hunter2-secret"
+contains "the synced line is still valid JSON"    "$(jq -r '.type' "${synced}")" "user"
+contains "the local transcript keeps its text"    "$(< "${LIVE}")" "hunter2-secret"
+contains "the redaction is held for review"       "$(< "${FIX_HELD}")" '"kind":"transcript"'
+contains "the held entry names the LIVE transcript" "$(< "${FIX_HELD}")" "\"path\":\"${LIVE}\""
+(( $(wc -c < "${synced}") < $(wc -c < "${LIVE}") )) \
+  && ok "the redaction shrank the file, so grow-only cannot pass by accident" \
+  || bad "the redaction shrank the file, so grow-only cannot pass by accident"
+contains "and the warn says a copy was written" "${OUT}" "of abc.jsonl (redacted)"
+
+cp "${synced}" "${BASE}/gate-transcript.before"
+synced_bytes="$(wc -c < "${synced}")"
+run_backup --force
+check    "the second run exits clean"             "${RC}" "0"
+same     "the synced copy is byte-identical"      "${BASE}/gate-transcript.before" "${synced}"
+excludes "and nothing was copied again"           "${OUT}" "Synced transcript"
+contains "the warn says the synced copy was left as it was" \
+  "${OUT}" "(redacted; synced copy unchanged)"
+
+# Grow-only compares the CANDIDATE against the synced copy: a clean line
+# appended locally must move exactly its own bytes from the smaller redacted base.
+clean_line='{"type":"user","text":"nothing to see"}'
+print -r -- "${clean_line}" >> "${LIVE}"
+run_backup --force
+check    "the third run exits clean"              "${RC}" "0"
+check    "the synced copy grew by exactly the appended line" \
+  "$(wc -c < "${synced}")" "$(( synced_bytes + ${#clean_line} + 1 ))"
+contains "and it was copied this time"            "${OUT}" "Synced transcript"
+
+print -r -- "a redaction that would break the JSON holds the whole file"
+transcript_fixture gate-transcript-invalid
+FAKE_SECRET='x","'
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"a":"x","b":"c"}' > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+absent "the file does not reach the state root" "${SLUG_STATE}/abc.jsonl"
+contains "and the run says it was held" "${OUT}" "held back"
+
+print -r -- "a scanner that cannot run is a failure, not a silent write"
+transcript_fixture gate-broken
+FAKE_BROKEN=1
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user"}' > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --force
+check    "the run reports failure"                "${RC}" "1"
+contains "and names the gate"                     "${OUT}" "Secret gate"
+absent   "no unscanned history in the state root" "${FIX_STATE}/shell/.zsh_history_merged"
+absent   "no unscanned transcript either"         "${SLUG_STATE}/abc.jsonl"
+is_file  "the payload copy is untouched by the gate" "${FIX_SHELL}/.zsh_history"
+
+print -r -- "--review-secrets deletes a record from every local source"
+state_fixture gate-review-delete
+secret_history
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_MERGED}"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                 "${RC}" "0"
+excludes "the live history lost the record"       "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "and kept the clean one"                 "$(< "${FIX_HOME}/.zsh_history")" "ls"
+excludes "the payload instance copy lost it too"  "$(< "${FIX_SHELL}/.zsh_history")" "hunter2-secret"
+excludes "and the pre-state-root merged file"     "$(< "${FIX_MERGED}")" "hunter2-secret"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+has_match "pre-scrub copies were kept" "${scrub}" '*'
+is_file   "a decision was persisted to the state root" "${FIX_DECISIONS}"
+decisions="$(< "${FIX_DECISIONS}")"
+contains "recording the fingerprint"              "${decisions}" "$(fingerprint hunter2-secret)"
+contains "with the delete decision"               "${decisions}" '"decision":"delete"'
+excludes "and never the secret"                   "${decisions}" "hunter2"
+
+run_backup --force
+check    "a later backup exits clean"             "${RC}" "0"
+excludes "and has nothing left to hold"           "${OUT}" "held back"
+
+print -r -- "one answer settles every record carrying the same secret"
+state_fixture gate-review-same-secret
+FAKE_SECRET="hunter2-secret"
+{
+  rec 1000 0 "export TOKEN=hunter2-secret"
+  rec 1500 0 "curl -H auth:hunter2-secret example.invalid"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+check "both records are held"  "$(grep -c . "${FIX_HELD}")" "2"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "both records hang off one question"      "${OUT}" "2 record"
+excludes "the first record left the live history"  "$(< "${FIX_HOME}/.zsh_history")" "export TOKEN="
+excludes "and so did the second"                   "$(< "${FIX_HOME}/.zsh_history")" "curl -H auth"
+contains "the clean record stays"                  "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "and the held list is empty afterwards"   "$(grep -c . "${FIX_HELD}")" "0"
+
+print -r -- "a pasted block with one secret is one question with readable previews"
+state_fixture gate-review-preview
+FAKE_SECRET="hunter2-secret"
+{
+  rec 1000 0 'curl -H auth:hunter2-secret example.invalid \'
+  print -r -- '  --output /dev/null'
+  rec 1001 0 "export TOKEN=hunter2-secret"
+  rec 1002 0 "echo hunter2-secret"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the backup exits clean"      "${RC}" "0"
+check "all three records are held"  "$(grep -c . "${FIX_HELD}")" "3"
+check "each one carries a preview"  \
+  "$(jq -s '[.[] | select((.preview // "") != "")] | length' "${FIX_HELD}")" "3"
+held="$(< "${FIX_HELD}")"
+contains "masking the secret"                      "${held}" "export TOKEN=***"
+contains "and joining the continuation line"       "${held}" " ⏎ "
+excludes "the held list never carries the secret"  "${held}" "hunter2-secret"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "one question for the whole group"        "${OUT}" "[1/1]"
+excludes "and no second one"                       "${OUT}" "[2/"
+contains "listing every record under it"           "${OUT}" "3 record"
+contains "with the record's human date"            "${OUT}" "$(date -d @1000 '+%Y-%m-%d %H:%M')"
+contains "the pasted block reads as one command"   "${OUT}" " ⏎ "
+contains "and the keys are explained once"         "${OUT}" "history keys are the zsh history epoch"
+excludes "the live history lost every flagged record" \
+  "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "keeping the clean one"                   "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "and the held list is empty"              "$(grep -c . "${FIX_HELD}")" "0"
+
+print -r -- "a held entry written before previews is still reviewable"
+state_fixture gate-review-legacy-entry
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+# What the gate wrote before it stored a preview.
+jq -c 'del(.preview)' "${FIX_HELD}" > "${FIX_HELD}.legacy" && mv "${FIX_HELD}.legacy" "${FIX_HELD}"
+excludes "the entry has no preview" "$(< "${FIX_HELD}")" '"preview"'
+
+# A later backup re-holds the same record; the re-hold upgrades the blind
+# entry in place instead of leaving it previewless forever.
+run_backup --force
+check    "the refresh backup exits clean"          "${RC}" "0"
+check    "the entry is not duplicated"             "$(grep_c_held)" "1"
+contains "and now carries a preview"               "$(jq -r '.preview' "${FIX_HELD}")" "export TOKEN=***"
+jq -c 'del(.preview)' "${FIX_HELD}" > "${FIX_HELD}.legacy" && mv "${FIX_HELD}.legacy" "${FIX_HELD}"
+
+ANSWERS="k"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "it is still offered"                     "${OUT}" "[1/1]"
+contains "falling back to the redacted match"      "${OUT}" "export TOKEN=***"
+check    "and the entry settles"                   "$(grep -c . "${FIX_HELD}")" "0"
+
+# The scanner flattens a match it found across a line break, so its Secret is
+# literal NOWHERE in the record and masking cannot remove it.
+print -r -- "a finding the scanner saw across a line break is never previewed"
+state_fixture gate-preview-span
+FAKE_SPAN="aaa-part-one bbb-part-two"
+{
+  print -r -- ": 1000:0;export TOKEN=aaa-part-one"
+  print -r -- "bbb-part-two"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the record is held"                      "$(grep_c_held)" "1"
+held="$(< "${FIX_HELD}")"
+excludes "no half of the secret is in the held list" "${held}" "aaa-part-one"
+excludes "nor the other half"                        "${held}" "bbb-part-two"
+check    "and the preview is empty"                "$(jq -r '.preview' "${FIX_HELD}")" ""
+
+ANSWERS="s"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "it falls back to the redacted match"     "${OUT}" "export TOKEN=***"
+excludes "with no half-secret on screen"           "${OUT}" "aaa-part-one"
+
+print -r -- "and the same when the break is a CRLF"
+state_fixture gate-preview-span-crlf
+FAKE_SPAN="ccc-part-one  ddd-part-two"
+{
+  printf ': 1000:0;export TOKEN=ccc-part-one\r\n'
+  printf 'ddd-part-two\n'
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the record is held"                      "$(grep_c_held)" "1"
+held="$(< "${FIX_HELD}")"
+excludes "no half of the secret is in the held list" "${held}" "ccc-part-one"
+excludes "nor the other half"                        "${held}" "ddd-part-two"
+check    "and the preview is empty"                "$(jq -r '.preview' "${FIX_HELD}")" ""
+
+# Half the secret in each record, and a half cannot be masked out of the record
+# that holds it: the preview is only ever built for a finding that fits inside
+# ONE record.
+print -r -- "a finding straddling two records is previewed in neither"
+state_fixture gate-preview-straddle
+FAKE_SPAN="part-a : 2000:0;echo part-b"
+{
+  rec 1000 0 "export TOKEN=part-a"
+  rec 2000 0 "echo part-b"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "both records are held"                   "$(grep_c_held)" "2"
+check    "and neither carries a preview"           "$(jq -r '.preview' "${FIX_HELD}" | sort -u)" ""
+held="$(< "${FIX_HELD}")"
+excludes "no half of the secret is in the held list" "${held}" "part-a"
+excludes "nor the other half"                        "${held}" "part-b"
+
+# One record, two findings: each entry carries the WHOLE record, so masking only
+# its own secret would print the other one in the clear.
+print -r -- "two secrets on one record never expose each other"
+state_fixture gate-preview-two-secrets
+FAKE_SECRET="alpha-token-one"
+FAKE_SECRET2="beta-token-two"
+{
+  rec 1000 0 "deploy --key alpha-token-one --other beta-token-two"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the record is held once per finding"     "$(grep_c_held)" "2"
+held="$(< "${FIX_HELD}")"
+excludes "the first secret is nowhere in the held list" "${held}" "alpha-token-one"
+excludes "and neither is the second"                    "${held}" "beta-token-two"
+contains "both are masked in the preview"          "${held}" "deploy --key *** --other ***"
+
+ANSWERS="ss"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the prompt shows neither secret"         "${OUT}" "alpha-token-one"
+excludes "nor the other"                           "${OUT}" "beta-token-two"
+
+print -r -- "a secret overlapping itself is masked out completely"
+state_fixture gate-preview-overlap
+FAKE_SECRET="ababab"
+{
+  rec 1000 0 "echo abababab"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+held="$(< "${FIX_HELD}")"
+excludes "the secret is nowhere in the held list"  "${held}" "ababab"
+contains "and the preview masks it"                "${held}" "echo ***ab"
+
+print -r -- "a delete decided on another machine reaches local files only via a review"
+state_fixture gate-review-foreign-delete
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+[[ -s "${FIX_HELD}" ]] && ok "the finding is held on this box" || bad "the finding is held on this box"
+
+foreign_decision delete hunter2-secret
+
+run_backup --force
+check    "a later backup exits clean"                   "${RC}" "0"
+contains "and leaves this machine's history alone"      "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+excludes "while still keeping the secret out of the state root" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the review exits clean"                       "${RC}" "0"
+contains "it asks once before touching local files"     "${OUT}" \
+  "already decided to this machine's local files"
+excludes "the record left this machine's live history"  "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "and the clean record stayed"                  "$(< "${FIX_HOME}/.zsh_history")" "ls"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+has_match "a pre-scrub copy was kept" "${scrub}" '*'
+
+print -r -- "and declining that confirmation leaves it held, to be offered again"
+state_fixture gate-review-foreign-delete-no
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+foreign_decision delete hunter2-secret
+
+ANSWERS="n"
+run_backup --review-secrets
+check    "the review exits clean"                       "${RC}" "0"
+contains "the live history is untouched"                "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+no_match "and nothing was rewritten" "${scrub}" '*'
+check    "the entry stays held"                         "$(grep -c . "${FIX_HELD}")" "1"
+
+run_backup --force
+check    "a later backup exits clean"                   "${RC}" "0"
+contains "and still counts it as pending"               "${OUT}" \
+  "held back from the state root; review with"
+
+ANSWERS="n"
+run_backup --review-secrets
+check    "the second review exits clean"                "${RC}" "0"
+contains "and offers the deletion again"                "${OUT}" \
+  "already decided to this machine's local files"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the third review exits clean"                 "${RC}" "0"
+excludes "which applies it to the live history"         "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "keeping the clean record"                     "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "and settles the entry"                        "$(grep -c . "${FIX_HELD}")" "0"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the fourth review exits clean"                "${RC}" "0"
+excludes "with nothing left to offer"                   "${OUT}" \
+  "already decided to this machine's local files"
+
+# Lines written before EXTENDED_HISTORY have no header and belong to no record.
+print -r -- "a delete keeps the history lines above the first header"
+state_fixture gate-review-preamble
+FAKE_SECRET="hunter2-secret"
+{
+  print -r -- "plain-line-one"
+  print -r -- "plain-line-two"
+  rec 1000 0 "export TOKEN=hunter2-secret"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the secret record is gone"               "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+check    "and the two lines above it survive byte for byte" \
+  "$(head -2 "${FIX_HOME}/.zsh_history")" "plain-line-one
+plain-line-two"
+contains "as does the clean record"                "$(< "${FIX_HOME}/.zsh_history")" "ls"
+
+print -r -- "--review-secrets scrubs the secret out of the live transcript"
+transcript_fixture gate-review-transcript
+secret_transcript
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+synced="${SLUG_STATE}/abc.jsonl"
+held="$(< "${FIX_HELD}")"
+contains "the held entry previews the JSON line, masked" "${held}" '{\"type\":\"user\",\"text\":\"token ***'
+excludes "and never the secret"                          "${held}" "hunter2-secret"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the live transcript lost the secret"     "$(< "${LIVE}")" "hunter2-secret"
+contains "and carries the placeholder instead"     "$(< "${LIVE}")" "[REDACTED:fake-rule]"
+check    "the scrubbed line is still valid JSON"   "$(jq -r '.type' "${LIVE}")" "user"
+excludes "the synced copy has no secret either"    "$(< "${synced}")" "hunter2-secret"
+pre=(${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub/transcript-*(N))
+if (( ${#pre} == 1 )); then
+  ok "a pre-scrub copy was kept"
+  check "and it is owner-only" "$(stat -c '%a' "${pre[1]}")" "600"
+else
+  bad "a pre-scrub copy was kept"
+  bad "and it is owner-only"
+fi
+no_scratch "and no scratch file is left beside it" "${SLUG_HOME}"
+check    "the held list no longer carries it"      "$(grep -c . "${FIX_HELD}")" "0"
+decisions="$(< "${FIX_DECISIONS}")"
+contains "the decision is recorded"                "${decisions}" '"decision":"delete"'
+excludes "and never the secret"                    "${decisions}" "hunter2"
+
+print -r -- "a transcript that vanished before the review is not written off"
+transcript_fixture gate-review-transcript-gone
+secret_transcript
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+mv "${LIVE}" "${SLUG_HOME}/moved-away.txt"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review reports the failure"          "${RC}" "1"
+contains "and says the transcript is gone"         "${OUT}" "Transcript is gone"
+check    "the entry stays held"                    "$(grep -c . "${FIX_HELD}")" "1"
+absent   "and no decision was recorded"            "${FIX_DECISIONS}"
+absent   "not even locally"                        "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl"
+
+print -r -- "a delete settles only when every record of that secret went"
+transcript_fixture gate-review-partial-delete
+FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+LIVE="${SLUG_HOME}/abc.jsonl"
+{
+  rec 1000 0 "export TOKEN=hunter2-secret-and-a-good-deal-more"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"token hunter2-secret-and-a-good-deal-more here"}' > "${LIVE}"
+
+run_backup --force
+check "the backup exits clean"     "${RC}" "0"
+check "both records are held"      "$(grep -c . "${FIX_HELD}")" "2"
+
+mv "${LIVE}" "${SLUG_HOME}/moved-away.txt"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review reports the failure"          "${RC}" "1"
+contains "and says nothing was settled for it"     "${OUT}" "nothing was settled for that secret"
+excludes "the history record was still removed"    "$(< "${FIX_HOME}/.zsh_history")" "export TOKEN="
+contains "and the clean record stayed"             "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "BOTH entries stay held"                  "$(grep -c . "${FIX_HELD}")" "2"
+absent   "no decision reached the state root"      "${FIX_DECISIONS}"
+absent   "and none was recorded locally"           "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl"
+no_scratch "and no scratch file is left in the gate directory" "${FIX_HOME}/.local/state/flakelab/state-gate"
+
+ANSWERS="s"
+run_backup --review-secrets
+check    "the second review exits clean"           "${RC}" "0"
+contains "and offers the secret again"             "${OUT}" "2 record(s) in 1 finding(s) held back"
+
+# The offer to apply a foreign delete is driven off the held list, so the record must be held.
+print -r -- "a delete ruled elsewhere is held on first sight, not silently dropped"
+state_fixture gate-foreign-delete-first-scan
+secret_history
+foreign_decision delete hunter2-secret
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+excludes "the record is kept out of the state root" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+contains "the clean record still syncs"            "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "ls"
+check    "the record is held even though it is decided" \
+  "$(grep -c . "${FIX_HELD}")" "1"
+contains "and the summary counts it as pending"    "${OUT}" \
+  "1 secret record(s) held back from the state root; review with"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "it offers the foreign deletion"          "${OUT}" \
+  "already decided to this machine's local files"
+excludes "which then leaves the live history"      "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "keeping the clean record"                "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "and the entry is settled"                "$(grep -c . "${FIX_HELD}")" "0"
+
+print -r -- "a delete whose file is gone settles instead of failing forever"
+transcript_fixture gate-pending-delete-gone
+secret_transcript
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+check "the transcript finding is held" "$(grep -c . "${FIX_HELD}")" "1"
+
+mv "${LIVE}" "${SLUG_HOME}/moved-away.txt"
+foreign_decision delete hunter2-secret-and-a-good-deal-more
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "applying it exits clean"                 "${RC}" "0"
+contains "and reports the file that is not here"   "${OUT}" "no longer on this box"
+check    "the entry is settled"                    "$(grep -c . "${FIX_HELD}")" "0"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "a later review exits clean"              "${RC}" "0"
+excludes "with nothing left to offer"              "${OUT}" \
+  "already decided to this machine's local files"
+
+print -r -- "k keeps this box's copies and stops the offer"
+state_fixture gate-pending-delete-keep
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+foreign_decision delete hunter2-secret
+
+ANSWERS="k"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "and says it left the files as they are"  "${OUT}" "Left as is on this box by operator choice"
+contains "the record is still in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+no_match "nothing was rewritten" "${scrub}" '*'
+check    "and the entry is settled"                "$(grep -c . "${FIX_HELD}")" "0"
+
+# Settled on THIS host by its own decision record; the shared ruling is untouched.
+run_backup --force
+check    "a later backup exits clean"              "${RC}" "0"
+contains "the record is still in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+excludes "and still kept out of the state root"    \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+check    "it is not held again"                    "$(grep_c_held)" "0"
+excludes "and the summary counts nothing"          "${OUT}" \
+  "held back from the state root; review with"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "a later review exits clean"              "${RC}" "0"
+excludes "with nothing left to offer"              "${OUT}" \
+  "already decided to this machine's local files"
+
+# Per HOST, not per secret: a third box that never applied the delete is still offered it.
+FIX_HOME="${BASE}/gate-pending-delete-keep/home3"
+FIX_HELD="${FIX_HOME}/.local/state/flakelab/state-gate/held.jsonl"
+mkdir -p "${FIX_HOME}"
+{
+  rec 1000 0 "export TOKEN=hunter2-secret"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+HOST=third-box run_backup --force
+check    "a third box's backup exits clean"        "${RC}" "0"
+check    "and holds the record there"              "$(grep_c_held)" "1"
+contains "counting it as pending"                  "${OUT}" \
+  "1 secret record(s) held back from the state root; review with"
+
+ANSWERS="y"
+HOST=third-box run_backup --review-secrets
+check    "its review exits clean"                  "${RC}" "0"
+contains "offers the deletion there"               "${OUT}" \
+  "already decided to this machine's local files"
+excludes "which applies it to that box's history"  "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "keeping the clean record"                "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "and settles the entry there"             "$(grep_c_held)" "0"
+
+print -r -- "a history deletion already decided settles only when the rewrite went through"
+state_fixture gate-pending-delete-unwritable
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+foreign_decision delete hunter2-secret
+
+# No placement temp can be created beside ~/.zsh_history, so its rewrite fails.
+chmod 555 "${FIX_HOME}"
+ANSWERS="y"
+run_backup --review-secrets
+chmod 755 "${FIX_HOME}"
+check    "the review reports the failure"          "${RC}" "1"
+contains "and says it stays held"                  "${OUT}" "it stays held and will be offered again"
+contains "the record is still in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+check    "and the entry stays held"                "$(grep_c_held)" "1"
+absent   "no delete was recorded under this host"  "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl"
+
+print -r -- "a per-finding delete whose history rewrite failed settles nothing"
+state_fixture gate-review-delete-unwritable
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+
+chmod 555 "${FIX_HOME}"
+ANSWERS="d"
+run_backup --review-secrets
+chmod 755 "${FIX_HOME}"
+check    "the review reports the failure"          "${RC}" "1"
+contains "and says nothing was settled for it"     "${OUT}" "nothing was settled for that secret"
+contains "the record is still in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+check    "and the entry stays held"                "$(grep_c_held)" "1"
+absent   "and no decision reached the state root"  "${FIX_DECISIONS}"
+
+print -r -- "--review-secrets without a terminal fails even with nothing held"
+state_fixture gate-review-headless
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+absent "and nothing was held" "${FIX_HELD}"
+
+ANSWERS=""
+run_backup --review-secrets
+check    "the review refuses"                      "${RC}" "1"
+contains "and says it needs a terminal"            "${OUT}" "needs a terminal"
+
+# The instance history is pre-seeded: a dry run copies nothing, so without it
+# merge_zsh_history has no input and never reaches the gate.
+print -r -- "--dry-run with no scanner on PATH fails instead of previewing"
+state_fixture gate-dryrun-no-scanner
+NO_GITLEAKS=1
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+rec 1000 0 "typed-here" > "${FIX_SHELL}/.zsh_history"
+
+run_backup --dry-run
+check    "the preview reports failure"             "${RC}" "1"
+contains "with the gate's own message"             "${OUT}" \
+  "Secret gate unavailable (gitleaks/jq not on PATH); history and transcripts NOT written to the state root this run"
+absent   "nothing reached the state root"          "${FIX_STATE}/shell"
+absent   "and no gate state was created in the home" "${FIX_HOME}/.local/state/flakelab"
+
+print -r -- "--dry-run with a scanner that cannot run fails too"
+state_fixture gate-dryrun-broken-scanner
+FAKE_BROKEN=1
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_SHELL}/.zsh_history"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+
+run_backup --dry-run
+check    "the preview reports failure"             "${RC}" "1"
+contains "and says the history would not be written" "${OUT}" \
+  "the history would NOT be written"
+absent   "nothing reached the state root"          "${FIX_STATE}/shell"
+absent   "and no gate state was created in the home" "${FIX_HOME}/.local/state/flakelab"
+
+# Grow-only is LINES: the redacted synced copy is HEAVIER than the file it came from.
+print -r -- "a restore never replaces a local transcript with its redacted copy"
+transcript_fixture gate-restore-redacted
+# Short enough that [REDACTED:fake-rule] (20 bytes) is LONGER than it.
+FAKE_SECRET="tok123"
+live="${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"token tok123 here"}' > "${live}"
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check "the backup exits clean" "${RC}" "0"
+(( $(wc -c < "${synced}") > $(wc -c < "${live}") )) \
+  && ok "the synced copy really is the heavier one" \
+  || bad "the synced copy really is the heavier one"
+check "and has the same number of lines" \
+  "$(wc -l < "${synced}")" "$(wc -l < "${live}")"
+
+cp "${live}" "${BASE}/gate-restore-redacted.before"
+run_restore
+check "the restore exits clean" "${RC}" "0"
+same  "the local transcript is byte-identical" "${BASE}/gate-restore-redacted.before" "${live}"
+contains "and still holds what was typed" "$(< "${live}")" "tok123"
+
+print -r -- '{"type":"user","text":"from the other box"}' >> "${synced}"
+run_restore
+check "the second restore exits clean" "${RC}" "0"
+check "a synced copy with one more line is restored" "$(wc -l < "${live}")" "2"
+contains "bringing the other box's line"  "$(< "${live}")" "from the other box"
+
+print -r -- "a kept finding stops being counted as pending"
+state_fixture gate-keep-not-counted
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+
+ANSWERS="k"
+run_backup --review-secrets
+check "the review exits clean" "${RC}" "0"
+check "and the held list is empty" "$(grep -c . "${FIX_HELD}")" "0"
+
+run_backup --force
+check    "a later backup exits clean"              "${RC}" "0"
+excludes "the kept record is still not published"  \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+excludes "and the summary no longer nags about it" "${OUT}" \
+  "held back from the state root; review with"
+
+ANSWERS="s"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+contains "and agrees there is nothing to review"   "${OUT}" "Nothing has been held back"
+
+print -r -- "a deleted secret typed again on the same box stays out of the state root, unoffered"
+state_fixture gate-delete-reappears
+secret_history
+
+run_backup --force
+ANSWERS="d"
+run_backup --review-secrets
+check "the delete exits clean" "${RC}" "0"
+check "and the list is empty"  "$(grep -c . "${FIX_HELD}")" "0"
+
+rec 3000 0 "export TOKEN=hunter2-secret # again" >> "${FIX_HOME}/.zsh_history"
+run_backup --force
+check    "the later backup exits clean"            "${RC}" "0"
+excludes "the new record is kept out of the state root" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+contains "the clean record still syncs"            \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "ls"
+check    "it is not held again — this box already ruled on it" "$(grep_c_held)" "0"
+excludes "and the summary counts nothing"          "${OUT}" \
+  "held back from the state root; review with"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "with nothing to offer"                   "${OUT}" \
+  "already decided to this machine's local files"
+contains "and the record stays in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret # again"
+
+print -r -- "--review-secrets refuses --dry-run and --restore"
+state_fixture gate-review-dryrun
+FAKE_SECRET="hunter2-secret"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+
+ANSWERS="d"
+run_backup --review-secrets --dry-run
+check    "the combination is refused"              "${RC}" "1"
+contains "and says why"                            "${OUT}" "run it without --dry-run"
+contains "the live history is untouched"           "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+check    "and the finding is still held"           "$(grep_c_held)" "1"
+
+run_backup --review-secrets --restore
+check    "--restore with it is refused too"        "${RC}" "1"
+contains "and says so"                             "${OUT}" "separate runs"
+
+print -r -- "a scanner whose paths do not match the staged files fails closed"
+state_fixture gate-scanner-drift
+FAKE_SECRET="hunter2-secret"
+FAKE_RELPATH=1
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run reports failure"                 "${RC}" "1"
+contains "and says the report cannot be mapped"    "${OUT}" "cannot be mapped onto the staged files"
+absent   "nothing unscanned reached the state root" "${FIX_STATE}/shell/.zsh_history_merged"
+
+print -r -- "a decisions conflict copy is folded in and removed"
+state_fixture gate-decisions-conflict
+mkdir -p "${FIX_STATE}/.flakelab-state-gate"
+FAKE_SECRET="hunter2-secret"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+copy="${FIX_STATE}/.flakelab-state-gate/decisions.jsonl_OTHERBOX_Jan-09-003137-2026_Conflict"
+jq -c -n --arg f "$(fingerprint other-secret)" \
+  '{fingerprint:$f,decision:"allow",epoch:2,host:"other-box"}' > "${copy}"
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+
+ANSWERS="k"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+absent   "the conflict copy is gone"               "${copy}"
+contains "and its removal is logged"               "${OUT}" "Removed folded decisions conflict copy"
+decisions="$(< "${FIX_DECISIONS}")"
+contains "the shared file kept the copy's ruling"  "${decisions}" "$(fingerprint other-secret)"
+contains "and carries this box's new one"          "${decisions}" '"decision":"keep"'
+no_scratch "and no scratch file is left in the state root" "${FIX_STATE}"
+
+print -r -- "a decisions file that cannot be parsed holds everything back"
+state_fixture gate-decisions-corrupt
+mkdir -p "${FIX_STATE}/.flakelab-state-gate"
+secret_history
+# What a sync client captures from an in-place append by the other box.
+print -r -- '{"fingerprint":"fake-rule:abc","decision":"allo' > "${FIX_DECISIONS}"
+
+run_backup --force
+check    "the run reports failure"                 "${RC}" "1"
+contains "and names the file it could not read"    "${OUT}" "Could not read the decisions in"
+excludes "the flagged record is not published"     \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+check    "and it is held for review"               "$(grep_c_held)" "1"
+
+print -r -- "a truncated decisions conflict copy is never folded into the primary"
+state_fixture gate-decisions-corrupt-copy
+secret_history
+# A valid primary that ALLOWS this very secret: it must not publish while a sibling cannot be read.
+foreign_decision allow hunter2-secret
+copy="${FIX_STATE}/.flakelab-state-gate/decisions.jsonl_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -rn -- '{"fingerprint":"fake-rule:abc","decision":"dele' > "${copy}"
+cp "${FIX_DECISIONS}" "${BASE}/gate-decisions-corrupt-copy.before"
+
+run_backup --force
+check    "the run reports failure"                 "${RC}" "1"
+contains "and names the copy it could not read"    "${OUT}" "${copy:t}"
+excludes "the allowed record is NOT published: decisions are unknown this run" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+contains "the clean record still syncs"            "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "ls"
+check    "and the flagged one is held"             "$(grep_c_held)" "1"
+
+ANSWERS="k"
+run_backup --review-secrets
+check    "the review reports the failure"          "${RC}" "1"
+contains "and says the shared file was not rewritten" "${OUT}" "was NOT rewritten"
+same     "the primary is byte-identical"           "${BASE}/gate-decisions-corrupt-copy.before" "${FIX_DECISIONS}"
+exists   "the truncated copy is still there"       "${copy}"
+no_scratch "and no scratch file is left in the state root" "${FIX_STATE}"
+contains "the decision was still recorded locally" \
+  "$(< "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl")" '"decision":"keep"'
+
+# A primary about ANOTHER secret, so the finding is undecided and the review has a decision to fold.
+print -r -- "the fold refuses outright rather than carrying the corruption over"
+state_fixture gate-decisions-corrupt-copy-fold
+FAKE_SECRET="hunter2-secret"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+foreign_decision allow other-secret
+copy="${FIX_STATE}/.flakelab-state-gate/decisions.jsonl_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -rn -- '{"fingerprint":"fake-rule:abc","decision":"dele' > "${copy}"
+cp "${FIX_DECISIONS}" "${BASE}/gate-decisions-corrupt-copy-fold.before"
+
+run_backup --force
+check    "the backup holds the finding"            "$(grep_c_held)" "1"
+
+ANSWERS="k"
+run_backup --review-secrets
+check    "the review reports the failure"          "${RC}" "1"
+same     "the primary is byte-identical"           "${BASE}/gate-decisions-corrupt-copy-fold.before" "${FIX_DECISIONS}"
+exists   "the truncated copy is still there"       "${copy}"
+excludes "and its bytes are nowhere in the primary" "$(< "${FIX_DECISIONS}")" '"decision":"dele'
+
+print -r -- "a decision taken with the root unmounted reaches the shared file on the next backup"
+state_fixture gate-decisions-replay
+secret_history
+
+run_backup --force
+check "the backup exits clean" "${RC}" "0"
+check "and holds the record"   "$(grep_c_held)" "1"
+
+STATE="${BASE}/gate-decisions-replay/no-such-parent/state"
+ANSWERS="k"
+run_backup --review-secrets
+check    "the review reports the unusable root"    "${RC}" "1"
+contains "and says the decision is local only"     "${OUT}" "local only"
+absent   "nothing reached the shared file"         "${FIX_DECISIONS}"
+local_log="${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl"
+contains "but the local log has it"                "$(< "${local_log}")" '"decision":"keep"'
+
+STATE="${FIX_STATE}"
+run_backup --dry-run
+check    "a preview with the root back exits clean" "${RC}" "0"
+absent   "and writes nothing to the shared file"    "${FIX_DECISIONS}"
+
+run_backup --force
+check    "the next backup exits clean"             "${RC}" "0"
+is_file  "the shared file now exists"              "${FIX_DECISIONS}"
+contains "carrying the fingerprint"                "$(< "${FIX_DECISIONS}")" "$(fingerprint hunter2-secret)"
+contains "and the decision"                        "$(< "${FIX_DECISIONS}")" '"decision":"keep"'
+excludes "never the secret"                        "$(< "${FIX_DECISIONS}")" "hunter2"
+excludes "and the kept record is still not published" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+no_scratch "with no scratch file left in the state root" "${FIX_STATE}"
+
+cp "${FIX_DECISIONS}" "${BASE}/gate-decisions-replay.before"
+run_backup --force
+check    "a further backup exits clean"            "${RC}" "0"
+same     "and leaves the shared file as it was — nothing left to replay" \
+  "${BASE}/gate-decisions-replay.before" "${FIX_DECISIONS}"
+
+print -r -- "a held list that cannot be rewritten is a recorded failure"
+state_fixture gate-prune-unwritable
+FAKE_SECRET="hunter2-secret"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+chmod 555 "${FIX_HELD:h}"
+ANSWERS="s"
+run_backup --review-secrets
+chmod 755 "${FIX_HELD:h}"
+check "the review reports the failure" "${RC}" "1"
+
+print -r -- "without a state root the gate never runs"
+fixture gate-off
+FAKE_SECRET="hunter2-secret"
+rec 1000 0 "export TOKEN=hunter2-secret" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run exits clean"                    "${RC}" "0"
+contains "the payload merge keeps today's behaviour" "$(< "${FIX_MERGED}")" "hunter2-secret"
+excludes "nothing is held"                        "${OUT}" "held back"
+absent   "and no held list is created"            "${FIX_HELD}"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

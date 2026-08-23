@@ -1,0 +1,479 @@
+#!/usr/bin/env zsh
+#
+# Offline test suite for gitchecker.
+#
+# Fixture repos carry a real-looking forge URL (git@gitlab.com:grp/repo.git) that
+# url.<base>.insteadOf rewrites to a local bare repo, so `git fetch` works with no
+# network while gitchecker still sees the true host via `git config --get
+# remote.origin.url`. `glab` and `gh` are replaced by stubs on PATH.
+#
+# Run: files/scripts/test-gitchecker
+#
+
+set -uo pipefail
+
+SCRIPT_DIR="${0:A:h}"
+GITCHECKER="${SCRIPT_DIR}/gitchecker"
+
+typeset -i PASSED=0 FAILED=0
+GC_OUT=""
+typeset -i GC_RC=0
+
+TESTROOT="$(mktemp -d)"
+STUB_DIR="${TESTROOT}/stubs"
+mkdir -p "${STUB_DIR}"
+trap 'rm -rf "${TESTROOT}"' EXIT
+
+# Stubs shadow the real forge CLIs for the whole suite. Any PATH entry holding a
+# real glab/gh is dropped outright: without that, removing a stub to test the
+# missing-binary path would silently fall through to the real CLI — and a test
+# run could reach the network.
+typeset -a clean_path=()
+for path_dir in ${(s.:.)PATH}; do
+  [[ -x "${path_dir}/glab" || -x "${path_dir}/gh" ]] && continue
+  clean_path+=("${path_dir}")
+done
+export PATH="${STUB_DIR}:${(j.:.)clean_path}"
+# Keep fixture commits reproducible and independent of the host's git config.
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
+
+# write_stub <name> <exit_code> [payload_file]
+# `<name> auth status` always succeeds so preflight passes; every other
+# invocation cats the payload (if any) and exits with <exit_code>.
+write_stub() {
+  local name="$1" rc="$2" payload="${3:-}"
+  {
+    print -r -- '#!/usr/bin/env zsh'
+    print -r -- '[[ "$1" == "auth" ]] && exit 0'
+    [[ -n "${payload}" ]] && print -r -- "cat ${(q)payload}"
+    print -r -- "exit ${rc}"
+  } > "${STUB_DIR}/${name}"
+  chmod +x "${STUB_DIR}/${name}"
+}
+
+# mk_repo <root> <relpath> <host> <project> — echoes the work-tree path.
+mk_repo() {
+  local root="$1" rel="$2" host="$3" project="$4"
+  local bare="${TESTROOT}/bare/${project}.git"
+  local work="${root}/${rel}"
+  mkdir -p "${bare:h}" "${work:h}"
+  # -b main so the bare repo's HEAD matches the branch we push; otherwise later
+  # clones of it check out nothing.
+  git init -q -b main --bare "${bare}"
+  git init -q -b main "${work}"
+  print -r -- seed > "${work}/seed.txt"
+  git -C "${work}" add seed.txt
+  git -C "${work}" commit -qm seed
+  git -C "${work}" remote add origin "git@${host}:${project}.git"
+  git -C "${work}" config "url.${bare}.insteadOf" "git@${host}:${project}.git"
+  git -C "${work}" push -q -u origin main
+  print -r -- "${work}"
+}
+
+run_gc() {
+  GC_OUT="$("${GITCHECKER}" "$@" 2>&1)"
+  GC_RC=$?
+}
+
+assert_rc() {
+  local -i want="$1"
+  local label="$2"
+  if (( GC_RC == want )); then
+    (( PASSED++ )); print -r -- "  ok   ${label}"
+  else
+    (( FAILED++ )); print -r -- "  FAIL ${label}: exit ${GC_RC}, want ${want}"
+    print -r -- "${GC_OUT}" | sed 's/^/       | /'
+  fi
+}
+
+assert_has() {
+  local needle="$1" label="$2"
+  if [[ "${GC_OUT}" == *"${needle}"* ]]; then
+    (( PASSED++ )); print -r -- "  ok   ${label}"
+  else
+    (( FAILED++ )); print -r -- "  FAIL ${label}: output lacks ${(qq)needle}"
+    print -r -- "${GC_OUT}" | sed 's/^/       | /'
+  fi
+}
+
+assert_lacks() {
+  local needle="$1" label="$2"
+  if [[ "${GC_OUT}" != *"${needle}"* ]]; then
+    (( PASSED++ )); print -r -- "  ok   ${label}"
+  else
+    (( FAILED++ )); print -r -- "  FAIL ${label}: output unexpectedly has ${(qq)needle}"
+  fi
+}
+
+finish() {
+  print -r -- ""
+  print -r -- "${PASSED} passed, ${FAILED} failed"
+  (( FAILED > 0 )) && exit 1
+  exit 0
+}
+
+# ── Preflight and usage ──────────────────────────────────────────────
+print -r -- "preflight:"
+write_stub glab 0
+write_stub gh 0
+
+run_gc --frobnicate
+assert_rc 2 "unknown option exits 2"
+assert_has "Unknown option: --frobnicate" "unknown option is named"
+
+run_gc "${TESTROOT}/does-not-exist"
+assert_rc 2 "missing root exits 2"
+assert_has "repos dir not found" "missing root is named"
+
+# A forge CLI absent from PATH must abort before any repo is touched.
+mv "${STUB_DIR}/glab" "${STUB_DIR}/glab.disabled"
+run_gc "${TESTROOT}"
+assert_rc 2 "missing glab exits 2"
+assert_has "required binary not found on PATH: glab" "missing glab is named"
+mv "${STUB_DIR}/glab.disabled" "${STUB_DIR}/glab"
+
+# Present but unauthenticated: the auth probe must be checked, not assumed.
+print -rl -- '#!/usr/bin/env zsh' 'exit 1' > "${STUB_DIR}/glab"
+chmod +x "${STUB_DIR}/glab"
+run_gc "${TESTROOT}"
+assert_rc 2 "unauthenticated glab exits 2"
+assert_has "glab is not authenticated" "unauthenticated glab is named"
+write_stub glab 0
+
+run_gc --fetch "${TESTROOT}"
+assert_rc 2 "removed --fetch flag is rejected"
+
+# ── Discovery and grouping ───────────────────────────────────────────
+print -r -- "discovery:"
+write_stub glab 0 /dev/null
+write_stub gh 0 /dev/null
+
+ROOT_A="${TESTROOT}/roots/a"
+ROOT_B="${TESTROOT}/roots/b"
+mkdir -p "${ROOT_A}" "${ROOT_B}"
+mk_repo "${ROOT_A}" group-a/repo-one         gitlab.com group-a/repo-one         >/dev/null
+mk_repo "${ROOT_A}" group-a/repo-two         gitlab.com group-a/repo-two         >/dev/null
+mk_repo "${ROOT_A}" group-b/nested/flakelab  gitlab.com group-b/nested/flakelab  >/dev/null
+mk_repo "${ROOT_B}" flakelab                 gitlab.com group-b/nested/flakelab-b >/dev/null
+
+run_gc --repos-dir "${ROOT_A}" --repos-dir "${ROOT_B}"
+assert_rc 0 "all-current multi-root scan exits 0"
+assert_has "${ROOT_A}" "root A gets a header"
+assert_has "${ROOT_B}" "root B gets a header"
+assert_has "group-a/" "group header for a top-level group"
+assert_has "group-b/nested/" "group header for a nested subgroup"
+assert_has "repo-one" "repo row present"
+assert_has "4 repos in 2 roots" "summary counts repos and roots"
+assert_has "4 current" "summary counts current repos"
+
+# Positional roots are equivalent to --repos-dir.
+run_gc "${ROOT_A}" "${ROOT_B}"
+assert_rc 0 "positional roots work"
+assert_has "4 repos in 2 roots" "positional roots are both scanned"
+
+# A root with no repos must say so rather than claim success silently.
+mkdir -p "${TESTROOT}/roots/empty"
+run_gc "${TESTROOT}/roots/empty"
+assert_rc 0 "empty root exits 0"
+assert_has "No git repos found" "empty root is reported"
+
+# --quiet hides current rows but keeps the summary.
+run_gc --quiet --repos-dir "${ROOT_A}"
+assert_rc 0 "--quiet exits 0 when all current"
+assert_lacks "repo-one" "--quiet hides current rows"
+assert_has "3 current" "--quiet keeps the summary"
+
+# ── Repo states ──────────────────────────────────────────────────────
+print -r -- "states:"
+write_stub glab 0 /dev/null
+write_stub gh 0 /dev/null
+
+ST="${TESTROOT}/roots/states"
+mkdir -p "${ST}"
+
+# Uncommitted change to a tracked file.
+D="$(mk_repo "${ST}" dirty gitlab.com t/dirty)"
+print -r -- changed > "${D}/seed.txt"
+
+# Untracked file only.
+U="$(mk_repo "${ST}" untracked gitlab.com t/untracked)"
+print -r -- new > "${U}/extra.txt"
+
+# One unpushed commit.
+A="$(mk_repo "${ST}" ahead gitlab.com t/ahead)"
+print -r -- more > "${A}/b.txt"
+git -C "${A}" add b.txt && git -C "${A}" commit -qm ahead
+
+# Behind: a second clone pushes; fetching that is gitchecker's job.
+mk_repo "${ST}" behind gitlab.com t/behind >/dev/null
+BCLONE="${TESTROOT}/clone-behind"
+git clone -q "${TESTROOT}/bare/t/behind.git" "${BCLONE}"
+print -r -- upstream > "${BCLONE}/c.txt"
+git -C "${BCLONE}" add c.txt && git -C "${BCLONE}" commit -qm upstream
+git -C "${BCLONE}" push -q origin main
+
+# Diverged: a local commit plus a different upstream commit.
+V="$(mk_repo "${ST}" diverged gitlab.com t/diverged)"
+VCLONE="${TESTROOT}/clone-diverged"
+git clone -q "${TESTROOT}/bare/t/diverged.git" "${VCLONE}"
+print -r -- theirs > "${VCLONE}/d.txt"
+git -C "${VCLONE}" add d.txt && git -C "${VCLONE}" commit -qm theirs
+git -C "${VCLONE}" push -q origin main
+print -r -- mine > "${V}/e.txt"
+git -C "${V}" add e.txt && git -C "${V}" commit -qm mine
+
+# Detached HEAD.
+H="$(mk_repo "${ST}" detached gitlab.com t/detached)"
+git -C "${H}" checkout -q --detach HEAD
+
+# Branch with no upstream.
+N="$(mk_repo "${ST}" noupstream gitlab.com t/noupstream)"
+git -C "${N}" checkout -q -b orphan-work
+
+# Stashed work.
+S="$(mk_repo "${ST}" stashed gitlab.com t/stashed)"
+print -r -- wip > "${S}/seed.txt"
+git -C "${S}" stash -q
+
+# main is behind while HEAD sits on an unrelated branch — the case v1 misses.
+M="$(mk_repo "${ST}" hidden gitlab.com t/hidden)"
+MCLONE="${TESTROOT}/clone-hidden"
+git clone -q "${TESTROOT}/bare/t/hidden.git" "${MCLONE}"
+print -r -- moved > "${MCLONE}/f.txt"
+git -C "${MCLONE}" add f.txt && git -C "${MCLONE}" commit -qm moved
+git -C "${MCLONE}" push -q origin main
+git -C "${M}" checkout -q -b feat/side
+git -C "${M}" push -q -u origin feat/side
+
+# --no-ff first, against the untouched fixture: the default run below moves the
+# strictly-behind branch, so a later --no-ff run would find nothing to report.
+run_gc --repos-dir "${ST}" --no-ff
+assert_has "main: ↓1" "--no-ff reports a strictly-behind branch instead of moving it"
+assert_lacks "fast-forwarded" "--no-ff moves nothing"
+
+run_gc --repos-dir "${ST}"
+assert_rc 1 "a tree with stale repos exits 1"
+assert_has "1 dirty" "tracked modification counted"
+assert_has "↑1" "unpushed commit shown as ahead"
+assert_has "↓1" "unfetched upstream commit shown as behind"
+assert_has "diverged" "ahead+behind labelled diverged"
+assert_has "detached HEAD" "detached HEAD reported"
+assert_has "no upstream" "branch without upstream reported"
+assert_has "1 stashed" "stash reported"
+# A non-HEAD branch that is strictly behind is now fast-forwarded rather than
+# only reported - it moves via `git fetch . <upstream>:<branch>`, which cannot
+# touch the working tree.
+assert_has "fast-forwarded" "a strictly-behind non-HEAD branch is fast-forwarded"
+
+# It really moved, and a second pass has nothing left to do for it.
+run_gc --repos-dir "${ST}"
+assert_lacks "main: ↓1" "the branch stays fast-forwarded on a re-run"
+assert_lacks "0 need attention" "attention count is non-zero"
+
+# Gone upstream: delete the remote branch, gitchecker's own prune must find it.
+G="$(mk_repo "${ST}/gone-tree" gone gitlab.com t/gone)"
+git -C "${G}" checkout -q -b merged-feature
+git -C "${G}" push -q -u origin merged-feature
+git -C "${G}" checkout -q main
+git -C "${TESTROOT}/bare/t/gone.git" update-ref -d refs/heads/merged-feature
+run_gc --repos-dir "${ST}/gone-tree"
+assert_rc 1 "orphaned branch exits 1"
+assert_has "gone: merged-feature" "orphaned branch named"
+
+# --dirty-only keeps stale repos and drops current ones.
+run_gc --dirty-only --repos-dir "${ST}"
+assert_rc 1 "--dirty-only still exits 1"
+assert_has "dirty" "--dirty-only keeps stale repos"
+
+# --quiet is the summary alone — it drops attention rows too, which is what
+# distinguishes it from --dirty-only.
+run_gc --quiet --repos-dir "${ST}"
+assert_rc 1 "--quiet still exits 1 when repos are stale"
+assert_lacks "detached HEAD" "--quiet hides attention rows as well"
+assert_has "need attention" "--quiet keeps the summary line"
+
+# ── Forge queries ────────────────────────────────────────────────────
+print -r -- "forge:"
+FT="${TESTROOT}/roots/forge"
+mkdir -p "${FT}"
+mk_repo "${FT}" gl gitlab.com t/gl >/dev/null
+mk_repo "${FT}" gh github.com t/gh >/dev/null
+
+MR_JSON="${TESTROOT}/mr.json"
+cat > "${MR_JSON}" <<'JSON'
+[{"iid":412,"title":"bump tofu to 1.12.1","source_branch":"renovate/tofu","draft":false},
+ {"iid":410,"title":"split node pools","source_branch":"feat/pools","draft":true}]
+JSON
+PR_JSON="${TESTROOT}/pr.json"
+cat > "${PR_JSON}" <<'JSON'
+[{"number":14,"title":"update ESPHome yaml","headRefName":"feat/esphome","isDraft":false}]
+JSON
+write_stub glab 0 "${MR_JSON}"
+write_stub gh 0 "${PR_JSON}"
+
+run_gc --repos-dir "${FT}"
+assert_rc 1 "an open MR makes the repo need attention"
+assert_has "!412" "GitLab MR iid uses the ! sigil"
+assert_has "bump tofu to 1.12.1" "MR title listed"
+assert_has "renovate/tofu" "MR source branch listed"
+assert_has "DRAFT: split node pools" "draft MR marked"
+assert_has "#14" "GitHub PR iid uses the # sigil"
+assert_has "update ESPHome yaml" "PR title listed"
+assert_has "3 open MRs" "summary counts MRs and PRs"
+
+# A repo with no open MRs and nothing else wrong is current.
+write_stub glab 0 /dev/null
+write_stub gh 0 /dev/null
+run_gc --repos-dir "${FT}"
+assert_rc 0 "no open MRs means current"
+assert_has "2 current" "both repos current"
+
+# A failing forge query must abort, not silently report zero MRs.
+write_stub glab 1 /dev/null
+run_gc --repos-dir "${FT}"
+assert_rc 2 "failed glab query exits 2"
+assert_has "aborting" "abort is announced"
+assert_lacks "current" "no report is printed after an abort"
+write_stub glab 0 /dev/null
+
+# An unsupported forge host aborts rather than reporting an empty MR list.
+mk_repo "${TESTROOT}/roots/other" bb bitbucket.org t/bb >/dev/null
+run_gc --repos-dir "${TESTROOT}/roots/other"
+assert_rc 2 "unsupported forge host exits 2"
+assert_has "unsupported remote host" "unsupported host is named"
+
+# A title carrying a tab or newline must not shift the other fields or spawn a
+# bogus extra row — the record format has to survive arbitrary forge text.
+NASTY_JSON="${TESTROOT}/nasty.json"
+cat > "${NASTY_JSON}" <<'JSON'
+[{"iid":9,"title":"fix\ttab and\nnewline","source_branch":"feat/nasty","draft":false}]
+JSON
+write_stub glab 0 "${NASTY_JSON}"
+write_stub gh 0 /dev/null
+NT="${TESTROOT}/roots/nasty"
+mkdir -p "${NT}"
+mk_repo "${NT}" nasty gitlab.com t/nasty >/dev/null
+run_gc --repos-dir "${NT}"
+assert_rc 1 "MR with a tab in its title still counts"
+assert_has "feat/nasty" "source branch survives a tab in the title"
+assert_has "1 open MRs" "a tab in a title does not invent a second MR"
+write_stub glab 0 /dev/null
+
+# A repo sitting directly under a root has no group — it must not get a "./"
+# header invented for it.
+run_gc --repos-dir "${NT}"
+assert_lacks "./" "top-level repo gets no bogus ./ group header"
+
+# ── The non-interactive surface ──────────────────────────────────────
+print -r -- ""
+print -r -- "json and --repo:"
+
+# --json is a promise to a parser, so it is asserted by parsing: jq -e fails on
+# a malformed document, and every field a caller would branch on is read back.
+JR="${TESTROOT}/roots/json"
+mkdir -p "${JR}"
+JSON_REPO="$(mk_repo "${JR}" jsonrepo gitlab.com t/jsonrepo)"
+print -r -- dirt > "${JSON_REPO}/dirty.txt"
+git -C "${JSON_REPO}" add dirty.txt
+
+MR_JSON="${TESTROOT}/mr.json"
+cat > "${MR_JSON}" <<'JSON'
+[{"iid":7,"title":"a \"quoted\" title","source_branch":"feat/x","draft":true}]
+JSON
+write_stub glab 0 "${MR_JSON}"
+run_gc --repos-dir "${JR}" --json
+assert_rc 1 "--json still exits 1 when a repo needs attention"
+print -r -- "${GC_OUT}" | jq -e . >/dev/null 2>&1 \
+  && { (( PASSED++ )); print -r -- "  ok   --json emits parseable JSON" } \
+  || { (( FAILED++ )); print -r -- "  FAIL --json emits parseable JSON" }
+assert_has '"state": "attention"' "the repo state is a field, not prose"
+assert_has '"tracked": 1' "staged work is counted in the document"
+assert_has '"draft": true' "draft is a boolean, not a title prefix"
+assert_has 'a \"quoted\" title' "a quote in a title is escaped, not fatal"
+assert_lacks $'\e[' "--json never colours its output"
+write_stub glab 0 /dev/null
+
+# An abort must still be one document: a caller that tells "clean" from "died"
+# by whether stdout was empty gets it wrong exactly once.
+mk_repo "${TESTROOT}/roots/deadjson" deadjson gitlab.com t/deadjson >/dev/null
+rm -rf "${TESTROOT}/bare/t/deadjson.git"
+run_gc --repos-dir "${TESTROOT}/roots/deadjson" --json
+assert_rc 2 "--json exits 2 on abort"
+assert_has '"ok": false' "the abort document says so"
+assert_has '"aborted"' "the abort document names the failure"
+
+# --repo names a repo outright rather than a tree to search.
+run_gc --repo "${JSON_REPO}" --quiet
+assert_rc 1 "--repo scans exactly the named repo"
+assert_has "Scanned 1 repos" "and only that one"
+
+run_gc --repo "${TESTROOT}/not-a-repo"
+assert_rc 2 "--repo on a non-repo exits 2"
+assert_has "not a git repo" "and names what was wrong"
+
+# ── Paging past the first hundred ────────────────────────────────────
+print -r -- ""
+print -r -- "paging:"
+
+# A project with more open MRs than one page. The stub answers per --page, so a
+# script that asks for page 1 and calls it the answer reports 100 and stops.
+PAGE1="${TESTROOT}/page1.json"
+jq -n '[range(1; 101) | {iid: ., title: "mr \(.)", source_branch: "b\(.)", draft: false}]' > "${PAGE1}"
+PAGE2="${TESTROOT}/page2.json"
+jq -n '[range(101; 104) | {iid: ., title: "mr \(.)", source_branch: "b\(.)", draft: false}]' > "${PAGE2}"
+cat > "${STUB_DIR}/glab" <<STUB
+#!/usr/bin/env zsh
+[[ "\$1" == auth ]] && exit 0
+case "\$*" in
+  *"--page 1"*) cat "${PAGE1}" ;;
+  *"--page 2"*) cat "${PAGE2}" ;;
+  *)            print -r -- '[]' ;;
+esac
+exit 0
+STUB
+chmod +x "${STUB_DIR}/glab"
+PG="${TESTROOT}/roots/paged"
+mkdir -p "${PG}"
+mk_repo "${PG}" paged gitlab.com t/paged >/dev/null
+run_gc --repos-dir "${PG}" --quiet
+assert_rc 1 "a project past one page still exits 1"
+assert_has "103 open MRs" "every page is counted, not just the first"
+
+# Every page full to the cap means the list is truncated, and a truncated list
+# is the thing an open-MR guard must never be built on.
+cat > "${STUB_DIR}/glab" <<STUB
+#!/usr/bin/env zsh
+[[ "\$1" == auth ]] && exit 0
+cat "${PAGE1}"
+exit 0
+STUB
+chmod +x "${STUB_DIR}/glab"
+run_gc --repos-dir "${PG}"
+assert_rc 2 "a list that never ends aborts instead of truncating"
+assert_has "refusing to work from a truncated list" "the truncation is named"
+write_stub glab 0 /dev/null
+
+# gh caps by count rather than by page, so a reply that fills the limit is
+# indistinguishable from one cut off at it. Both forges must refuse the same way.
+GH_FULL="${TESTROOT}/gh-full.json"
+jq -n '[range(1; 4) | {number: ., title: "pr \(.)", headRefName: "b\(.)", isDraft: false}]' > "${GH_FULL}"
+write_stub gh 0 "${GH_FULL}"
+GHR="${TESTROOT}/roots/ghfull"
+mkdir -p "${GHR}"
+mk_repo "${GHR}" ghfull github.com t/ghfull >/dev/null
+export GITSCAN_GH_LIMIT=3
+run_gc --repos-dir "${GHR}"
+unset GITSCAN_GH_LIMIT
+assert_rc 2 "a gh reply that fills the limit aborts"
+assert_has "refusing to work from a truncated list" "the gh truncation is named"
+write_stub gh 0 /dev/null
+
+# A dead remote must abort — a stale 'current' is the bug this replaces.
+mk_repo "${TESTROOT}/roots/dead" dead gitlab.com t/dead >/dev/null
+rm -rf "${TESTROOT}/bare/t/dead.git"
+run_gc --repos-dir "${TESTROOT}/roots/dead"
+assert_rc 2 "unreachable remote exits 2"
+assert_has "git fetch --prune failed" "fetch failure is named"
+
+finish

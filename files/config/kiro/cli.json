@@ -1,0 +1,47 @@
+{
+  "chat.allowIcons": true,
+  "chat.defaultInterruptBehavior": "steer",
+  "chat.defaultModel": "claude-opus-5",
+  "chat.disableTrustAllConfirmation": true,
+  "chat.historyMode": "global",
+  "chat.keybindings.cancelStream": "ctrl+c",
+  "chat.modelDefaults": {
+    "claude-opus-5": {
+      "output_config": {
+        "effort": "high"
+      }
+    }
+  },
+  "chat.showThinking": "collapsed",
+  "chat.statusLine.tui": {
+    "credits": true,
+    "date": true,
+    "time": true,
+    "usage": true
+  },
+  "chat.terminalTitle": true,
+  "chat.verbosity.tui": {
+    "display": {
+      "argsMaxChars": null,
+      "argsMaxLines": null,
+      "outputMaxChars": null,
+      "outputMaxLines": 5,
+      "persistOutput": false,
+      "showElapsed": false,
+      "showTasks": true,
+      "showThinkingContent": true,
+      "showToolReasoning": false,
+      "showWriteDiffs": true,
+      "subagent": {
+        "deps": false,
+        "pipeline": false,
+        "prompts": false,
+        "responses": false,
+        "roles": false
+      },
+      "thinkingDisplay": "collapsed",
+      "toolArgsMode": "block"
+    },
+    "filters": ["all", "-subagent"]
+  }
+}

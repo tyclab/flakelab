@@ -1,0 +1,479 @@
+#!/usr/bin/env zsh
+
+# NOT set -e: every check must run so the operator sees the full picture in one
+# pass. A doctor that stops at the first finding cannot enumerate breakages.
+set -uo pipefail
+
+#
+# Diagnose a provisioned flakelab distro and say exactly what is wrong.
+#
+# Complements the activation health check in nix/home/health.nix, which can only assert
+# what holds unattended. The checks here also cover the state that needs a TTY or
+# an ssh-agent — precisely the things that break silently: an agent holding no
+# key, a 644 glab config, a CRLF secrets.env.
+#
+# Usage: flakelab doctor [--strict] [--quiet] [--help]  (script name: nix-doctor)
+#
+# Exit status: 0 all blocking checks passed, 1 at least one failed.
+#
+
+# Colors (print -P)
+GREEN="%F{green}"
+YELLOW="%F{yellow}"
+RED="%F{red}"
+CYAN="%F{cyan}"
+RESET="%f"
+
+STRICT=false
+QUIET=false
+
+while (( $# > 0 )); do
+  case $1 in
+    --strict) STRICT=true ;;
+    --quiet)  QUIET=true ;;
+    --help|-h)
+      echo "Usage: nix-doctor [options]"
+      echo ""
+      echo "Checks a provisioned flakelab distro and reports every finding."
+      echo ""
+      echo "Options:"
+      echo "  --strict   treat WARN findings as failures (exit 1)"
+      echo "  --quiet    print only FAIL/WARN lines and the summary"
+      echo "  --help     show this help message"
+      echo ""
+      echo "Blocking checks cover: the WSLInterop handler, kiro-cli, Claude Code,"
+      echo "the kiro-plugin checkout, ~/.kiro agents/skills/steering, mcp.json,"
+      echo "which git config file wins, secrets.env (mode + CRLF), glab config"
+      echo "modes (global and repo-local), glab auth, the ssh-agent and its keys,"
+      echo "GitLab SSH, cloned repos, a writable npm prefix, and the activation"
+      echo "warning log."
+      echo ""
+      echo "Non-blocking (WARN): Claude plugins installed."
+      echo ""
+      echo "The GitLab checks (token, glab auth, the git@gitlab.com SSH probe)"
+      echo "are skipped when the overlay configures no gitlabGroups, repos or"
+      echo "kiroPluginRepo — nothing on such a box ever talks to GitLab."
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+FAIL=0
+WARN=0
+
+log_head() { ${QUIET} || print -P "${CYAN}==>${RESET} $1" }
+log_ok()   { ${QUIET} || print -P "  ${GREEN}[ OK ]${RESET} $1" }
+log_fail() { print -P "  ${RED}[FAIL]${RESET} $1" >&2; FAIL=$(( FAIL + 1 )) }
+log_warn() { print -P "  ${YELLOW}[WARN]${RESET} $1" >&2; WARN=$(( WARN + 1 )) }
+log_hint() { print -P "         $1" >&2 }
+
+# Where the kiro-plugin checkout is expected, and the substring its `origin`
+# remote must contain. The wrapper in nix/scripts.nix exports BOTH, derived from
+# the kiroPluginRepo option (nix/scripts.nix takes the flakelab option set as `cfg`)
+# exactly as nix/home/default.nix derives the clone path, so an overlay that
+# overrides the repo is not measured against someone else's default. When plugins
+# are disabled (kiroPluginRepo = null) the wrapper exports them empty and these
+# checks skip — hence `-` and not `:-`, which would resurrect a default that does
+# not apply.
+KIRO_PLUGIN_DIR="${FLAKELAB_KIRO_PLUGIN_DIR-}"
+KIRO_PLUGIN_REMOTE="${FLAKELAB_KIRO_PLUGIN_REMOTE-}"
+
+# How much GitLab this box is configured for, exported by the same wrapper from
+# gitlabGroups and repos. An overlay that sets neither never calls glab and never
+# clones over git@gitlab.com, so a missing GITLAB_TOKEN, an unauthenticated glab
+# and a failing SSH probe are all "not configured", not findings — the same
+# distinction the kiro-plugin block above draws. Unset means 0 for the same
+# reason those two default to empty: run outside the wrapper, the doctor knows
+# nothing about this box's options and must not invent a requirement.
+GITLAB_GROUPS="${FLAKELAB_GITLAB_GROUPS-0}"
+GITLAB_REPOS="${FLAKELAB_GITLAB_REPOS-0}"
+# Group discovery is the only thing that drives glab; any git@ clone — the groups,
+# the explicit repos, the kiro-plugin checkout — needs the SSH identity.
+needs_glab() { (( GITLAB_GROUPS > 0 )) }
+needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) || [[ -n "${KIRO_PLUGIN_REMOTE}" ]] }
+SECRETS="${HOME}/.config/tyc/secrets.env"
+WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
+
+# ---------------------------------------------------------------------------
+# Activation warnings recorded by flakelab-warn
+# ---------------------------------------------------------------------------
+log_head "Activation"
+if [[ -s "${WARN_LOG}" ]]; then
+  log_fail "activation step(s) reported failures (${WARN_LOG}):"
+  local line
+  while IFS= read -r line; do
+    log_hint "${line}"
+  done < "${WARN_LOG}"
+  log_hint "Re-run: flakelab update"
+else
+  log_ok "no activation failures recorded"
+fi
+
+# ---------------------------------------------------------------------------
+# WSL interop
+# ---------------------------------------------------------------------------
+log_head "WSL interop"
+# binfmt_misc is one kernel-global registry shared by every distro in the WSL2 VM,
+# so a wipe there takes every .exe call in every distro with it (known-issues.md).
+# Nothing announces it: the first symptom is `exec format error` on an unrelated
+# binary. The entry is WSLInterop here; systemd-binfmt names it WSLInterop-late
+# instead (microsoft/WSL#13449), so both spellings count.
+if [[ ! -e /proc/sys/fs/binfmt_misc/register ]]; then
+  log_fail "binfmt_misc is not mounted — no interpreter registry at all"
+  log_hint "every .exe call fails; recover with 'wsl --shutdown' from a Windows terminal"
+elif [[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]; then
+  log_ok "WSLInterop handler registered"
+else
+  log_fail "WSLInterop handler missing — .exe calls fail with 'exec format error'"
+  log_hint "There is no in-distro repair for this — do not attempt one."
+  log_hint "The only fix is 'wsl --shutdown' from a WINDOWS terminal, then re-enter:"
+  log_hint "WSL re-registers the handler itself on VM boot."
+  log_hint "It kills every session in the VM, so it is the operator's call, never an agent's."
+  log_hint "Upstream: https://github.com/microsoft/WSL/issues/8203 (binfmt_misc namespacing, open)"
+fi
+
+# ---------------------------------------------------------------------------
+# AI CLIs
+# ---------------------------------------------------------------------------
+log_head "AI CLIs"
+if [[ -x "${HOME}/.local/bin/kiro-cli" ]]; then
+  log_ok "kiro-cli present (~/.local/bin/kiro-cli)"
+elif command -v kiro-cli > /dev/null 2>&1; then
+  log_ok "kiro-cli on PATH ($(command -v kiro-cli))"
+else
+  log_fail "kiro-cli not installed"
+  log_hint "curl -fsSL https://cli.kiro.dev/install | bash"
+fi
+
+# `which kiro` is a decoy on WSL: interop resolves it to the Windows IDE under
+# /mnt/c/.../Programs/Kiro/bin/kiro, which is not the CLI.
+if command -v kiro > /dev/null 2>&1 && [[ "$(command -v kiro)" == /mnt/* ]]; then
+  log_ok "note: \`kiro\` resolves to the Windows IDE via interop, not the CLI"
+fi
+
+if [[ -x "${HOME}/.local/bin/claude" ]]; then
+  log_ok "claude present ($(${HOME}/.local/bin/claude --version 2>/dev/null || echo 'version unknown'))"
+elif command -v claude > /dev/null 2>&1; then
+  log_ok "claude on PATH ($(command -v claude))"
+else
+  log_fail "Claude Code not installed"
+  log_hint "curl -fsSL https://claude.ai/install.sh | bash"
+fi
+
+# ---------------------------------------------------------------------------
+# Kiro plugins — agents / skills / steering / hooks / mcp.json
+# ---------------------------------------------------------------------------
+log_head "Kiro plugins"
+if [[ -z "${KIRO_PLUGIN_DIR}" ]]; then
+  # kiroPluginRepo = null: there is no checkout to find and ~/.kiro is whatever
+  # the operator put there, so every finding here would be a false FAIL.
+  log_ok "kiro plugins disabled for this user — skipping checkout and ~/.kiro checks"
+else
+  if [[ -d "${KIRO_PLUGIN_DIR}/.git" ]]; then
+    local remote
+    remote="$(git -C "${KIRO_PLUGIN_DIR}" remote get-url origin 2>/dev/null || true)"
+    if [[ "${remote}" == *"${KIRO_PLUGIN_REMOTE}"* ]]; then
+      log_ok "kiro-plugin checkout on the configured remote (${KIRO_PLUGIN_DIR})"
+    else
+      log_fail "kiro-plugin checkout is not the configured repo: origin=${remote:-<none>}"
+      log_hint "expected a remote containing ${KIRO_PLUGIN_REMOTE}"
+    fi
+  else
+    log_fail "no kiro-plugin checkout at ${KIRO_PLUGIN_DIR}"
+    log_hint "git clone git@gitlab.com:${KIRO_PLUGIN_REMOTE}.git ${KIRO_PLUGIN_DIR}"
+    log_hint "then: make -C ${KIRO_PLUGIN_DIR} install-global"
+  fi
+
+  # `make install-global` is what copies these out of the checkout; an empty dir
+  # means the clone failed on SSH and the Makefile guard skipped the install.
+  local kdir count
+  for kdir in agents skills steering hooks; do
+    count=$(print -rl -- "${HOME}/.kiro/${kdir}"/*(N) | grep -c . || true)
+    if (( count > 0 )); then
+      log_ok "~/.kiro/${kdir}: ${count} entr(y|ies)"
+    else
+      log_fail "~/.kiro/${kdir} is empty"
+      log_hint "make -C ${KIRO_PLUGIN_DIR} install-global"
+    fi
+  done
+fi
+
+MCP="${HOME}/.kiro/settings/mcp.json"
+if [[ -f "${MCP}" ]] && jq -e . "${MCP}" > /dev/null 2>&1; then
+  local servers nservers
+  servers="$(jq -r '(.mcpServers // {}) | keys | join(", ")' "${MCP}" 2>/dev/null)"
+  nservers="$(jq -r '(.mcpServers // {}) | length' "${MCP}" 2>/dev/null)"
+  if (( nservers > 0 )); then
+    log_ok "mcp.json: ${nservers} server(s) — ${servers}"
+  else
+    log_fail "mcp.json parses but declares no MCP servers"
+  fi
+else
+  log_fail "~/.kiro/settings/mcp.json missing or not valid JSON"
+fi
+
+# ---------------------------------------------------------------------------
+# Git config — which file git actually reads the flake's keys from
+# ---------------------------------------------------------------------------
+log_head "Git config"
+GITCONFIG="${HOME}/.gitconfig"
+XDG_GITCONFIG="${HOME}/.config/git/config"
+# Measure the effect, not the file list: git reads ~/.gitconfig last, so a real
+# file there wins over the flake's ~/.config/git/config for every key both set —
+# silently, which is how a distro can run for weeks with programs.git.settings
+# doing nothing and safe.directory naming a checkout that no longer matters.
+if [[ ! -f "${XDG_GITCONFIG}" && ! -L "${XDG_GITCONFIG}" ]]; then
+  log_fail "no ${XDG_GITCONFIG} — programs.git rendered nothing"
+  log_hint "flakelab update   (programs.git.enable must be true in nix/home/git-ssh.nix)"
+else
+  local emailOrigin
+  emailOrigin="$(git config --show-origin --get user.email 2>/dev/null | cut -f1)"
+  emailOrigin="${emailOrigin#file:}"
+  if [[ -z "${emailOrigin}" ]]; then
+    log_fail "git has no user.email from any config file"
+    log_hint "set gitEmail in the overlay (or flakelab.gitEmail from a module) and run flakelab update"
+  elif [[ "${emailOrigin}" == "${XDG_GITCONFIG}" ]]; then
+    log_ok "git reads the flake's config (${XDG_GITCONFIG})"
+  elif [[ "${emailOrigin}" == "${GITCONFIG}" ]] && [[ -L "${GITCONFIG}" ]]; then
+    # The flake owns ~/.gitconfig as an include of the XDG file, so resolving
+    # here is correct — the values still come from home-manager.
+    log_ok "git reads ~/.gitconfig, which the flake points at ${XDG_GITCONFIG}"
+  else
+    log_fail "${emailOrigin} shadows the flake's ${XDG_GITCONFIG}"
+    log_hint "git reads it last, so programs.git.settings is inert for every key both set"
+    log_hint "check what it overrides: git config --show-origin --get-all safe.directory"
+    log_hint "the flake owns ~/.gitconfig as an include; take it back with:"
+    log_hint "mv ${emailOrigin} ${emailOrigin}.pre-flakelab && flakelab update"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Secrets (shape only — never a value)
+# ---------------------------------------------------------------------------
+log_head "Secrets"
+if [[ ! -f "${SECRETS}" ]]; then
+  log_fail "no ${SECRETS}"
+  log_hint "populate it from OpenBao, or: flakelab backup --restore"
+  log_hint "see files/config/secrets.env.example for the expected keys"
+else
+  local mode keys
+  mode="$(stat -c '%a' "${SECRETS}")"
+  if [[ "${mode}" == "600" ]]; then
+    log_ok "secrets.env mode 600"
+  else
+    log_fail "secrets.env is mode ${mode}, expected 600"
+    log_hint "chmod 600 ${SECRETS}"
+  fi
+  # A CR inside a single-quoted value makes GITLAB_TOKEN one byte too long and
+  # every GitLab API call fails with `invalid header field value`.
+  if grep -q $'\r' "${SECRETS}"; then
+    log_fail "secrets.env has CRLF line endings; every token carries a trailing CR"
+    log_hint "sed -i 's/\\r\$//' ${SECRETS} && exec zsh -l"
+  else
+    log_ok "secrets.env free of carriage returns"
+  fi
+  # setup-wsl-nix.ps1 generates bare KEY= lines (the file is sourced under
+  # `set -a`), so counting only `export` lines reported 0 on every provisioned
+  # box — and a computed count fed straight to log_ok is a check that cannot
+  # fail. Count both spellings, and an empty file is a finding, not an OK.
+  keys=$(grep -cE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "${SECRETS}" || true)
+  if (( keys > 0 )); then
+    log_ok "secrets.env defines ${keys} key(s)"
+  else
+    log_fail "secrets.env defines no keys"
+    log_hint "populate it from OpenBao; see files/config/secrets.env.example"
+  fi
+fi
+
+if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+  # The file being clean is not enough: a shell that started before secrets.env
+  # was repaired still carries the old value, and every glab call then dies with
+  # `invalid header field value for "Private-Token"` while the file verdict above
+  # says OK. Verdict and length only — never the value. Checked whenever the
+  # variable IS set, configured groups or not: a broken token is broken.
+  if [[ "${GITLAB_TOKEN}" == *[[:cntrl:]]* ]]; then
+    log_fail "GITLAB_TOKEN carries a control character (${#GITLAB_TOKEN} chars)"
+    log_hint "the value in THIS shell is stale, even if secrets.env is already fixed"
+    log_hint "start a fresh login shell: exec zsh -l"
+  else
+    log_ok "GITLAB_TOKEN exported in this shell (${#GITLAB_TOKEN} chars, no control characters)"
+  fi
+elif needs_glab; then
+  log_fail "GITLAB_TOKEN not exported in this shell"
+  log_hint "flakelab clone needs it for group discovery (${GITLAB_GROUPS} group(s) configured)"
+  log_hint "the zsh hook sources secrets.env at login; start a login shell (exec zsh -l)"
+else
+  log_ok "no gitlabGroups configured for this user — skipping the GITLAB_TOKEN check"
+fi
+
+# ---------------------------------------------------------------------------
+# GitLab CLI
+# ---------------------------------------------------------------------------
+log_head "GitLab CLI"
+# glab refuses to start on ANY config file it reads at a mode other than 600 —
+# config.yml and aliases.yml alike — and exits non-zero, which kills
+# `flakelab clone` inside its `set -e` discovery fence before a single clone.
+local yml seen=0 bad=0
+for yml in "${HOME}"/.config/glab-cli/*.yml(N.); do
+  seen=$(( seen + 1 ))
+  mode="$(stat -c '%a' "${yml}")"
+  if [[ "${mode}" != "600" ]]; then
+    bad=$(( bad + 1 ))
+    log_fail "${yml} is mode ${mode}, glab requires 600"
+    log_hint "chmod 600 ${yml}"
+  fi
+done
+if (( seen == 0 )); then
+  log_warn "no ~/.config/glab-cli/*.yml — glab has never been configured here"
+elif (( bad == 0 )); then
+  log_ok "glab-cli config modes correct (${seen} file(s))"
+fi
+
+# The same 600 rule applies to the REPO-LOCAL config glab reads from
+# $PWD/.git/glab-cli/, which `glab config set` writes whenever it runs without
+# --global. One such file breaks every glab call made from that checkout while
+# ~/.config/glab-cli stays spotless, so the loop above reports all-clear. Files
+# created on a /mnt drvfs mount land 0777, which is how this arrives.
+# -prune stops the descent at each .git, matching the Repos check below.
+local gitdir localSeen=0 localBad=0
+while IFS= read -r gitdir; do
+  for yml in "${gitdir}"/glab-cli/*.yml(N.); do
+    localSeen=$(( localSeen + 1 ))
+    mode="$(stat -c '%a' "${yml}")"
+    if [[ "${mode}" != "600" ]]; then
+      localBad=$(( localBad + 1 ))
+      log_fail "${yml} is mode ${mode}, glab requires 600"
+      log_hint "chmod 600 ${yml}   # repo-local config: breaks glab only inside that checkout"
+    fi
+  done
+done < <(find "${HOME}/git" -type d -name .git -prune -print 2>/dev/null)
+if (( localSeen > 0 && localBad == 0 )); then
+  log_ok "repo-local glab config modes correct (${localSeen} file(s))"
+fi
+
+if ! needs_glab; then
+  log_ok "no gitlabGroups configured for this user — skipping the glab auth check"
+elif glab auth status > /dev/null 2>&1; then
+  log_ok "glab authenticated"
+else
+  # An offline shell fails here with a perfectly good token, so the hint must not
+  # send the operator off to rotate credentials first.
+  log_fail "glab auth status failed — credentials OR reachability"
+  log_hint "glab auth status   # shows the reason (network, config mode, or token)"
+fi
+
+# ---------------------------------------------------------------------------
+# SSH — the precondition every git@ clone shares
+# ---------------------------------------------------------------------------
+log_head "SSH"
+if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+  log_fail "SSH_AUTH_SOCK unset — no ssh-agent in this shell"
+  log_hint "systemctl --user status ssh-agent.service"
+else
+  # Capture the status before testing it. `! ssh-add -l` replaces it with the
+  # negation, so a dead socket (2) becomes indistinguishable from an agent that
+  # holds no key (1) and every stale socket gets the wrong remedy.
+  local agentKeys agentStatus
+  agentKeys="$(ssh-add -l 2>/dev/null)"
+  agentStatus=$?
+  if (( agentStatus == 0 )); then
+    log_ok "ssh-agent holds $(print -r -- "${agentKeys}" | grep -c .) key(s)"
+  elif (( agentStatus == 2 )); then
+    log_fail "cannot reach the ssh-agent at ${SSH_AUTH_SOCK}"
+    log_hint "the socket is stale or the agent is down"
+    log_hint "systemctl --user restart ssh-agent.service   # then: exec zsh -l"
+  else
+    log_fail "ssh-agent is running but holds NO key"
+    log_hint "the TTY-gated hook in the flake's zsh initContent loads every sshKeys"
+    log_hint "entry on interactive login — start a login shell, or: ssh-add ~/.ssh/id_ed25519"
+  fi
+fi
+
+if ! needs_gitlab_ssh; then
+  log_ok "nothing on this box clones from gitlab.com — skipping the SSH probe"
+elif ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@gitlab.com 2>&1 | grep -q "Welcome to GitLab"; then
+  log_ok "git@gitlab.com authenticates (BatchMode, no prompt)"
+else
+  # The probe cannot tell a missing key from an unreachable host, so it names
+  # both: offline this fails with a key that is loaded and working.
+  log_fail "git@gitlab.com does NOT authenticate non-interactively"
+  log_hint "every git clone and the kiro-plugin clone depend on this. Either the"
+  log_hint "host is unreachable or no key is loaded: ssh-add ~/.ssh/id_ed25519"
+fi
+
+# ---------------------------------------------------------------------------
+# Repos
+# ---------------------------------------------------------------------------
+log_head "Repos"
+# -prune stops the descent at each .git: without it find walks the internals of
+# every clone to a depth it can never match anything at. No -maxdepth: repos nest
+# as deep as the GitLab group structure goes, and a cap silently undercounts.
+count=$(find "${HOME}/git" -type d -name .git -prune -printf '.' 2>/dev/null | wc -c)
+if (( count > 0 )); then
+  log_ok "${count} clone(s) under ~/git"
+else
+  log_fail "no clones under ~/git"
+  log_hint "flakelab clone   (needs GITLAB_TOKEN, a 600 glab config and a loaded key)"
+fi
+
+# ---------------------------------------------------------------------------
+# npm
+# ---------------------------------------------------------------------------
+log_head "npm"
+# npm's default prefix is the read-only nodejs store path, so `npm i -g` dies with
+# ENOENT; the flake writes ~/.npmrc with prefix=$HOME/.npm-global to fix it.
+local prefix
+prefix="$(npm config get prefix 2>/dev/null || true)"
+if [[ -z "${prefix}" ]]; then
+  log_fail "could not read npm config get prefix"
+elif [[ "${prefix}" == /nix/store/* ]]; then
+  log_fail "npm prefix is the read-only store path ${prefix}"
+  log_hint "npm install -g <pkg> fails with ENOENT; the flake should write ~/.npmrc"
+elif [[ -w "${prefix}" ]] || [[ ! -e "${prefix}" && -w "${prefix:h}" ]]; then
+  log_ok "npm prefix writable (${prefix})"
+else
+  log_fail "npm prefix ${prefix} is not writable"
+fi
+
+# ---------------------------------------------------------------------------
+# Non-blocking: needs the network, or is merely untidy
+# ---------------------------------------------------------------------------
+log_head "Operator state (non-blocking)"
+if [[ -x "${HOME}/.local/bin/claude" ]]; then
+  # `plugin list | grep -qv "No plugins installed"` succeeds on the "Installed
+  # plugins:" header alone, so it reports plugins on an empty install. Count the
+  # per-plugin `Version:` lines instead: one entry, one line, no header to fool it.
+  local pluginList pluginCount
+  pluginList="$("${HOME}/.local/bin/claude" plugin list 2>/dev/null)"
+  pluginCount=$(print -r -- "${pluginList}" | grep -c '^[[:space:]]*Version:' || true)
+  if (( pluginCount > 0 )); then
+    log_ok "Claude plugins installed (${pluginCount})"
+  else
+    log_warn "Claude has no plugins installed"
+    log_hint "needs a reachable marketplace: flakelab update replays the install"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+if ${STRICT} && (( WARN > 0 )); then
+  FAIL=$(( FAIL + WARN ))
+  print -P "${YELLOW}--strict: ${WARN} warning(s) counted as failures${RESET}" >&2
+fi
+if (( FAIL > 0 )); then
+  print -P "${RED}nix-doctor: ${FAIL} problem(s), ${WARN} warning(s).${RESET}" >&2
+  exit 1
+fi
+if (( WARN > 0 )); then
+  print -P "${GREEN}nix-doctor: no blocking problems${RESET} (${WARN} warning(s))."
+else
+  print -P "${GREEN}nix-doctor: all checks passed.${RESET}"
+fi
+exit 0

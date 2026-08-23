@@ -1,0 +1,169 @@
+#!/usr/bin/env zsh
+# Drive the Windows provisioning script from inside a WSL distro.
+#
+# Everything about doing this by hand is a trap. The script lives on the Windows
+# side and only works there, so it has to go through `powershell.exe`; and it must
+# be given an absolute drive path, because a shell sitting on ext4 makes PowerShell
+# inherit a `\\wsl.localhost\...` cwd it cannot use.
+#
+# What this cannot do is drive a run that restarts the distro it is running in.
+# `provision` restarts it twice - `wsl --terminate` halfway through to apply the new
+# user, then `wsl --shutdown` at the closing interop heal - and each one kills this
+# shell. Detaching does not save it: a Windows process started over interop belongs
+# to the `wsl` relay of the distro that launched it, so the restart takes the run
+# down too, wherever its Linux session is. Measured 2026-08-13: such a process
+# stopped one second after the terminate, mid-run, with no way to tell how far it
+# got.
+#
+# wslkube settled this for the whole family of these scripts - "running from
+# Windows PowerShell is unaffected" (wslkube docs/known-issues.md) - and the same
+# rule applies here. So: read-only commands run in the foreground, and the ones that
+# restart the distro print the command for a Windows terminal instead of pretending
+# to survive.
+set -uo pipefail
+
+_self="${0:t}"
+
+die() { print -ru2 -- "${_self}: $*"; exit 1 }
+
+usage() {
+  cat <<EOF
+${_self} - run the Windows provisioning script from inside WSL
+
+  ${_self} [options] [command] [-- <extra args for the .ps1>]
+
+Commands (passed through): status (default), generate, init, bootstrap, migrate,
+provision. Anything not recognised is passed through unchanged.
+
+provision, bootstrap and migrate restart this distro, so they are not run from
+here: the command to paste into a Windows PowerShell is printed instead.
+
+Only 'generate' and 'init' need Windows at all. To write the overlay WITHOUT
+PowerShell - on Linux, on macOS, or in here - use the flakelab checkout's own
+  files/scripts/nix-overlay-generate --out <dir> --config <user_data.yaml>
+which reads the same user_data.yaml schema and never calls wsl.exe.
+
+Options:
+  --repo <path>   the flakelab checkout holding setup-wsl-nix.ps1 (WSL or Windows
+                  path). Default: found next to the overlay.
+  --foreground    run even a restarting command here, losing this shell with it
+  -h, --help      this text
+
+Examples:
+  ${_self} status
+  ${_self} generate -- -Config ..\\wslkube\\files\\config\\user_data.yaml
+  ${_self} provision -- -DryRun
+  ${_self} provision              # prints the Windows PowerShell command
+EOF
+}
+
+# --- arguments -------------------------------------------------------------
+_repo=""
+_foreground=false
+_cmd=""
+_ps_args=()
+
+while (( $# )); do
+  case "$1" in
+    --repo)       shift; _repo="${1:-}"; [[ -n "${_repo}" ]] || die "--repo needs a path" ;;
+    --foreground) _foreground=true ;;
+    -h|--help)    usage; exit 0 ;;
+    --)           shift; _ps_args+=("$@"); break ;;
+    -*)           _ps_args+=("$1") ;;
+    *)            if [[ -z "${_cmd}" ]]; then _cmd="$1"; else _ps_args+=("$1"); fi ;;
+  esac
+  shift
+done
+[[ -n "${_cmd}" ]] || _cmd='status'
+
+# --- environment gates -----------------------------------------------------
+grep -qi microsoft /proc/version 2>/dev/null || die "this only runs inside WSL"
+
+# powershell.exe is itself an interop call, so a wiped WSLInterop handler is the
+# first thing to check - otherwise the failure is 'exec format error' from a
+# binary the user never mentioned. known-issues.md covers the wipe.
+if [[ ! -e /proc/sys/fs/binfmt_misc/WSLInterop && ! -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]; then
+  die "WSL interop is broken (no WSLInterop in /proc/sys/fs/binfmt_misc), so .exe calls fail.
+  Heal it from a Windows terminal:  wsl --shutdown
+  then re-enter this distro and retry."
+fi
+
+_ps="$(command -v powershell.exe || print -- /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)"
+[[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
+
+# --- locate the checkout ---------------------------------------------------
+# FLAKELAB_REPO_ROOT is the overlay (nix/scripts.nix exports repoPath); the
+# provisioning script lives in the template checkout beside it, which is exactly
+# where the overlay's own nixdev.ps1 wrapper looks for it.
+if [[ -z "${_repo}" ]]; then
+  _parent="${${FLAKELAB_REPO_ROOT:-}:h}"
+  if [[ -n "${_parent}" && -d "${_parent}" ]]; then
+    for _d in "${_parent}"/*(/N); do
+      if [[ -f "${_d}/setup-wsl-nix.ps1" ]]; then _repo="${_d}"; break; fi
+    done
+  fi
+fi
+[[ -n "${_repo}" ]] || die "no checkout with setup-wsl-nix.ps1 found - pass --repo <path>"
+
+# Accept either form: a Windows path is converted for the checks below.
+case "${_repo}" in
+  [A-Za-z]:[\\/]*) _repo="$(wslpath -u "${_repo}")" || die "cannot convert '${_repo}'" ;;
+esac
+_repo="${_repo:A}"
+_script="${_repo}/setup-wsl-nix.ps1"
+[[ -f "${_script}" ]] || die "no setup-wsl-nix.ps1 in ${_repo}"
+
+# The .ps1 derives every path it hands the distro from a drive letter, so the
+# checkout has to be reachable as one. wslpath fails on anything else, which is
+# the same refusal the script itself now makes.
+_script_win="$(wslpath -w "${_script}" 2>/dev/null)" \
+  || die "${_repo} is not on a Windows drive - keep the checkout under C:\\Users\\<name>\\git\\"
+case "${_script_win}" in
+  [A-Za-z]:[\\/]*) ;;
+  *) die "${_repo} resolves to '${_script_win}', which is not a drive path - keep the checkout under C:\\Users\\<name>\\git\\" ;;
+esac
+
+# --- run here, or hand the operator a command for Windows --------------------
+# Only the commands that restart the distro have to leave, and -DryRun never gets
+# there.
+_restarts=false
+case "${_cmd}" in
+  provision|bootstrap|migrate) _restarts=true ;;
+esac
+# ${_a:l} rather than a (#i) glob: that flag needs extendedglob, which is not on
+# here, and without it the pattern silently never matches - so -DryRun left.
+for _a in "${_ps_args[@]}"; do
+  [[ "${_a:l}" == "-dryrun" ]] && _restarts=false
+done
+${_foreground} && _restarts=false
+
+if ! ${_restarts}; then
+  exec "${_ps}" -NoProfile -ExecutionPolicy Bypass -File "${_script_win}" "${_cmd}" "${_ps_args[@]}"
+fi
+
+# Quote for PowerShell so the command can be pasted as printed: inside a
+# single-quoted PowerShell literal the only special sequence is '' for a quote. The
+# quote goes through a variable because `${1//\'/\'\'}` keeps its backslashes and
+# would emit \'\', which is not an escape PowerShell knows.
+_psq() { local _q="'"; print -r -- "${_q}${1//$_q/$_q$_q}${_q}" }
+
+_paste="& $(_psq "${_script_win}") ${_cmd}"
+for _a in "${_ps_args[@]}"; do
+  case "${_a}" in
+    (-*) _paste+=" ${_a}" ;;
+    (*)  _paste+=" $(_psq "${_a}")" ;;
+  esac
+done
+
+print -ru2 -- "${_self}: '${_cmd}' restarts this distro, so it has to be started from Windows."
+print -ru2 -- ""
+print -ru2 -- "  Open a Windows PowerShell - no admin needed - and run:"
+print -ru2 -- ""
+print -ru2 -- "    ${_paste}"
+print -ru2 -- ""
+print -ru2 -- "  There the run owns the restarts and nothing kills it halfway. Driven from"
+print -ru2 -- "  in here it dies with this shell, part-way through, and the log stops"
+print -ru2 -- "  wherever the distro went down."
+print -ru2 -- ""
+print -ru2 -- "  --foreground runs it here anyway, for a distro this run does not restart."
+exit 1

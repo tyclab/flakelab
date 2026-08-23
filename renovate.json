@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "labels": ["dependencies"],
+  "timezone": "Europe/Berlin",
+  "minimumReleaseAge": "3 days",
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 3,
+  "nix": {
+    "description": "Off by default in Renovate; reads the flake inputs in flake.nix",
+    "enabled": true
+  },
+  "pre-commit": {
+    "description": "Off by default in Renovate; bumps the hook `rev:` pins in .pre-commit-config.yaml.",
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "description": "`nix flake update` for flake.lock — the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh.",
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track version pins in the Nix let bindings annotated with `# renovate: ...` comments",
+      "managerFilePatterns": ["/^nix/.*\\.nix$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+?)(?:\\s+versioning=(?<versioning>\\S+))?(?:\\s+extractVersion=(?<extractVersion>\\S+))?\\s*\\n[^\\n]*?\"(?<currentValue>[^\"\\s]+)\""
+      ]
+    }
+  ]
+}

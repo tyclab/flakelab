@@ -1,0 +1,68 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+_WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
+if ! [[ -x ${_WSL_BIN} ]]
+then
+  print -u2 "ERROR: WSL binary not executable"
+  exit 1
+fi
+
+
+function executeWSLExecutable() {
+  local _OUTPUT
+  _OUTPUT=$(${_WSL_BIN} "${@}" | tr -d '\0' | tr -d '\r' | sed '/^[[:space:]]*$/d') || {
+    print -u2 "ERROR: wsl.exe command failed"
+    print -u2 "${_OUTPUT}"
+    exit 1
+  }
+  print -r -- "${_OUTPUT}"
+}
+
+_RUNNING_DISTROS=$(executeWSLExecutable --list --running --quiet)
+# Command substitution strips trailing newlines, so count using
+# zsh array splitting to avoid wc -l undercounting
+_DISTRO_LINES=("${(@f)_RUNNING_DISTROS}")
+_DISTRO_COUNT=${#_DISTRO_LINES}
+
+if (( _DISTRO_COUNT == 1 ))
+then
+  # Only one running, so it's obvious
+  print -rn -- "${_RUNNING_DISTROS}"
+else
+  # We have to find it manually
+  # 1. Create file /tmp to work as beacon
+  _BEACON_FILE=$(mktemp /tmp/beacon_XXXXXX)
+  trap 'rm -f "${_BEACON_FILE}"' EXIT INT TERM
+
+  # 2. Search for the beacon by testing for it inside each running distro.
+  #
+  # The probe is `/bin/sh -c '[ -e … ]'`: `-e ls` failed on NixOS with
+  # `execvpe(ls) failed: No such file or directory`, because a NixOS-WSL distro
+  # has no coreutils on the default PATH. /bin/sh exists in both NixOS-WSL and
+  # Ubuntu and `[` is a shell builtin, so this probe depends on nothing but the
+  # shell. A missing beacon exits non-zero, which is a legitimate answer here and
+  # must not abort the script, so it does not go through executeWSLExecutable.
+  _MATCHED_DISTRO=""
+  for _DISTRO in "${_DISTRO_LINES[@]}"
+  do
+    _PROBE=$(${_WSL_BIN} --distribution "${_DISTRO}" -- \
+      /bin/sh -c "[ -e '${_BEACON_FILE}' ] && echo found" 2>/dev/null \
+      | tr -d '\0' | tr -d '\r' | sed '/^[[:space:]]*$/d') || true
+    if [[ "${_PROBE}" == "found" ]]
+    then
+      _MATCHED_DISTRO=${_DISTRO}
+      break
+    fi
+  done
+
+  # 3. Output result (beacon cleanup handled by trap)
+  if [[ -z "${_MATCHED_DISTRO}" ]]
+  then
+    print -u2 "ERROR: Distro could not be identified!"
+    exit 2
+  else
+    print -rn -- "${_MATCHED_DISTRO}"
+  fi
+fi

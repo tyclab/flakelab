@@ -1,0 +1,11 @@
+# Markdownlint config.
+config:
+  # Line length: disabled (docs have long tables/URLs)
+  MD013: false
+  # First line heading: off (flexibility for frontmatter/badges)
+  MD041: false
+  # Duplicate headings: allowed under different parents
+  MD024:
+    siblings_only: true
+  # Code fence language: off (many legacy blocks lack lang)
+  MD040: false

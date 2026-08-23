@@ -1,0 +1,175 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+#
+# build-dev-wsl-nix — stand up (or refresh) a NixOS-WSL dev distro straight from
+# this flake, with NO Nix required on the host distro: the upstream NixOS-WSL
+# base image already ships nix, so `nixos-rebuild switch --flake .#default`
+# applies our config from inside it.
+#
+# Modeled on files/scripts/test-provision (cross-WSL temp-file logging,
+# check()/check_contains()), minus the Ubuntu/Ansible machinery.
+#
+# Usage:
+#   build-dev-wsl-nix [--name NixDev] [--base /path/nixos.wsl]
+#                     [--reinstall] [--no-verify]
+#
+#   --name NAME   distro name (default NixDev)
+#   --flake REF   flake to apply (default this repo's .#default; e.g. an overlay)
+#   --base PATH   use this NixOS-WSL rootfs tarball instead of downloading
+#   --reinstall   unregister + reimport from base before applying the flake
+#   --no-verify   skip the post-build verification checks
+
+DISTRO_NAME="NixDev"
+FLAKE_REF=""
+BASE_URL="https://github.com/nix-community/NixOS-WSL/releases/latest/download/nixos.wsl"
+BASE_TARBALL=""
+REINSTALL=false
+VERIFY=true
+
+while (( $# > 0 )); do
+  case $1 in
+    --name)      DISTRO_NAME="$2"; shift ;;
+    --flake)     FLAKE_REF="$2"; shift ;;
+    --base)      BASE_TARBALL="$2"; shift ;;
+    --reinstall) REINSTALL=true ;;
+    --no-verify) VERIFY=false ;;
+    -h|--help)   sed -n '3,25p' "$0"; exit 0 ;;
+    *) print -P "%F{red}Unknown option: $1%f" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+# Repo root: set by the nix wrapper (from repoPath), because ${0:A:h:h:h} from a
+# flat store directory resolves to the store's parent - /nix - which yielded a
+# flake ref of `/nix#default` and a log path under /nix. The fallback keeps the
+# script runnable straight from a checkout.
+_repo_root="${FLAKELAB_REPO_ROOT:-${0:A:h:h:h}}"
+_flake_ref="${FLAKE_REF:-${_repo_root}#default}"
+# Verify checks compare against the built flake's user/locale (an overlay carries
+# them in flake.nix; the template in nix/users/default.nix).
+_flake_dir="${_flake_ref%%#*}"
+_username="$(grep -hoP 'username\s*=\s*"\K[^"]+' "${_flake_dir}/flake.nix" "${_flake_dir}/nix/users/default.nix" 2>/dev/null | head -1 || echo youruser)"
+_locale="$(grep -hoP 'locale\s*=\s*"\K[^"]+' "${_flake_dir}/flake.nix" "${_flake_dir}/nix/users/default.nix" 2>/dev/null | head -1 || echo en_US.UTF-8)"
+_WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
+[[ -x ${_WSL_BIN} ]] || { print -P "%F{red}wsl.exe not found%f" >&2; exit 1 }
+# Interop must be healthy before any lifecycle op (known-issues.md). systemd-binfmt
+# names the entry WSLInterop-late (microsoft/WSL#13449), so both spellings count.
+[[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]] || {
+  print -P "%F{red}WSL interop broken — run 'wsl --shutdown' then retry%f" >&2; exit 1 }
+
+wsl_clean() { ${_WSL_BIN} "$@" | tr -d '\0\r'; }
+_win() { local p="$1"; [[ "$p" == /mnt/[a-z]/* ]] && p="${(U)p[6]}:${p#/mnt/?}"; print -r -- "${p//\//\\}"; }
+_exists() { wsl_clean --list --quiet 2>/dev/null | grep -qx "${DISTRO_NAME}"; }
+
+_install_win="$(_win "${_repo_root}/files/.wsl-${DISTRO_NAME}-instance")"
+
+# --- (Re)import the distro (base image downloaded fresh only when importing) ---
+if _exists && ${REINSTALL}; then
+  print -P "%F{yellow}Unregistering existing ${DISTRO_NAME}...%f"
+  ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
+fi
+if ! _exists; then
+  _base_tmp=""
+  if [[ -z "${BASE_TARBALL}" ]]; then
+    command -v curl >/dev/null || { print -P "%F{red}curl not found — pass --base%f" >&2; exit 1 }
+    # Download onto the Windows mount (not /tmp): wsl.exe --import needs a Windows
+    # path, and _win can't convert a distro-local /tmp path. Gitignored (files/.wsl-*).
+    _base_tmp="$(mktemp "${_repo_root}/files/.wsl-nixos-base.XXXXXX")"; BASE_TARBALL="${_base_tmp}"
+    print -P "%F{cyan}Downloading NixOS-WSL base image...%f"
+    curl -fL --retry 5 --retry-all-errors --progress-bar -o "${BASE_TARBALL}" "${BASE_URL}"
+  fi
+  print -P "%F{cyan}Importing ${DISTRO_NAME}...%f"
+  _tmp=$(mktemp)
+  ${_WSL_BIN} --import "${DISTRO_NAME}" "${_install_win}" "$(_win "${BASE_TARBALL}")" --version 2 >"$_tmp" 2>&1
+  tr -d '\0\r' <"$_tmp"; rm -f "$_tmp"
+  [[ -n "${_base_tmp}" ]] && rm -f "${_base_tmp}"
+else
+  print -P "%F{green}${DISTRO_NAME} exists — applying flake (--reinstall to rebuild from base)%f"
+fi
+
+# Root reads the /mnt/c repo as another uid; mark it safe so the flake git
+# fetcher (and nixos-rebuild) don't bail with "not owned by current user".
+# Write directly — git is not on root's PATH in the base image before the flake applies.
+# Trust all: root reads the flake + its inputs from /mnt/c (a throwaway distro).
+${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
+  sh -c "mkdir -p /root && printf '[safe]\n\tdirectory = *\n' >> /root/.gitconfig" \
+  < /dev/null || true
+
+# Pin the lock for the flake being built (an overlay ships without one).
+if [[ ! -f "${_flake_dir}/flake.lock" ]]; then
+  print -P "%F{cyan}Generating flake.lock...%f"
+  ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
+    env NIX_CONFIG="experimental-features = nix-command flakes" \
+    nix flake lock "${_flake_dir}" < /dev/null
+fi
+
+# --- Apply the flake from inside the distro (base image provides nix) ---
+print -P "%F{cyan}[$(date +%H:%M:%S)] nixos-rebuild switch --flake ${_flake_ref}%f"
+print -P "%F{yellow}(first run downloads the store from cache.nixos.org — minutes)%f"
+_log="${_repo_root}/build-dev-wsl-nix.log"
+: > "${_log}"
+tail -f "${_log}" < /dev/null &
+_tail_pid=$!
+if setsid -w ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
+     env NIX_CONFIG="experimental-features = nix-command flakes" \
+     nixos-rebuild switch --flake "${_flake_ref}" >> "${_log}" 2>&1 < /dev/null; then
+  _rc=0
+else
+  _rc=$?
+fi
+kill $_tail_pid 2>/dev/null; wait $_tail_pid 2>/dev/null || true
+if (( _rc != 0 )); then
+  print -P "%F{red}nixos-rebuild failed (exit ${_rc}). Log: ${_log}%f"
+  tail -25 "${_log}"; exit 1
+fi
+# NOTE: deliberately NO `wsl --terminate` here — terminating a systemd distro
+# unmounts the shared binfmt_misc and breaks interop for sibling distros
+# (known-issues.md). Default-user is verified by reading /etc/wsl.conf.
+print -P "%F{green}Flake applied.%f"
+
+# --- Verification (ported from test-provision-nix) ---
+if ${VERIFY}; then
+  _pass=0; _fail=0
+  check() {
+    local d="$1"; shift; local o
+    if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -u "${_username}" -- "$@" 2>&1); then
+      print -P "  %F{green}[PASS]%f ${d}"; (( ++_pass ))
+    else
+      print -P "  %F{red}[FAIL]%f ${d}"; [[ -n "$o" ]] && print "         ${o}" | head -3; (( ++_fail ))
+    fi
+  }
+  check_contains() {
+    local d="$1" e="$2"; shift 2; local o
+    if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -u "${_username}" -- "$@" 2>&1) && [[ "$o" == *"$e"* ]]; then
+      print -P "  %F{green}[PASS]%f ${d}"; (( ++_pass ))
+    else
+      print -P "  %F{red}[FAIL]%f ${d} (want '${e}', got '${o}')"; (( ++_fail ))
+    fi
+  }
+
+  print -P "%F{cyan}=== Verification ===%f"
+  check_contains "PID 1 is systemd"               "systemd"     zsh -lc "ps -p 1 -o comm="
+  check "WSLInterop handler present under systemd" zsh -lc "[[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]"
+  check "powershell.exe interop works"             zsh -lc "powershell.exe -NoProfile -Command exit"
+  check_contains "wsl.conf default user is ${_username}" "${_username}" zsh -lc "grep -A1 '\[user\]' /etc/wsl.conf"
+  check_contains "locale ${_locale}"                     "${_locale}"   zsh -lc "locale | head -1"
+  check "docker service active"   zsh -lc "systemctl is-active docker"
+  check "user in docker group"    zsh -lc "id -nG | tr ' ' '\n' | grep -qx docker"
+  for t in kubectl helm k9s kubectx kubens yq jq go node bun uv glab gitleaks tofu trivy tflint; do
+    check "$t on PATH" zsh -lc "command -v $t >/dev/null"
+  done
+  # The CLI itself, and one deprecation shim: nothing above would notice if the
+  # flakelab dispatch were broken, since none of those commands come from it.
+  check "flakelab on PATH"                  zsh -lc "command -v flakelab >/dev/null"
+  check "flakelab --help lists subcommands" zsh -lc "flakelab --help | grep -q '^  update '"
+  check "the nix-update shim still answers" zsh -lc "nix-update --help >/dev/null 2>&1"
+
+  _total=$(( _pass + _fail ))
+  print ""
+  (( _fail == 0 )) && print -P "%F{green}All ${_total} checks passed.%f" \
+                   || { print -P "%F{red}${_fail}/${_total} checks failed.%f"; exit 1 }
+fi
+
+print ""
+print -P "%F{green}Dev distro '${DISTRO_NAME}' ready. Enter it: wsl -d ${DISTRO_NAME}%f"
+print -P "%F{yellow}Re-apply after edits: wsl -d ${DISTRO_NAME} -u root -- nixos-rebuild switch --flake ${_flake_ref}%f"

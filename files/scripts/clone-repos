@@ -1,0 +1,386 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Parallel git clone/fetch for WSL provisioning
+#
+# Reads repo specs from stdin (one per line):
+#   ssh_url                        → dest auto-derived under --repos-dir
+#   ssh_url /absolute/dest/path    → explicit dest
+#
+# Usage:
+#   clone-repos --key-file ~/.ssh/id_ed25519 --repos-dir ~/git
+#   clone-repos --key-file ~/.ssh/id_ed25519 --max-jobs 8 --repos-dir ~/git
+#
+
+MAX_JOBS=4
+KEY_FILE=""
+REPOS_DIR=""
+
+while (( $# > 0 )); do
+  case $1 in
+    --key-file)
+      KEY_FILE="$2"; shift ;;
+    --max-jobs)
+      MAX_JOBS="$2"; shift ;;
+    --repos-dir)
+      REPOS_DIR="$2"; shift ;;
+    --help|-h)
+      echo "Usage: clone-repos --key-file <path> --repos-dir <path> [--max-jobs N]"
+      echo "Reads repo specs from stdin (one per line): ssh_url [dest_path]"
+      exit 0 ;;
+    *)
+      echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z "${KEY_FILE}" ]]; then
+  echo "Error: --key-file is required" >&2
+  exit 1
+fi
+if [[ -z "${REPOS_DIR}" ]]; then
+  echo "Error: --repos-dir is required" >&2
+  exit 1
+fi
+
+# Shared network-facing git plumbing (ssh hardening, retry shape). Sibling
+# lookup, so this works both from the nix store copy the wrapper executes and
+# the repo.
+source "${0:A:h}/lib/git-net.zsh" || exit 1
+
+SSH_MUX_DIR="$(mktemp -d)"
+RESULT_FILE="$(mktemp)"
+trap 'rm -f "${RESULT_FILE}"; rm -rf "${SSH_MUX_DIR}"' EXIT
+
+export GIT_SSH_COMMAND="ssh -i ${KEY_FILE} -o StrictHostKeyChecking=accept-new ${GITNET_SSH_BASE} -o ControlMaster=auto -o ControlPath=${SSH_MUX_DIR}/%r@%h:%p -o ControlPersist=60"
+
+# Process a single repo: clone, or fetch + rebase local branch onto upstream.
+# On rebase conflict: abort (restore pre-rebase state) and flag REBASE_CONFLICT.
+# Pre-flight guards skip the rebase with REBASE_SKIPPED + reason.
+process_repo() {
+  local url="$1"
+  local dest="$2"
+
+  if [[ -d "${dest}/.git" ]]; then
+    local out default_branch pre_default_sha=""
+    default_branch="$(git -C "${dest}" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
+    default_branch="${default_branch#origin/}"
+    if [[ -n "${default_branch}" ]]; then
+      pre_default_sha="$(git -C "${dest}" rev-parse -q --verify "refs/remotes/origin/${default_branch}" 2>/dev/null)"
+    fi
+    if ! gitnet_retry git -C "${dest}" fetch --prune; then
+      out="${GITNET_OUT}"
+      # A blobless clone whose promisor config got clobbered (e.g. by another
+      # tool touching .git/config) reports its filtered-out blobs as corruption
+      # and chokes on thin-pack deltas: "pack has N unresolved deltas /
+      # fetch-pack: invalid index-pack output". Restoring the config and
+      # retrying once is then safe and non-destructive.
+      # Gated on a *.promisor pack marker, which a filtered fetch writes and
+      # which survives the config being unset: an existing checkout this script
+      # did not create is processed too, and those two error strings are not
+      # unique to partial clones. Without the marker the pack really is damaged,
+      # and writing extensions.partialClone would hide the missing objects from
+      # fsck.
+      local -a promisor_packs
+      promisor_packs=("${dest}"/.git/objects/pack/*.promisor(N))
+      if [[ "${out}" == *"unresolved deltas"* || "${out}" == *"invalid index-pack"* ]] \
+         && (( ${#promisor_packs} )); then
+        git -C "${dest}" config remote.origin.promisor true
+        git -C "${dest}" config remote.origin.partialclonefilter blob:none
+        git -C "${dest}" config extensions.partialClone origin
+        if ! gitnet_retry git -C "${dest}" fetch --prune; then
+          echo "FAILED|${dest}|${GITNET_OUT//$'\n'/ }" >> "${RESULT_FILE}"
+          return
+        fi
+      else
+        echo "FAILED|${dest}|${out//$'\n'/ }" >> "${RESULT_FILE}"
+        return
+      fi
+    fi
+
+    # A rewritten default branch drops commits that local refs may still hold,
+    # so rebasing onto it would resurrect or conflict on them — the repo is
+    # reported and left untouched; the operator resolves the rewrite first.
+    # Two windows: the rewrite landing during this fetch, and the aftermath
+    # persisting from an earlier run (local default both ahead of and behind
+    # upstream).
+    if [[ -n "${default_branch}" ]]; then
+      local post_default_sha ahead_count behind_count
+      post_default_sha="$(git -C "${dest}" rev-parse -q --verify "refs/remotes/origin/${default_branch}" 2>/dev/null)"
+      if [[ -n "${pre_default_sha}" && -n "${post_default_sha}" && "${pre_default_sha}" != "${post_default_sha}" ]] \
+         && ! git -C "${dest}" merge-base --is-ancestor "${pre_default_sha}" "${post_default_sha}" 2>/dev/null; then
+        echo "FORCE_PUSHED|${dest}|${default_branch} rewritten upstream: ${pre_default_sha[1,7]} -> ${post_default_sha[1,7]}" >> "${RESULT_FILE}"
+        return
+      elif git -C "${dest}" rev-parse -q --verify "refs/heads/${default_branch}" >/dev/null 2>&1; then
+        ahead_count="$(git -C "${dest}" rev-list --count "refs/remotes/origin/${default_branch}..refs/heads/${default_branch}" 2>/dev/null)"
+        behind_count="$(git -C "${dest}" rev-list --count "refs/heads/${default_branch}..refs/remotes/origin/${default_branch}" 2>/dev/null)"
+        if [[ -n "${ahead_count}" && -n "${behind_count}" && "${ahead_count}" != "0" && "${behind_count}" != "0" ]]; then
+          echo "FORCE_PUSHED|${dest}|${default_branch} diverged: ${ahead_count} local-only, ${behind_count} upstream-only" >> "${RESULT_FILE}"
+          return
+        fi
+      fi
+    fi
+
+    # Unborn local branch with a populated remote: HEAD points at a branch that
+    # has no commit while origin/<branch> does, and branch.<name>.merge still
+    # resolves. The rebase below then dies with "could not resolve HEAD to a
+    # commit", which lands as a rebase-conflict demanding manual resolution and
+    # leaves the checkout empty on every subsequent run. Fast-forward from
+    # upstream instead: on an unborn branch with nothing staged that is the
+    # initial checkout. wslkube uses `reset --hard` and only asserts the empty
+    # index in a comment; checking it keeps the destructive verb out and
+    # preserves staged work rather than discarding it. The trade is that an
+    # untracked file colliding with an upstream path reports FAILED instead of
+    # being clobbered — loud, but it will not self-heal.
+    if ! git -C "${dest}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+      if ! git -C "${dest}" rev-parse --verify -q '@{upstream}' >/dev/null 2>&1; then
+        echo "REBASE_SKIPPED|${dest}|empty repo (no commits on either side)" >> "${RESULT_FILE}"
+      elif [[ -n "$(git -C "${dest}" ls-files 2>/dev/null)" ]]; then
+        echo "REBASE_SKIPPED|${dest}|unborn branch with a staged index — resolve by hand" >> "${RESULT_FILE}"
+      elif out="$(git -C "${dest}" merge --ff-only '@{upstream}' 2>&1)"; then
+        echo "REBASED|${dest}" >> "${RESULT_FILE}"
+      else
+        echo "FAILED|${dest}|could not materialize unborn branch: ${out//$'\n'/ }" >> "${RESULT_FILE}"
+      fi
+      return
+    fi
+
+    # Pre-flight guards — flag and skip rebase if any condition isn't safe.
+    if ! git -C "${dest}" diff --quiet 2>/dev/null || \
+       ! git -C "${dest}" diff --cached --quiet 2>/dev/null; then
+      echo "REBASE_SKIPPED|${dest}|dirty working tree" >> "${RESULT_FILE}"
+      return
+    fi
+    if ! git -C "${dest}" symbolic-ref -q HEAD >/dev/null 2>&1; then
+      echo "REBASE_SKIPPED|${dest}|detached HEAD" >> "${RESULT_FILE}"
+      return
+    fi
+    # branch.<name>.merge surviving without a resolvable @{upstream} means the
+    # remote branch was pruned (MR merged) — the local branch is stranded and the
+    # default branch drifts behind unnoticed. Absent merge config it was never pushed.
+    if ! git -C "${dest}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+      local branch merge_ref behind_note=""
+      branch="$(git -C "${dest}" symbolic-ref --short -q HEAD 2>/dev/null)"
+      merge_ref="$(git -C "${dest}" config --get "branch.${branch}.merge" 2>/dev/null)"
+      if [[ -n "${merge_ref}" ]]; then
+        if [[ -n "${default_branch}" ]]; then
+          local behind
+          behind="$(git -C "${dest}" rev-list --count \
+            "refs/heads/${default_branch}..refs/remotes/origin/${default_branch}" 2>/dev/null)"
+          if [[ -n "${behind}" && "${behind}" != "0" ]]; then
+            behind_note=", ${default_branch} behind ${behind}"
+          fi
+        fi
+        echo "REBASE_SKIPPED|${dest}|upstream gone: ${branch} (remote branch pruned${behind_note})" >> "${RESULT_FILE}"
+      else
+        echo "REBASE_SKIPPED|${dest}|no upstream configured: ${branch}" >> "${RESULT_FILE}"
+      fi
+      return
+    fi
+
+    # Already at upstream → no rebase needed.
+    local local_sha upstream_sha
+    local_sha="$(git -C "${dest}" rev-parse HEAD 2>/dev/null)"
+    upstream_sha="$(git -C "${dest}" rev-parse '@{upstream}' 2>/dev/null)"
+    if [[ "${local_sha}" == "${upstream_sha}" ]]; then
+      echo "FETCHED|${dest}" >> "${RESULT_FILE}"
+      return
+    fi
+
+    # Attempt rebase. On any failure, abort and flag — non-fatal.
+    local rebase_out
+    if rebase_out="$(git -C "${dest}" rebase '@{upstream}' 2>&1)"; then
+      echo "REBASED|${dest}" >> "${RESULT_FILE}"
+    else
+      git -C "${dest}" rebase --abort 2>/dev/null || true
+      echo "REBASE_CONFLICT|${dest}|${rebase_out//$'\n'/ }" >> "${RESULT_FILE}"
+    fi
+  else
+    local out
+    if out="$(git clone --filter=blob:none "${url}" "${dest}" 2>&1)"; then
+      echo "CLONED|${dest}" >> "${RESULT_FILE}"
+      echo "  cloned  ${dest}" > /dev/null
+    else
+      echo "FAILED|${dest}|${out//$'\n'/ }" >> "${RESULT_FILE}"
+      echo "  FAILED  ${dest}" > /dev/null
+    fi
+  fi
+}
+
+# Read repo specs into array
+typeset -a specs=()
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  # Skip empty lines
+  [[ -z "${line}" ]] && continue
+  specs+=("${line}")
+done
+
+if (( ${#specs[@]} == 0 )); then
+  echo "No repos provided on stdin"
+  exit 0
+fi
+
+echo "Processing ${#specs[@]} repos (max ${MAX_JOBS} parallel)..." > /dev/null
+
+# First pass: parallel clone/fetch
+typeset -a job_pids=()
+for spec in "${specs[@]}"; do
+  url="${spec%% *}"
+
+  if [[ "${spec}" == *" "* ]]; then
+    dest="${spec#* }"
+  else
+    # Derive dest from URL: git@host:group/subgroup/repo.git → repos_dir/group/subgroup/repo
+    dest="${REPOS_DIR}/${${url#*:}%.git}"
+  fi
+
+  mkdir -p "${dest:h}"
+  process_repo "${url}" "${dest}" &
+  job_pids+=($!)
+
+  # zsh has no `wait -n` — it reads -n as a job spec and exits 127. Waiting on the
+  # oldest child is what keeps concurrency bounded by MAX_JOBS.
+  if (( ${#job_pids[@]} >= MAX_JOBS )); then
+    wait "${job_pids[1]}" 2>/dev/null || true
+    job_pids=("${job_pids[@]:1}")
+  fi
+done
+wait
+
+# Collect failures for retry
+typeset -a failed_specs=()
+while IFS='|' read -r result_status dest err; do
+  if [[ "${result_status}" == "FAILED" ]]; then
+    for spec in "${specs[@]}"; do
+      local_url="${spec%% *}"
+      if [[ "${spec}" == *" "* ]]; then
+        check_dest="${spec#* }"
+      else
+        check_dest="${REPOS_DIR}/${${local_url#*:}%.git}"
+      fi
+      if [[ "${check_dest}" == "${dest}" ]]; then
+        failed_specs+=("${spec}")
+        break
+      fi
+    done
+  fi
+done < "${RESULT_FILE}"
+
+# Retry pass: sequential, one attempt each
+if (( ${#failed_specs[@]} > 0 )); then
+  echo "Retrying ${#failed_specs[@]} failed repo(s)..." > /dev/null
+  sleep 5
+
+  # Remove old FAILED lines — they'll be re-added or replaced
+  retry_tmp="$(mktemp)"
+  # rc 1 just means every line was FAILED; rc >1 is a real read/write error and
+  # must not silently move an empty temp over the ledger.
+  grep -v '^FAILED|' "${RESULT_FILE}" > "${retry_tmp}"
+  grep_rc=$?
+  if (( grep_rc > 1 )); then
+    echo "Error: could not rewrite result ledger (grep rc=${grep_rc})" >&2
+    rm -f "${retry_tmp}"
+    exit 2
+  fi
+  mv "${retry_tmp}" "${RESULT_FILE}"
+
+  for spec in "${failed_specs[@]}"; do
+    retry_url="${spec%% *}"
+    if [[ "${spec}" == *" "* ]]; then
+      retry_dest="${spec#* }"
+    else
+      retry_dest="${REPOS_DIR}/${${retry_url#*:}%.git}"
+    fi
+    process_repo "${retry_url}" "${retry_dest}"
+  done
+fi
+
+# Summary
+typeset -i cloned=0 fetched=0 rebased=0 rebase_skipped=0 rebase_conflict=0 force_pushed=0 failed=0
+typeset -a fail_details=() conflict_details=() force_details=()
+typeset -a skip_empty=() skip_gone=() skip_unpushed=() skip_dirty=() skip_detached=() skip_other=()
+
+while IFS='|' read -r result_status dest err; do
+  case "${result_status}" in
+    CLONED)          (( cloned++ )) ;;
+    FETCHED)         (( fetched++ )) ;;
+    REBASED)         (( rebased++ )) ;;
+    FORCE_PUSHED)
+      (( force_pushed++ ))
+      force_details+=("  ${dest} — ${err}")
+      ;;
+    REBASE_SKIPPED)
+      (( rebase_skipped++ ))
+      case "${err}" in
+        empty\ repo*)          skip_empty+=("  ${dest}") ;;
+        upstream\ gone*)       skip_gone+=("  ${dest} — ${err#upstream gone: }") ;;
+        no\ upstream\ config*) skip_unpushed+=("  ${dest} — ${err#no upstream configured: }") ;;
+        dirty*)                skip_dirty+=("  ${dest}") ;;
+        detached*)             skip_detached+=("  ${dest}") ;;
+        *)                     skip_other+=("  ${dest} — ${err}") ;;
+      esac
+      ;;
+    REBASE_CONFLICT)
+      (( rebase_conflict++ ))
+      conflict_details+=("  ${dest}: ${err}")
+      ;;
+    FAILED)
+      (( failed++ ))
+      fail_details+=("  ${dest}: ${err}")
+      ;;
+  esac
+done < "${RESULT_FILE}"
+
+echo ""
+echo "Results: ${cloned} cloned, ${fetched} fetched, ${rebased} rebased, ${rebase_skipped} rebase-skipped, ${rebase_conflict} rebase-conflict, ${force_pushed} force-pushed, ${failed} failed (${#specs[@]} total)"
+
+if (( cloned > 0 )); then
+  grep '^CLONED|' "${RESULT_FILE}" | while IFS='|' read -r _ dest; do
+    echo "  CLONED  ${dest}"
+  done
+fi
+
+if (( ${#force_details[@]} > 0 )); then
+  echo ""
+  echo "WARNING — default branch history rewritten (${#force_details[@]}); not rebased, resolve manually:"
+  printf '%s\n' "${force_details[@]}"
+fi
+
+if (( rebase_skipped > 0 )); then
+  echo ""
+  echo "Rebase skipped (${rebase_skipped}): ${#skip_gone[@]} upstream-gone, ${#skip_empty[@]} empty, ${#skip_unpushed[@]} never-pushed, ${#skip_dirty[@]} dirty, ${#skip_detached[@]} detached, ${#skip_other[@]} other"
+
+  print_skip_group() {
+    local header="$1"; shift
+    (( $# == 0 )) && return
+    echo "  ${header}"
+    printf '  %s\n' "$@"
+  }
+
+  # Ordered worst-first: stranded branches hide drift, the rest are inert.
+  print_skip_group "upstream gone — local branch stranded, default branch NOT updated:" "${skip_gone[@]}"
+  print_skip_group "dirty working tree — uncommitted changes block rebase:" "${skip_dirty[@]}"
+  print_skip_group "detached HEAD:" "${skip_detached[@]}"
+  print_skip_group "never pushed — branch exists only locally:" "${skip_unpushed[@]}"
+  print_skip_group "empty repo — no commits upstream yet, skips on every run:" "${skip_empty[@]}"
+  print_skip_group "other:" "${skip_other[@]}"
+fi
+
+if (( rebase_conflict > 0 )); then
+  echo ""
+  echo "Rebase conflicts (manual resolution needed):"
+  for detail in "${conflict_details[@]}"; do
+    echo "${detail}"
+  done
+fi
+
+if (( failed > 0 )); then
+  echo ""
+  echo "Failures:"
+  for detail in "${fail_details[@]}"; do
+    echo "${detail}"
+  done
+  exit 1
+fi

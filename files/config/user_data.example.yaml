@@ -1,0 +1,145 @@
+---
+# Example provisioning config for `setup-wsl-nix.ps1 provision -Config <this file>`.
+#
+# This is wslkube's files/config/user_data.yaml schema: with a wslkube checkout
+# next door `provision` reads that file directly, and this copy is for a machine
+# that has none. Same reader, same result - one schema, not two.
+#
+# `provision` turns it into the overlay's flake.nix (identity, profiles, groups,
+# repos, aliases, sessionVariables) plus ~/.config/tyc/secrets.env (the tokens).
+# From then on the generated flake is the profile; regenerate with -Force after
+# editing here.
+#
+# Copy it out of the repo before filling it in - the values below are placeholders
+# and REAL TOKENS MUST NEVER BE COMMITTED (gitleaks runs in pre-commit and CI).
+#
+# NOTE: no "-" in key names.
+
+# Linux user (no dashes).
+user: tycuser
+
+# Windows username - the C:\Users\<name> folder. May differ from the Linux user;
+# omit it and the overlay's own path is used.
+windows_username: WindowsUser
+
+# Shell/system locale. en_US.UTF-8 stays available either way.
+userlocale: de_DE.UTF-8
+
+# Git identity. Both are required - wslkube asserts them too.
+gitmail: you@example.com
+gitfullname: Your Name
+
+# Which profiles/ entries apply, resolved against this repo's profiles/ directory:
+# example (example-group). Selecting a profile is the only thing that installs its
+# gitlabGroups and profileCliTools, so an empty list means none of them are
+# installed. `team:`/`teams:` are read as aliases, because profiles/merge.nix
+# still honours the older name.
+#
+# A wslkube config has none of these keys - it has no profile concept, only a flat
+# gitlab_groups in its variables.yaml - so when generating from one, the profiles
+# are DERIVED from those groups (a group a profile declares selects that profile)
+# and whatever no profile claims stays a personal group below. Generating an
+# overlay with neither is a hard error, not a warning: it builds green and leaves
+# the box with no profile packages and an empty ~/git.
+profiles:
+  - example
+
+# Personal full-clone GitLab groups. Profile groups are unioned in, so do not
+# repeat a selected profile's own groups here.
+gitlab_groups:
+  - family-recipes
+
+# Repos to skip during group discovery, unioned with flakelab and this overlay,
+# which are always excluded. wslkube keeps this in variables.yaml.
+# clone_exclude:
+#   - wslkube
+
+# Claude Code plugins. claude_plugins is the always-on set and
+# claude_mcp_plugins the opt-in MCP servers - each loads its tool definitions into
+# Claude's context every session, so none are on by default. The two are
+# concatenated into one claudePlugins list. Both, plus the marketplace they
+# resolve against, live in wslkube's variables.yaml.
+#
+# The marketplace name MUST match the `name` in the marketplace's own
+# .claude-plugin/marketplace.json: `claude plugin install <plugin>@<name>` resolves
+# against that, and a wrong name fails every install while activation only warns.
+# claude_plugin_marketplace:
+#   name: 'YourMarketplace'
+#   url: 'git@gitlab.com:your-group/plugins/claude-plugins.git'
+# claude_plugins:
+#   - agents
+#   - skills
+# claude_mcp_plugins:
+#   - mcp-playwright
+
+# Cloned on activation and installed into ~/.kiro via `make install-global`.
+# wslkube hardcodes this in tasks/kiro.yaml, so a migrated config must add it here.
+# kiro_plugin_repo: 'git@gitlab.com:your-group/plugins/kiro-plugin.git'
+
+# Shareable backup state - the merged shell history and Claude auto-memory - kept
+# in a second directory so another machine can pick it up. Point it at a plain
+# folder your sync client replicates (which client is your business); NEVER a
+# git checkout. Credentials stay in the overlay's payload regardless. Unset =
+# everything stays in the payload. state_transcripts additionally syncs Claude
+# session transcripts there (large; the verbatim text of every session).
+# state_root: /mnt/d/sync/flakelab-state
+# state_transcripts: false
+
+# Checkout the whatsapp MCP server runs from, required by the mcp-whatsapp plugin.
+# wslkube derives it from repos_dir in tasks/claude.yaml; state it explicitly here.
+# whatsapp_mcp_dir: '/home/you/git/your-group/plugins/whatsapp-mcp-extended/whatsapp-mcp-server'
+
+# Private keys in ~/.ssh to load into the agent on login, space-separated. The
+# FIRST one is the git/clone identity, and every name here must have a matching
+# file in the overlay's files/config/shared/ssh/keys/.
+sshkeyautoadd: id_ed25519
+
+# No analog under NixOS: docker is a systemd service, so there is no per-shell
+# start to toggle. Kept so this file stays readable as a wslkube user_data.yaml.
+dockerautostart: true
+
+# Run `flakelab backup --force` daily from a systemd user timer.
+backupautostart: false
+
+# Git editor. Omit to keep git's default.
+giteditor: 'code'
+
+# Extra repos beyond group discovery, cloned into ~/git/<rel_path>/<repo-name>.
+# SSH URLs only. These bypass cloneExclude - naming a repo here is explicit.
+# repos:
+#   - rel_path: ''
+#     url: git@gitlab.com:your-group/your-repo.git
+
+# Personal shell aliases, merged with the profile ones into the managed .zshrc.
+custom_aliases:
+  - name: k
+    command: kiro-cli chat
+  - name: kk
+    command: kiro-cli chat --trust-all-tools
+
+# Split by NAME on provisioning: everything in the script's secret list goes to
+# ~/.config/tyc/secrets.env (mode 600, git-ignored), everything else becomes
+# `sessionVariables` in the generated flake. Tokens therefore never reach the
+# world-readable nix store - which is why the endpoints and the credentials sit in
+# one block here but end up in two different places. Each non-secret endpoint is
+# also what GATES its MCP server in nix/home/mcp.nix: no endpoint, no server.
+custom_env_vars:
+  # Non-secret endpoints and account names -> flake sessionVariables.
+  HASS_URL: 'http://homeassistant.example.lan:8123'
+  PROXMOX_API_URL: 'https://pve.example.lan:8006' # base URL, no /api2/json
+  PROXMOX_VERIFY_SSL: 'false' # PVE self-signed cert lacks the .lan SAN
+  SYNOLOGY_HOST: 'nas.example.com' # bare host, NO port
+  SYNOLOGY_PORT: '5001'
+  SYNOLOGY_HTTPS: 'true'
+  SYNOLOGY_USERNAME: 'mcp-service'
+  GRAFANA_URL: 'https://grafana.example.lan'
+  WHATSAPP_BRIDGE_HOST: 'localhost:8180'
+  # Secrets -> secrets.env. PLACEHOLDERS: replace them outside this repo.
+  GITLAB_TOKEN: '<your-gitlab-personal-access-token>'
+  GH_TOKEN: '<your-github-personal-access-token>'
+  HASS_TOKEN: '<your-home-assistant-long-lived-token>'
+  PROXMOX_TOKEN_ID: '<user@pam!tokenname>'
+  PROXMOX_TOKEN_SECRET: '<your-proxmox-token-secret>'
+  SYNOLOGY_PASSWORD: '<your-dsm-password>'
+  SYNOLOGY_DEVICE_ID: '<optional-dsm-trusted-device-id>'
+  GRAFANA_SERVICE_ACCOUNT_TOKEN: '<your-grafana-service-account-token>'

@@ -1,0 +1,58 @@
+---
+name: Bug report
+description: Something behaves differently than documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Please do not report security vulnerabilities here — see
+        [SECURITY.md](../../SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, and what it did instead of what you expected.
+      placeholder: "`flakelab update` exits 1 with ..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest sequence that shows it.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - WSL2 distro (setup-wsl-nix.ps1 / provision)
+        - The flakelab CLI in a running distro
+        - The flake itself (nix build / nix flake check)
+        - Overlay generation (flakelab overlay-gen)
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >-
+        Output of `flakelab doctor` if it runs, plus your Windows and WSL
+        versions (`wsl --version`). Redact tokens and hostnames.
+      render: text
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked known-issues.md.
+          required: true
+        - label: There are no secrets, tokens or private hostnames in this report.
+          required: true

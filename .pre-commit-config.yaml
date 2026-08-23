@@ -1,0 +1,79 @@
+---
+# Pre-commit hook suite. `make lint` runs it over the whole tree; CI runs the
+# same target, so a green local run is the same gate.
+#
+# Install: `make install-hooks` (or `pre-commit install`)
+# Run on whole tree: `pre-commit run --all-files`
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      # The upstream entry is `gitleaks git --staged`, which reads the staged DIFF:
+      # zero bytes under `pre-commit run --all-files`, reported as "Passed" — a green
+      # over nothing. `gitleaks dir` reads file CONTENT instead, so the same hook is
+      # real at commit time and under --all-files. One path at a time via xargs, and
+      # not because of speed: given more than one path `gitleaks dir` silently
+      # ignores all of them and scans the whole working tree, untracked `.terraform/`
+      # provider dumps included. Git HISTORY is out of scope here — CI's `gitleaks`
+      # job covers it.
+      - id: gitleaks
+        # `--config` is REQUIRED here: gitleaks resolves .gitleaks.toml relative to
+        # the SCAN TARGET, and this entry hands it individual file paths, so without
+        # it every repo's allowlist is silently discarded and known false positives
+        # (vendored i18n strings, *.example templates) turn the gate red.
+        entry: sh -c 'cfg=; if [ -f .gitleaks.toml ]; then cfg="--config .gitleaks.toml"; fi; printf "%s\0" "$@" | xargs -0 -n1 -P4 gitleaks dir $cfg --redact --verbose --no-banner --log-level error' --
+        pass_filenames: true
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [--strict]
+
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.2
+    hooks:
+      - id: markdownlint-cli2
+        language_version: system
+
+  # shellcheck-py (pip wheel), NOT koalaman/shellcheck-precommit: the latter is a
+  # docker_image hook and fails in CI runners without a Docker daemon. No-op in
+  # repos with no shell scripts.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+        # shellcheck supports sh/bash/dash/ksh only (SC1071); skip zsh scripts.
+        exclude_types: [zsh]
+
+  # Closes the hole left by the shellcheck exclusion above: without this, zsh
+  # scripts are linted by nothing at all. No-op in repos with no zsh files.
+  - repo: local
+    hooks:
+      - id: zsh-syntax
+        name: zsh -n (syntax check zsh scripts)
+        entry: zsh -n
+        language: system
+        types: [zsh]
+        require_serial: false
+
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.9.6
+    hooks:
+      - id: prettier
+        types_or: [markdown, json]
+        language_version: system
+
+  # Python is linted by nothing else in this fleet. The select is explicit and
+  # narrow on purpose: ruff's own default set is style-heavy — 1234 findings over
+  # the fleet's python as it stands — while E9 + F are the defect rules (syntax
+  # errors, undefined names, unused imports), which every repo passes today, so
+  # each red here is a new defect rather than a taste argument. No-op in repos
+  # with no python files.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff-check
+        args: [--select, "E9,F"]

@@ -1,0 +1,15 @@
+# gitleaks rules for the shared-state secret gate (nix-backup).
+#
+# The gate scans the merged shell history and the Claude transcripts before they
+# are written to FLAKELAB_STATE_ROOT — a folder a sync client replicates, whose
+# version history keeps whatever reaches it once. Detection is gitleaks' own
+# default rule set; nothing is added here, and nothing is allowlisted.
+#
+# False positives are handled per finding, not by shipping an allowlist: run
+# `flakelab backup --review-secrets` and answer `a` (allow) once. The decision
+# is stored as a fingerprint (rule:sha256) in the state root, so it is honoured
+# on every machine that shares the folder, and it never records the value that
+# caused it.
+
+[extend]
+useDefault = true

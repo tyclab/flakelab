@@ -1,0 +1,30 @@
+# Key material and secrets never belong in git, even in a private overlay.
+# setup-wsl-nix.ps1 writes secrets.env under files/config/shared/secrets/ (LF
+# only - a CR lands inside the quoted value and corrupts every token) and reads
+# the SSH keys from files/config/shared/ssh/keys/.
+id_ed25519
+id_rsa
+*.pem
+secrets.env
+
+# nix rewrites this on every switch, and with a local `path:`/`git+file:` flakelab
+# input a committed lock pins that checkout's NAR hash - the next change over
+# there aborts the build with "NAR hash mismatch". Untracked, the file is inert.
+flake.lock
+
+# nix-backup payload: gitconfig, ssh config, shell history, secrets. Restored by
+# `nix-backup --restore`, never committed. The rollback snapshots are tarballs
+# of that same payload — cleartext secrets included — and the lock is runtime
+# state; without these two lines a `git add .` in the overlay commits both.
+files/config/instances/
+files/config/shared/
+files/config/snapshots/
+files/config/.backup.lock
+!files/config/shared/ssh/keys/.gitkeep
+
+# One-off migration marker written by `setup-wsl-nix.ps1 migrate`.
+.migrated-from-wslkube
+
+# Build results.
+result
+result-*
