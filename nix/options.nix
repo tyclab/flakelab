@@ -234,6 +234,13 @@ in
       description = "Release channel Claude Code's self-updater follows. Claude Code is the one tool this flake deliberately does not pin, so this is the only control over what lands unreviewed on every box.";
     };
 
+    claudeOutputStyle = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "Concise";
+      description = "Claude Code output style asserted into settings.outputStyle. Null leaves the key alone, so the style stays whatever /output-style last picked on the box. Name a built-in (\"Concise\", \"Explanatory\", \"Learning\") or a custom style from ~/.claude/output-styles.";
+    };
+
     claudeMcpServers = mkOption {
       type = types.attrsOf types.attrs;
       default = { };

@@ -142,6 +142,7 @@ symlinks, because Claude rewrites these files itself:
 
 - **`settings.json`** — attribution, the classifier rules (`claudeAutoMode`),
   `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
+  the output style when `claudeOutputStyle` names one,
   the bridge environment, the statusline, and a `permissions.deny` **floor**
   against force-pushing. The floor is unioned in, so rules added by hand
   survive; nothing else in the file is asserted whole except `autoMode`. The
