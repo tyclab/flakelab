@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
-- A local flakelab input is named rather than silently re-locked: `flakelab update` says which checkout it built from, and `flakelab doctor` warns on `path:`/`git+file:` inputs.
+- `flakelab update` bumps the flakelab input whatever its shape — a remote pin moves to its latest commit instead of needing `nix flake update flakelab` by hand. A local flakelab input is named rather than silently re-locked: `flakelab update` says which checkout it built from, and `flakelab doctor` warns on `path:`/`git+file:` inputs.
 - `setup-wsl-nix.ps1 provision` with a config that carries no token (what the first-run wizard writes) skips the credential-copy prompt and the per-name "not in user_data.yaml" lines; the missing SSH key / secrets.env note reads as optional, with `flakelab update` as the way to enable the deferred steps later.
 - `flakelab backup --restore` is now additive: it no longer deletes local files the backup does not have.
 - `flakelab.bitwardenServer` defaults to `null`, which skips the `bw config server` activation entirely; set it to name a region.

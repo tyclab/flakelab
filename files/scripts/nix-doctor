@@ -120,7 +120,7 @@ fi
 log_head "flakelab input"
 # A local override is fine for side-by-side work, but a box left on one stops
 # following the published flakelab and no rebuild says so.
-input="$(jq -r '.nodes[.nodes[.root].inputs.flakelab // ""].locked | "\(.type // "?") \(.path // .url // "?")"' \
+input="$(jq -r '.nodes[.nodes[.root].inputs.flakelab // ""].locked | "\(.type // "?") \(.path // .url // "\(.owner)/\(.repo)")"' \
   "${FLAKELAB_REPO_ROOT:-}/flake.lock" 2>/dev/null || print '? ?')"
 case "${input%% *}" in
   path|git+file)
