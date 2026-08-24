@@ -237,9 +237,10 @@ _nix_check_base || exit 1
 # which flakelab it evaluated. Observed 2026-08-23, when a switch died inside a
 # profiles/merge.nix that had already been fixed on the default branch.
 #
-# Re-locked only when the input IS a `path:` one. A github:/git+ pin is
-# deliberate, and bumping it here would turn every rebuild into an unrequested
-# update of somebody else's flake.
+# flakelab is this config's own flake, not a third party's, so `update` updates
+# it whatever its shape: a `path:` input re-locks to the checkout, a remote one
+# moves to its latest commit. Only `git+file:` is left alone - it is not
+# re-lockable this way and serves committed content only.
 #
 # `nix eval` rather than jq: nix is the one tool this script cannot run
 # without, and the wrapper's PATH (nix/scripts.nix) carries no jq. The lock
@@ -260,12 +261,16 @@ _nix_relock_flakelab() {
     print -P "%F{yellow}⚠ LOCAL flakelab (git+file: ${_where}) — only committed content is in this build%f"
     return 0
   fi
-  [[ "${_ty}" == path ]] || return 0
+  [[ -n "${_ty}" ]] || return 0
   # Unprivileged on purpose: a lock written by root on the 9p mount is what
   # makes the operator's next `nix` command in that flake fail on "opening
   # file flake.lock: Permission denied".
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
-    print -P "%F{yellow}⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)%f"
+    if [[ "${_ty}" == path ]]; then
+      print -P "%F{yellow}⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)%f"
+    else
+      print -P "%F{cyan}ℹ flakelab input updated%f"
+    fi
   else
     print -P "%F{yellow}⚠ could not re-lock the path: flakelab input — the switch may evaluate the previously locked snapshot%f"
     print -r -- "${_out}"
