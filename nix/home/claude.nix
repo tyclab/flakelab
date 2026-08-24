@@ -261,12 +261,15 @@ in
                   ${flakelabWarn} "claude plugin $_p not updated; it stays on its installed version."
                 # Installed is not loaded: a plugin reaches a session only when
                 # settings.enabledPlugins names it, and install leaves that key
-                # alone — so one disabled plugin stays inert while every check
-                # here reports success, and its MCP servers and agents go missing
-                # with no warning. Declaring it in claudePlugins IS the opt-in;
-                # opt out by dropping it (the prune below then uninstalls it).
-                "$_claude" plugin enable "$_p" >/dev/null 2>&1 || \
-                  ${flakelabWarn} "claude plugin $_p not enabled; it stays installed but loads nothing into a session."
+                # alone. Declaring it in claudePlugins is the opt-in; opt out by
+                # dropping it. enable is not a no-op like install — it exits 1
+                # when the plugin is already enabled, which is the steady state.
+                if ! _enabled="$("$_claude" plugin enable "$_p" 2>&1)"; then
+                  case "$_enabled" in
+                    *"already enabled"*) ;;
+                    *) ${flakelabWarn} "claude plugin $_p not enabled; it stays installed but loads nothing into a session." ;;
+                  esac
+                fi
               else
                 ${flakelabDefer} "claude plugin $_p not installed: its marketplace was not fetched (no agent key, or unreachable). Retry: flakelab update"
               fi
