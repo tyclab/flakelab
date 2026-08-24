@@ -4,7 +4,7 @@ A complete developer environment on top of
 [NixOS-WSL](https://github.com/nix-community/NixOS-WSL), not a distro image:
 NixOS-WSL gets you a NixOS in WSL2, flakelab is the flake that furnishes it —
 zsh/Oh My Zsh, Kubernetes tooling, native Docker, cloud CLIs, language
-runtimes, AI CLIs and dev utilities, applied with a single `nixos-rebuild`,
+runtimes, AI CLIs and dev utilities, applied with a single `flakelab update`,
 plus the Windows-side provisioning that stands a machine up from nothing.
 
 Requires WSL >= 2.5.7 (native systemd). The flake builds for **`x86_64-linux`
