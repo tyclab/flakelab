@@ -251,14 +251,21 @@ _nix_relock_flakelab() {
     let
       l = builtins.fromJSON (builtins.readFile (builtins.getEnv "FLAKELAB_LOCK"));
       n = l.nodes.${l.root}.inputs.flakelab or null;
-    in if n == null then "" else l.nodes.${n}.locked.type or ""
+    in if n == null then "" else "${l.nodes.${n}.locked.type or ""} ${l.nodes.${n}.locked.path or ""}"
   ' 2>/dev/null)"
+  local _where="${_ty#* }"; _ty="${_ty%% *}"
+  # git+file: is local too, but serves only COMMITTED content and is not
+  # re-locked below — say so, since the edit under test may not be in the build.
+  if [[ "${_ty}" == git+file ]]; then
+    print -P "%F{yellow}⚠ LOCAL flakelab (git+file: ${_where}) — only committed content is in this build%f"
+    return 0
+  fi
   [[ "${_ty}" == path ]] || return 0
   # Unprivileged on purpose: a lock written by root on the 9p mount is what
   # makes the operator's next `nix` command in that flake fail on "opening
   # file flake.lock: Permission denied".
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
-    print -P "%F{cyan}ℹ re-locked the mutable path: flakelab input%f"
+    print -P "%F{yellow}⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)%f"
   else
     print -P "%F{yellow}⚠ could not re-lock the path: flakelab input — the switch may evaluate the previously locked snapshot%f"
     print -r -- "${_out}"
