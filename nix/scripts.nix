@@ -359,6 +359,7 @@ rec {
   # nothing on this distro ever calls glab or clones over git@gitlab.com, so a
   # missing token or a failed auth probe is not a finding.
   nix-doctor = pkgs.writeShellScriptBin "nix-doctor" ''
+    export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_KIRO_PLUGIN_DIR="${kiroPluginDir}"
     export FLAKELAB_KIRO_PLUGIN_REMOTE="${kiroPluginPath}"
     export FLAKELAB_GITLAB_GROUPS="${toString (builtins.length cfg.gitlabGroups)}"

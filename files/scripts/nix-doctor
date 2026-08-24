@@ -115,6 +115,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# flakelab input
+# ---------------------------------------------------------------------------
+log_head "flakelab input"
+# A local override is fine for side-by-side work, but a box left on one stops
+# following the published flakelab and no rebuild says so.
+input="$(jq -r '.nodes[.nodes[.root].inputs.flakelab // ""].locked | "\(.type // "?") \(.path // .url // "?")"' \
+  "${FLAKELAB_REPO_ROOT:-}/flake.lock" 2>/dev/null || print '? ?')"
+case "${input%% *}" in
+  path|git+file)
+    log_warn "LOCAL flakelab override: ${input}"
+    log_hint "changes published to flakelab never reach this box"
+    ;;
+  github|gitlab|git+ssh|git+https|tarball) log_ok "published flakelab (${input})" ;;
+  *) log_warn "could not read the flakelab input from the lock" ;;
+esac
+
+# ---------------------------------------------------------------------------
 # WSL interop
 # ---------------------------------------------------------------------------
 log_head "WSL interop"
