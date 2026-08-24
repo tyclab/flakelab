@@ -38,6 +38,13 @@ let
   # every box, and "stable" is the baseline. Override per user for early access.
   inherit (cfg) claudeAutoUpdatesChannel;
 
+  # Output style, asserted only when the overlay names one: an unset option
+  # leaves the key alone, so a box that never declares a style keeps whatever
+  # /output-style last picked there.
+  claudeOutputStyleJq = lib.optionalString (cfg.claudeOutputStyle != null) ''
+    | .outputStyle = ${builtins.toJSON cfg.claudeOutputStyle}
+  '';
+
   # Auto-mode classifier rules (settings.autoMode), written by the
   # claudeDisableAttribution activation below. Written unconditionally, even where
   # claudeAgentDefaults leaves defaultMode alone: the rules only ever narrow what
@@ -377,6 +384,7 @@ in
             | .autoUpdatesChannel = "${claudeAutoUpdatesChannel}"
             | .autoMode = $am[0]
             | .permissions.deny = ((.permissions.deny // []) + $d | unique)
+            ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings" || {
             rm -f "$_settings.tmp"
