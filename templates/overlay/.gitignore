@@ -14,12 +14,14 @@ flake.lock
 
 # nix-backup payload: gitconfig, ssh config, shell history, secrets. Restored by
 # `nix-backup --restore`, never committed. The rollback snapshots are tarballs
-# of that same payload — cleartext secrets included — and the lock is runtime
-# state; without these two lines a `git add .` in the overlay commits both.
+# of that same payload — cleartext secrets included — and the lock and the
+# restore marker are runtime state; without these lines a `git add .` in the
+# overlay commits all of them.
 files/config/instances/
 files/config/shared/
 files/config/snapshots/
 files/config/.backup.lock
+files/config/.last-restore-kept
 !files/config/shared/ssh/keys/.gitkeep
 
 # One-off migration marker written by `setup-wsl-nix.ps1 migrate`.
