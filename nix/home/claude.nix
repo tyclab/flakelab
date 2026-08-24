@@ -259,6 +259,14 @@ in
                 # whose bridge extension auto-updates past a stale server).
                 "$_claude" plugin update "$_p" >/dev/null 2>&1 || \
                   ${flakelabWarn} "claude plugin $_p not updated; it stays on its installed version."
+                # Installed is not loaded: a plugin reaches a session only when
+                # settings.enabledPlugins names it, and install leaves that key
+                # alone — so one disabled plugin stays inert while every check
+                # here reports success, and its MCP servers and agents go missing
+                # with no warning. Declaring it in claudePlugins IS the opt-in;
+                # opt out by dropping it (the prune below then uninstalls it).
+                "$_claude" plugin enable "$_p" >/dev/null 2>&1 || \
+                  ${flakelabWarn} "claude plugin $_p not enabled; it stays installed but loads nothing into a session."
               else
                 ${flakelabDefer} "claude plugin $_p not installed: its marketplace was not fetched (no agent key, or unreachable). Retry: flakelab update"
               fi
