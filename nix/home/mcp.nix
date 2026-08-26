@@ -32,6 +32,8 @@ let
 
   # renovate: datasource=npm depName=@playwright/mcp
   playwrightMcpVersion = "0.0.79";
+  # renovate: datasource=npm depName=@jarahkon/hass-mcp-server
+  hassMcpVersion = "1.0.10";
   # renovate: datasource=npm depName=@itunified.io/mcp-proxmox
   proxmoxMcpVersion = "2026.4.10-1";
   # renovate: datasource=pypi depName=mcp-synology
@@ -69,7 +71,7 @@ let
     command = "sh";
     args = [
       "-c"
-      ''HA_URL="$HASS_URL" HA_TOKEN="$HASS_TOKEN" exec npx --yes @jarahkon/hass-mcp-server''
+      ''HA_URL="$HASS_URL" HA_TOKEN="$HASS_TOKEN" exec npx --yes @jarahkon/hass-mcp-server@${hassMcpVersion}''
     ];
   };
 
@@ -118,9 +120,10 @@ let
     ];
   };
 
-  mcpServers = {
-    playwright = playwrightServer;
-  }
+  mcpServers =
+    lib.optionalAttrs cfg.mcpPlaywright {
+      playwright = playwrightServer;
+    }
   // lib.optionalAttrs (cfg.sessionVariables ? HASS_URL) {
     homeassistant = homeassistantServer;
   }

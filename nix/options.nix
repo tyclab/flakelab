@@ -241,6 +241,12 @@ in
       description = "Claude Code output style asserted into settings.outputStyle. Null leaves the key alone, so the style stays whatever /output-style last picked on the box. Name a built-in (\"Concise\", \"Explanatory\", \"Learning\") or a custom style from ~/.claude/output-styles.";
     };
 
+    mcpPlaywright = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Register the Playwright MCP server. Off by default: it is a browser-driving server with no config predicate of its own — every other server here appears only when its endpoint variable is set — so registering it unconditionally hands an adopter browser automation they never asked for. Extension mode also assumes a Windows Chrome at the path in nix/home/mcp.nix, which is meaningless off WSL.";
+    };
+
     claudeMcpServers = mkOption {
       type = types.attrsOf types.attrs;
       default = { };
