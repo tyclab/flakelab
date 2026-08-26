@@ -20,11 +20,12 @@ let
   # symlinked so the opt-in is a single source of truth; the baseline file stays
   # the place to edit every other key.
   kiroCliBase = builtins.fromJSON (builtins.readFile ../../files/config/kiro/cli.json);
-  kiroCliJson =
-    (pkgs.formats.json { }).generate "kiro-cli.json"
-      (kiroCliBase // lib.optionalAttrs cfg.kiroTrustAll {
-        "chat.disableTrustAllConfirmation" = true;
-      });
+  kiroCliJson = (pkgs.formats.json { }).generate "kiro-cli.json" (
+    kiroCliBase
+    // lib.optionalAttrs cfg.kiroTrustAll {
+      "chat.disableTrustAllConfirmation" = true;
+    }
+  );
   inherit (flakelabMcp) whatsappMcpDir;
 
   scripts = import ../scripts.nix { inherit pkgs cfg; };
