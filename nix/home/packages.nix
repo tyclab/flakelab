@@ -14,6 +14,17 @@
 }:
 let
   cfg = osConfig.flakelab;
+
+  # Kiro cli.json: the checked-in baseline, plus the trust-all confirmation
+  # suppressor only when flakelab.kiroTrustAll is on. Generated rather than
+  # symlinked so the opt-in is a single source of truth; the baseline file stays
+  # the place to edit every other key.
+  kiroCliBase = builtins.fromJSON (builtins.readFile ../../files/config/kiro/cli.json);
+  kiroCliJson =
+    (pkgs.formats.json { }).generate "kiro-cli.json"
+      (kiroCliBase // lib.optionalAttrs cfg.kiroTrustAll {
+        "chat.disableTrustAllConfirmation" = true;
+      });
   inherit (flakelabMcp) whatsappMcpDir;
 
   scripts = import ../scripts.nix { inherit pkgs cfg; };
@@ -144,7 +155,11 @@ in
   // cfg.sessionVariables;
 
   # ── Kiro CLI integration (replaces tasks/kiro.yaml) ────────────────────────
-  # cli.json is the enforced baseline.
+  # cli.json is the enforced baseline. `chat.disableTrustAllConfirmation` is NOT
+  # in the checked-in baseline: it suppresses the confirmation in front of
+  # --trust-all-tools, which outranks the agent's deniedCommands, so it ships
+  # only when the operator opts in via flakelab.kiroTrustAll — the same gate that
+  # decides whether the `kk` alias exists at all (nix/home/zsh.nix).
   #
   # mcp.json is deliberately NOT a home.file entry. A kiro-plugin repo's
   # `make install-global` installs its own MCP baseline by copying over
@@ -155,7 +170,7 @@ in
   # are merged *onto* whatever the plugin repo installed, in the kiroMcpMerge
   # activation (kiro.nix).
   home.file = {
-    ".kiro/settings/cli.json".source = ../../files/config/kiro/cli.json;
+    ".kiro/settings/cli.json".source = kiroCliJson;
     ".kiro/settings/kiro_cli_theme.json".source = ../../files/config/kiro/kiro_cli_theme.json;
     # npm's default prefix is the read-only nodejs store path, so `npm i -g` dies
     # with ENOENT. NPM_CONFIG_PREFIX (sessionVariables) only covers processes that

@@ -162,6 +162,12 @@ in
       description = "Install the Kiro CLI via its official installer into ~/.local/bin.";
     };
 
+    kiroTrustAll = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Opt in to the operator's full-trust Kiro surface: the `kk` alias (`kiro-cli chat --trust-all-tools`) and `chat.disableTrustAllConfirmation` in cli.json. Trust-all auto-approves every tool and OUTRANKS the agent's deniedCommands, so the destructive floor (force-push, reset --hard, clean -f, branch -D, rm -rf) does not apply under it — only the write.deniedPaths secret gates remain. Off by default so an adopter cannot inherit that surface without asking for it; `k` (plain `kiro-cli chat`) is unaffected either way.";
+    };
+
     installClaude = mkOption {
       type = types.bool;
       default = true;
