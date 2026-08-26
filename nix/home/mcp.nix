@@ -124,21 +124,21 @@ let
     lib.optionalAttrs cfg.mcpPlaywright {
       playwright = playwrightServer;
     }
-  // lib.optionalAttrs (cfg.sessionVariables ? HASS_URL) {
-    homeassistant = homeassistantServer;
-  }
-  // lib.optionalAttrs (cfg.sessionVariables ? PROXMOX_API_URL) {
-    proxmox = proxmoxServer;
-  }
-  // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_HOST) {
-    synology = synologyServer;
-  }
-  // lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL) {
-    grafana = grafanaServer;
-  }
-  // lib.optionalAttrs (cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST && whatsappMcpDir != null) {
-    whatsapp = whatsappServer;
-  };
+    // lib.optionalAttrs (cfg.sessionVariables ? HASS_URL) {
+      homeassistant = homeassistantServer;
+    }
+    // lib.optionalAttrs (cfg.sessionVariables ? PROXMOX_API_URL) {
+      proxmox = proxmoxServer;
+    }
+    // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_HOST) {
+      synology = synologyServer;
+    }
+    // lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL) {
+      grafana = grafanaServer;
+    }
+    // lib.optionalAttrs (cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST && whatsappMcpDir != null) {
+      whatsapp = whatsappServer;
+    };
 
   # Nothing secret is written to the Nix store (see homeassistantServer). These
   # servers are applied by the kiroMcpMerge activation (kiro.nix), not home.file
