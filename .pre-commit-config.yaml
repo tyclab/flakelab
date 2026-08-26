@@ -7,7 +7,7 @@
 
 repos:
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
     hooks:
       # The upstream entry is `gitleaks git --staged`, which reads the staged DIFF:
       # zero bytes under `pre-commit run --all-files`, reported as "Passed" — a green
@@ -26,13 +26,13 @@ repos:
         pass_filenames: true
 
   - repo: https://github.com/adrienverge/yamllint
-    rev: v1.38.0
+    rev: cba56bcde1fdd01c1deb3f945e69764c291a6530  # frozen: v1.38.0
     hooks:
       - id: yamllint
         args: [--strict]
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.23.2
+    rev: b82a6c8896e491b9cb377a99ff3412131920681b  # frozen: v0.23.2
     hooks:
       - id: markdownlint-cli2
         language_version: system
@@ -41,7 +41,7 @@ repos:
   # docker_image hook and fails in CI runners without a Docker daemon. No-op in
   # repos with no shell scripts.
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
+    rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
     hooks:
       - id: shellcheck
         args: [--severity=warning]
@@ -60,7 +60,7 @@ repos:
         require_serial: false
 
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.9.6
+    rev: 0ee178619d696787ca73d210cc191d720868c631  # frozen: v3.9.6
     hooks:
       - id: prettier
         types_or: [markdown, json]
@@ -73,7 +73,7 @@ repos:
   # each red here is a new defect rather than a taste argument. No-op in repos
   # with no python files.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.3
+    rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
     hooks:
       - id: ruff-check
         args: [--select, "E9,F"]
