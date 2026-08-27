@@ -15,7 +15,7 @@
     "enabled": true
   },
   "lockFileMaintenance": {
-    "description": "`nix flake update` for flake.lock — the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh.",
+    "description": "`nix flake update` for flake.lock \u2014 the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh.",
     "enabled": true
   },
   "customManagers": [
@@ -26,6 +26,20 @@
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+?)(?:\\s+versioning=(?<versioning>\\S+))?(?:\\s+extractVersion=(?<extractVersion>\\S+))?\\s*\\n[^\\n]*?\"(?<currentValue>[^\"\\s]+)\""
       ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": [
+        "@playwright/mcp runs in --extension mode: the Playwright MCP Bridge Chrome extension auto-updates and cannot be pinned, so a server lagging behind it is rejected with 'unsupported protocol version' and the browser bridge simply stops working.",
+        "minimumReleaseAge is waived here because a 3-day hold is a guaranteed 3-day outage window, while the risk it buys down is a hypothetical malicious publish from the Playwright team. automerge is the operative half: an exempted PR that still waits on a human reproduces exactly the lag the exemption removes. CI (lint/test/gitleaks) still gates the merge.",
+        "This is the ONLY package with either waiver. Everything else keeps the repo-wide 3-day hold."
+      ],
+      "matchDatasources": ["npm"],
+      "matchPackageNames": ["@playwright/mcp"],
+      "minimumReleaseAge": null,
+      "automerge": true,
+      "automergeType": "pr"
     }
   ]
 }
