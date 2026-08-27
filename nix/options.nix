@@ -162,6 +162,12 @@ in
       description = "Install the Kiro CLI via its official installer into ~/.local/bin.";
     };
 
+    claudeTrustAll = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Opt in to the `cc` alias (`claude --dangerously-skip-permissions`), which auto-approves every tool with no permission prompts. The Claude-side twin of kiroTrustAll, and off for the same reason: the permission prompt is the only thing standing between an agent and an unreviewed command, so an adopter should not inherit its removal. `c` (plain `claude`) is unaffected.";
+    };
+
     kiroTrustAll = mkOption {
       type = types.bool;
       default = false;

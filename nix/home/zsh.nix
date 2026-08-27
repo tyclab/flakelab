@@ -79,14 +79,14 @@ in
 
       # claude (mirrors k/kk/kwsl)
       # `c`  — everyday Claude Code.
-      # `cc` — FULL TRUST (--dangerously-skip-permissions): auto-approves every
+      # `cc` — FULL TRUST (--dangerously-skip-permissions), only with
+      #        flakelab.claudeTrustAll. Auto-approves every
       #        tool with no permission prompts. Use `c` for risky work; reach for
       #        `cc` only when you knowingly accept full send. (Shadows the C
       #        compiler name, but only in interactive shells — scripts are
       #        unaffected since aliases don't expand there.)
       # `cwsl` — Claude Code in the flake repo dir.
       c = "claude";
-      cc = "claude --dangerously-skip-permissions";
       cwsl = ''(cd "${cfg.repoPath}" && claude)'';
     }
     # `kk` ships ONLY when the operator opts in (flakelab.kiroTrustAll). Trust-all
@@ -94,6 +94,12 @@ in
     # under it — an adopter who never read that should not inherit the alias.
     // lib.optionalAttrs cfg.kiroTrustAll {
       kk = "kiro-cli chat --trust-all-tools";
+    }
+    # `cc` is the Claude-side twin and gates the same way (flakelab.claudeTrustAll):
+    # --dangerously-skip-permissions removes the prompt that is the only thing
+    # between an agent and an unreviewed command.
+    // lib.optionalAttrs cfg.claudeTrustAll {
+      cc = "claude --dangerously-skip-permissions";
     }
     # LAST, so an overlay's customAliases can override any of the above.
     // cfg.customAliases;
