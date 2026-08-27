@@ -72,7 +72,12 @@ sync_artifact_find_args() {
   done
 }
 
-DISTRO_NAME="${WSL_DISTRO_NAME:-unknown}"
+# WSL_DISTRO_NAME wins where it is set (the shell env on a WSL distro).
+# FLAKELAB_INSTANCE is next: the nix-backup wrapper (nix/scripts.nix) exports it
+# from flakelab.hostName on every OTHER target, where WSL_DISTRO_NAME is never
+# set at all — so on those targets this line resolves the instance directly and
+# the wsl.exe fallback below never runs.
+DISTRO_NAME="${WSL_DISTRO_NAME:-${FLAKELAB_INSTANCE:-unknown}}"
 if [[ "${DISTRO_NAME}" == "unknown" ]]; then
   script_dir="${0:A:h}"
   if [[ -x "${script_dir}/get_current_wsl_distro_name" ]]; then
@@ -164,6 +169,7 @@ while (( $# > 0 )); do
       echo ""
       echo "Environment:"
       echo "  FLAKELAB_BACKUP_ROOT        payload root (set by the nix wrapper from repoPath)"
+      echo "  FLAKELAB_INSTANCE           instance name off WSL, where WSL_DISTRO_NAME is unset (set by the nix wrapper from hostName)"
       echo "  FLAKELAB_STATE_ROOT         optional shared-state root (a synced folder, never a git checkout)"
       echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts in the state root"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"

@@ -55,8 +55,15 @@ let
   # its header), so leaving the environment untouched means each subcommand's
   # own wrapper is still the only thing that sets PATH for it — the same PATH,
   # in the same position, as when that wrapper was invoked directly.
+  #
+  # FLAKELAB_TARGET IS new environment, though: it is what lets the router gate
+  # the four WSL-only verbs (its own sixth map) instead of every target getting
+  # every verb on PATH. Unset in checkout mode (no wrapper runs there), which the
+  # router treats as no gate at all — the same "can't know, so don't guess"
+  # stance the doctor and backup wrappers below take on their own target reads.
   flakelab = pkgs.writeShellScriptBin "flakelab" ''
     export FLAKELAB_DISPATCH_DIR=${dispatchDir}/bin
+    export FLAKELAB_TARGET=${cfg.target}
     exec ${zsh} ${s}/flakelab "$@"
   '';
 

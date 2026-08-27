@@ -69,7 +69,7 @@ in
 # backups. This is the same hard read zsh.nix did before the block moved here.
 lib.optionalAttrs cfg.backupAutostart {
   systemd.user.services.flakelab-backup = {
-    Unit.Description = "flakelab: back up home-dir data to the Windows mount";
+    Unit.Description = "flakelab: back up home-dir data to the backup root";
     Service = {
       Type = "oneshot";
       # --force, as the shell autostart passed: there is no TTY here either, and
@@ -79,7 +79,7 @@ lib.optionalAttrs cfg.backupAutostart {
   };
 
   systemd.user.timers.flakelab-backup = {
-    Unit.Description = "flakelab: daily home-dir backup to the Windows mount";
+    Unit.Description = "flakelab: daily home-dir backup to the backup root";
     Timer = {
       # OnStartupSec is relative to the USER manager starting, which on WSL is
       # the first login to the distro — the closest equivalent of the shell
@@ -87,8 +87,9 @@ lib.optionalAttrs cfg.backupAutostart {
       # minutes so it does not compete with home-manager activation.
       OnStartupSec = "2min";
       OnUnitActiveSec = "24h";
-      # The payload lives on /mnt/c. Jitter keeps a backup from landing on top
-      # of whatever else woke up at the same moment on a shared Windows disk.
+      # Jitter keeps a backup from landing on top of whatever else woke up at
+      # the same moment on a backup root shared with other things (a Windows
+      # disk on WSL, whatever mount a target's backupRoot names elsewhere).
       RandomizedDelaySec = "10min";
     };
     Install.WantedBy = [ "timers.target" ];
