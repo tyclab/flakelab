@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `bwu` / `bwl` shell functions: `bwu` unlocks the Bitwarden vault on the TTY and parks the session token in mode-600 `~/.config/tyc/bw-session`; every shell exports it as `BW_SESSION` from there, so agents inherit an unlocked `bw` without the token crossing a command line or a transcript. `bwl` locks and removes the file. The token is per-unlock, so it lives outside `secrets.env` and outside `flakelab backup`.
 - `flakelab.target` (default `wsl`): the platform a system is built for, and the module set in `nix/targets/` that goes with it — `wsl` is the NixOS-WSL distro, `proxmox-vm` a Proxmox guest. It rides outside `userData` (`mkSystem { target = "proxmox-vm"; userData = { … }; }`, or as a top-level key of the legacy attrset) because `imports` cannot be conditional: the choice is made before the module system runs, which is also why the option is read-only afterwards.
 - `nixosConfigurations.proxmox-vm`: the tracked placeholders on the new target — cloud-init for the hostname, network and keys PVE hands the guest, a qemu-guest-agent that refuses fs-freeze so `vzdump` does not wait for a thaw that never comes, keys-only sshd, and a root filesystem that grows into whatever disk it is given.
 - `flakelab.flakeAttr` (default `"default"`): the `nixosConfigurations` attribute `flakelab update` switches into, for an overlay flake that declares more than one box.

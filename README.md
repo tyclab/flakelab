@@ -350,8 +350,13 @@ missing key means that server starts and then fails on first call.
 
 The Bitwarden CLI (`bw`) keeps whatever endpoint it already has unless
 `bitwardenServer` names one (default `null`); set it — `"https://vault.bitwarden.eu"`
-for the EU region — and every rebuild points `bw config server` there. Either way
-there is no unlock automation: run `bw unlock` and export the session it prints.
+for the EU region — and every rebuild points `bw config server` there. Unlocking
+stays interactive: `bwu` runs `bw unlock` on your TTY and parks the session token
+it prints in mode-600 `~/.config/tyc/bw-session`, which every shell exports as
+`BW_SESSION` — agents and MCP servers inherit it without the token ever appearing
+on a command line or in a transcript; `bwl` locks the vault and removes the file.
+The token is per-unlock (valid until `bw lock`/`bw logout`), so it is not a
+`secrets.env` entry and `flakelab backup` does not carry it.
 
 ## Shared state between machines
 

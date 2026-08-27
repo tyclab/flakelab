@@ -169,6 +169,31 @@ in
         set -a; source =(tr -d '\r' < "$HOME/.config/tyc/secrets.env"); set +a
       fi
 
+      # Bitwarden CLI session. `bw unlock` yields a per-unlock token that stays
+      # valid until `bw lock`/`bw logout` — not a durable secret, so it belongs
+      # neither in secrets.env nor in OpenBao. `bwu` unlocks on the TTY and parks
+      # the token in a mode-600 file; every shell (the ones agents run in
+      # included) exports it from there, so it never rides a command line, a
+      # chat message or a transcript. `bwl` locks and removes the file. The file
+      # is not part of `flakelab backup` on purpose (nix-backup restores
+      # secrets.env by name).
+      if [[ -r "$HOME/.config/tyc/bw-session" ]]; then
+        export BW_SESSION="$(tr -d '\r\n' < "$HOME/.config/tyc/bw-session")"
+      fi
+      bwu() {
+        local _f="$HOME/.config/tyc/bw-session" _t
+        _t="$(bw unlock --raw)" || return 1
+        mkdir -p "$HOME/.config/tyc" && chmod 700 "$HOME/.config/tyc"
+        (umask 077; printf '%s\n' "$_t" > "$_f") || return 1
+        export BW_SESSION="$_t"
+        echo "bw: unlocked — token in $_f, exported to new shells (bwl to lock)"
+      }
+      bwl() {
+        bw lock
+        rm -f "$HOME/.config/tyc/bw-session"
+        unset BW_SESSION
+      }
+
       # services.ssh-agent starts an agent but loads no key, and ssh_config(5)
       # adds one via `AddKeysToAgent yes` only when ssh itself loads a key from a
       # file mid-connection — which for a passphrase-protected key means prompting
