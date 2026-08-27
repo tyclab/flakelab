@@ -73,7 +73,7 @@ repos:
   # each red here is a new defect rather than a taste argument. No-op in repos
   # with no python files.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3  # frozen: v0.16.3
+    rev: aab412d509121cb5f7533134b7e67f9fab59c682  # frozen: v0.16.4
     hooks:
       - id: ruff-check
         args: [--select, "E9,F"]
