@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-27
+
+First tagged release. The project has been in daily use on two machines since
+before the public flip; this marks the point where adopters get a version to
+pin to instead of a moving `main`.
+
 ### Added
 
 - `flakelab.stateRoot` / `stateTranscripts` options for a shared state root synced across machines.
@@ -56,5 +62,6 @@ The format is based on [Keep a Changelog], and this project adheres to
 - Flow-style YAML lists (`profiles: [a, b]`) are parsed as lists by both overlay generators, instead of reaching the overlay as a literal string.
 - `gitpublisher` no longer reads pre-commit's cold-cache "Installing environment for .../gitleaks" line as a secret finding.
 
+[0.1.0]: https://github.com/tyclab/flakelab/releases/tag/v0.1.0
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
