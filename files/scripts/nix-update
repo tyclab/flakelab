@@ -301,8 +301,12 @@ _nix_relock_flakelab
 # nix-update() function, so its status WAS the command's. nixos-rebuild's own
 # codes (100 for a build failure, say) must survive the move.
 # The path is encoded, the `#` that follows it is NOT: that one is the flake
-# URL's fragment, which is how `default` is selected at all.
-sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#default" || exit $?
+# URL's fragment, which is how an attribute is selected at all.
+#
+# FLAKELAB_FLAKE_ATTR comes from the wrapper (nix/scripts.nix, from the
+# flakeAttr option); the fallback is for a checkout run, where this script has
+# no wrapper and this repo's own output is the only one there is.
+sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || exit $?
 
 (( _run_clone )) || exit 0
 

@@ -1,10 +1,10 @@
 # Wrappers around files/scripts, with a pinned PATH each.
 #
 # `cfg` is the flakelab option set (nix/options.nix) — the callers in nix/home/
-# pass `osConfig.flakelab`. The fields read here are repoPath, username,
-# kiroPluginRepo, gitlabGroups, repos, sshKeys, cloneExclude, stateRoot and
-# stateTranscripts; every one has its type and default declared there, which
-# is why nothing below needs an `or` fallback any more.
+# pass `osConfig.flakelab`. The fields read here are repoPath, flakeAttr,
+# username, kiroPluginRepo, gitlabGroups, repos, sshKeys, cloneExclude,
+# stateRoot and stateTranscripts; every one has its type and default declared
+# there, which is why nothing below needs an `or` fallback any more.
 { pkgs, cfg }:
 let
   inherit (pkgs) lib;
@@ -261,8 +261,12 @@ rec {
   # against the caller's ssh until now, so pinning one here would CHANGE which
   # ssh it uses rather than preserve it. A bare env fails loudly (gitnet_retry
   # prints GITNET_WHY), it does not fail silently.
+  # FLAKELAB_FLAKE_ATTR alongside the repo root: an overlay flake that declares
+  # several boxes names each one, and the rebuild has to switch into THIS box's
+  # attribute rather than the one this repo happens to call its own.
   nix-update = pkgs.writeShellScriptBin "nix-update" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
+    export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
     export PATH=${
       bin [
         pkgs.zsh
@@ -279,6 +283,7 @@ rec {
   # place while both names stay callable exactly as the shell functions were.
   nix-update-all = pkgs.writeShellScriptBin "nix-update-all" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
+    export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
     export PATH=${
       bin [
         pkgs.zsh
