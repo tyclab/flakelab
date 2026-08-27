@@ -20,7 +20,33 @@
 }:
 let
   cfg = osConfig.flakelab;
-  inherit (flakelab) sshKeys;
+  inherit (flakelab) isWsl sshKeys;
+
+  # The jump is WSL-only and needs a Windows user to jump away from: nothing
+  # else has a Windows profile directory a shell can start in.
+  homeJump = lib.optionalString (isWsl && cfg.windowsUsername != null) ''
+    # Jump to Linux home only when the shell starts at a Windows default entry
+    # path. There are two: the Windows profile root, and C:\Windows\System32 —
+    # the WSL profiles Windows Terminal generates carry no startingDirectory,
+    # so the distro inherits Terminal's own cwd, which is System32 whenever
+    # Terminal itself was launched from the Start menu or a pinned icon.
+    # Shells deliberately opened elsewhere on /mnt — e.g. a file manager's
+    # "open shell here" — keep their directory. Guarded so a .zshrc re-source
+    # never re-triggers the jump mid-session.
+    #
+    # Both sides are lowercased with zsh's :l modifier: windowsUsername is free
+    # text typed into the overlay, while $PWD carries the profile directory
+    # name as Windows actually stores it — Windows preserves case but does not
+    # enforce it, so a mismatched-case configured name would silently stop the
+    # jump on a literal compare.
+    if [[ -z "''${_flakelab_home_jump:-}" ]]; then
+      _flakelab_home_jump=1
+      _flakelab_win_home="/mnt/c/Users/${cfg.windowsUsername}"
+      [[ "''${PWD:l}" == "''${_flakelab_win_home:l}" || "''${PWD:l}" == /mnt/c/windows/system32 ]] && cd ~
+      unset _flakelab_win_home
+    fi
+
+  '';
 
   # gitcheck/gitclean scan roots, built once so the reporter and the deleter
   # cannot disagree about what is in scope. extraReposDirs adds roots beyond
@@ -130,28 +156,7 @@ in
     initContent = ''
       export GPG_TTY="$(tty)"
 
-      # Jump to Linux home only when the shell starts at a Windows default entry
-      # path. There are two: the Windows profile root, and C:\Windows\System32 —
-      # the WSL profiles Windows Terminal generates carry no startingDirectory,
-      # so the distro inherits Terminal's own cwd, which is System32 whenever
-      # Terminal itself was launched from the Start menu or a pinned icon.
-      # Shells deliberately opened elsewhere on /mnt — e.g. a file manager's
-      # "open shell here" — keep their directory. Guarded so a .zshrc re-source
-      # never re-triggers the jump mid-session.
-      #
-      # Both sides are lowercased with zsh's :l modifier: windowsUsername is free
-      # text typed into the overlay, while $PWD carries the profile directory
-      # name as Windows actually stores it — Windows preserves case but does not
-      # enforce it, so a mismatched-case configured name would silently stop the
-      # jump on a literal compare.
-      if [[ -z "''${_flakelab_home_jump:-}" ]]; then
-        _flakelab_home_jump=1
-        _flakelab_win_home="/mnt/c/Users/${cfg.windowsUsername}"
-        [[ "''${PWD:l}" == "''${_flakelab_win_home:l}" || "''${PWD:l}" == /mnt/c/windows/system32 ]] && cd ~
-        unset _flakelab_win_home
-      fi
-
-      # Load runtime secrets from a git-ignored env file if present. Populate it
+      ${homeJump}# Load runtime secrets from a git-ignored env file if present. Populate it
       # from OpenBao (e.g. `bao kv get`) or export the vars yourself — nothing is
       # baked into the repo or the Nix store.
       #

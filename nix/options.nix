@@ -46,6 +46,21 @@ let
 in
 {
   options.flakelab = {
+    # ── Set by mkSystem, never by a module ────────────────────────────────────
+
+    # readOnly because the answer is already spent: mkSystem selected the
+    # platform module set from this value in the flake's `let` (flake.nix
+    # targetModules), before a module system existed to hold a definition. A
+    # module redefining it would describe a system nobody built.
+    target = mkOption {
+      type = types.enum [
+        "wsl"
+        "proxmox-vm"
+      ];
+      readOnly = true;
+      description = "Platform this system is built for: `wsl` is a NixOS-WSL distro, `proxmox-vm` a Proxmox guest. Pass it to mkSystem (`mkSystem { target = \"proxmox-vm\"; userData = { … }; }`) — it picks the modules in nix/targets/, so it is the one field that cannot travel inside userData.";
+    };
+
     # ── Required: no default, so an overlay that omits one aborts eval ────────
     # These were read bare (no `or`) before, and an overlay missing one has no
     # sensible neutral value: a wrong username or repoPath builds a system for
@@ -74,11 +89,6 @@ in
     gitEmail = mkOption {
       type = types.str;
       description = "git user.email.";
-    };
-
-    windowsUsername = mkOption {
-      type = types.str;
-      description = "The C:\\Users\\<name> folder this WSL distro's host belongs to; the zsh init resolves the Windows home from it.";
     };
 
     backupAutostart = mkOption {
@@ -136,6 +146,18 @@ in
       type = types.strMatching "^[[:alnum:]]([[:alnum:]_-]{0,61}[[:alnum:]])?$";
       default = "flakelab";
       description = "System hostname (networking.hostName), as a single RFC 1123 label (alphanumeric ends, 63 characters at most). The default matches the distro name a fresh provision registers; a box registered under another name, or a second box built from the same overlay, sets its own here. Changing it on an existing box renames it at the next restart, and anything keyed on the hostname (the gate ledger among them) sees a new machine.";
+    };
+
+    windowsUsername = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "The C:\\Users\\<name> folder this WSL distro's host belongs to; the zsh init resolves the Windows home from it and jumps to the Linux home when a shell starts there. Null drops that hook, which is what every target other than `wsl` wants — there is no Windows side to jump away from.";
+    };
+
+    flakeAttr = mkOption {
+      type = types.str;
+      default = "default";
+      description = "The `nixosConfigurations` attribute `flakelab update` rebuilds (`nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`). The default names this repo's own output; an overlay flake that describes several boxes gives each one the attribute name it is declared under.";
     };
 
     sshKeys = mkOption {
