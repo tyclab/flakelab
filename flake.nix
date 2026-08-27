@@ -448,7 +448,7 @@
       # directory, and this treefmt wrapper is what it points at instead.
       formatter.${system} = pkgs.nixfmt-tree;
 
-      # `nix flake check` — the five offline suites, the two nix linters, and two
+      # `nix flake check` — the six offline suites, the two nix linters, and two
       # eval-time assertions. `targets` INSTANTIATES both systems (it forces
       # their toplevel drvPath) and builds neither, so the set still finishes
       # without realising a single system output.
@@ -458,6 +458,7 @@
         gitpublisher = suiteCheck "gitpublisher";
         nix-backup = suiteCheck "nix-backup";
         nix-overlay-generate = suiteCheck "nix-overlay-generate";
+        flakelab-cli = suiteCheck "flakelab-cli";
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 

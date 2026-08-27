@@ -13,11 +13,19 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `nixosConfigurations.proxmox-vm`: the tracked placeholders on the new target — cloud-init for the hostname, network and keys PVE hands the guest, a qemu-guest-agent that refuses fs-freeze so `vzdump` does not wait for a thaw that never comes, keys-only sshd, and a root filesystem that grows into whatever disk it is given.
 - `flakelab.flakeAttr` (default `"default"`): the `nixosConfigurations` attribute `flakelab update` switches into, for an overlay flake that declares more than one box.
 - `checks.targets`: `nix flake check` instantiates both systems and builds neither, asserting that each one carries its own platform and none of the other's.
+- `flakelab.backupRoot` (default `null`, resolving to `${repoPath}/files/config` as before): the `flakelab backup` payload root, for a target with no Windows mount to point it at instead.
+- `test-flakelab-cli`: the sixth offline suite, covering the router's target gate.
 
 ### Changed
 
 - `flakelab.windowsUsername` is optional and defaults to `null`. It feeds the zsh jump out of the Windows profile directory, which only the `wsl` target has, so an overlay for any other target leaves it out.
 - `nix/configuration.nix` is the system layer every target shares; the NixOS-WSL settings, the interop hazard note and `system.stateVersion` live in `nix/targets/wsl.nix`.
+- `flakelab <command>` refuses the four WSL-only verbs (`provision`, `build-distro`, `test-provision`, `distro-name`) with exit 2 on any target other than `wsl`, and drops them from `--help` and its did-you-mean suggestions.
+- `flakelab doctor`'s WSL interop check runs only when the target is `wsl`; every other target gets a single `ok` line instead of a spurious failure.
+- `flakelab backup`'s per-instance path resolves `WSL_DISTRO_NAME`, then `FLAKELAB_INSTANCE` (exported by the nix wrapper from `hostName` on any non-`wsl` target), before falling back to the `wsl.exe` probe.
+- `BROWSER` is set only on the `wsl` target (`wsl-open` needs a Windows default browser to hand a URL to); other targets' CLIs print the URL themselves.
+- `flakelab.mcpPlaywright`'s server registration, and Claude's Playwright MCP bridge env, are gated on the `wsl` target too — extension mode's Windows Chrome path is meaningless elsewhere; a trace warns when `mcpPlaywright` is set on another target.
+- `~/.claude/CLAUDE.md`'s managed block is now a target-neutral core plus a per-target file (`target-wsl.md` or `target-proxmox-vm.md`), so a Proxmox guest gets its own facts instead of a WSL box's `/mnt/c` and WSL-verb notes.
 
 ## [0.1.0] - 2026-08-27
 

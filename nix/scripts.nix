@@ -3,8 +3,9 @@
 # `cfg` is the flakelab option set (nix/options.nix) — the callers in nix/home/
 # pass `osConfig.flakelab`. The fields read here are repoPath, flakeAttr,
 # username, kiroPluginRepo, gitlabGroups, repos, sshKeys, cloneExclude,
-# stateRoot and stateTranscripts; every one has its type and default declared
-# there, which is why nothing below needs an `or` fallback any more.
+# stateRoot, stateTranscripts, target, hostName and backupRoot; every one has
+# its type and default declared there, which is why nothing below needs an
+# `or` fallback any more.
 { pkgs, cfg }:
 let
   inherit (pkgs) lib;
@@ -38,8 +39,10 @@ let
   };
   zsh = "${pkgs.zsh}/bin/zsh";
   bin = lib.makeBinPath;
-  # Backups must land on the Windows mount to survive distro re-provisioning.
-  backupRoot = "${cfg.repoPath}/files/config";
+  # Backups must land somewhere that survives distro re-provisioning: the
+  # Windows mount on WSL (the default, unset), or wherever a target with no
+  # such mount points cfg.backupRoot at instead (nix/options.nix).
+  backupRoot = if cfg.backupRoot != null then cfg.backupRoot else "${cfg.repoPath}/files/config";
   # The optional state root is exported by the nix-backup wrapper below only
   # when set; the script treats an unset variable as "everything stays in the
   # payload".
@@ -297,6 +300,17 @@ rec {
 
   nix-backup = pkgs.writeShellScriptBin "nix-backup" ''
     export FLAKELAB_BACKUP_ROOT=${backupRoot}
+    ${
+      # Instance identity for a target with no WSL_DISTRO_NAME to read at run
+      # time — gated at EVAL time on cfg.target rather than leaving the script
+      # to notice WSL_DISTRO_NAME is unset: inside the WSL backup timer that
+      # variable genuinely is unset (systemd units run with no login-shell
+      # env), so a runtime gate would misread every WSL instance as "not WSL"
+      # and silently move its payload under FLAKELAB_INSTANCE instead.
+      lib.optionalString (
+        cfg.target != "wsl"
+      ) "export FLAKELAB_INSTANCE=${lib.escapeShellArg cfg.hostName}"
+    }
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
       ${lib.optionalString cfg.stateTranscripts "export FLAKELAB_STATE_TRANSCRIPTS=1"}
@@ -365,6 +379,7 @@ rec {
   # missing token or a failed auth probe is not a finding.
   nix-doctor = pkgs.writeShellScriptBin "nix-doctor" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
+    export FLAKELAB_TARGET=${cfg.target}
     export FLAKELAB_KIRO_PLUGIN_DIR="${kiroPluginDir}"
     export FLAKELAB_KIRO_PLUGIN_REMOTE="${kiroPluginPath}"
     export FLAKELAB_GITLAB_GROUPS="${toString (builtins.length cfg.gitlabGroups)}"

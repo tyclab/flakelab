@@ -9,11 +9,13 @@
   lib,
   pkgs,
   osConfig,
+  flakelab,
   flakelabMcp,
   ...
 }:
 let
   cfg = osConfig.flakelab;
+  inherit (flakelab) isWsl;
 
   # Kiro cli.json: the checked-in baseline, plus the trust-all confirmation
   # suppressor only when flakelab.kiroTrustAll is on. Generated rather than
@@ -141,13 +143,17 @@ in
 
   home.sessionVariables = {
     EDITOR = "nano";
-    BROWSER = "wsl-open"; # open URLs in the Windows default browser
     KUBE_EDITOR = "code --wait";
     GOPATH = "${config.home.homeDirectory}/git/go";
     GOBIN = "${config.home.homeDirectory}/git/go/bin";
     # `npm install -g` targets ~/.npm-global (writable, unlike the nix store);
     # home.activation.pinNpm installs the pinned npm there.
     NPM_CONFIG_PREFIX = "${config.home.homeDirectory}/.npm-global";
+  }
+  // lib.optionalAttrs isWsl {
+    # wsl-open shells to the Windows default browser; a headless target has
+    # none, and its CLIs print the URL for the operator to open themselves.
+    BROWSER = "wsl-open";
   }
   // lib.optionalAttrs (whatsappMcpDir != null) {
     # Expanded as ${WHATSAPP_MCP_DIR} by the mcp-whatsapp plugin's .mcp.json.

@@ -19,7 +19,7 @@ and only write one, since applying it needs an `x86_64-linux` NixOS-WSL machine.
 ## Required local gate
 
 ```bash
-make test          # the five offline suites, seconds
+make test          # the six offline suites, seconds
 nix flake check    # the same suites plus statix and deadnix; what CI runs
 ```
 
