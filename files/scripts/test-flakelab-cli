@@ -1,0 +1,132 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for the flakelab router (files/scripts/flakelab): the real
+# script against a throwaway dispatch dir of stub wrappers, so no case depends
+# on nix/cli.nix having built anything real.
+#
+# Covers the target gate only — the sixth map (_targets) and _available() that
+# decide which of the 14 commands a target sees. Everything else about the
+# router (unknown-command handling, checkout-mode dispatch with no
+# FLAKELAB_DISPATCH_DIR) is exercised by hand today and stays out of scope
+# here; adding it is a fine follow-up, not a reason to hold this one back.
+#
+# Usage: files/scripts/test-flakelab-cli
+
+SCRIPT_DIR="${0:A:h}"
+ROUTER="${SCRIPT_DIR}/flakelab"
+typeset -i PASS=0 FAIL=0
+
+# Same shape as test-nix-backup / test-nix-overlay-generate: both end in
+# `return 0`, since `(( PASS++ ))` yields the value BEFORE the increment and an
+# `&& ok || bad` chain would otherwise run both arms on the very first call.
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# ---------------------------------------------------------------------------
+# A stub dispatch dir: one executable per wrapper name nix/cli.nix's
+# dispatchDir would hold, each just naming itself so a dispatch is
+# distinguishable from a gate refusal. Literal `#!/usr/bin/env zsh` — the same
+# shebang the real wrappers and this suite carry, rewritten by flake.nix's
+# suiteCheck the same blanket way for every occurrence in this file, stub body
+# included.
+DISPATCH="${BASE}/dispatch/bin"
+mkdir -p "${DISPATCH}"
+
+typeset -a WRAPPERS=(
+  nix-update nix-update-all nix-doctor nix-backup nix-clone-repos
+  nix-provision nix-overlay-generate build-dev-wsl-nix test-provision-nix
+  get_current_wsl_distro_name clone-repos activate-hooks report-stale-repos
+  glab-group-projects
+)
+for w in "${WRAPPERS[@]}"; do
+  cat > "${DISPATCH}/${w}" <<STUB
+#!/usr/bin/env zsh
+print -r -- "ran:${w}"
+STUB
+  chmod +x "${DISPATCH}/${w}"
+done
+
+# The router's own _order (14) and its wsl-only subset (4) — mirrored here
+# rather than sourced, since the router's arrays are not meant to be sourced
+# by anything else, this suite included.
+typeset -a ORDER=(
+  update update-all doctor backup clone provision overlay-gen build-distro
+  test-provision distro-name clone-repos activate-hooks stale-repos
+  glab-projects
+)
+typeset -a WSL_ONLY=( provision build-distro test-provision distro-name )
+
+# run_router <target|""> <args...> — sets OUT and RC. Empty target means the
+# env var is left UNSET entirely (checkout mode), not exported empty; the
+# router treats both the same way, but leaving it genuinely unset is the more
+# honest fixture for "nothing wrapped this run".
+typeset -i RC=0
+OUT=""
+run_router() {
+  local target="$1"
+  shift
+  if [[ -n "${target}" ]]; then
+    OUT="$(FLAKELAB_DISPATCH_DIR="${DISPATCH}" FLAKELAB_TARGET="${target}" "${ROUTER}" "$@" 2>&1)"
+  else
+    OUT="$(FLAKELAB_DISPATCH_DIR="${DISPATCH}" "${ROUTER}" "$@" 2>&1)"
+  fi
+  RC=$?
+}
+
+# How many of ORDER's names appear as a LISTED command line in $OUT — anchored
+# on the two-space/name/whitespace prefix printf '  %-15s %s\n' writes, so the
+# "  flakelab <command> [args...]" usage line above the list can never count.
+count_listed() {
+  local -i n=0
+  local c
+  for c in "${ORDER[@]}"; do
+    print -r -- "$OUT" | grep -qE "^  ${c}[[:space:]]" && (( n++ ))
+  done
+  print -r -- "$n"
+}
+
+# ---------------------------------------------------------------------------
+print -r -- "no FLAKELAB_TARGET (checkout mode): every verb available"
+run_router "" --help
+check "--help lists all 14 commands" "$(count_listed)" "14"
+check "--help exits 0" "${RC}" "0"
+
+run_router "" build-distro
+contains "build-distro dispatches with no target set" "${OUT}" "ran:build-dev-wsl-nix"
+check "build-distro exits 0 with no target set" "${RC}" "0"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "FLAKELAB_TARGET=proxmox-vm: the four wsl-only verbs are gated"
+run_router "proxmox-vm" --help
+check "--help lists 10 commands (14 minus the four wsl-only verbs)" "$(count_listed)" "10"
+for c in "${WSL_ONLY[@]}"; do
+  excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
+done
+
+run_router "proxmox-vm" build-distro
+check "build-distro exits 2 on proxmox-vm" "${RC}" "2"
+contains "build-distro's refusal names the command and the required target" \
+  "${OUT}" "build-distro: not available on target proxmox-vm (wsl only)"
+
+run_router "proxmox-vm" update
+contains "update still dispatches on proxmox-vm" "${OUT}" "ran:nix-update"
+check "update exits 0 on proxmox-vm" "${RC}" "0"
+
+run_router "proxmox-vm" "build-distr"
+check "a typo near a hidden verb exits 2" "${RC}" "2"
+contains "a typo near a hidden verb is reported unknown" "${OUT}" "unknown command: build-distr"
+excludes "a typo near a hidden verb does NOT suggest it" "${OUT}" "did you mean 'build-distro'"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

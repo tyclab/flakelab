@@ -14,10 +14,12 @@
 {
   lib,
   osConfig,
+  flakelab,
   ...
 }:
 let
   cfg = osConfig.flakelab;
+  inherit (flakelab) isWsl;
 
   # Per-user: `flakelab clone` lays repos out by GitLab namespace, so this follows
   # the user's own gitlabGroups. null -> whatsapp is skipped.
@@ -121,24 +123,31 @@ let
   };
 
   mcpServers =
-    lib.optionalAttrs cfg.mcpPlaywright {
-      playwright = playwrightServer;
-    }
-    // lib.optionalAttrs (cfg.sessionVariables ? HASS_URL) {
-      homeassistant = homeassistantServer;
-    }
-    // lib.optionalAttrs (cfg.sessionVariables ? PROXMOX_API_URL) {
-      proxmox = proxmoxServer;
-    }
-    // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_HOST) {
-      synology = synologyServer;
-    }
-    // lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL) {
-      grafana = grafanaServer;
-    }
-    // lib.optionalAttrs (cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST && whatsappMcpDir != null) {
-      whatsapp = whatsappServer;
-    };
+    # Extension mode assumes a Windows Chrome at windowsChromePath, which
+    # exists nowhere off WSL — registering the server anyway would just hand
+    # every agent a broken tool. warnIf traces the mismatch at eval time
+    # (forced by mcpServers itself being read below) rather than staying
+    # silent about a config bit the target quietly dropped.
+    lib.warnIf (cfg.mcpPlaywright && !isWsl)
+      "flakelab.mcpPlaywright is set but flakelab.target is not \"wsl\" — extension mode needs the Windows Chrome path in nix/home/mcp.nix, which is meaningless off WSL; the playwright MCP server was NOT registered."
+      (
+        lib.optionalAttrs (cfg.mcpPlaywright && isWsl) { playwright = playwrightServer; }
+        // lib.optionalAttrs (cfg.sessionVariables ? HASS_URL) {
+          homeassistant = homeassistantServer;
+        }
+        // lib.optionalAttrs (cfg.sessionVariables ? PROXMOX_API_URL) {
+          proxmox = proxmoxServer;
+        }
+        // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_HOST) {
+          synology = synologyServer;
+        }
+        // lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL) {
+          grafana = grafanaServer;
+        }
+        // lib.optionalAttrs (cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST && whatsappMcpDir != null) {
+          whatsapp = whatsappServer;
+        }
+      );
 
   # Nothing secret is written to the Nix store (see homeassistantServer). These
   # servers are applied by the kiroMcpMerge activation (kiro.nix), not home.file

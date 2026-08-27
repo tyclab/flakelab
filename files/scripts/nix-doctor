@@ -41,7 +41,7 @@ while (( $# > 0 )); do
       echo "  --quiet    print only FAIL/WARN lines and the summary"
       echo "  --help     show this help message"
       echo ""
-      echo "Blocking checks cover: the WSLInterop handler, kiro-cli, Claude Code,"
+      echo "Blocking checks cover: the WSLInterop handler (WSL target only), kiro-cli, Claude Code,"
       echo "the kiro-plugin checkout, ~/.kiro agents/skills/steering, mcp.json,"
       echo "which git config file wins, secrets.env (mode + CRLF), glab config"
       echo "modes (global and repo-local), glab auth, the ssh-agent and its keys,"
@@ -99,6 +99,20 @@ needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) || [[ -n "${KIR
 SECRETS="${HOME}/.config/tyc/secrets.env"
 WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
 
+# Exported by the nix-doctor wrapper (nix/scripts.nix) from flakelab.target. Run
+# outside the wrapper (a checkout, or a distro predating the target facade)
+# FLAKELAB_TARGET is unset, so fall back to the same signal the WSL interop
+# check below already relies on: /proc/version names "microsoft" on every WSL2
+# kernel, upstream or not.
+TARGET="${FLAKELAB_TARGET:-}"
+if [[ -z "${TARGET}" ]]; then
+  if grep -qi microsoft /proc/version 2> /dev/null; then
+    TARGET="wsl"
+  else
+    TARGET="other"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Activation warnings recorded by flakelab-warn
 # ---------------------------------------------------------------------------
@@ -135,23 +149,28 @@ esac
 # WSL interop
 # ---------------------------------------------------------------------------
 log_head "WSL interop"
-# binfmt_misc is one kernel-global registry shared by every distro in the WSL2 VM,
-# so a wipe there takes every .exe call in every distro with it (known-issues.md).
-# Nothing announces it: the first symptom is `exec format error` on an unrelated
-# binary. The entry is WSLInterop here; systemd-binfmt names it WSLInterop-late
-# instead (microsoft/WSL#13449), so both spellings count.
-if [[ ! -e /proc/sys/fs/binfmt_misc/register ]]; then
-  log_fail "binfmt_misc is not mounted — no interpreter registry at all"
-  log_hint "every .exe call fails; recover with 'wsl --shutdown' from a Windows terminal"
-elif [[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]; then
-  log_ok "WSLInterop handler registered"
+if [[ "${TARGET}" != "wsl" ]]; then
+  log_ok "target ${TARGET}: no WSL interop to check"
 else
-  log_fail "WSLInterop handler missing — .exe calls fail with 'exec format error'"
-  log_hint "There is no in-distro repair for this — do not attempt one."
-  log_hint "The only fix is 'wsl --shutdown' from a WINDOWS terminal, then re-enter:"
-  log_hint "WSL re-registers the handler itself on VM boot."
-  log_hint "It kills every session in the VM, so it is the operator's call, never an agent's."
-  log_hint "Upstream: https://github.com/microsoft/WSL/issues/8203 (binfmt_misc namespacing, open)"
+  # binfmt_misc is one kernel-global registry shared by every distro in the WSL2
+  # VM, so a wipe there takes every .exe call in every distro with it
+  # (known-issues.md). Nothing announces it: the first symptom is `exec format
+  # error` on an unrelated binary. The entry is WSLInterop here; systemd-binfmt
+  # names it WSLInterop-late instead (microsoft/WSL#13449), so both spellings
+  # count.
+  if [[ ! -e /proc/sys/fs/binfmt_misc/register ]]; then
+    log_fail "binfmt_misc is not mounted — no interpreter registry at all"
+    log_hint "every .exe call fails; recover with 'wsl --shutdown' from a Windows terminal"
+  elif [[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]; then
+    log_ok "WSLInterop handler registered"
+  else
+    log_fail "WSLInterop handler missing — .exe calls fail with 'exec format error'"
+    log_hint "There is no in-distro repair for this — do not attempt one."
+    log_hint "The only fix is 'wsl --shutdown' from a WINDOWS terminal, then re-enter:"
+    log_hint "WSL re-registers the handler itself on VM boot."
+    log_hint "It kills every session in the VM, so it is the operator's call, never an agent's."
+    log_hint "Upstream: https://github.com/microsoft/WSL/issues/8203 (binfmt_misc namespacing, open)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -208,6 +208,14 @@ transcript_fixture() {
 
 # run_backup / run_restore: the real script, sandboxed; set OUT and RC. stdin is
 # /dev/null so prompts are reached only through the seams, under a terminal or not.
+#
+# RUN_WSL_NAME / RUN_INSTANCE: the two halves of the DISTRO_NAME fallback chain
+# (WSL_DISTRO_NAME, then FLAKELAB_INSTANCE). Every existing case here leaves
+# both at their default — WSL_DISTRO_NAME=TestDistro, FLAKELAB_INSTANCE unset —
+# which is the exact env this suite always ran under; the instance-identity
+# cases below are the only ones that override them, and reset both afterward.
+RUN_WSL_NAME="TestDistro"
+RUN_INSTANCE=""
 typeset -i RC=0
 OUT=""
 run_backup() {
@@ -220,7 +228,8 @@ run_backup() {
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
     FAKE_GITLEAKS_RELPATH="${FAKE_RELPATH}" \
     FLAKELAB_GATE_ANSWERS="${ANSWERS}" \
-    WSL_DISTRO_NAME=TestDistro "${BACKUP}" "$@" < /dev/null 2>&1)"
+    WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}" \
+    "${BACKUP}" "$@" < /dev/null 2>&1)"
   RC=$?
 }
 run_restore() { run_backup --restore "$@" }
@@ -262,6 +271,30 @@ foreign_decision() {
 }
 
 print -r -- "test-nix-backup"
+
+# ---------------------------------------------------------------------------
+# Instance identity: WSL_DISTRO_NAME, then FLAKELAB_INSTANCE, then "unknown"
+# ---------------------------------------------------------------------------
+print -r -- "FLAKELAB_INSTANCE names the instance when WSL_DISTRO_NAME is unset"
+fixture instance-fallback
+RUN_WSL_NAME=""
+RUN_INSTANCE="vmbox"
+run_backup --dry-run
+RUN_WSL_NAME="TestDistro"
+RUN_INSTANCE=""
+contains "the payload path uses FLAKELAB_INSTANCE" "${OUT}" "instances/vmbox"
+excludes "not the TestDistro every other case runs under" "${OUT}" "instances/TestDistro"
+check    "the run exits clean"                     "${RC}"  "0"
+
+print -r -- "WSL_DISTRO_NAME wins when both are set"
+fixture instance-precedence
+RUN_WSL_NAME="TestDistro"
+RUN_INSTANCE="vmbox"
+run_backup --dry-run
+RUN_INSTANCE=""
+contains "the payload path uses WSL_DISTRO_NAME" "${OUT}" "instances/TestDistro"
+excludes "not FLAKELAB_INSTANCE"                  "${OUT}" "instances/vmbox"
+check    "the run exits clean"                    "${RC}"  "0"
 
 print -r -- "restore merges instead of overwriting"
 fixture additive

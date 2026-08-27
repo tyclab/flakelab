@@ -56,7 +56,7 @@ flowchart LR
     HOME -.-> VM
 ```
 
-Not drawn: `nix flake check` (the five offline suites plus statix/deadnix) and
+Not drawn: `nix flake check` (the six offline suites plus statix/deadnix) and
 `devShells.default` guard every change with the same pinned tooling.
 
 ## Bootstrap
@@ -383,7 +383,7 @@ ever typed at a prompt.
 ## Test and lint
 
 ```bash
-make test          # the five offline suites, seconds
+make test          # the six offline suites, seconds
 nix flake check    # the same suites + statix/deadnix; what CI runs
 ```
 

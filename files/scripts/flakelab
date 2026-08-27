@@ -124,7 +124,7 @@ _desc=(
   update          'rebuild THIS distro from the configured flake + overlay'
   update-all      'update, then re-run the GitLab clone sweep'
   doctor          'diagnose this distro and print what to run next'
-  backup          'back up home-dir data to the Windows mount (--restore to read it back)'
+  backup          'back up home-dir data to the backup root (--restore to read it back)'
   clone           'discover and clone the configured GitLab groups and repos'
   provision       'drive the Windows provisioning script from inside WSL'
   overlay-gen     'scaffold a private flakelab overlay from a user_data.yaml'
@@ -137,6 +137,32 @@ _desc=(
   glab-projects   'plumbing: list a GitLab group'\''s projects as NDJSON'
 )
 
+# --- the target gate ----------------------------------------------------------
+# Sixth map: the four verbs that only make sense on a WSL distro, keyed by the
+# target each one needs rather than a bare "wsl only" flag — a future
+# target-gated verb only adds a row. `provision`/`build-distro`/`test-provision`
+# drive Windows-side distro lifecycle; `distro-name` reads WSL_DISTRO_NAME (or
+# shells to wsl.exe). A verb with no row here is available on every target.
+typeset -A _targets
+_targets=(
+  provision       wsl
+  build-distro    wsl
+  test-provision  wsl
+  distro-name     wsl
+)
+
+# FLAKELAB_TARGET is exported by the nix wrapper (nix/cli.nix) from
+# flakelab.target. Unset means CHECKOUT mode — nothing wrapped this run, so
+# nothing exported it — and that is no gate at all: `./files/scripts/flakelab
+# doctor` has to keep working exactly as it always did, before any target
+# concept existed.
+_available() {
+  local c="$1"
+  [[ -z "${FLAKELAB_TARGET:-}" ]] && return 0
+  [[ -z "${_targets[$c]:-}" ]] && return 0
+  [[ "${_targets[$c]}" == "${FLAKELAB_TARGET}" ]]
+}
+
 # --- help --------------------------------------------------------------------
 usage() {
   print -r -- "${_self} - one entrypoint for the flakelab distro commands"
@@ -146,7 +172,7 @@ usage() {
   print -r -- "Commands:"
   local c
   for c in ${_order}; do
-    printf '  %-15s %s\n' "$c" "${_desc[$c]}"
+    _available "$c" && printf '  %-15s %s\n' "$c" "${_desc[$c]}"
   done
   print -r -- ""
   print -r -- "Every command takes its own flags; ${_self} <command> --help shows them."
@@ -178,16 +204,20 @@ _lev() {
 
 # Best match wins, and only if it is actually close: a prefix of a real command
 # ("flakelab up"), or within two edits of one. Anything further away gets the
-# plain command list rather than a misleading guess.
+# plain command list rather than a misleading guess. Unavailable verbs are
+# skipped in both passes — the same reason usage() does not print them: a typo
+# near a hidden WSL-only verb must not point at a command this target refuses.
 _suggest() {
   local want="$1" c best="" ; local -i d bestd=3
   for c in ${_order}; do
+    _available "$c" || continue
     if [[ "$c" == "${want}"* ]]; then
       print -r -- "$c"
       return 0
     fi
   done
   for c in ${_order}; do
+    _available "$c" || continue
     d=$(_lev "$want" "$c")
     if (( d < bestd )); then
       bestd=$d
@@ -222,6 +252,11 @@ if [[ -z "${_bin[$_cmd]:-}" ]]; then
   [[ -n "$_guess" ]] && print -ru2 -- "${_self}: did you mean '${_guess}'?"
   print -ru2 -- ""
   usage >&2
+  exit 2
+fi
+
+if ! _available "$_cmd"; then
+  print -ru2 -- "${_self}: ${_cmd}: not available on target ${FLAKELAB_TARGET} (${_targets[$_cmd]} only)"
   exit 2
 fi
 

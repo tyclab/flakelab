@@ -339,6 +339,12 @@ in
       description = "Extra roots the gitcheck/gitclean aliases scan beyond ~/git — e.g. a Windows-mount tree still holding clones that exist nowhere else.";
     };
 
+    backupRoot = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Absolute path of the flakelab backup payload root (secrets, keys, per-host config); null resolves to `\${repoPath}/files/config`, the Windows-mount default `flakelab backup` has always used. A target with no such mount (nothing survives a proxmox-vm guest's own disk across re-provisioning) points this at a mount that outlives it instead.";
+    };
+
     stateRoot = mkOption {
       type = types.nullOr types.str;
       default = null;
