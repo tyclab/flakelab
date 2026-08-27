@@ -5,10 +5,10 @@ How flakelab is put together, and why. Usage lives in
 
 ## Principles
 
-1. **Two layers.** System-scoped configuration in `nix/configuration.nix`,
-   user-scoped in `nix/home/` (Home Manager as a NixOS module), split by
-   concern: `packages`, `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `tooling`,
-   `health`, `backup`.
+1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
+   the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
+   `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
+   `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `tooling`, `health`, `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
    with no nixpkgs path (kiro-cli, the Claude installer) and SSH key material —
    both behind guarded, idempotent activation, never in the store.

@@ -104,6 +104,10 @@ let
   inherit (cfg) sshKeys;
   firstSshKey = builtins.head sshKeys; # the git/clone key
 
+  # The one target fact the home modules need: what the shell may assume about
+  # a Windows side (zsh's home jump today).
+  isWsl = cfg.target == "wsl";
+
   inherit (cfg) installKiro installClaude;
 
   inherit (cfg) kiroPluginRepo;
@@ -136,6 +140,7 @@ in
       flakelabDefer
       sshAgentPreamble
       sshDefer
+      isWsl
       sshKeys
       firstSshKey
       installKiro

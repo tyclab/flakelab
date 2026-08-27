@@ -1,8 +1,9 @@
 # AGENTS.md — flakelab
 
-Shareable NixOS-WSL dev environment (`nixosConfigurations.default`, `.#wslImage`,
-`lib.mkSystem`). `nix/users/default.nix` ships neutral placeholders; real personal
-values live in the private overlay `flakelab-config`, which imports this flake via
+Shareable NixOS dev environment (`nixosConfigurations.default` — the WSL distro
+— `nixosConfigurations.proxmox-vm`, `.#wslImage`, `lib.mkSystem`).
+`nix/users/default.nix` ships neutral placeholders; real personal values live in
+the private overlay `flakelab-config`, which imports this flake via
 `lib.mkSystem`.
 
 - Secrets come from OpenBao via `~/.config/tyc/secrets.env` at use time.

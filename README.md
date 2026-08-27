@@ -43,7 +43,7 @@ flowchart LR
     subgraph pub["flakelab — this repo"]
         MK["lib.mkSystem"] --> PROF["profiles/merge.nix"]
         PROF --> OPT["options.flakelab.*<br/>typed schema"]
-        OPT --> SYS["configuration.nix<br/>system layer"]
+        OPT --> SYS["configuration.nix + nix/targets/<br/>system layer"]
         OPT --> HOME["nix/home/*<br/>9 concern modules"]
         OPT --> SCR["scripts"]
     end
@@ -212,15 +212,15 @@ overlay written on a Mac is applied on a Windows/WSL2 machine.
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
 all fourteen.
 
-| Command                   | Action                                                      |
-| ------------------------- | ----------------------------------------------------------- |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#default` |
-| `flakelab update-all`     | rebuild + clone                                             |
-| `flakelab clone`          | clone / fetch GitLab group repos                            |
-| `flakelab doctor`         | diagnose a provisioned distro                               |
-| `flakelab backup`         | payload + optional shared state root                        |
-| `flakelab overlay-gen`    | write the private overlay from a config                     |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                |
+| Command                   | Action                                                          |
+| ------------------------- | --------------------------------------------------------------- |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>` |
+| `flakelab update-all`     | rebuild + clone                                                 |
+| `flakelab clone`          | clone / fetch GitLab group repos                                |
+| `flakelab doctor`         | diagnose a provisioned distro                                   |
+| `flakelab backup`         | payload + optional shared state root                            |
+| `flakelab overlay-gen`    | write the private overlay from a config                         |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 drift check's exit status. Without a terminal they refuse to rebuild from a
@@ -302,7 +302,8 @@ with your own rather than reading them as defaults.
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | `flake.nix`                           | inputs, `nixosConfigurations.default`, `lib.mkSystem`, `.#wslImage`         |
 | `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record        |
-| `nix/configuration.nix`               | system: wsl.conf, locale, native Docker, nix-ld                             |
+| `nix/configuration.nix`               | system, every target: locale, native Docker, nix-ld                         |
+| `nix/targets/`                        | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`          |
 | `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, tooling, health, backup    |
 | `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)               |
 | `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs  |
