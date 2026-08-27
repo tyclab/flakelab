@@ -7,6 +7,7 @@ the private overlay `flakelab-config`, which imports this flake via
 `lib.mkSystem`.
 
 - Secrets come from OpenBao via `~/.config/tyc/secrets.env` at use time.
+- The Bitwarden session token is the exception: the operator runs `bwu`, which parks it in `~/.config/tyc/bw-session`, and the shell exports it as `BW_SESSION`. A locked vault means asking the operator to run `bwu` — never asking for the token or putting it on a command line.
 - **`flakelab` is the CLI.** One binary, subcommands; `flakelab --help` lists
   them all. It is a ROUTER (`files/scripts/flakelab`): each subcommand still
   execs the same per-command wrapper `nix/scripts.nix` builds, so every one
