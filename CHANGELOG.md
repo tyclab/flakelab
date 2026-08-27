@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `flakelab.hostName` (default `flakelab`): sets `networking.hostName`, which nothing set before — every box came up as `nixos`. An existing box is renamed at its next update, effective at the next distro restart, and anything keyed on the hostname sees a new machine: the gate ledger does, so already-applied holds are offered once more after the rename. Set `hostName = "nixos"` in the overlay to keep the old name.
 - `setup-wsl-nix.ps1 -RestoreInstance <name>`: names the backup instance the overlay-payload restore reads, for a distro whose payload was written under another distro name. A name the payload has no directory for is refused, listing the ones it has.
 - `setup-wsl-nix.ps1 provision` on a fresh PC — no overlay, no `-Config`, an interactive console — asks for the four values a config cannot do without (Linux user, git name, git mail, profiles; an optional repo list last) and writes them as `<overlay>\files\config\user_data.yaml` before carrying on; that file is found on every later run, so `-Force` regenerates from it. The README bootstrap is one command. Non-interactive runs and `-DryRun` keep the refusal; the `.cmd` menu's config prompt now falls through to the questions on Enter.
+- `BACKLOG.md`: planned work, tracked in the repository alongside the code it describes rather than in the GitHub issue tracker.
+- `flakelab.kiroTrustAll`, `flakelab.claudeTrustAll` and `flakelab.mcpPlaywright` (all default `false`): the operator's full-trust agent surface is now opt-in. Adopters no longer inherit `kk` (`kiro-cli chat --trust-all-tools`), `cc` (`claude --dangerously-skip-permissions`), `cli.json`'s `chat.disableTrustAllConfirmation`, or a browser-driving MCP server. Trust-all outranks the Kiro agent's `deniedCommands`, so the destructive floor does not apply under it — which is why it is a decision and not a default.
 
 ### Changed
 
@@ -31,10 +33,13 @@ The format is based on [Keep a Changelog], and this project adheres to
 - A config that names only `repos:` — no `profiles:`, no `gitlab_groups:` — is accepted by both overlay generators, for adopters with no GitLab.
 - The managed `permissions.deny` floor denies every force push and remote-branch deletion, not only those naming `main`; `worktree.baseRef` is no longer asserted.
 - The agent instructions file is `AGENTS.md`, and it is the only one: the repo ships no root `CLAUDE.md`. `ARCHITECTURE.md`'s "Known gaps" moved into `known-issues.md` as "Known limitations".
+- Every third-party `pre-commit` hook is pinned to an immutable commit SHA (`rev: <sha>  # frozen: <tag>`) rather than a mutable tag, which a compromised maintainer can repoint without changing the version string.
+- `@jarahkon/hass-mcp-server` is version-pinned like the other MCP servers; it was resolved fresh by `npx --yes` on every start while holding a live `HASS_TOKEN`.
+- Renovate waives `minimumReleaseAge` and automerges `@playwright/mcp` alone: the Playwright MCP Bridge Chrome extension auto-updates and cannot be pinned, so a lagging server is rejected with "unsupported protocol version" and a release-age hold is a guaranteed outage window. Every other package keeps the repo-wide hold.
 
 ### Removed
 
-- `HANDOVER.md` and every pointer to it; open work is tracked in the issue tracker, not in the tree.
+- `HANDOVER.md` and every pointer to it; open work is tracked in `BACKLOG.md`.
 
 ### Fixed
 
