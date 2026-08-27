@@ -380,6 +380,75 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md#shared-state-and-the-secret-gate).
 **Read that section before turning it on:** the merged history is everything
 ever typed at a prompt.
 
+## Proxmox VM
+
+`nix build .#proxmoxImage` produces a generic qcow2 **seed**: cloud-init, the
+qemu guest agent, keys-only sshd and the shared system layer, with no
+home-manager closure and no personal values in it, so one image serves every
+box. Each tagged release publishes it as `flakelab-proxmox-vm-<tag>.qcow2` next
+to a `.sha256`, which is what a hypervisor pins and imports.
+
+The seed is half a system. Write `/etc/flakelab/bootstrap.env` on the guest and
+the `flakelab-bootstrap` unit clones your private overlay and switches the box
+into it:
+
+```ini
+OVERLAY_URL=git@gitlab.example.com:you/flakelab-config.git
+OVERLAY_REF=main
+OVERLAY_ATTR=tycdev
+BOOTSTRAP_USER=you
+REPO_PATH=~/git/flakelab-config
+OVERLAY_SSH_IDENTITY=~/.ssh/flakelab_deploy
+OVERLAY_KNOWN_HOSTS=~/.ssh/known_hosts.flakelab
+```
+
+systemd parses that file itself rather than handing it to a shell: a `#` starts
+a comment only at the start of a line, a trailing one is part of the value, and
+nothing but a leading `~/` in the three path keys is expanded. `OVERLAY_URL` is
+the only required key.
+
+| Key                    | Default                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `OVERLAY_REF`          | `main` — any branch or tag                                     |
+| `OVERLAY_ATTR`         | `default` — the `nixosConfigurations` attribute to switch into |
+| `BOOTSTRAP_USER`       | `flakelab.username`                                            |
+| `REPO_PATH`            | `~/git/flakelab-config`                                        |
+| `OVERLAY_SSH_IDENTITY` | `~/.ssh/<first sshKeys entry>`                                 |
+| `OVERLAY_KNOWN_HOSTS`  | unset — `ssh -o StrictHostKeyChecking=accept-new`              |
+
+`~/` resolves against the home the passwd database gives `BOOTSTRAP_USER`, which
+is not always `/home/<user>`.
+
+The clone, the lock and the checkout run as `BOOTSTRAP_USER`; only
+`nixos-rebuild switch` runs as root. With no `OVERLAY_SSH_IDENTITY` that
+`BOOTSTRAP_USER` can read, the unit exits 75 and names the path it wants — seed
+the key, then `systemctl start flakelab-bootstrap`. A switch that activates the
+new generation but warns on the way — a unit that would not start, or the
+per-user activation for a user who is logged in while it runs — counts as done.
+It runs once,
+`/var/lib/flakelab/bootstrapped` is the marker, and
+`journalctl -u flakelab-bootstrap` is the log. After that the box rebuilds with
+`flakelab update` like any other.
+
+The overlay declares the box on the `proxmox-vm` target, and `flakeAttr` is the
+attribute `OVERLAY_ATTR` and `flakelab update` both switch into:
+
+```nix
+nixosConfigurations.tycdev = flakelab.lib.mkSystem {
+  target = "proxmox-vm";
+  userData = base // {
+    hostName = "tycdev";
+    flakeAttr = "tycdev";
+    repoPath = "/home/tycorc/git/flakelab-config";
+    sshKeys = [ "id_ed25519" "flakelab_deploy" ];
+    extraReposDirs = [ ];
+    stateRoot = null;
+    backupRoot = "/mnt/backup/flakelab";   # a mount that outlives the guest
+  };
+  modules = [ { time.timeZone = "Europe/Berlin"; } ];
+};
+```
+
 ## Test and lint
 
 ```bash

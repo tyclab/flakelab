@@ -85,6 +85,41 @@ not present exactly once. Git-ignore the overlay's own `flake.lock`: a committed
 lock pins the NAR hash of a local checkout, and the next edit over there aborts
 the build with "NAR hash mismatch".
 
+## Targets
+
+The seed image is a **variant** of `nixosConfigurations.proxmox-vm`, not a
+second system: `image.modules.proxmox-vm-seed` (nix/targets/proxmox-vm.nix)
+extends the same modules with nixpkgs' `disk-image.nix` and `image.format =
+"qcow2"`, which is why `system.build.image` never lands on the toplevel system
+where `images.nix` would warn about it colliding with every other variant. The
+variant forces `home-manager.users` empty and parks the placeholder user's uid
+at 65000. Both are load-bearing. A full closure is 7.9 GiB, far past what a
+release asset carries, and a home-manager activation in a generic image would
+run installers against credentials it cannot have; and with the placeholder out
+of the useradd range, the login cloud-init creates from the hypervisor's `user:`
+lands on uid 1000 — the uid the overlay declares for it a few minutes later.
+`checks.targets` asserts the stripping held, so a module wiring home-manager
+back in reddens `nix flake check` rather than a 8 GiB upload.
+
+A seed is half a system, and the other half is private. `flakelab-bootstrap`
+is the seam: a one-shot unit, conditioned on `/etc/flakelab/bootstrap.env`
+existing and `/var/lib/flakelab/bootstrapped` not, that reads `OVERLAY_URL`
+(required) plus `OVERLAY_REF`, `OVERLAY_ATTR`, `BOOTSTRAP_USER`, `REPO_PATH`,
+`OVERLAY_SSH_IDENTITY` and `OVERLAY_KNOWN_HOSTS`. `OVERLAY_REF` names a branch
+or a tag, and the unit expands a leading `~/` in the three path values against
+the home `BOOTSTRAP_USER` has in the passwd database, because systemd reads an
+`EnvironmentFile=` itself and a shell never sees it. It clones the overlay, locks
+it and checks it out **as `BOOTSTRAP_USER`** — a lock written by root makes that
+user's next `nix` command in the checkout fail on a permission denied — and runs
+only `nixos-rebuild switch --flake path:<repo>#<attr>` as root, taking
+switch-to-configuration's exit 4 — activated, with warnings — as a switch that
+happened, so a warning does not repeat the whole clone on the next boot. An
+identity `BOOTSTRAP_USER` cannot read exits 75 and names the path it wants,
+because on a fresh guest the key arrives after the first boot and the unit is
+meant to be started again rather than to fail it. The unit ships from the target module and not the seed variant,
+so a system already built from an overlay carries it too: the marker is what
+makes it a one-shot, never the image.
+
 ## The CLI
 
 `flakelab` is one binary with subcommands, and it is a **router**
