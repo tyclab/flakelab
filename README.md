@@ -12,6 +12,7 @@ only** — `nixosConfigurations.default`, `.#wslImage`, the dev shell and every
 `nix flake check` output are declared for that system and no other, so an
 `aarch64` Windows box or an Apple Silicon host cannot build or run this system.
 Design and internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Planned work: [`BACKLOG.md`](BACKLOG.md).
 
 > ⚠️ **Provisioning wipes host interop, and the stable channel has no
 > protection.** Building a NixOS distro removes `WSLInterop` for every distro in
