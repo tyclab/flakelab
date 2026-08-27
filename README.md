@@ -43,7 +43,7 @@ flowchart LR
     subgraph pub["flakelab — this repo"]
         MK["lib.mkSystem"] --> PROF["profiles/merge.nix"]
         PROF --> OPT["options.flakelab.*<br/>typed schema"]
-        OPT --> SYS["configuration.nix<br/>system layer"]
+        OPT --> SYS["configuration.nix + nix/targets/<br/>system layer"]
         OPT --> HOME["nix/home/*<br/>9 concern modules"]
         OPT --> SCR["scripts"]
     end
@@ -302,7 +302,8 @@ with your own rather than reading them as defaults.
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | `flake.nix`                           | inputs, `nixosConfigurations.default`, `lib.mkSystem`, `.#wslImage`         |
 | `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record        |
-| `nix/configuration.nix`               | system: wsl.conf, locale, native Docker, nix-ld                             |
+| `nix/configuration.nix`               | system, every target: locale, native Docker, nix-ld                         |
+| `nix/targets/`                        | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`          |
 | `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, tooling, health, backup    |
 | `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)               |
 | `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs  |

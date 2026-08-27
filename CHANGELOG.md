@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `flakelab.target` (default `wsl`): the platform a system is built for, and the module set in `nix/targets/` that goes with it — `wsl` is the NixOS-WSL distro, `proxmox-vm` a Proxmox guest. It rides outside `userData` (`mkSystem { target = "proxmox-vm"; userData = { … }; }`, or as a top-level key of the legacy attrset) because `imports` cannot be conditional: the choice is made before the module system runs, which is also why the option is read-only afterwards.
+- `nixosConfigurations.proxmox-vm`: the tracked placeholders on the new target — cloud-init for the hostname, network and keys PVE hands the guest, a qemu-guest-agent that refuses fs-freeze so `vzdump` does not wait for a thaw that never comes, keys-only sshd, and a root filesystem that grows into whatever disk it is given.
+- `flakelab.flakeAttr` (default `"default"`): the `nixosConfigurations` attribute `flakelab update` switches into, for an overlay flake that declares more than one box.
+- `checks.targets`: `nix flake check` instantiates both systems and builds neither, asserting that each one carries its own platform and none of the other's.
+
+### Changed
+
+- `flakelab.windowsUsername` is optional and defaults to `null`. It feeds the zsh jump out of the Windows profile directory, which only the `wsl` target has, so an overlay for any other target leaves it out.
+- `nix/configuration.nix` is the system layer every target shares; the NixOS-WSL settings, the interop hazard note and `system.stateVersion` live in `nix/targets/wsl.nix`.
+
 ## [0.1.0] - 2026-08-27
 
 First tagged release. The project has been in daily use on two machines since
