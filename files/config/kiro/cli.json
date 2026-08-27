@@ -2,7 +2,6 @@
   "chat.allowIcons": true,
   "chat.defaultInterruptBehavior": "steer",
   "chat.defaultModel": "claude-opus-5",
-  "chat.disableTrustAllConfirmation": true,
   "chat.historyMode": "global",
   "chat.keybindings.cancelStream": "ctrl+c",
   "chat.modelDefaults": {

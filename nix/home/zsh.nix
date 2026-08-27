@@ -69,12 +69,12 @@ in
       #        destructive set (force-push, reset --hard, clean -f, branch -D, rm -rf)
       #        is denied via the agent's deniedCommands and cannot be bypassed by
       #        instruction.
-      # `kk` — FULL TRUST (--trust-all-tools): auto-approves every tool. Trust-all
+      # `kk` — FULL TRUST (--trust-all-tools), only with flakelab.kiroTrustAll.
+      #        Auto-approves every tool. Trust-all
       #        outranks deniedCommands, so the destructive floor does NOT apply under
       #        `kk` (only write.deniedPaths secret gates remain). Use `k` for risky
       #        work; reach for `kk` only when you knowingly accept full send.
       k = "kiro-cli chat";
-      kk = "kiro-cli chat --trust-all-tools";
       kwsl = ''(cd "${cfg.repoPath}" && kiro-cli chat)'';
 
       # claude (mirrors k/kk/kwsl)
@@ -88,6 +88,12 @@ in
       c = "claude";
       cc = "claude --dangerously-skip-permissions";
       cwsl = ''(cd "${cfg.repoPath}" && claude)'';
+    }
+    # `kk` ships ONLY when the operator opts in (flakelab.kiroTrustAll). Trust-all
+    # outranks the agent's deniedCommands, so the destructive floor does not apply
+    # under it — an adopter who never read that should not inherit the alias.
+    // lib.optionalAttrs cfg.kiroTrustAll {
+      kk = "kiro-cli chat --trust-all-tools";
     }
     # LAST, so an overlay's customAliases can override any of the above.
     // cfg.customAliases;
