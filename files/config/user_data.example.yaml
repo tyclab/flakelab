@@ -18,8 +18,14 @@
 # Linux user (no dashes).
 user: tycuser
 
+# Platform this box is built for: wsl (default) or proxmox-vm. Selects the
+# module set in flakelab/nix/targets/ - wsl is a NixOS-WSL distro, proxmox-vm
+# a Proxmox guest with no Windows side, so windows_username below is read only
+# under wsl and dropped from the generated overlay otherwise.
+# target: wsl
+
 # Windows username - the C:\Users\<name> folder. May differ from the Linux user;
-# omit it and the overlay's own path is used.
+# omit it and the overlay's own path is used. wsl only.
 windows_username: WindowsUser
 
 # Shell/system locale. en_US.UTF-8 stays available either way.
