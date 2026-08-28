@@ -1075,6 +1075,14 @@ fi
 say "  2. fill ${_out}/${_secrets_rel} (names: flakelab files/config/secrets.env.example)"
 say "  3. drop the private key(s) named in sshKeys into ${_out}/files/config/shared/ssh/keys/ (LF only)"
 say "  4. check it evaluates:  nix flake metadata ${_out}"
-say "  5. apply it:  sudo nixos-rebuild switch --flake ${_out}#default"
-say "     (on a machine with no distro yet, provision from Windows instead:"
-say "      setup-wsl-nix.ps1 provision -FlakeRef <the overlay>)"
+# The last step differs per target: a proxmox-vm overlay is never applied by
+# the Windows provisioner, the seed guest's flakelab-bootstrap pulls it in.
+if [[ "${_target}" == "wsl" ]]; then
+  say "  5. apply it:  sudo nixos-rebuild switch --flake ${_out}#default"
+  say "     (on a machine with no distro yet, provision from Windows instead:"
+  say "      setup-wsl-nix.ps1 provision -FlakeRef <the overlay>)"
+else
+  say "  5. push it to a git remote the guest can clone, boot a .#proxmoxImage guest and"
+  say "     write /etc/flakelab/bootstrap.env (OVERLAY_URL=<that remote>, OVERLAY_ATTR=default);"
+  say "     flakelab-bootstrap clones and switches into it (flakelab README, 'Proxmox VM')"
+fi
