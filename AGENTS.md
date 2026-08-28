@@ -1,7 +1,8 @@
 # AGENTS.md — flakelab
 
 Shareable NixOS dev environment (`nixosConfigurations.default` — the WSL distro
-— `nixosConfigurations.proxmox-vm`, `.#wslImage`, `lib.mkSystem`).
+— `nixosConfigurations.proxmox-vm`, `.#wslImage`, `.#proxmoxImage`,
+`lib.mkSystem`).
 `nix/users/default.nix` ships neutral placeholders; real personal values live in
 the private overlay `flakelab-config`, which imports this flake via
 `lib.mkSystem`.
