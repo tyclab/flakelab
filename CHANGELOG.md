@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-28
+
 ### Added
 
 - `bwu` / `bwl` shell functions: `bwu` unlocks the Bitwarden vault on the TTY and parks the session token in mode-600 `~/.config/tyc/bw-session`; every shell exports it as `BW_SESSION` from there, so agents inherit an unlocked `bw` without the token crossing a command line or a transcript. `bwl` locks and removes the file. The token is per-unlock, so it lives outside `secrets.env` and outside `flakelab backup`.
@@ -87,6 +89,7 @@ pin to instead of a moving `main`.
 - Flow-style YAML lists (`profiles: [a, b]`) are parsed as lists by both overlay generators, instead of reaching the overlay as a literal string.
 - `gitpublisher` no longer reads pre-commit's cold-cache "Installing environment for .../gitleaks" line as a secret finding.
 
+[0.2.0]: https://github.com/tyclab/flakelab/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tyclab/flakelab/releases/tag/v0.1.0
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html
