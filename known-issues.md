@@ -217,6 +217,10 @@ Not bugs — things the flake does not do yet:
 - This repo's own pre-commit hooks are installed only by `make install-hooks`:
   `activate-hooks` scans `~/git` and never reaches a checkout on the Windows
   mount, so gitleaks does not gate commits here automatically.
+- `proxmox-vm`: wheel-wide sudo as on `wsl` — the sudoers-narrowing limitation
+  above applies here too. `vzdump` fs-freeze is refused on purpose (the
+  qemu-guest-agent unit drops that capability), so a Proxmox backup of this
+  target is crash-consistent, not application-consistent.
 
 ## Upgrading a box provisioned before the `wslnix` → `flakelab` rename
 

@@ -866,6 +866,32 @@ contains "the space is percent-encoded" "${f}" "path:${BASE}/with%20space/flakel
 excludes "and no raw space is left in the URL" "${f}" "path:${BASE}/with space"
 
 # ---------------------------------------------------------------------------
+# 25. --target proxmox-vm drops windowsUsername and emits target first
+# ---------------------------------------------------------------------------
+# nix/options.nix declares target as a readOnly enum ["wsl" "proxmox-vm"] that
+# only mkSystem may set, and windowsUsername as nullOr, default null - the
+# WSL-only zsh home-jump has nothing to jump from on any other target. Both
+# facts are asserted against the shipped example config, the same fixture
+# case 4 pins the wsl (default) output against.
+print -r -- "--target proxmox-vm emits target first and drops windowsUsername"
+o="$(out proxmoxvm)"
+run_gen --out "${o}" --config "${EXAMPLE}" --target proxmox-vm
+check    "exits clean"                       "${RC}" "0"
+f="$(flake_of "${o}")"
+contains "target is emitted"                 "${f}" $'mkSystem {\n        target = "proxmox-vm";\n        username = "tycuser";'
+excludes "windowsUsername is absent"         "${f}" "windowsUsername"
+contains "repoPath is still present"         "${f}" "repoPath = \"${o}\";"
+
+print -r -- "an unknown --target is refused"
+o="$(out badtarget)"
+run_gen --out "${o}" --user u --git-name N --git-email n@example.com \
+  --profiles example --target bogus
+check    "it exits 1"                  "${RC}" "1"
+contains "naming the bad value"        "${OUT}" "bogus"
+contains "and the known set"           "${OUT}" "wsl, proxmox-vm"
+[[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
+
+# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

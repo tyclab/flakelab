@@ -87,6 +87,28 @@ the build with "NAR hash mismatch".
 
 ## Targets
 
+`target` picks the platform module set `mkSystem` builds from —
+`nix/targets/wsl.nix` or `nix/targets/proxmox-vm.nix`, unioned with the shared
+`nix/configuration.nix` every target carries. It is a `let`-level choice, not a
+module-system one: `imports` cannot be `mkIf`'d, so the module list is decided
+before a module system exists to hold a conditional definition, from
+`flake.nix`'s own `targetModules.${target}` map, read via `args.target or
+"wsl"` in both `mkSystem` call forms. An unknown target hits a `throwIf`
+against that map's own keys, naming the bad value and the known set, before
+`targetModules.${target}` would fail on a missing attribute with neither.
+`nix/options.nix` still declares `flakelab.target` — `readOnly`, no default —
+purely so the choice already made is inspectable afterwards; a module
+redefining it would describe a system nobody built, which is why nothing but
+`mkSystem` may set it.
+
+`flakeAttr` (string, default `"default"`) is the companion option: the
+`nixosConfigurations` attribute `flakelab update` rebuilds
+(`nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`). This repo's own
+output is `default`; an overlay describing more than one box — several targets,
+or several boxes on the same one — gives each `nixosConfigurations.<name>` the
+matching `flakeAttr = "<name>"` so each box's `flakelab update` switches into
+itself and not another box's configuration.
+
 The seed image is a **variant** of `nixosConfigurations.proxmox-vm`, not a
 second system: `image.modules.proxmox-vm-seed` (nix/targets/proxmox-vm.nix)
 extends the same modules with nixpkgs' `disk-image.nix` and `image.format =

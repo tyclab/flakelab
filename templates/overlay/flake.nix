@@ -73,11 +73,16 @@
       #                                                these wholesale needs
       #                                                lib.mkForce.
       nixosConfigurations.default = flakelab.lib.mkSystem {
+        # Optional: the platform this box is built for (default "wsl"). Picks
+        # the module set in flakelab/nix/targets/ - set it on a Proxmox guest,
+        # never on a WSL distro.
+        # target = "proxmox-vm";
+
         username = "CHANGEME"; # Linux user (no dashes)
         gitName = "CHANGEME";
         gitEmail = "changeme@example.com";
         locale = "en_US.UTF-8";
-        windowsUsername = "WindowsUser"; # your C:\Users\<name> folder
+        windowsUsername = "WindowsUser"; # your C:\Users\<name> folder - WSL only; null elsewhere
         repoPath = "/mnt/c/Users/WindowsUser/git/flakelab-config"; # this flake
 
         gitEditor = null; # null -> leave the git default

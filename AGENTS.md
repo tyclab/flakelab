@@ -57,6 +57,10 @@ the private overlay `flakelab-config`, which imports this flake via
   - `flakelab build-distro` / `flakelab test-provision`: stand up a THROWAWAY
     distro (`NixDev`) to test the flake end to end. Not the update path for
     this one. Interop-wiping — expendable sessions only.
+  - These, plus `provision` and `distro-name`, refuse with exit 2 on any
+    `flakelab.target` other than `wsl` — a `proxmox-vm` box has no distro to
+    provision, wipe interop for, or name — and drop out of `--help` and its
+    did-you-mean suggestions there too.
 - Docs live in the repo root — no `docs/` folder; every `.md` sits at the top level.
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
