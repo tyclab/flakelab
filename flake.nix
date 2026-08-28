@@ -516,6 +516,9 @@
           assert vm.services.qemuGuest.enable;
           assert vm.users.users.${vm.flakelab.username}.isNormalUser;
           assert !vm.services.openssh.settings.PasswordAuthentication;
+          # The seed variant's whole point: a release asset cannot carry the
+          # home-manager closure, so the qcow2 must be built without one.
+          assert self.packages.${system}.proxmoxImage.passthru.config.home-manager.users == { };
           # Forcing the drvPath evaluates every module of both systems, their
           # assertions included, and builds neither.
           assert builtins.isString wsl.system.build.toplevel.drvPath;
@@ -547,6 +550,12 @@
         # Build the importable distro tarball (produces `nixos.wsl` in CWD):
         #   sudo nix run .#wslImage
         wslImage = self.nixosConfigurations.default.config.system.build.tarballBuilder;
+
+        # The Proxmox seed image (`nix build .#proxmoxImage` → a qcow2 under
+        # `result/`), which release.yml compresses and publishes per tag. It is
+        # the `proxmox-vm-seed` VARIANT of the same system, so the qcow2 carries
+        # no home-manager closure — see nix/targets/proxmox-vm.nix.
+        proxmoxImage = self.nixosConfigurations.proxmox-vm.config.system.build.images.proxmox-vm-seed;
 
         # The history scan CI runs (`nix run .#gitleaks`). Exposed here so it
         # comes from the nixpkgs revision flake.lock pins rather than a moving

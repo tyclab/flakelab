@@ -1,0 +1,63 @@
+---
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# The job uploads the seed image to the release the tag names.
+permissions:
+  contents: write
+
+jobs:
+  seed-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # make-disk-image boots a qemu VM with the whole seed closure inside it.
+      # The runner image spends ~25 GB on toolchains this build never touches,
+      # and without that space back the image build dies on a full disk.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}"
+          df -h /
+
+      # The nix daemon builds as nixbld, which is not in the kvm group the
+      # runner image puts its own user in.
+      - name: Open /dev/kvm to the build users
+        run: sudo chmod o+rw /dev/kvm
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          # make-disk-image requires the kvm system feature; naming it here
+          # replaces the default list, so the other four come along.
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - run: nix build --print-build-logs .#proxmoxImage
+
+      # qcow2 has no compressed variant in image.format, and the raw image is
+      # several times the size of a release asset. `-c` is the whole reason this
+      # runs outside the derivation.
+      - name: Compress and checksum
+        run: |
+          asset="flakelab-proxmox-vm-${GITHUB_REF_NAME}.qcow2"
+          nix shell --inputs-from . nixpkgs#qemu-utils -c \
+            qemu-img convert -c -O qcow2 result/*.qcow2 "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          ls -lh "$asset"
+
+      # --verify-tag: the tag already exists (it triggered this run), and create
+      # must refuse rather than invent a second one. `view` first, so a release
+      # written by hand keeps its notes and only gains the asset.
+      - name: Publish the release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="flakelab-proxmox-vm-${GITHUB_REF_NAME}.qcow2"
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256" --clobber
