@@ -9,17 +9,19 @@ nix develop
 Drops you into a shell with pre-commit, statix, deadnix, shellcheck, zsh, jq
 and make — everything the gates below need, at the versions this repo pins.
 
-The flake's outputs — `nixosConfigurations.default`, `.#wslImage`, this dev
+The flake's outputs — `nixosConfigurations.default`,
+`nixosConfigurations.proxmox-vm`, `.#wslImage`, `.#proxmoxImage`, this dev
 shell and every `nix flake check` output — are declared for **`x86_64-linux`
 only**, so that is where the gates run. The one part that runs elsewhere is
 `files/scripts/nix-overlay-generate` (`flakelab overlay-gen`): a **zsh** script
 with no PowerShell and no WSL, so a Linux or macOS host can write an overlay —
-and only write one, since applying it needs an `x86_64-linux` NixOS-WSL machine.
+and only write one, since applying it needs an `x86_64-linux` NixOS box, WSL2
+or a Proxmox guest.
 
 ## Required local gate
 
 ```bash
-make test          # the five offline suites, seconds
+make test          # the six offline suites, seconds
 nix flake check    # the same suites plus statix and deadnix; what CI runs
 ```
 
@@ -40,6 +42,14 @@ Hooks: gitleaks, yamllint, markdownlint-cli2, prettier, shellcheck, `zsh -n`,
 ruff-check. `shellcheck` supports sh/bash/dash/ksh only (SC1071), so the
 `zsh -n` hook is what covers the zsh scripts under `files/scripts/` — without it
 they would be linted by nothing.
+
+## Releases
+
+Tag `vX.Y.Z` on `main` and `.github/workflows/release.yml` builds
+`.#proxmoxImage` and publishes `flakelab-proxmox-vm-<tag>.qcow2` plus its
+`.sha256` to the GitHub release — the tag is what an adopter's `tofu`
+(tycpve's `vm_tycdev.tf`, say) pins its asset URL to, so a release exists
+before anything downstream can point at one.
 
 ## Opening a pull request
 

@@ -72,7 +72,12 @@ sync_artifact_find_args() {
   done
 }
 
-DISTRO_NAME="${WSL_DISTRO_NAME:-unknown}"
+# WSL_DISTRO_NAME wins where it is set (the shell env on a WSL distro).
+# FLAKELAB_INSTANCE is next: the nix-backup wrapper (nix/scripts.nix) exports it
+# from flakelab.hostName on every OTHER target, where WSL_DISTRO_NAME is never
+# set at all — so on those targets this line resolves the instance directly and
+# the wsl.exe fallback below never runs.
+DISTRO_NAME="${WSL_DISTRO_NAME:-${FLAKELAB_INSTANCE:-unknown}}"
 if [[ "${DISTRO_NAME}" == "unknown" ]]; then
   script_dir="${0:A:h}"
   if [[ -x "${script_dir}/get_current_wsl_distro_name" ]]; then
@@ -116,7 +121,11 @@ recompute_backup_paths
 FORCE=false
 DRY_RUN=false
 RESTORE=false
+STATE_ONLY=false
 REVIEW_SECRETS=false
+# Re-hold findings settled as `keep` so the next --review-secrets can re-decide
+# them; without this a keep is a one-way door. They stay excluded from the sync.
+REVISIT_KEEPS=false
 SRC_FROM=""
 SRC_INSTANCE=""
 
@@ -135,7 +144,9 @@ while (( $# > 0 )); do
     --force)   FORCE=true ;;
     --dry-run) DRY_RUN=true ;;
     --restore) RESTORE=true ;;
+    --state-only) STATE_ONLY=true ;;
     --review-secrets) REVIEW_SECRETS=true ;;
+    --revisit-keeps) REVISIT_KEEPS=true ;;
     --skip-conflicts) SKIP_CONFLICTS=true ;;
     --keep)
       if [[ "${2:-}" != <-> ]]; then
@@ -154,7 +165,12 @@ while (( $# > 0 )); do
       echo "  --force              overwrite existing backups without prompting"
       echo "  --dry-run            show what would be backed up without copying"
       echo "  --restore            restore files from backup into home directory"
+      echo "  --state-only         sync ONLY the state-root categories, both directions (merged"
+      echo "                       history, Claude memory, transcripts); never touches the payload,"
+      echo "                       takes no snapshot. Needs FLAKELAB_STATE_ROOT / flakelab.stateRoot"
       echo "  --review-secrets     decide per finding the secret gate held back: delete, keep local, allow (needs a terminal)"
+      echo "  --revisit-keeps      on a backup/--state-only run, re-hold findings settled as 'keep'"
+      echo "                       so the next --review-secrets offers them again (they stay unsynced)"
       echo "  --skip-conflicts     on restore without a TTY, keep a differing file instead of failing"
       echo "  --keep <n>           rollback snapshots to retain (default ${KEEP}); the newest is never pruned"
       echo "  --from <repo>        restore FROM another repo's backup (a repo root or its files/config dir)"
@@ -164,6 +180,7 @@ while (( $# > 0 )); do
       echo ""
       echo "Environment:"
       echo "  FLAKELAB_BACKUP_ROOT        payload root (set by the nix wrapper from repoPath)"
+      echo "  FLAKELAB_INSTANCE           instance name off WSL, where WSL_DISTRO_NAME is unset (set by the nix wrapper from hostName)"
       echo "  FLAKELAB_STATE_ROOT         optional shared-state root (a synced folder, never a git checkout)"
       echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts in the state root"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
@@ -988,10 +1005,12 @@ do_restore() {
       done
     fi
     if state_enabled && ${STATE_TRANSCRIPTS}; then
-      local transcript
-      for transcript in "${STATE_ROOT}"/claude/projects/*/*.jsonl(N.); do
-        is_sync_artifact "${transcript:t}" && continue
-        sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${transcript:h:t}/${transcript:t}"
+      local transcript rel
+      # `**`: subagent transcripts sit below the session file.
+      for transcript in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
+        rel="${transcript#${STATE_ROOT}/claude/projects/}"
+        rel_path_is_sync_artifact "${rel}" && continue
+        sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${rel}"
       done
     fi
     ensure_dir "${HOME_DIR}/.claude/plugins"
@@ -1113,6 +1132,7 @@ do_backup() {
     done
   fi
   if state_enabled && ${STATE_TRANSCRIPTS}; then
+    fold_transcript_conflicts
     backup_transcripts
   fi
   ensure_dir "${BACKUP_CLAUDE}/plugins"
@@ -1154,6 +1174,63 @@ do_backup() {
 }
 
 # ---------------------------------------------------------------------------
+# State-only mode
+# ---------------------------------------------------------------------------
+
+# Both legs of the state root in one run and nothing else: the categories with
+# a between-machines freshness requirement are exactly the state-root ones, and
+# the full payload pass (snapshot, ssh, kube, secrets) has a daily cadence, not
+# this one's. Every write path here is a union or grow-only, so running it from
+# a short timer on several machines at once converges instead of ping-ponging.
+do_state_only() {
+  log_info "=== Syncing shared state [${DISTRO_NAME}] ==="
+  log_state_root
+  echo ""
+
+  # check_state_root already recorded the failure that made the root unusable;
+  # nothing below can run without it (memory_root would silently fall back to
+  # the payload), so say so once and let the exit code carry it.
+  if ! state_enabled; then
+    log_warn "State root unavailable; nothing synced this run"
+  else
+    # Decisions taken while the root was unavailable go out before anything consults them.
+    gate_decisions_replay
+
+    log_info "--- Shell history ---"
+    merge_zsh_history
+    restore_zsh_history
+
+    log_info "--- Claude memory ---"
+    local mem_dir
+    for mem_dir in "${HOME_DIR}"/.claude/projects/*/memory(N/); do
+      sync_memory_dir backup "${mem_dir}" "$(memory_root)/${mem_dir:h:t}/memory"
+    done
+    for mem_dir in "$(memory_root)"/*/memory(N/); do
+      sync_memory_dir restore "${mem_dir}" "${HOME_DIR}/.claude/projects/${mem_dir:h:t}/memory"
+    done
+
+    if ${STATE_TRANSCRIPTS}; then
+      log_info "--- Claude transcripts ---"
+      fold_transcript_conflicts
+      backup_transcripts
+      pull_transcripts
+    fi
+  fi
+
+  echo ""
+  if (( GATE_HELD_COUNT > 0 )); then
+    log_warn "${GATE_HELD_COUNT} secret record(s) held back from the state root; review with: flakelab backup --review-secrets"
+  fi
+  if (( FAILURES > 0 )); then
+    log_error "=== State sync completed with ${FAILURES} failure(s) ==="
+  else
+    log_ok "=== State sync complete ==="
+  fi
+  # No closing treat-as-secret banner: this runs dozens of times a day from a
+  # timer, and every full backup already prints it.
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1174,6 +1251,29 @@ if ${REVIEW_SECRETS}; then
   fi
 fi
 
+# Revisiting happens where holds are made — a backup or --state-only run; the
+# other modes never scan, so the flag there can only mean the caller is confused.
+if ${REVISIT_KEEPS} && { ${RESTORE} || ${REVIEW_SECRETS} }; then
+  log_error "--revisit-keeps re-holds during a backup or --state-only run; drop --restore/--review-secrets"
+  exit 1
+fi
+
+if ${STATE_ONLY}; then
+  # Each of the other modes already covers both directions of the state root or
+  # rewrites what it holds; combining them with --state-only can only mean the
+  # caller is confused about which one runs.
+  if ${RESTORE} || ${REVIEW_SECRETS}; then
+    log_error "--state-only is its own mode; drop --restore/--review-secrets"
+    exit 1
+  fi
+  # A configuration error, not a skip: the unit exists to feed the state root,
+  # and exiting 0 with nothing to do would hide a wrapper that stopped exporting it.
+  if ! ${STATE_CONFIGURED}; then
+    log_error "--state-only needs a state root (flakelab.stateRoot / FLAKELAB_STATE_ROOT)"
+    exit 1
+  fi
+fi
+
 acquire_lock
 
 if ${REVIEW_SECRETS}; then
@@ -1181,6 +1281,8 @@ if ${REVIEW_SECRETS}; then
   do_review_secrets
 elif ${RESTORE}; then
   do_restore
+elif ${STATE_ONLY}; then
+  do_state_only
 else
   do_backup
 fi

@@ -125,10 +125,12 @@ Options:
 
 Value flags - each one overrides the matching user_data.yaml key:
   --user <name>              user
+  --target <wsl|proxmox-vm>  target              (default wsl)
   --git-name <name>          gitfullname
   --git-email <addr>         gitmail
   --locale <locale>          userlocale          (default en_US.UTF-8)
-  --windows-username <name>  windows_username    (default: --user)
+  --windows-username <name>  windows_username    (default: --user; wsl only,
+                             ignored on proxmox-vm)
   --git-editor <cmd>         giteditor           (empty string -> null)
   --backup-autostart <bool>  backupautostart     (default false)
   --profiles <a,b>           profiles            (comma or space separated)
@@ -168,6 +170,7 @@ _have_values=false
 
 # Empty means "not given"; the config or a default fills it in below.
 _user=""
+_target=""
 _git_name=""
 _git_email=""
 _locale=""
@@ -197,6 +200,7 @@ while (( $# )); do
     --force)             _force=true ;;
     --dry-run)           _dry_run=true ;;
     --user)              shift; _need --user "${1:-}"; _user="$1"; _have_values=true ;;
+    --target)            shift; _need --target "${1:-}"; _target="$1"; _have_values=true ;;
     --git-name)          shift; _need --git-name "${1:-}"; _git_name="$1"; _have_values=true ;;
     --git-email)         shift; _need --git-email "${1:-}"; _git_email="$1"; _have_values=true ;;
     --locale)            shift; _need --locale "${1:-}"; _locale="$1"; _have_values=true ;;
@@ -564,6 +568,7 @@ if [[ -n "${_config}" ]]; then
   fi
   _yaml_load "${_config}"
   [[ -n "${_user}" ]] || _user="${YS[user]:-}"
+  [[ -n "${_target}" ]] || _target="${YS[target]:-}"
   [[ -n "${_git_name}" ]] || _git_name="${YS[gitfullname]:-}"
   [[ -n "${_git_email}" ]] || _git_email="${YS[gitmail]:-}"
   [[ -n "${_locale}" ]] || _locale="${YS[userlocale]:-}"
@@ -648,6 +653,16 @@ ${_groups_given} && _groups=("${_groups_flag[@]}")
 ${_sshkeys_given} && _sshkeys=("${_sshkeys_flag[@]}")
 
 if ${_have_values}; then
+  # Validated up front, ahead of every other field: nix/options.nix's `target`
+  # is `types.enum [ "wsl" "proxmox-vm" ]`, and a value outside that set would
+  # otherwise reach mkSystem only to abort eval there, naming a generated
+  # overlay file instead of the config the operator actually has open.
+  [[ -n "${_target}" ]] || _target="wsl"
+  case "${_target}" in
+    wsl | proxmox-vm) ;;
+    *) die "unknown target '${_target}' - known: wsl, proxmox-vm" ;;
+  esac
+
   [[ -n "${_user}" ]] \
     || die "no Linux username - set 'user:' in the config or pass --user. There is no sane default for it."
   [[ -n "${_git_name}" && -n "${_git_email}" ]] \
@@ -659,11 +674,13 @@ if ${_have_values}; then
     _locale='en_US.UTF-8'
     warn "no locale in the config - defaulting to ${_locale}"
   fi
-  # windowsUsername is a REQUIRED option (nix/options.nix declares it with no
-  # default) and it is the C:\Users\<name> folder. Off Windows there is nothing
-  # to read it from, so the Linux user is the fallback and the generated flake
-  # says so - it is inert until this overlay is used from WSL.
-  [[ -n "${_windows_user}" ]] || _windows_user="${_user}"
+  # windowsUsername is the C:\Users\<name> folder, meaningful only on the wsl
+  # target - proxmox-vm has no Windows side to fall back to, so the field is
+  # left unset here and the emitter omits it (nix/options.nix defaults it to
+  # null already; a target other than wsl wants exactly that).
+  if [[ "${_target}" == "wsl" ]]; then
+    [[ -n "${_windows_user}" ]] || _windows_user="${_user}"
+  fi
   [[ -n "${_repo_path}" ]] || _repo_path="${_out}"
 
   # Profile names are validated against the checkout's profiles/ rather than a
@@ -829,6 +846,13 @@ _generated_flake() {
   print -r -- '      # No secrets: the nix store is world-readable. The tokens from the same'
   print -r -- '      # config belong in ~/.config/tyc/secrets.env instead.'
   print -r -- '      nixosConfigurations.default = flakelab.lib.mkSystem {'
+  # Omitted for wsl (the default target nix/options.nix falls back to anyway)
+  # so an all-wsl config generates byte-identical output to before this field
+  # existed; emitted first for every other target, since it selects the whole
+  # module set mkSystem builds from.
+  if [[ "${_target}" != "wsl" ]]; then
+    print -r -- "        target = $(_nix_str "${_target}");"
+  fi
   print -r -- "        username = $(_nix_str "${_user}");"
   print -r -- "        gitName = $(_nix_str "${_git_name}");"
   print -r -- "        gitEmail = $(_nix_str "${_git_email}");"
@@ -849,11 +873,13 @@ _generated_flake() {
     print -r -- "        stateRoot = $(_nix_str "${_state_root}");"
     [[ -n "${_state_transcripts}" ]] && print -r -- "        stateTranscripts = $(_nix_bool "${_state_transcripts}");"
   fi
-  print -r -- ''
-  print -r -- '        # The C:\Users\<name> folder, used only when this overlay is built from'
-  print -r -- '        # inside WSL. Required either way - nix/options.nix declares it with no'
-  print -r -- '        # default - so a non-Windows run falls back to the Linux user.'
-  print -r -- "        windowsUsername = $(_nix_str "${_windows_user}");"
+  if [[ "${_target}" == "wsl" ]]; then
+    print -r -- ''
+    print -r -- '        # The C:\Users\<name> folder, used only when this overlay is built from'
+    print -r -- '        # inside WSL. Required either way - nix/options.nix declares it with no'
+    print -r -- '        # default - so a non-Windows run falls back to the Linux user.'
+    print -r -- "        windowsUsername = $(_nix_str "${_windows_user}");"
+  fi
   print -r -- '        # The flake this distro rebuilds from: this overlay.'
   print -r -- "        repoPath = $(_nix_str "${_repo_path}");"
   print -r -- ''
@@ -1049,6 +1075,14 @@ fi
 say "  2. fill ${_out}/${_secrets_rel} (names: flakelab files/config/secrets.env.example)"
 say "  3. drop the private key(s) named in sshKeys into ${_out}/files/config/shared/ssh/keys/ (LF only)"
 say "  4. check it evaluates:  nix flake metadata ${_out}"
-say "  5. apply it:  sudo nixos-rebuild switch --flake ${_out}#default"
-say "     (on a machine with no distro yet, provision from Windows instead:"
-say "      setup-wsl-nix.ps1 provision -FlakeRef <the overlay>)"
+# The last step differs per target: a proxmox-vm overlay is never applied by
+# the Windows provisioner, the seed guest's flakelab-bootstrap pulls it in.
+if [[ "${_target}" == "wsl" ]]; then
+  say "  5. apply it:  sudo nixos-rebuild switch --flake ${_out}#default"
+  say "     (on a machine with no distro yet, provision from Windows instead:"
+  say "      setup-wsl-nix.ps1 provision -FlakeRef <the overlay>)"
+else
+  say "  5. push it to a git remote the guest can clone, boot a .#proxmoxImage guest and"
+  say "     write /etc/flakelab/bootstrap.env (OVERLAY_URL=<that remote>, OVERLAY_ATTR=default);"
+  say "     flakelab-bootstrap clones and switches into it (flakelab README, 'Proxmox VM')"
+fi

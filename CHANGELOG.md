@@ -7,6 +7,55 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A `d` answer in `--review-secrets` records the delete ruling immediately instead of only after every record was scrubbed: a record in a file that refuses a rewrite (a live session's transcript, an unwritable history) now stays held as a pending delete that every later review retries — and the ruling reaches the other machines. Before, the failed scrub silently left the old decision standing.
+- `flakelab doctor` no longer warns about "0 secret findings held back": the held list can legitimately be a newline-only file after pruning, and the check now counts records instead of bytes.
+
+- Transcript sync is recursive: subagent transcripts live below the session file (`<slug>/<session>/subagents/*.jsonl`) and the one-level globs in the push, pull and restore legs never saw them. A sync-artifact path segment (`@eaDir`, a conflict-named directory) keeps its whole subtree out of every leg.
+- Conflict-copy pairing understands the naming the deployed Synology Drive actually produces: the marker is inserted BEFORE the extension (`MEMORY_<host>_<date>_Conflict.md`), which the full-name prefix match could never pair — such copies were excluded from mirrors but their lines were silently lost. The append-after-name shape keeps working, and the pairing still folds dotfile conflicts (`.zsh_history_merged_…_Conflict`).
+- Transcript conflict copies are folded grow-only before both legs and then removed: a copy is the other machine's gated write that lost the rename race, so folding stays inside the state root and needs no rescan. Until now they were skipped forever and accumulated beside the file they shadowed.
+
+### Added
+
+- `flakelab backup --revisit-keeps` (backup and `--state-only` runs): re-holds findings settled as `keep` so the next `--review-secrets` offers them again — without it a keep was a one-way door with no supported path back. Revisited records stay excluded from the sync throughout.
+- `flakelab backup --state-only`: both legs of the state root and nothing else — the merged history (read from the LIVE `~/.zsh_history`, since this mode never writes the payload's instance copy), Claude memory and, with `stateTranscripts`, transcripts, pushed AND pulled in one run. No payload copy, no rollback snapshot, no restore of activation-owned files. The pull leg skips any local transcript modified in the last 10 minutes: a live session appends through an open fd, and the rename-in-place a pull uses would orphan that inode and silently drop the session's tail. Until now nothing ever pulled outside a manual `--restore`, so with two machines pushing the state root was a write-only archive.
+- `flakelab.stateSyncInterval` (default `null`): schedules `--state-only` on its own systemd user timer (`flakelab-state-sync`, `Nice=10`, `IOSchedulingClass=idle`) at the given `OnUnitActiveSec` span, e.g. `"30min"`. Needs `stateRoot` and `backupAutostart`. The full backup stays on its 24h timer — putting THAT on a short interval would re-snapshot the payload every run and burn the 5-deep rollback ring down to hours.
+- `flakelab doctor` reports secret-gate findings held back from the state root — count, the transcripts held back whole (a held file with no synced copy at all never reaches the other machines), and the `--review-secrets` pointer. The gate's own warnings go to a journal nobody reads once the sync runs from a timer; without this the hold is invisible from the operator's seat. The doctor wrapper now exports `FLAKELAB_STATE_ROOT` for the whole-held probe.
+
+## [0.2.0] - 2026-08-28
+
+### Added
+
+- `bwu` / `bwl` shell functions: `bwu` unlocks the Bitwarden vault on the TTY and parks the session token in mode-600 `~/.config/tyc/bw-session`; every shell exports it as `BW_SESSION` from there, so agents inherit an unlocked `bw` without the token crossing a command line or a transcript. `bwl` locks and removes the file. The token is per-unlock, so it lives outside `secrets.env` and outside `flakelab backup`.
+- `flakelab.target` (default `wsl`): the platform a system is built for, and the module set in `nix/targets/` that goes with it — `wsl` is the NixOS-WSL distro, `proxmox-vm` a Proxmox guest. It rides outside `userData` (`mkSystem { target = "proxmox-vm"; userData = { … }; }`, or as a top-level key of the legacy attrset) because `imports` cannot be conditional: the choice is made before the module system runs, which is also why the option is read-only afterwards.
+- `nixosConfigurations.proxmox-vm`: the tracked placeholders on the new target — cloud-init for the hostname, network and keys PVE hands the guest, a qemu-guest-agent that refuses fs-freeze so `vzdump` does not wait for a thaw that never comes, the cloud-init CLI a wrong boot is read with, keys-only sshd, and a root filesystem that grows into whatever disk it is given — on the virtio controllers the initrd can actually see.
+- `flakelab.flakeAttr` (default `"default"`): the `nixosConfigurations` attribute `flakelab update` switches into, for an overlay flake that declares more than one box.
+- `checks.targets`: `nix flake check` instantiates both systems and builds neither, asserting that each one carries its own platform and none of the other's.
+- `flakelab.backupRoot` (default `null`, resolving to `${repoPath}/files/config` as before): the `flakelab backup` payload root, for a target with no Windows mount to point it at instead.
+- `test-flakelab-cli`: the sixth offline suite, covering the router's target gate.
+- `.#proxmoxImage`: the Proxmox seed image (`nix build .#proxmoxImage` → a qcow2), built as the `proxmox-vm-seed` variant of `nixosConfigurations.proxmox-vm` with `home-manager.users` forced empty — a full closure is 7.9 GiB, which no release asset carries, and a generic image has none of the credentials its activation would want. `checks.targets` asserts the stripping held.
+- `flakelab-bootstrap`: the one-shot unit on the `proxmox-vm` target that turns a seed into your box. It reads `/etc/flakelab/bootstrap.env` — `OVERLAY_URL` (required), `OVERLAY_REF` (`main`, a branch or tag), `OVERLAY_ATTR` (`default`), `BOOTSTRAP_USER` (`flakelab.username`), `REPO_PATH` (`~<user>/git/flakelab-config`), `OVERLAY_SSH_IDENTITY` (`~/.ssh/<first sshKeys entry>`), `OVERLAY_KNOWN_HOSTS` (unset: `StrictHostKeyChecking=accept-new`), with a leading `~/` in the three paths resolved against the home passwd gives `BOOTSTRAP_USER`, because systemd reads the file itself and a `#` only starts a comment at the start of a line — clones the private overlay as that user and switches the system into `#<OVERLAY_ATTR>` as root. A missing identity exits 75 and names the path instead of failing the boot; `/var/lib/flakelab/bootstrapped` keeps it to one run and `journalctl -u flakelab-bootstrap` is the log.
+- `.github/workflows/release.yml`: a `v*` tag builds the seed, compresses it with `qemu-img convert -c` and uploads `flakelab-proxmox-vm-<tag>.qcow2` plus its `.sha256` to the release, so an adopter's hypervisor pins an asset URL by tag rather than building the image itself.
+- `nix-overlay-generate --target <wsl|proxmox-vm>` (default `wsl`), and the matching `target:` key in `user_data.yaml`: generates a `proxmox-vm` overlay with `target = "proxmox-vm";` first in the attrset and `windowsUsername` left out entirely, instead of hand-editing the flake a bare scaffold produces. An unknown value is refused up front rather than reaching `mkSystem`'s own `throwIf` with a generated file name in the error instead of the config the operator has open. Generating for `wsl` (the default, and what every existing config still selects) is unchanged byte for byte.
+
+### Changed
+
+- `flakelab.windowsUsername` is optional and defaults to `null`. It feeds the zsh jump out of the Windows profile directory, which only the `wsl` target has, so an overlay for any other target leaves it out.
+- `nix/configuration.nix` is the system layer every target shares; the NixOS-WSL settings, the interop hazard note and `system.stateVersion` live in `nix/targets/wsl.nix`.
+- `flakelab <command>` refuses the four WSL-only verbs (`provision`, `build-distro`, `test-provision`, `distro-name`) with exit 2 on any target other than `wsl`, and drops them from `--help` and its did-you-mean suggestions.
+- `flakelab doctor`'s WSL interop check runs only when the target is `wsl`; every other target gets a single `ok` line instead of a spurious failure.
+- `flakelab backup`'s per-instance path resolves `WSL_DISTRO_NAME`, then `FLAKELAB_INSTANCE` (exported by the nix wrapper from `hostName` on any non-`wsl` target), before falling back to the `wsl.exe` probe.
+- `BROWSER` is set only on the `wsl` target (`wsl-open` needs a Windows default browser to hand a URL to); other targets' CLIs print the URL themselves.
+- `flakelab.mcpPlaywright`'s server registration, and Claude's Playwright MCP bridge env, are gated on the `wsl` target too — extension mode's Windows Chrome path is meaningless elsewhere; a trace warns when `mcpPlaywright` is set on another target.
+- `~/.claude/CLAUDE.md`'s managed block is now a target-neutral core plus a per-target file (`target-wsl.md` or `target-proxmox-vm.md`), so a Proxmox guest gets its own facts instead of a WSL box's `/mnt/c` and WSL-verb notes.
+
+## [0.1.0] - 2026-08-27
+
+First tagged release. The project has been in daily use on two machines since
+before the public flip; this marks the point where adopters get a version to
+pin to instead of a moving `main`.
+
 ### Added
 
 - `flakelab.stateRoot` / `stateTranscripts` options for a shared state root synced across machines.
@@ -18,6 +67,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `flakelab.hostName` (default `flakelab`): sets `networking.hostName`, which nothing set before — every box came up as `nixos`. An existing box is renamed at its next update, effective at the next distro restart, and anything keyed on the hostname sees a new machine: the gate ledger does, so already-applied holds are offered once more after the rename. Set `hostName = "nixos"` in the overlay to keep the old name.
 - `setup-wsl-nix.ps1 -RestoreInstance <name>`: names the backup instance the overlay-payload restore reads, for a distro whose payload was written under another distro name. A name the payload has no directory for is refused, listing the ones it has.
 - `setup-wsl-nix.ps1 provision` on a fresh PC — no overlay, no `-Config`, an interactive console — asks for the four values a config cannot do without (Linux user, git name, git mail, profiles; an optional repo list last) and writes them as `<overlay>\files\config\user_data.yaml` before carrying on; that file is found on every later run, so `-Force` regenerates from it. The README bootstrap is one command. Non-interactive runs and `-DryRun` keep the refusal; the `.cmd` menu's config prompt now falls through to the questions on Enter.
+- `BACKLOG.md`: planned work, tracked in the repository alongside the code it describes rather than in the GitHub issue tracker.
+- `flakelab.kiroTrustAll`, `flakelab.claudeTrustAll` and `flakelab.mcpPlaywright` (all default `false`): the operator's full-trust agent surface is now opt-in. Adopters no longer inherit `kk` (`kiro-cli chat --trust-all-tools`), `cc` (`claude --dangerously-skip-permissions`), `cli.json`'s `chat.disableTrustAllConfirmation`, or a browser-driving MCP server. Trust-all outranks the Kiro agent's `deniedCommands`, so the destructive floor does not apply under it — which is why it is a decision and not a default.
 
 ### Changed
 
@@ -31,10 +82,13 @@ The format is based on [Keep a Changelog], and this project adheres to
 - A config that names only `repos:` — no `profiles:`, no `gitlab_groups:` — is accepted by both overlay generators, for adopters with no GitLab.
 - The managed `permissions.deny` floor denies every force push and remote-branch deletion, not only those naming `main`; `worktree.baseRef` is no longer asserted.
 - The agent instructions file is `AGENTS.md`, and it is the only one: the repo ships no root `CLAUDE.md`. `ARCHITECTURE.md`'s "Known gaps" moved into `known-issues.md` as "Known limitations".
+- Every third-party `pre-commit` hook is pinned to an immutable commit SHA (`rev: <sha>  # frozen: <tag>`) rather than a mutable tag, which a compromised maintainer can repoint without changing the version string.
+- `@jarahkon/hass-mcp-server` is version-pinned like the other MCP servers; it was resolved fresh by `npx --yes` on every start while holding a live `HASS_TOKEN`.
+- Renovate waives `minimumReleaseAge` and automerges `@playwright/mcp` alone: the Playwright MCP Bridge Chrome extension auto-updates and cannot be pinned, so a lagging server is rejected with "unsupported protocol version" and a release-age hold is a guaranteed outage window. Every other package keeps the repo-wide hold.
 
 ### Removed
 
-- `HANDOVER.md` and every pointer to it; open work is tracked in the issue tracker, not in the tree.
+- `HANDOVER.md` and every pointer to it; open work is tracked in `BACKLOG.md`.
 
 ### Fixed
 
@@ -51,5 +105,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - Flow-style YAML lists (`profiles: [a, b]`) are parsed as lists by both overlay generators, instead of reaching the overlay as a literal string.
 - `gitpublisher` no longer reads pre-commit's cold-cache "Installing environment for .../gitleaks" line as a secret finding.
 
+[0.2.0]: https://github.com/tyclab/flakelab/releases/tag/v0.2.0
+[0.1.0]: https://github.com/tyclab/flakelab/releases/tag/v0.1.0
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
 [Semantic Versioning]: https://semver.org/spec/v2.0.0.html

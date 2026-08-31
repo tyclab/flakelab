@@ -37,15 +37,45 @@ history_merge_ok() {
 }
 
 # Conflict copies a sync client left beside one file — the other machine's
-# write that lost the race. Sets `reply`.
+# write that lost the race. Two naming shapes exist: most clients append their
+# marker after the full name (MEMORY.md_<host>_<date>_Conflict), but Synology
+# Drive inserts it BEFORE the extension (MEMORY_<host>_<date>_Conflict.md), so
+# a plain full-name prefix never pairs those. The stem+extension match is a
+# heuristic: a sibling artifact sharing the stem and extension is taken as this
+# file's conflict, which is exact for the one merged file each of these
+# folders holds. Sets `reply`.
 sync_conflict_copies() {
   local merged="$1" f
+  local tail="${merged:t}" stem="" ext=""
+  # Dotfiles (.zsh_history_merged) have no extension to insert before; for
+  # them only the prefix shape applies.
+  if [[ "${tail}" == ?*.* ]]; then
+    ext="${tail##*.}"
+    stem="${tail%.*}"
+  fi
   reply=()
-  for f in "${merged:h}"/"${merged:t}"*(N.); do
+  # (D): the merged history is a dotfile, and so are its conflict copies.
+  for f in "${merged:h}"/*(ND.); do
     [[ "${f}" == "${merged}" ]] && continue
-    is_sync_artifact "${f:t}" && reply+=("${f}")
+    is_sync_artifact "${f:t}" || continue
+    if [[ "${f:t}" == "${tail}"* ]]; then
+      reply+=("${f}")
+    elif [[ -n "${stem}" && "${f:t}" == "${stem}"*".${ext}" ]]; then
+      reply+=("${f}")
+    fi
   done
   return 0
+}
+
+# Any path segment that is a sync artifact poisons the whole path: a Synology
+# @eaDir tree can hold .jsonl-named litter, and a conflict-named directory
+# must not have its contents mirrored as transcripts.
+rel_path_is_sync_artifact() {
+  local seg
+  for seg in ${(s:/:)1}; do
+    is_sync_artifact "${seg}" && return 0
+  done
+  return 1
 }
 
 # Remove conflict copies once their lines are folded into the file they sat beside.
@@ -64,6 +94,9 @@ fold_conflict_copies() {
 
 merge_zsh_history() {
   local instance_history="${BACKUP_SHELL}/.zsh_history"
+  # --state-only never writes the payload, so its instance copy can be days
+  # stale; the live history is the input that actually holds what was typed.
+  ${STATE_ONLY} && instance_history="${HOME_DIR}/.zsh_history"
   local merged_history
   merged_history="$(merged_history_path)"
 
@@ -421,18 +454,78 @@ sync_transcript() {
   return 0
 }
 
+# A transcript conflict copy in the state root is the other machine's gated
+# write that lost the rename race — its bytes already passed that machine's
+# secret gate, and folding moves them only within the root, so no rescan is
+# needed. The same grow-only line rule decides: a copy with more lines than
+# the base replaces it, otherwise the base stands; either way the copy is
+# removed so it stops shadowing the file. A copy whose base is gone entirely
+# is left in place — there is nothing safe to fold it into. Runs before both
+# legs so push and pull see the folded file.
+fold_transcript_conflicts() {
+  local base copy rel
+  for base in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
+    rel="${base#${STATE_ROOT}/claude/projects/}"
+    rel_path_is_sync_artifact "${rel}" && continue
+    sync_conflict_copies "${base}"
+    for copy in "${reply[@]}"; do
+      local failures_before=${FAILURES}
+      sync_transcript "${copy}" "${base}"
+      if ! ${DRY_RUN} && (( FAILURES == failures_before )); then
+        fold_conflict_copies transcript "${copy}"
+      fi
+    done
+  done
+  return 0
+}
+
+# Pull leg: state-root transcripts this box lacks, or that grew on another one.
+# A local copy written to in the last PULL_FRESH_SECONDS is a live session
+# appending through an open fd — sync_transcript places by rename, which would
+# orphan that fd's inode and silently drop the session's tail — so freshness
+# skips it; the next run picks it up once the session has gone quiet. The
+# grow-only line rule inside sync_transcript still applies on top.
+PULL_FRESH_SECONDS=600
+pull_transcripts() {
+  local transcript rel dst mtime
+  local now
+  if ! now="$(date +%s)"; then
+    record_failure "Could not read the clock; transcripts not pulled this run"
+    return 0
+  fi
+  # `**`: subagent transcripts live below the session file
+  # (<slug>/<session>/subagents/*.jsonl), so one level misses them.
+  for transcript in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
+    rel="${transcript#${STATE_ROOT}/claude/projects/}"
+    rel_path_is_sync_artifact "${rel}" && continue
+    dst="${HOME_DIR}/.claude/projects/${rel}"
+    if [[ -f "${dst}" ]]; then
+      if ! mtime="$(stat -c %Y "${dst}" 2> /dev/null)"; then
+        record_failure "Could not stat transcript: ${dst}"
+        continue
+      fi
+      if (( now - mtime < PULL_FRESH_SECONDS )); then
+        log_info "Session still live, not pulled: ${dst:t}"
+        continue
+      fi
+    fi
+    sync_transcript "${transcript}" "${dst}"
+  done
+  return 0
+}
+
 # Every transcript staged and scanned in ONE gitleaks run, then synced through
 # the redactor. Grow-only compares the CANDIDATE (redacted or not) against the
 # synced copy, never the raw source.
 backup_transcripts() {
   local -a srcs=() dsts=()
-  local slug_dir transcript
-  for slug_dir in "${HOME_DIR}"/.claude/projects/*(N/); do
-    for transcript in "${slug_dir}"/*.jsonl(N.); do
-      is_sync_artifact "${transcript:t}" && continue
-      srcs+=("${transcript}")
-      dsts+=("${STATE_ROOT}/claude/projects/${slug_dir:t}/${transcript:t}")
-    done
+  local transcript rel
+  # `**` mirrors the pull leg: subagent transcripts sit below the session file.
+  for transcript in "${HOME_DIR}"/.claude/projects/**/*.jsonl(N.); do
+    rel="${transcript#${HOME_DIR}/.claude/projects/}"
+    rel_path_is_sync_artifact "${rel}" && continue
+    srcs+=("${transcript}")
+    dsts+=("${STATE_ROOT}/claude/projects/${rel}")
   done
   (( ${#srcs} > 0 )) || return 0
   gate_guard || return 0

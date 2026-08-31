@@ -431,12 +431,18 @@ gate_filter_history() {
       red="$(gate_mask "${match}" "${secrets[@]}")"
       (( ${#red} > 200 )) && red="${red[1,200]}…"
       id="$(gate_id history "${fp}" "${key}" "${sha}")"
-      # `keep` is settled outright; `delete` per BOX — ruled elsewhere and never
-      # answered here, the record is still in this box's files and must be offered.
-      [[ "${decision}" == keep ]] && continue
+      # `keep` is settled outright — unless the operator asked to revisit those
+      # rulings, which re-holds the record (still excluded from the sync) so the
+      # next --review-secrets can re-decide it; `delete` per BOX — ruled
+      # elsewhere and never answered here, the record is still in this box's
+      # files and must be offered.
+      if [[ "${decision}" == keep ]]; then
+        ${REVISIT_KEEPS} || continue
+      fi
       [[ "${decision}" == delete ]] && gate_decided_here "${fp}" && continue
       countable=$(( countable + 1 ))
-      if [[ -z "${decision}" ]] || [[ "${decision}" == delete ]]; then
+      if [[ -z "${decision}" || "${decision}" == delete ]] \
+        || { [[ "${decision}" == keep ]] && ${REVISIT_KEEPS} }; then
         # HOLD time is the only moment the secret literal is known, so the
         # preview is masked here and never rebuilt. Only when the WHOLE finding
         # sits inside this record: one that straddles two records leaves half
@@ -523,14 +529,17 @@ gate_redact_transcript() {
     done
     held=$(( held + 1 ))
     decision="$(gate_decision "${fp}")"
-    # Redacted either way; `keep`, or a `delete` this box answered for, has nothing to review.
-    if [[ "${decision}" == keep ]] \
-      || { [[ "${decision}" == delete ]] && gate_decided_here "${fp}" }; then
+    # Redacted either way; `keep` (unless the operator asked to revisit those
+    # rulings), or a `delete` this box answered for, has nothing to review.
+    if [[ "${decision}" == keep ]]; then
+      ${REVISIT_KEEPS} || continue
+    elif [[ "${decision}" == delete ]] && gate_decided_here "${fp}"; then
       continue
     fi
     countable=$(( countable + 1 ))
     if [[ -n "${held_file}" ]]; then
-      if [[ -z "${decision}" ]] || [[ "${decision}" == delete ]]; then
+      if [[ -z "${decision}" || "${decision}" == delete ]] \
+        || { [[ "${decision}" == keep ]] && ${REVISIT_KEEPS} }; then
         red="$(gate_mask "${match}" "${secrets[@]}")"
         (( ${#red} > 200 )) && red="${red[1,200]}…"
         id="$(gate_id transcript "${fp}" "${live_src:t}")"
@@ -1077,12 +1086,16 @@ do_review_secrets() {
 
   local -a entries=()
   local -i settled=0
-  local line kind fp rule desc redacted key record_sha file live_path entry_id preview
+  local line kind fp rule desc redacted key record_sha file live_path entry_id preview decision
   while IFS= read -r line; do
     [[ -n "${line}" ]] || continue
     gate_read_held "${line}"
     [[ -n "${fp}" ]] || continue
-    if [[ -n "$(gate_decision "${fp}")" ]]; then
+    # A held entry whose winning decision is `keep` only exists after a
+    # --revisit-keeps run put it back on the table: offer it again. allow and
+    # delete rulings stay settled (deletes go through the pending path above).
+    decision="$(gate_decision "${fp}")"
+    if [[ -n "${decision}" && "${decision}" != keep ]]; then
       settled=$(( settled + 1 ))
       continue
     fi
@@ -1169,6 +1182,12 @@ do_review_secrets() {
     esac
 
     if [[ "${ans}" == (d|D) ]]; then
+      # The RULING is recorded now, application may be pending: a record in a
+      # file that cannot be rewritten yet (a live session's transcript) stays
+      # held under the delete and every later --review-secrets retries it via
+      # gate_apply_pending_deletes — before this, a failed scrub left the old
+      # decision standing and a `keep` could never be revised into a delete.
+      gate_settle_delete_here "${gfp}"
       del_order+=("${gfp}")
       for gline in "${glines[@]}"; do
         gate_read_held "${gline}"
@@ -1200,7 +1219,7 @@ do_review_secrets() {
   local dfp settled_id
   for dfp in "${del_order[@]}"; do
     if [[ -n "${del_failed[${dfp}]:-}" ]]; then
-      record_failure "Could not remove the finding from ${del_where[${dfp}]}; nothing was settled for that secret and every record of it stays held for the next --review-secrets"
+      record_failure "Could not remove the finding from ${del_where[${dfp}]} yet (a live session's file refuses a rewrite); the delete ruling stands and every later --review-secrets retries it"
       continue
     fi
     for settled_id in ${=del_ids[${dfp}]}; do

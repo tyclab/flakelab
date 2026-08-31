@@ -1,11 +1,14 @@
 # AGENTS.md — flakelab
 
-Shareable NixOS-WSL dev environment (`nixosConfigurations.default`, `.#wslImage`,
-`lib.mkSystem`). `nix/users/default.nix` ships neutral placeholders; real personal
-values live in the private overlay `flakelab-config`, which imports this flake via
+Shareable NixOS dev environment (`nixosConfigurations.default` — the WSL distro
+— `nixosConfigurations.proxmox-vm`, `.#wslImage`, `.#proxmoxImage`,
+`lib.mkSystem`).
+`nix/users/default.nix` ships neutral placeholders; real personal values live in
+the private overlay `flakelab-config`, which imports this flake via
 `lib.mkSystem`.
 
 - Secrets come from OpenBao via `~/.config/tyc/secrets.env` at use time.
+- The Bitwarden session token is the exception: the operator runs `bwu`, which parks it in `~/.config/tyc/bw-session`, and the shell exports it as `BW_SESSION`. A locked vault means asking the operator to run `bwu` — never asking for the token or putting it on a command line.
 - **`flakelab` is the CLI.** One binary, subcommands; `flakelab --help` lists
   them all. It is a ROUTER (`files/scripts/flakelab`): each subcommand still
   execs the same per-command wrapper `nix/scripts.nix` builds, so every one
@@ -55,6 +58,10 @@ values live in the private overlay `flakelab-config`, which imports this flake v
   - `flakelab build-distro` / `flakelab test-provision`: stand up a THROWAWAY
     distro (`NixDev`) to test the flake end to end. Not the update path for
     this one. Interop-wiping — expendable sessions only.
+  - These, plus `provision` and `distro-name`, refuse with exit 2 on any
+    `flakelab.target` other than `wsl` — a `proxmox-vm` box has no distro to
+    provision, wipe interop for, or name — and drop out of `--help` and its
+    did-you-mean suggestions there too.
 - Docs live in the repo root — no `docs/` folder; every `.md` sits at the top level.
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
@@ -67,16 +74,17 @@ values live in the private overlay `flakelab-config`, which imports this flake v
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
 - Changing any of these means running its offline suite. `make test` runs all
-  five (`test-gitchecker`, `test-gitcleaner`, `test-gitpublisher`,
-  `test-nix-backup`, `test-nix-overlay-generate`) and stays the required local
-  gate. Those five are TEST HARNESSES, not user commands, so the `flakelab` CLI
-  did not rename them: `test-nix-backup` and `test-nix-overlay-generate` keep
-  the old prefix on purpose, because renaming them would drag `Makefile` and
-  `flake.nix`'s `checks.<system>.*` along for no change in behaviour. They run
-  the scripts by path, not by command name. CI runs the same five as flake
-  checks — `nix flake check` (the `test` job) builds
+  six (`test-gitchecker`, `test-gitcleaner`, `test-gitpublisher`,
+  `test-nix-backup`, `test-nix-overlay-generate`, `test-flakelab-cli`) and
+  stays the required local gate. These are TEST HARNESSES, not user commands,
+  so the `flakelab` CLI did not rename them: `test-nix-backup` and
+  `test-nix-overlay-generate` keep the old prefix on purpose, because renaming
+  them would drag `Makefile` and `flake.nix`'s `checks.<system>.*` along for no
+  change in behaviour. They run the scripts by path, not by command name. CI
+  runs the same six as flake checks — `nix flake check` (the `test` job)
+  builds
   `checks.<system>.{gitchecker,gitcleaner,gitpublisher,nix-backup,`
-  `nix-overlay-generate,statix,deadnix}`, so a red suite blocks the pull
+  `nix-overlay-generate,flakelab-cli,statix,deadnix}`, so a red suite blocks the pull
   request rather than surviving to main. Those checks copy the WHOLE tree
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`
   asserts against the tracked `templates/overlay/` and

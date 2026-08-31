@@ -5,10 +5,10 @@ How flakelab is put together, and why. Usage lives in
 
 ## Principles
 
-1. **Two layers.** System-scoped configuration in `nix/configuration.nix`,
-   user-scoped in `nix/home/` (Home Manager as a NixOS module), split by
-   concern: `packages`, `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `tooling`,
-   `health`, `backup`.
+1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
+   the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
+   `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
+   `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `tooling`, `health`, `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
    with no nixpkgs path (kiro-cli, the Claude installer) and SSH key material —
    both behind guarded, idempotent activation, never in the store.
@@ -84,6 +84,63 @@ Both rewrite one anchored line in `templates/overlay/flake.nix` (keyed on a
 not present exactly once. Git-ignore the overlay's own `flake.lock`: a committed
 lock pins the NAR hash of a local checkout, and the next edit over there aborts
 the build with "NAR hash mismatch".
+
+## Targets
+
+`target` picks the platform module set `mkSystem` builds from —
+`nix/targets/wsl.nix` or `nix/targets/proxmox-vm.nix`, unioned with the shared
+`nix/configuration.nix` every target carries. It is a `let`-level choice, not a
+module-system one: `imports` cannot be `mkIf`'d, so the module list is decided
+before a module system exists to hold a conditional definition, from
+`flake.nix`'s own `targetModules.${target}` map, read via `args.target or
+"wsl"` in both `mkSystem` call forms. An unknown target hits a `throwIf`
+against that map's own keys, naming the bad value and the known set, before
+`targetModules.${target}` would fail on a missing attribute with neither.
+`nix/options.nix` still declares `flakelab.target` — `readOnly`, no default —
+purely so the choice already made is inspectable afterwards; a module
+redefining it would describe a system nobody built, which is why nothing but
+`mkSystem` may set it.
+
+`flakeAttr` (string, default `"default"`) is the companion option: the
+`nixosConfigurations` attribute `flakelab update` rebuilds
+(`nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`). This repo's own
+output is `default`; an overlay describing more than one box — several targets,
+or several boxes on the same one — gives each `nixosConfigurations.<name>` the
+matching `flakeAttr = "<name>"` so each box's `flakelab update` switches into
+itself and not another box's configuration.
+
+The seed image is a **variant** of `nixosConfigurations.proxmox-vm`, not a
+second system: `image.modules.proxmox-vm-seed` (nix/targets/proxmox-vm.nix)
+extends the same modules with nixpkgs' `disk-image.nix` and `image.format =
+"qcow2"`, which is why `system.build.image` never lands on the toplevel system
+where `images.nix` would warn about it colliding with every other variant. The
+variant forces `home-manager.users` empty and parks the placeholder user's uid
+at 65000. Both are load-bearing. A full closure is 7.9 GiB, far past what a
+release asset carries, and a home-manager activation in a generic image would
+run installers against credentials it cannot have; and with the placeholder out
+of the useradd range, the login cloud-init creates from the hypervisor's `user:`
+lands on uid 1000 — the uid the overlay declares for it a few minutes later.
+`checks.targets` asserts the stripping held, so a module wiring home-manager
+back in reddens `nix flake check` rather than a 8 GiB upload.
+
+A seed is half a system, and the other half is private. `flakelab-bootstrap`
+is the seam: a one-shot unit, conditioned on `/etc/flakelab/bootstrap.env`
+existing and `/var/lib/flakelab/bootstrapped` not, that reads `OVERLAY_URL`
+(required) plus `OVERLAY_REF`, `OVERLAY_ATTR`, `BOOTSTRAP_USER`, `REPO_PATH`,
+`OVERLAY_SSH_IDENTITY` and `OVERLAY_KNOWN_HOSTS`. `OVERLAY_REF` names a branch
+or a tag, and the unit expands a leading `~/` in the three path values against
+the home `BOOTSTRAP_USER` has in the passwd database, because systemd reads an
+`EnvironmentFile=` itself and a shell never sees it. It clones the overlay, locks
+it and checks it out **as `BOOTSTRAP_USER`** — a lock written by root makes that
+user's next `nix` command in the checkout fail on a permission denied — and runs
+only `nixos-rebuild switch --flake path:<repo>#<attr>` as root, taking
+switch-to-configuration's exit 4 — activated, with warnings — as a switch that
+happened, so a warning does not repeat the whole clone on the next boot. An
+identity `BOOTSTRAP_USER` cannot read exits 75 and names the path it wants,
+because on a fresh guest the key arrives after the first boot and the unit is
+meant to be started again rather than to fail it. The unit ships from the target module and not the seed variant,
+so a system already built from an overlay carries it too: the marker is what
+makes it a one-shot, never the image.
 
 ## The CLI
 

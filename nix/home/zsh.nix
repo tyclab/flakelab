@@ -20,7 +20,33 @@
 }:
 let
   cfg = osConfig.flakelab;
-  inherit (flakelab) sshKeys;
+  inherit (flakelab) isWsl sshKeys;
+
+  # The jump is WSL-only and needs a Windows user to jump away from: nothing
+  # else has a Windows profile directory a shell can start in.
+  homeJump = lib.optionalString (isWsl && cfg.windowsUsername != null) ''
+    # Jump to Linux home only when the shell starts at a Windows default entry
+    # path. There are two: the Windows profile root, and C:\Windows\System32 —
+    # the WSL profiles Windows Terminal generates carry no startingDirectory,
+    # so the distro inherits Terminal's own cwd, which is System32 whenever
+    # Terminal itself was launched from the Start menu or a pinned icon.
+    # Shells deliberately opened elsewhere on /mnt — e.g. a file manager's
+    # "open shell here" — keep their directory. Guarded so a .zshrc re-source
+    # never re-triggers the jump mid-session.
+    #
+    # Both sides are lowercased with zsh's :l modifier: windowsUsername is free
+    # text typed into the overlay, while $PWD carries the profile directory
+    # name as Windows actually stores it — Windows preserves case but does not
+    # enforce it, so a mismatched-case configured name would silently stop the
+    # jump on a literal compare.
+    if [[ -z "''${_flakelab_home_jump:-}" ]]; then
+      _flakelab_home_jump=1
+      _flakelab_win_home="/mnt/c/Users/${cfg.windowsUsername}"
+      [[ "''${PWD:l}" == "''${_flakelab_win_home:l}" || "''${PWD:l}" == /mnt/c/windows/system32 ]] && cd ~
+      unset _flakelab_win_home
+    fi
+
+  '';
 
   # gitcheck/gitclean scan roots, built once so the reporter and the deleter
   # cannot disagree about what is in scope. extraReposDirs adds roots beyond
@@ -130,28 +156,7 @@ in
     initContent = ''
       export GPG_TTY="$(tty)"
 
-      # Jump to Linux home only when the shell starts at a Windows default entry
-      # path. There are two: the Windows profile root, and C:\Windows\System32 —
-      # the WSL profiles Windows Terminal generates carry no startingDirectory,
-      # so the distro inherits Terminal's own cwd, which is System32 whenever
-      # Terminal itself was launched from the Start menu or a pinned icon.
-      # Shells deliberately opened elsewhere on /mnt — e.g. a file manager's
-      # "open shell here" — keep their directory. Guarded so a .zshrc re-source
-      # never re-triggers the jump mid-session.
-      #
-      # Both sides are lowercased with zsh's :l modifier: windowsUsername is free
-      # text typed into the overlay, while $PWD carries the profile directory
-      # name as Windows actually stores it — Windows preserves case but does not
-      # enforce it, so a mismatched-case configured name would silently stop the
-      # jump on a literal compare.
-      if [[ -z "''${_flakelab_home_jump:-}" ]]; then
-        _flakelab_home_jump=1
-        _flakelab_win_home="/mnt/c/Users/${cfg.windowsUsername}"
-        [[ "''${PWD:l}" == "''${_flakelab_win_home:l}" || "''${PWD:l}" == /mnt/c/windows/system32 ]] && cd ~
-        unset _flakelab_win_home
-      fi
-
-      # Load runtime secrets from a git-ignored env file if present. Populate it
+      ${homeJump}# Load runtime secrets from a git-ignored env file if present. Populate it
       # from OpenBao (e.g. `bao kv get`) or export the vars yourself — nothing is
       # baked into the repo or the Nix store.
       #
@@ -163,6 +168,31 @@ in
       if [[ -r "$HOME/.config/tyc/secrets.env" ]]; then
         set -a; source =(tr -d '\r' < "$HOME/.config/tyc/secrets.env"); set +a
       fi
+
+      # Bitwarden CLI session. `bw unlock` yields a per-unlock token that stays
+      # valid until `bw lock`/`bw logout` — not a durable secret, so it belongs
+      # neither in secrets.env nor in OpenBao. `bwu` unlocks on the TTY and parks
+      # the token in a mode-600 file; every shell (the ones agents run in
+      # included) exports it from there, so it never rides a command line, a
+      # chat message or a transcript. `bwl` locks and removes the file. The file
+      # is not part of `flakelab backup` on purpose (nix-backup restores
+      # secrets.env by name).
+      if [[ -r "$HOME/.config/tyc/bw-session" ]]; then
+        export BW_SESSION="$(tr -d '\r\n' < "$HOME/.config/tyc/bw-session")"
+      fi
+      bwu() {
+        local _f="$HOME/.config/tyc/bw-session" _t
+        _t="$(bw unlock --raw)" || return 1
+        mkdir -p "$HOME/.config/tyc" && chmod 700 "$HOME/.config/tyc"
+        (umask 077; printf '%s\n' "$_t" > "$_f") || return 1
+        export BW_SESSION="$_t"
+        echo "bw: unlocked — token in $_f, exported to new shells (bwl to lock)"
+      }
+      bwl() {
+        bw lock
+        rm -f "$HOME/.config/tyc/bw-session"
+        unset BW_SESSION
+      }
 
       # services.ssh-agent starts an agent but loads no key, and ssh_config(5)
       # adds one via `AddKeysToAgent yes` only when ssh itself loads a key from a

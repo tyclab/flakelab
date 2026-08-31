@@ -96,10 +96,11 @@ in
                 ${sshDefer "kiro-plugin not cloned, so its agents/skills/steering are not installed. Either activation had no passphrase-unlocked ssh-agent key, or the host was unreachable. Log in interactively (the zsh hook loads the key), then run: flakelab update"}
             else
               # No key yet is the NORMAL state of the first rebuild on a fresh
-              # distro: setup-wsl-nix.ps1 can only seed ~/.ssh after this rebuild
-              # has created the user. Record the deferral the health check looks
-              # for - skipping silently made it report the missing checkout as a
-              # defect and failed the very rebuild that creates the user.
+              # system: setup-wsl-nix.ps1 (WSL) or cloud-init/Ansible (a VM
+              # target) can only seed ~/.ssh after this rebuild has created the
+              # user. Record the deferral the health check looks for - skipping
+              # silently made it report the missing checkout as a defect and
+              # failed the very rebuild that creates the user.
               ${flakelabDefer} "kiro-plugin not cloned: no ~/.ssh/${firstSshKey} yet, so the clone was not attempted. Provisioning seeds the key after this rebuild; flakelab update then completes it."
             fi
           fi

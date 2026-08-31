@@ -1,17 +1,21 @@
 # flakelab
 
-A complete developer environment on top of
-[NixOS-WSL](https://github.com/nix-community/NixOS-WSL), not a distro image:
-NixOS-WSL gets you a NixOS in WSL2, flakelab is the flake that furnishes it —
-zsh/Oh My Zsh, Kubernetes tooling, native Docker, cloud CLIs, language
-runtimes, AI CLIs and dev utilities, applied with a single `flakelab update`,
-plus the Windows-side provisioning that stands a machine up from nothing.
+A complete developer environment, not a distro image: zsh/Oh My Zsh,
+Kubernetes tooling, native Docker, cloud CLIs, language runtimes, AI CLIs and
+dev utilities, applied with a single `flakelab update`. Two targets share this
+one flake — `wsl`, a distro on top of
+[NixOS-WSL](https://github.com/nix-community/NixOS-WSL) with the Windows-side
+provisioning that stands a machine up from nothing, and `proxmox-vm`, a
+Proxmox guest built from a seed image and bootstrapped in place.
 
-Requires WSL >= 2.5.7 (native systemd). The flake builds for **`x86_64-linux`
-only** — `nixosConfigurations.default`, `.#wslImage`, the dev shell and every
-`nix flake check` output are declared for that system and no other, so an
-`aarch64` Windows box or an Apple Silicon host cannot build or run this system.
+Both targets need WSL >= 2.5.7 (native systemd) or an equivalent
+`x86_64-linux` host — the flake builds for **`x86_64-linux` only**:
+`nixosConfigurations.default`, `nixosConfigurations.proxmox-vm`, `.#wslImage`,
+`.#proxmoxImage`, the dev shell and every `nix flake check` output are declared
+for that system and no other, so an `aarch64` Windows box or an Apple Silicon
+host cannot build or run this system.
 Design and internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Planned work: [`BACKLOG.md`](BACKLOG.md).
 
 > ⚠️ **Provisioning wipes host interop, and the stable channel has no
 > protection.** Building a NixOS distro removes `WSLInterop` for every distro in
@@ -30,8 +34,8 @@ Two repos: a private overlay flake supplies the **data** (plus optional extra
 modules); this repo holds the machinery and no personal values. Everything
 flows through the typed `options.flakelab.*` schema — a typo aborts evaluation,
 defaults are neutral — into per-concern modules, from which the same
-configuration builds a WSL tarball today and a VM image next. Secrets arrive at
-runtime from a vault, never entering repo or store.
+configuration builds a WSL tarball or a Proxmox seed image, picked by
+`target`. Secrets arrive at runtime from a vault, never entering repo or store.
 
 ```mermaid
 flowchart LR
@@ -42,7 +46,7 @@ flowchart LR
     subgraph pub["flakelab — this repo"]
         MK["lib.mkSystem"] --> PROF["profiles/merge.nix"]
         PROF --> OPT["options.flakelab.*<br/>typed schema"]
-        OPT --> SYS["configuration.nix<br/>system layer"]
+        OPT --> SYS["configuration.nix + nix/targets/<br/>system layer"]
         OPT --> HOME["nix/home/*<br/>9 concern modules"]
         OPT --> SCR["scripts"]
     end
@@ -51,11 +55,10 @@ flowchart LR
     SYS --> IMG[".#wslImage"]
     HOME --> IMG
     SCR --> IMG
-    SYS -.-> VM["VM image<br/>(planned)"]
-    HOME -.-> VM
+    SYS --> VMIMG[".#proxmoxImage<br/>seed"]
 ```
 
-Not drawn: `nix flake check` (the five offline suites plus statix/deadnix) and
+Not drawn: `nix flake check` (the six offline suites plus statix/deadnix) and
 `devShells.default` guard every change with the same pinned tooling.
 
 ## Bootstrap
@@ -200,26 +203,29 @@ defaults to `path:` that checkout, which is why the lock above works offline —
 as `flakelab overlay-gen` from PATH it is required instead
 ([`ARCHITECTURE.md`](ARCHITECTURE.md#options-and-the-overlay) says why).
 
-It does not provision: applying the overlay is `setup-wsl-nix.ps1 provision`
-from Windows, or `sudo nixos-rebuild switch --flake <overlay>#default` inside a
-distro that already runs NixOS-WSL. macOS is a place to **generate** from, not
-to run this system: the flake's outputs are `x86_64-linux` only (above), so the
-overlay written on a Mac is applied on a Windows/WSL2 machine.
+It does not provision: applying a `wsl`-target overlay is
+`setup-wsl-nix.ps1 provision` from Windows, or
+`sudo nixos-rebuild switch --flake <overlay>#default` inside a distro that
+already runs NixOS-WSL; a `proxmox-vm`-target overlay applies via
+`flakelab-bootstrap` on a `.#proxmoxImage` seed instead (below). macOS is a
+place to **generate** from, not to run this system: the flake's outputs are
+`x86_64-linux` only (above), so the overlay written on a Mac is applied on an
+`x86_64-linux` NixOS box — WSL2 or a Proxmox guest.
 
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
 all fourteen.
 
-| Command                   | Action                                                      |
-| ------------------------- | ----------------------------------------------------------- |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#default` |
-| `flakelab update-all`     | rebuild + clone                                             |
-| `flakelab clone`          | clone / fetch GitLab group repos                            |
-| `flakelab doctor`         | diagnose a provisioned distro                               |
-| `flakelab backup`         | payload + optional shared state root                        |
-| `flakelab overlay-gen`    | write the private overlay from a config                     |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                |
+| Command                   | Action                                                          |
+| ------------------------- | --------------------------------------------------------------- |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>` |
+| `flakelab update-all`     | rebuild + clone                                                 |
+| `flakelab clone`          | clone / fetch GitLab group repos                                |
+| `flakelab doctor`         | diagnose a provisioned distro                                   |
+| `flakelab backup`         | payload + optional shared state root                            |
+| `flakelab overlay-gen`    | write the private overlay from a config                         |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 drift check's exit status. Without a terminal they refuse to rebuild from a
@@ -297,21 +303,24 @@ with your own rather than reading them as defaults.
 
 ### Layout
 
-| Path                                  | Purpose                                                                     |
-| ------------------------------------- | --------------------------------------------------------------------------- |
-| `flake.nix`                           | inputs, `nixosConfigurations.default`, `lib.mkSystem`, `.#wslImage`         |
-| `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record        |
-| `nix/configuration.nix`               | system: wsl.conf, locale, native Docker, nix-ld                             |
-| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, tooling, health, backup    |
-| `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)               |
-| `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs  |
-| `nix/cli.nix`                         | assembles those wrappers into the `flakelab` CLI                            |
-| `files/scripts/flakelab`              | the router: subcommand table, `--help`, did-you-mean                        |
-| `profiles/`                           | profile registry + merge (`example`)                                        |
-| `templates/overlay/`                  | scaffold for the private overlay flake (`init`, `flake new`, `overlay-gen`) |
-| `files/`                              | scripts + config consumed by the flake                                      |
-| `files/config/user_data.example.yaml` | provisioning config for `provision -Config` / `overlay-gen`                 |
-| `setup-wsl-nix.ps1`                   | Windows provisioning: status / generate / init / bootstrap / provision      |
+| Path                                  | Purpose                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `flake.nix`                           | inputs, `nixosConfigurations.{default,proxmox-vm}`, `lib.mkSystem`, `.#wslImage`/`.#proxmoxImage` |
+| `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record                              |
+| `nix/configuration.nix`               | system, every target: locale, native Docker, nix-ld                                               |
+| `nix/targets/`                        | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
+| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, tooling, health, backup                          |
+| `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)                                     |
+| `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs                        |
+| `nix/cli.nix`                         | assembles those wrappers into the `flakelab` CLI                                                  |
+| `files/scripts/flakelab`              | the router: subcommand table, `--help`, did-you-mean                                              |
+| `profiles/`                           | profile registry + merge (`example`)                                                              |
+| `templates/overlay/`                  | scaffold for the private overlay flake (`init`, `flake new`, `overlay-gen`)                       |
+| `files/`                              | scripts + config consumed by the flake                                                            |
+| `files/config/user_data.example.yaml` | provisioning config for `provision -Config` / `overlay-gen`                                       |
+| `files/config/claude/target-*.md`     | per-target facts appended into the managed `~/.claude/CLAUDE.md`                                  |
+| `setup-wsl-nix.ps1`                   | Windows provisioning: status / generate / init / bootstrap / provision                            |
+| `.github/workflows/release.yml`       | tag push → builds and publishes the `.#proxmoxImage` seed asset                                   |
 
 ## Secrets
 
@@ -348,8 +357,13 @@ missing key means that server starts and then fails on first call.
 
 The Bitwarden CLI (`bw`) keeps whatever endpoint it already has unless
 `bitwardenServer` names one (default `null`); set it — `"https://vault.bitwarden.eu"`
-for the EU region — and every rebuild points `bw config server` there. Either way
-there is no unlock automation: run `bw unlock` and export the session it prints.
+for the EU region — and every rebuild points `bw config server` there. Unlocking
+stays interactive: `bwu` runs `bw unlock` on your TTY and parks the session token
+it prints in mode-600 `~/.config/tyc/bw-session`, which every shell exports as
+`BW_SESSION` — agents and MCP servers inherit it without the token ever appearing
+on a command line or in a transcript; `bwl` locks the vault and removes the file.
+The token is per-unlock (valid until `bw lock`/`bw logout`), so it is not a
+`secrets.env` entry and `flakelab backup` does not carry it.
 
 ## Shared state between machines
 
@@ -373,10 +387,79 @@ in [`ARCHITECTURE.md`](ARCHITECTURE.md#shared-state-and-the-secret-gate).
 **Read that section before turning it on:** the merged history is everything
 ever typed at a prompt.
 
+## Proxmox VM
+
+`nix build .#proxmoxImage` produces a generic qcow2 **seed**: cloud-init, the
+qemu guest agent, keys-only sshd and the shared system layer, with no
+home-manager closure and no personal values in it, so one image serves every
+box. Each tagged release publishes it as `flakelab-proxmox-vm-<tag>.qcow2` next
+to a `.sha256`, which is what a hypervisor pins and imports.
+
+The seed is half a system. Write `/etc/flakelab/bootstrap.env` on the guest and
+the `flakelab-bootstrap` unit clones your private overlay and switches the box
+into it:
+
+```ini
+OVERLAY_URL=git@gitlab.example.com:you/flakelab-config.git
+OVERLAY_REF=main
+OVERLAY_ATTR=tycdev
+BOOTSTRAP_USER=you
+REPO_PATH=~/git/flakelab-config
+OVERLAY_SSH_IDENTITY=~/.ssh/flakelab_deploy
+OVERLAY_KNOWN_HOSTS=~/.ssh/known_hosts.flakelab
+```
+
+systemd parses that file itself rather than handing it to a shell: a `#` starts
+a comment only at the start of a line, a trailing one is part of the value, and
+nothing but a leading `~/` in the three path keys is expanded. `OVERLAY_URL` is
+the only required key.
+
+| Key                    | Default                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `OVERLAY_REF`          | `main` — any branch or tag                                     |
+| `OVERLAY_ATTR`         | `default` — the `nixosConfigurations` attribute to switch into |
+| `BOOTSTRAP_USER`       | `flakelab.username`                                            |
+| `REPO_PATH`            | `~/git/flakelab-config`                                        |
+| `OVERLAY_SSH_IDENTITY` | `~/.ssh/<first sshKeys entry>`                                 |
+| `OVERLAY_KNOWN_HOSTS`  | unset — `ssh -o StrictHostKeyChecking=accept-new`              |
+
+`~/` resolves against the home the passwd database gives `BOOTSTRAP_USER`, which
+is not always `/home/<user>`.
+
+The clone, the lock and the checkout run as `BOOTSTRAP_USER`; only
+`nixos-rebuild switch` runs as root. With no `OVERLAY_SSH_IDENTITY` that
+`BOOTSTRAP_USER` can read, the unit exits 75 and names the path it wants — seed
+the key, then `systemctl start flakelab-bootstrap`. A switch that activates the
+new generation but warns on the way — a unit that would not start, or the
+per-user activation for a user who is logged in while it runs — counts as done.
+It runs once,
+`/var/lib/flakelab/bootstrapped` is the marker, and
+`journalctl -u flakelab-bootstrap` is the log. After that the box rebuilds with
+`flakelab update` like any other.
+
+The overlay declares the box on the `proxmox-vm` target, and `flakeAttr` is the
+attribute `OVERLAY_ATTR` and `flakelab update` both switch into:
+
+```nix
+nixosConfigurations.tycdev = flakelab.lib.mkSystem {
+  target = "proxmox-vm";
+  userData = base // {
+    hostName = "tycdev";
+    flakeAttr = "tycdev";
+    repoPath = "/home/tycorc/git/flakelab-config";
+    sshKeys = [ "id_ed25519" "flakelab_deploy" ];
+    extraReposDirs = [ ];
+    stateRoot = null;
+    backupRoot = "/mnt/backup/flakelab";   # a mount that outlives the guest
+  };
+  modules = [ { time.timeZone = "Europe/Berlin"; } ];
+};
+```
+
 ## Test and lint
 
 ```bash
-make test          # the five offline suites, seconds
+make test          # the six offline suites, seconds
 nix flake check    # the same suites + statix/deadnix; what CI runs
 ```
 

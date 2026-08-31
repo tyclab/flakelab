@@ -1,6 +1,10 @@
-# NixOS-WSL system layer. Per-user values are the declared `flakelab.*` options
-# (nix/options.nix); mkSystem turns the userData attrset into definitions for
-# them, so everything below is a plain config read.
+# The system layer every target shares. Per-user values are the declared
+# `flakelab.*` options (nix/options.nix); mkSystem turns the userData attrset
+# into definitions for them, so everything below is a plain config read.
+#
+# What a single platform needs — the NixOS-WSL settings, a Proxmox guest's
+# cloud-init and bootloader, and each one's stateVersion — lives in
+# nix/targets/, which mkSystem picks by `target`.
 {
   config,
   lib,
@@ -8,22 +12,6 @@
   ...
 }:
 {
-  wsl = {
-    enable = true;
-    defaultUser = config.flakelab.username;
-    wslConf = {
-      automount.options = "metadata";
-      interop = {
-        enabled = true;
-        appendWindowsPath = true;
-      };
-      network = {
-        generateHosts = true;
-        generateResolvConf = true;
-      };
-    };
-  };
-
   networking.hostName = lib.mkDefault config.flakelab.hostName;
 
   # Locale (replaces tasks/locale.yaml), keeping the en_US baseline.
@@ -52,37 +40,33 @@
   # any other downloaded tools used while bootstrapping/validating the migration.
   programs.nix-ld.enable = true;
 
-  # WSL interop (known-issues.md): terminating ANY systemd distro wipes
-  # the kernel-global WSLInterop binfmt handler for EVERY distro. There is NO
-  # safe in-distro heal (manual re-register breaks the next systemd boot, and
-  # only a VM restart rescues an already-running sibling): recovery is
-  # `wsl --shutdown` from Windows, by the user. The Ansible predecessor
-  # prevents the wipe by baking systemd=false into its cached image — NixOS
-  # requires systemd, so this path instead avoids lifecycle ops where possible
-  # (`flakelab build-distro` never terminates) and warns loudly where not
-  # (`flakelab test-provision`).
-
   # System-level CLI utilities (the dev toolchain is per-user, in
   # nix/home/packages.nix).
-  environment.systemPackages = with pkgs; [
-    git
-    curl
-    wget
-    jq
-    tree
-    unzip
-    zip
-    file
-    pwgen
-    figlet
-    grc
-    # Opens paths/URLs with the Windows default handler. Replaces wslu, which
-    # 26.05 dropped after upstream discontinued and archived it.
-    wsl-open
-    dnsutils
-    gnumake
-    gcc
-  ];
+  environment.systemPackages =
+    with pkgs;
+    [
+      git
+      curl
+      wget
+      jq
+      tree
+      unzip
+      zip
+      file
+      pwgen
+      figlet
+      grc
+    ]
+    # Opens paths/URLs with the Windows default handler (replaces wslu, which
+    # 26.05 dropped), so it is WSL-only. Inline rather than a definition in
+    # nix/targets/wsl.nix, which would land at that module's position and reorder
+    # the whole system path.
+    ++ lib.optional (config.flakelab.target == "wsl") pkgs.wsl-open
+    ++ (with pkgs; [
+      dnsutils
+      gnumake
+      gcc
+    ]);
 
   # Enable flakes + the new nix CLI (needed for `nix flake check` / `nix build`).
   nix.settings.experimental-features = [
@@ -92,9 +76,8 @@
 
   nixpkgs.config.allowUnfree = true;
 
-  # WSL keeps its ext4 in a VHDX that grows on demand and never shrinks on its
-  # own, so store garbage is not reclaimed disk — it is permanent Windows-side
-  # disk. Neither of these runs on a rebuild; they are timers.
+  # Store garbage is disk nothing reclaims on its own. Neither of these runs on
+  # a rebuild; they are timers.
   #
   # 30 days rather than a generation count: the rollback this repo actually
   # relies on is `flakelab backup`'s payload snapshots, not old system generations,
@@ -110,8 +93,4 @@
     automatic = true;
     dates = [ "weekly" ];
   };
-
-  # stateVersion records the release whose stateful defaults this system adopted;
-  # it stays put when the nixpkgs channel moves, or those defaults change under it.
-  system.stateVersion = "25.11";
 }

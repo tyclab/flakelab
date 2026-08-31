@@ -19,6 +19,7 @@ let
   cfg = osConfig.flakelab;
   inherit (flakelab)
     installClaude
+    isWsl
     firstSshKey
     sshAgentPreamble
     sshDefer
@@ -428,11 +429,13 @@ in
   # The mcp-playwright marketplace plugin reads PLAYWRIGHT_MCP_* from
   # settings.json env. Values are non-secret and fixed by the bridge design.
   # Without them the server launches a local chrome and fails ('"chrome"
-  # executable not found') instead of attaching to Windows Chrome.
+  # executable not found') instead of attaching to Windows Chrome. `isWsl` in
+  # the gate: windowsChromePath is meaningless off WSL (mcp.nix already skips
+  # registering the server there; this stops writing its env too).
   home.activation.claudePlaywrightEnv =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "claudeDisableAttribution" ]
       (
-        lib.optionalString (installClaude && lib.elem "mcp-playwright" claudePlugins) ''
+        lib.optionalString (installClaude && isWsl && lib.elem "mcp-playwright" claudePlugins) ''
           export PATH="${
             lib.makeBinPath [
               pkgs.jq
@@ -612,10 +615,12 @@ in
   # artifact no rebuild refreshed, so a distro could describe an environment it is
   # not.
   #
-  # Two halves, in order: the text this repo ships, which stays limited to facts
-  # about the distro every adopter gets, then flakelab.claudeMdExtra (default "",
-  # so nothing is appended) for the personal workflow rules that used to be
-  # shipped alongside them.
+  # Three parts, in order: the target-neutral core this repo ships (facts about
+  # the distro EVERY adopter gets, on any target), the per-target file
+  # (target-wsl.md or target-proxmox-vm.md — the enum in nix/options.nix has no
+  # third answer, so `cfg.target` alone picks the right one), then
+  # flakelab.claudeMdExtra (default "", so nothing is appended) for the personal
+  # workflow rules that used to be shipped alongside them.
   home.activation.claudeMd =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "claudeDisableAttribution" ]
       (
@@ -641,6 +646,8 @@ in
             cat "$_tmp"
             echo '<!-- BEGIN managed by flakelab -->'
             cat ${../../files/config/claude/CLAUDE.md}
+            printf '\n'
+            cat ${../../files/config/claude/target-${cfg.target}.md}
             ${claudeMdExtraCat}
             echo '<!-- END managed by flakelab -->'
           } > "$_tmp.new" && $DRY_RUN_CMD install -m644 "$_tmp.new" "$_md" || \

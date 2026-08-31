@@ -224,19 +224,31 @@
         "claudeMcpServers"
       ];
 
+      # The platform layer, one module list per target. A NixOS `imports` list
+      # cannot be made conditional — the module system reads it before any
+      # option has a value — so which platform a system is built for is decided
+      # HERE, in the flake's `let`, and nowhere below.
+      targetModules = {
+        wsl = [
+          nixos-wsl.nixosModules.default
+          ./nix/targets/wsl.nix
+        ];
+        proxmox-vm = [ ./nix/targets/proxmox-vm.nix ];
+      };
+
       # The only keys the second call form takes. Anything else is a field that
       # belongs inside `userData`, or a typo.
       callFormKeys = [
         "userData"
         "modules"
         "homeModules"
+        "target"
       ];
 
-      # Build a NixOS-WSL system from a userData attrset. A private overlay flake
-      # calls `flakelab.lib.mkSystem { <real values> }` to keep personal data off
-      # this (shareable) repo; the default config below uses the tracked
-      # placeholders in nix/users/default.nix. See README "Where configuration
-      # lives".
+      # Build a system from a userData attrset. A private overlay flake calls
+      # `flakelab.lib.mkSystem { <real values> }` to keep personal data off this
+      # (shareable) repo; the default config below uses the tracked placeholders
+      # in nix/users/default.nix. See README "Where configuration lives".
       #
       # Two call forms:
       #   mkSystem { <userData fields> }                      — legacy, the whole
@@ -250,6 +262,12 @@
       # never carry it. This line is what keeps the old form working — do not
       # add a userData field of that name.
       #
+      # `target` rides on the OUTSIDE of both forms — `mkSystem { target = "…";
+      # userData = {...}; }`, or as a top-level key of a legacy attrset —
+      # because targetModules above is read before the option facade exists. It
+      # is stripped from a legacy attrset for the same reason: the facade would
+      # otherwise turn it into a second definition of a read-only option.
+      #
       # Either way the fields are the DECLARED options in nix/options.nix: the
       # attrset is turned into option definitions below, so a wrong type or an
       # undeclared name aborts evaluation instead of quietly doing nothing.
@@ -257,7 +275,14 @@
         args:
         let
           newForm = args ? userData;
-          rawUserData = if newForm then args.userData else args;
+          target = args.target or "wsl";
+          rawUserData = if newForm then args.userData else removeAttrs args [ "target" ];
+          # throwIf rather than the attrset's own missing-attribute error, which
+          # names neither the value nor the set of answers that would work.
+          platformModules =
+            nixpkgs.lib.throwIf (!(targetModules ? ${target}))
+              "mkSystem: unknown target `${target}`. Known targets: ${nixpkgs.lib.concatStringsSep ", " (builtins.attrNames targetModules)} (see nix/targets/)."
+              targetModules.${target};
           extraModules = if newForm then args.modules or [ ] else [ ];
           extraHomeModules = if newForm then args.homeModules or [ ] else [ ];
           userData = resolveUserData rawUserData;
@@ -294,101 +319,109 @@
               [ ];
         in
         nixpkgs.lib.throwIf (unknownArgKeys != [ ])
-          "mkSystem: unknown argument(s) to the { userData, modules, homeModules } call form: ${nixpkgs.lib.concatStringsSep ", " unknownArgKeys}. Those three are the only keys it takes; every per-user field goes INSIDE userData (schema: nix/options.nix)."
+          "mkSystem: unknown argument(s) to the { target, userData, modules, homeModules } call form: ${nixpkgs.lib.concatStringsSep ", " unknownArgKeys}. Those four are the only keys it takes; every per-user field goes INSIDE userData (schema: nix/options.nix)."
           (
             nixpkgs.lib.throwIf (unknownKeys != [ ]) unknownKeysMessage (
               nixpkgs.lib.nixosSystem {
                 inherit system;
-                modules = [
-                  nixos-wsl.nixosModules.default
-                  home-manager.nixosModules.home-manager
-                  ./nix/options.nix
-                  {
-                    # Names the source of these definitions, so a type error reads
-                    # "In `flakelab mkSystem userData attrset'" instead of blaming the
-                    # flake's own store path, which tells nobody which file to edit.
-                    _file = "flakelab mkSystem userData attrset (schema: nix/options.nix)";
+                modules =
+                  platformModules
+                  ++ [
+                    home-manager.nixosModules.home-manager
+                    ./nix/options.nix
+                    {
+                      # Names the source of these definitions, so a type error reads
+                      # "In `flakelab mkSystem userData attrset'" instead of blaming the
+                      # flake's own store path, which tells nobody which file to edit.
+                      _file = "flakelab mkSystem userData attrset (schema: nix/options.nix)";
 
-                    # userData reaches the modules as option DEFINITIONS rather than as
-                    # an argument: nix/options.nix declares every field, so the module
-                    # system type-checks each value and rejects a name nothing declares.
-                    # mkDefault, because the escape hatch has to be able to win — an
-                    # overlay passing `modules = [ { flakelab.installKiro = false; } ]`
-                    # sets it at normal priority and outranks the attrset.
-                    #
-                    # For the three attrsOf options (perKeyDefaultOptions above) the
-                    # mkDefault goes on each KEY instead of the whole set, so a module
-                    # adding `flakelab.sessionVariables.FOO` gets userData's entries PLUS
-                    # FOO rather than silently wiping the rest — priority filtering runs
-                    # over an option's whole definition list before the type merges it,
-                    # so a whole-value mkDefault would have been dropped entire.
-                    # The tradeoff, deliberate: their container definition now sits at
-                    # NORMAL priority, so replacing such a set wholesale from a module
-                    # needs `mkForce`, and a module that mkDefault's the whole set loses
-                    # to userData. Adding and overriding individual keys, which is what
-                    # overlays actually do, both work.
-                    # Lists (gitlabGroups, claudePlugins, …) stay whole-value: a module
-                    # definition REPLACES them.
-                    flakelab = nixpkgs.lib.mapAttrs (
-                      n: v:
-                      if builtins.elem n perKeyDefaultOptions then
-                        nixpkgs.lib.mapAttrs (_: nixpkgs.lib.mkDefault) v
-                      else
-                        nixpkgs.lib.mkDefault v
-                    ) (nixpkgs.lib.filterAttrs (n: _: builtins.elem n flakelabOptionNames) userData);
-                  }
-                  {
-                    nixpkgs.overlays = [
-                      unstableOverlay
-                      preCommitOverlay
-                    ];
-                  }
-                  {
-                    home-manager = {
-                      useGlobalPkgs = true;
-                      useUserPackages = true;
-                      # Home Manager aborts activation outright when a generated file
-                      # would clobber an existing unmanaged one ("Keeping your ~ safe
-                      # from harm" in its manual) — and it does so BEFORE any activation
-                      # entry runs, so nothing is logged and the health check never gets
-                      # a chance to explain it. This flake owns ~/.npmrc (nix/home/packages.nix
-                      # sets npm's prefix there), a path many homes already have as a
-                      # plain file, so without this a migrated home fails its next
-                      # rebuild on a bare collision error. Move the stranger aside
-                      # instead of refusing to activate.
-                      backupFileExtension = "hm-bak";
-                      # The one place the resolved attrset is still read directly.
-                      # This is an attribute NAME, and this module is a literal
-                      # attrset in the flake's `let` — `config` is not in scope
-                      # here to read the option from. (nix/configuration.nix, which
-                      # IS a module function, keys `users.users` on
-                      # `config.flakelab.username` instead; that is safe because the
-                      # flakelab definitions come from the plain attrset above, which
-                      # depends on no config.) The home modules read
-                      # `osConfig.flakelab.username` like every other field.
+                      # userData reaches the modules as option DEFINITIONS rather than as
+                      # an argument: nix/options.nix declares every field, so the module
+                      # system type-checks each value and rejects a name nothing declares.
+                      # mkDefault, because the escape hatch has to be able to win — an
+                      # overlay passing `modules = [ { flakelab.installKiro = false; } ]`
+                      # sets it at normal priority and outranks the attrset.
                       #
-                      # Consequence worth knowing: `flakelab.username` is the ONE
-                      # option the modules escape hatch cannot usefully override.
-                      # `modules = [ { flakelab.username = "other"; } ]` moves the
-                      # NixOS-side reads but not this attribute name, leaving the
-                      # home config attached to the old user. Change
-                      # `userData.username`, not the option.
-                      #
-                      # The `or throw` is for message quality only: without it an
-                      # omitted username fails as a bare "attribute missing"
-                      # against a store path, before the option system ever gets to
-                      # say which field is required.
-                      users.${
-                        userData.username or (throw "mkSystem: userData.username is required — see nix/options.nix")
-                      } =
-                        {
-                          imports = [ ./nix/home ] ++ extraHomeModules;
-                        };
-                    };
-                  }
-                  ./nix/configuration.nix
-                ]
-                ++ extraModules;
+                      # For the three attrsOf options (perKeyDefaultOptions above) the
+                      # mkDefault goes on each KEY instead of the whole set, so a module
+                      # adding `flakelab.sessionVariables.FOO` gets userData's entries PLUS
+                      # FOO rather than silently wiping the rest — priority filtering runs
+                      # over an option's whole definition list before the type merges it,
+                      # so a whole-value mkDefault would have been dropped entire.
+                      # The tradeoff, deliberate: their container definition now sits at
+                      # NORMAL priority, so replacing such a set wholesale from a module
+                      # needs `mkForce`, and a module that mkDefault's the whole set loses
+                      # to userData. Adding and overriding individual keys, which is what
+                      # overlays actually do, both work.
+                      # Lists (gitlabGroups, claudePlugins, …) stay whole-value: a module
+                      # definition REPLACES them.
+                      flakelab = nixpkgs.lib.mapAttrs (
+                        n: v:
+                        if builtins.elem n perKeyDefaultOptions then
+                          nixpkgs.lib.mapAttrs (_: nixpkgs.lib.mkDefault) v
+                        else
+                          nixpkgs.lib.mkDefault v
+                      ) (nixpkgs.lib.filterAttrs (n: _: builtins.elem n flakelabOptionNames) userData);
+                    }
+                    {
+                      # The only definition this read-only option ever gets: the
+                      # modules above were already chosen from it, so anything
+                      # able to override it here would describe a system nobody
+                      # built.
+                      flakelab.target = target;
+                    }
+                    {
+                      nixpkgs.overlays = [
+                        unstableOverlay
+                        preCommitOverlay
+                      ];
+                    }
+                    {
+                      home-manager = {
+                        useGlobalPkgs = true;
+                        useUserPackages = true;
+                        # Home Manager aborts activation outright when a generated file
+                        # would clobber an existing unmanaged one ("Keeping your ~ safe
+                        # from harm" in its manual) — and it does so BEFORE any activation
+                        # entry runs, so nothing is logged and the health check never gets
+                        # a chance to explain it. This flake owns ~/.npmrc (nix/home/packages.nix
+                        # sets npm's prefix there), a path many homes already have as a
+                        # plain file, so without this a migrated home fails its next
+                        # rebuild on a bare collision error. Move the stranger aside
+                        # instead of refusing to activate.
+                        backupFileExtension = "hm-bak";
+                        # The one place the resolved attrset is still read directly.
+                        # This is an attribute NAME, and this module is a literal
+                        # attrset in the flake's `let` — `config` is not in scope
+                        # here to read the option from. (nix/configuration.nix, which
+                        # IS a module function, keys `users.users` on
+                        # `config.flakelab.username` instead; that is safe because the
+                        # flakelab definitions come from the plain attrset above, which
+                        # depends on no config.) The home modules read
+                        # `osConfig.flakelab.username` like every other field.
+                        #
+                        # Consequence worth knowing: `flakelab.username` is the ONE
+                        # option the modules escape hatch cannot usefully override.
+                        # `modules = [ { flakelab.username = "other"; } ]` moves the
+                        # NixOS-side reads but not this attribute name, leaving the
+                        # home config attached to the old user. Change
+                        # `userData.username`, not the option.
+                        #
+                        # The `or throw` is for message quality only: without it an
+                        # omitted username fails as a bare "attribute missing"
+                        # against a store path, before the option system ever gets to
+                        # say which field is required.
+                        users.${
+                          userData.username or (throw "mkSystem: userData.username is required — see nix/options.nix")
+                        } =
+                          {
+                            imports = [ ./nix/home ] ++ extraHomeModules;
+                          };
+                      };
+                    }
+                    ./nix/configuration.nix
+                  ]
+                  ++ extraModules;
               }
             )
           );
@@ -399,20 +432,33 @@
 
       nixosConfigurations.default = mkSystem (import ./nix/users);
 
+      # The same placeholders on the other target, so `nix flake check` has a
+      # second system to instantiate and an adopter has a shape to copy. Both
+      # dropped fields are Windows-side: a PVE guest has no C:\Users folder, and
+      # the placeholder repoPath names a mount that does not exist there.
+      nixosConfigurations.proxmox-vm = mkSystem {
+        target = "proxmox-vm";
+        userData = removeAttrs (import ./nix/users) [ "windowsUsername" ] // {
+          repoPath = "/home/youruser/git/flakelab-config";
+        };
+      };
+
       # `nix fmt` — pinned by flake.lock, so CI and the distro format identically.
       # nixfmt-tree, not nixfmt-rfc-style: nixfmt deprecated being handed a
       # directory, and this treefmt wrapper is what it points at instead.
       formatter.${system} = pkgs.nixfmt-tree;
 
-      # `nix flake check` — the five offline suites plus the two nix linters.
-      # None of these builds the nixosConfiguration: the eval stays as cheap as
-      # it was when CI ran `--no-build`, and every check finishes in seconds.
+      # `nix flake check` — the six offline suites, the two nix linters, and two
+      # eval-time assertions. `targets` INSTANTIATES both systems (it forces
+      # their toplevel drvPath) and builds neither, so the set still finishes
+      # without realising a single system output.
       checks.${system} = {
         gitchecker = suiteCheck "gitchecker";
         gitcleaner = suiteCheck "gitcleaner";
         gitpublisher = suiteCheck "gitpublisher";
         nix-backup = suiteCheck "nix-backup";
         nix-overlay-generate = suiteCheck "nix-overlay-generate";
+        flakelab-cli = suiteCheck "flakelab-cli";
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 
@@ -445,6 +491,39 @@
               "inline-tool"
             ];
           pkgs.runCommandLocal "flakelab-check-profiles-merge" { } "touch $out";
+
+        # The target seam. Every module picked its platform from
+        # `flakelab.target`, so the two systems must differ in exactly the ways
+        # nix/targets/ says they do — and both must still evaluate. Same
+        # eval-time shape as profiles-merge above.
+        targets =
+          let
+            wsl = self.nixosConfigurations.default.config;
+            vm = self.nixosConfigurations.proxmox-vm.config;
+            hasPkg = cfg: name: builtins.any (p: (p.pname or "") == name) cfg.environment.systemPackages;
+          in
+          assert wsl.flakelab.target == "wsl";
+          assert wsl.wsl.enable;
+          assert hasPkg wsl "wsl-open";
+          assert vm.flakelab.target == "proxmox-vm";
+          assert !(vm ? wsl);
+          assert !(hasPkg vm "wsl-open");
+          assert vm.services.cloud-init.enable;
+          # default_user has to ARRIVE ALONGSIDE the module's own system_info
+          # defaults, not replace them — the whole reason it is an mkDefault.
+          assert vm.services.cloud-init.settings.system_info.default_user.name == vm.flakelab.username;
+          assert vm.services.cloud-init.settings.system_info.distro == "nixos";
+          assert vm.services.qemuGuest.enable;
+          assert vm.users.users.${vm.flakelab.username}.isNormalUser;
+          assert !vm.services.openssh.settings.PasswordAuthentication;
+          # The seed variant's whole point: a release asset cannot carry the
+          # home-manager closure, so the qcow2 must be built without one.
+          assert self.packages.${system}.proxmoxImage.passthru.config.home-manager.users == { };
+          # Forcing the drvPath evaluates every module of both systems, their
+          # assertions included, and builds neither.
+          assert builtins.isString wsl.system.build.toplevel.drvPath;
+          assert builtins.isString vm.system.build.toplevel.drvPath;
+          pkgs.runCommandLocal "flakelab-check-targets" { } "touch $out";
       };
 
       # `nix develop` — the tooling this repo's gates need, at the versions
@@ -471,6 +550,12 @@
         # Build the importable distro tarball (produces `nixos.wsl` in CWD):
         #   sudo nix run .#wslImage
         wslImage = self.nixosConfigurations.default.config.system.build.tarballBuilder;
+
+        # The Proxmox seed image (`nix build .#proxmoxImage` → a qcow2 under
+        # `result/`), which release.yml compresses and publishes per tag. It is
+        # the `proxmox-vm-seed` VARIANT of the same system, so the qcow2 carries
+        # no home-manager closure — see nix/targets/proxmox-vm.nix.
+        proxmoxImage = self.nixosConfigurations.proxmox-vm.config.system.build.images.proxmox-vm-seed;
 
         # The history scan CI runs (`nix run .#gitleaks`). Exposed here so it
         # comes from the nixpkgs revision flake.lock pins rather than a moving
