@@ -999,10 +999,12 @@ do_restore() {
       done
     fi
     if state_enabled && ${STATE_TRANSCRIPTS}; then
-      local transcript
-      for transcript in "${STATE_ROOT}"/claude/projects/*/*.jsonl(N.); do
-        is_sync_artifact "${transcript:t}" && continue
-        sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${transcript:h:t}/${transcript:t}"
+      local transcript rel
+      # `**`: subagent transcripts sit below the session file.
+      for transcript in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
+        rel="${transcript#${STATE_ROOT}/claude/projects/}"
+        rel_path_is_sync_artifact "${rel}" && continue
+        sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${rel}"
       done
     fi
     ensure_dir "${HOME_DIR}/.claude/plugins"
@@ -1124,6 +1126,7 @@ do_backup() {
     done
   fi
   if state_enabled && ${STATE_TRANSCRIPTS}; then
+    fold_transcript_conflicts
     backup_transcripts
   fi
   ensure_dir "${BACKUP_CLAUDE}/plugins"
@@ -1202,6 +1205,7 @@ do_state_only() {
 
     if ${STATE_TRANSCRIPTS}; then
       log_info "--- Claude transcripts ---"
+      fold_transcript_conflicts
       backup_transcripts
       pull_transcripts
     fi

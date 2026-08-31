@@ -1940,6 +1940,78 @@ excludes "the secret never reaches the merged file" \
   "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
 contains "and the hold is reported"      "${OUT}" "held back"
 
+print -r -- "subagent transcripts below the session file sync in both directions"
+transcript_fixture state-only-subagents
+mkdir -p "${SLUG_HOME}/sess-1/subagents" "${SLUG_STATE}/sess-2/subagents"
+print -r -- '{"n":"sub-local"}' > "${SLUG_HOME}/sess-1/subagents/agent-a.jsonl"
+print -r -- '{"n":"sub-other"}' > "${SLUG_STATE}/sess-2/subagents/agent-b.jsonl"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check   "the run exits clean"                          "${RC}" "0"
+is_file "the local subagent transcript reached the state root" \
+  "${SLUG_STATE}/sess-1/subagents/agent-a.jsonl"
+is_file "the other box's subagent transcript arrived"  \
+  "${SLUG_HOME}/sess-2/subagents/agent-b.jsonl"
+
+rm -rf "${SLUG_HOME}/sess-2"
+run_restore
+check   "the restore exits clean"                      "${RC}" "0"
+is_file "a restore pulls the subagent transcript too"  \
+  "${SLUG_HOME}/sess-2/subagents/agent-b.jsonl"
+
+print -r -- "a sync-artifact path segment keeps its transcripts out of both legs"
+transcript_fixture state-only-artifact-dirs
+mkdir -p "${SLUG_STATE}/@eaDir" "${SLUG_HOME}/sess-1_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -r -- '{"n":"nas-litter"}'  > "${SLUG_STATE}/@eaDir/litter.jsonl"
+print -r -- '{"n":"conflict-dir"}' > "${SLUG_HOME}/sess-1_OTHERBOX_Jan-09-003137-2026_Conflict/agent.jsonl"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check  "the run exits clean"                        "${RC}" "0"
+absent "NAS litter is not pulled as a transcript"   "${SLUG_HOME}/@eaDir/litter.jsonl"
+absent "a conflict-named directory is not mirrored" \
+  "${SLUG_STATE}/sess-1_OTHERBOX_Jan-09-003137-2026_Conflict/agent.jsonl"
+
+# Synology Drive inserts its conflict marker BEFORE the extension, so the
+# copy shares no full-name prefix with the file it conflicts.
+print -r -- "an extension-inserted memory index conflict copy is folded and removed"
+memory_fixture memory-conflict-inserted
+print -r -- "- theirs"        > "${MEM_STATE}/MEMORY.md"
+print -r -- "- conflict-line" > "${MEM_STATE}/MEMORY_OTHERBOX_Jan-09-003137-2026_Conflict.md"
+print -r -- "- ours"          > "${MEM_HOME}/MEMORY.md"
+
+run_backup --force
+index="$(< "${MEM_STATE}/MEMORY.md")"
+check    "the run exits clean"                        "${RC}" "0"
+contains "the state root's own line survives"         "${index}" "- theirs"
+contains "the conflict copy's line is folded in"      "${index}" "- conflict-line"
+contains "and this box's line arrives"                "${index}" "- ours"
+absent   "the folded conflict copy is removed" \
+  "${MEM_STATE}/MEMORY_OTHERBOX_Jan-09-003137-2026_Conflict.md"
+
+print -r -- "a transcript conflict copy is folded grow-only and removed"
+transcript_fixture transcript-conflict-fold
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"n":1}'                              > "${SLUG_STATE}/abc.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' }   > "${SLUG_STATE}/abc_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' }   > "${SLUG_STATE}/def.jsonl"
+print -r -- '{"n":"stale"}'                        > "${SLUG_STATE}/def_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+print -r -- '{"n":1}' > "${SLUG_HOME}/abc.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check "the run exits clean"                             "${RC}" "0"
+check "the larger conflict copy replaces its base"      "$(wc -l < "${SLUG_STATE}/abc.jsonl")" "2"
+check "a smaller conflict copy does not shrink its base" "$(wc -l < "${SLUG_STATE}/def.jsonl")" "2"
+absent "the larger copy is removed once folded" \
+  "${SLUG_STATE}/abc_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+absent "and so is the smaller one" \
+  "${SLUG_STATE}/def_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+check "the folded file is what the pull hands this box" "$(wc -l < "${SLUG_HOME}/abc.jsonl")" "2"
+absent "no conflict copy leaks into the home"           "${SLUG_HOME}/abc_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
