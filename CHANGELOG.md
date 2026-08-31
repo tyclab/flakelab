@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- Home-manager activation no longer waits on, stops, or restarts the backup oneshots: both units carry `X-RestartIfChanged=false` (in `[Unit]` for sd-switch and `[Service]` for switch-to-configuration), so a switch that overlaps a running multi-minute sync cannot time `home-manager-<user>.service` out any more — and cannot kill a sync mid-copy. A changed unit definition takes effect at the next timer fire instead.
+- Transcript staging is incremental: only a transcript whose source outgrew its synced copy (or has none) is copied into the staging tree and gitleaks-scanned. A quiet run stops re-scanning the whole corpus — which had grown into the multi-minute runs that made the activation timeout above reachable in the first place — and the run logs the phase's staged/unchanged counts and elapsed seconds. A transcript held back whole stays staged every run until a ruling frees it; a partially-redacted one stops re-warning about already-held findings until it grows.
+
 - A `d` answer in `--review-secrets` records the delete ruling immediately instead of only after every record was scrubbed: a record in a file that refuses a rewrite (a live session's transcript, an unwritable history) now stays held as a pending delete that every later review retries — and the ruling reaches the other machines. Before, the failed scrub silently left the old decision standing.
 - `flakelab doctor` no longer warns about "0 secret findings held back": the held list can legitimately be a newline-only file after pruning, and the check now counts records instead of bytes.
 

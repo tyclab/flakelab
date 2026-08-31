@@ -1000,8 +1000,12 @@ run_backup --force
 check    "the second run exits clean"             "${RC}" "0"
 same     "the synced copy is byte-identical"      "${BASE}/gate-transcript.before" "${synced}"
 excludes "and nothing was copied again"           "${OUT}" "Synced transcript"
-contains "the warn says the synced copy was left as it was" \
-  "${OUT}" "(redacted; synced copy unchanged)"
+# Redaction rewrites within lines, so the synced copy matches the unchanged
+# source by line count and the incremental filter keeps it out of staging —
+# the already-held finding is not re-warned until the transcript grows.
+contains "the unchanged transcript is not even staged" \
+  "${OUT}" "unchanged, nothing to stage"
+excludes "so the held finding is not re-warned"   "${OUT}" "held back from the synced copy"
 
 # Grow-only compares the CANDIDATE against the synced copy: a clean line
 # appended locally must move exactly its own bytes from the smaller redacted base.
@@ -1917,6 +1921,34 @@ touch -d '1 hour ago' "${SLUG_HOME}/quiet.jsonl"
 run_backup --state-only --force
 check "the run exits clean"                        "${RC}" "0"
 check "the grown state-root copy replaced the local one" "$(wc -l < "${SLUG_HOME}/quiet.jsonl")" "2"
+
+print -r -- "a second run with nothing changed stages and scans no transcript"
+transcript_fixture state-only-incremental-quiet
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"n":"steady"}' > "${SLUG_HOME}/steady.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/steady.jsonl"
+
+run_backup --state-only --force
+check    "the first run exits clean"          "${RC}" "0"
+is_file  "and syncs the transcript"           "${SLUG_STATE}/steady.jsonl"
+run_backup --state-only --force
+check    "the second run exits clean"         "${RC}" "0"
+contains "the unchanged transcript is not staged" "${OUT}" "1 unchanged, nothing to stage"
+excludes "so nothing is synced again"         "${OUT}" "Synced transcript: steady.jsonl"
+
+print -r -- "a grown transcript is staged and scanned again"
+transcript_fixture state-only-incremental-grown
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"n":1}' > "${SLUG_HOME}/growing.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/growing.jsonl"
+run_backup --state-only --force
+print -r -- '{"n":2}' >> "${SLUG_HOME}/growing.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/growing.jsonl"
+
+run_backup --state-only --force
+check    "the run exits clean"                "${RC}" "0"
+contains "the grown transcript went back through the gate" "${OUT}" "1 staged and scanned"
+check    "and its synced copy caught up"      "$(wc -l < "${SLUG_STATE}/growing.jsonl")" "2"
 
 print -r -- "--state-only unions memory in both directions"
 memory_fixture state-only-memory

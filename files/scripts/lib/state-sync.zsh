@@ -514,20 +514,46 @@ pull_transcripts() {
   return 0
 }
 
-# Every transcript staged and scanned in ONE gitleaks run, then synced through
+# Every STAGED transcript scanned in ONE gitleaks run, then synced through
 # the redactor. Grow-only compares the CANDIDATE (redacted or not) against the
 # synced copy, never the raw source.
+#
+# Staging is incremental: redaction rewrites text WITHIN lines, so the synced
+# copy always has the line count its source had when it was synced, and a
+# source with no more lines than its synced copy is one sync_transcript would
+# refuse anyway — comparing line counts up front skips the copy + gitleaks
+# pass for it entirely. Without this the phase re-staged and re-scanned the
+# whole corpus every run, which grew past what activation and a short timer
+# tolerate (the home-manager timeout of 2026-09-01). Two consequences, both
+# intended: a transcript held back whole has no synced copy and stays staged
+# every run until a ruling frees it, and a partially-redacted transcript stops
+# re-warning about already-held findings until it grows again. An unreadable
+# source falls through to staging, where the existing failure paths name it.
 backup_transcripts() {
   local -a srcs=() dsts=()
-  local transcript rel
+  local transcript rel dst src_lines dst_lines
+  local -i unchanged=0
+  local phase_started
+  phase_started="$(date +%s)" || phase_started=""
   # `**` mirrors the pull leg: subagent transcripts sit below the session file.
   for transcript in "${HOME_DIR}"/.claude/projects/**/*.jsonl(N.); do
     rel="${transcript#${HOME_DIR}/.claude/projects/}"
     rel_path_is_sync_artifact "${rel}" && continue
+    dst="${STATE_ROOT}/claude/projects/${rel}"
+    if [[ -f "${dst}" ]] \
+      && src_lines="$(wc -l < "${transcript}" 2> /dev/null)" \
+      && dst_lines="$(wc -l < "${dst}" 2> /dev/null)" \
+      && (( src_lines <= dst_lines )); then
+      unchanged=$(( unchanged + 1 ))
+      continue
+    fi
     srcs+=("${transcript}")
-    dsts+=("${STATE_ROOT}/claude/projects/${rel}")
+    dsts+=("${dst}")
   done
-  (( ${#srcs} > 0 )) || return 0
+  if (( ${#srcs} == 0 )); then
+    (( unchanged > 0 )) && log_info "Transcripts: ${unchanged} unchanged, nothing to stage"
+    return 0
+  fi
   gate_guard || return 0
 
   local stage findings
@@ -587,5 +613,13 @@ backup_transcripts() {
   done
 
   rm -rf "${stage}" "${findings}"
+  # One journal line per run so a phase creeping back toward activation- and
+  # timer-hostile durations is visible before it breaks something again.
+  if [[ -n "${phase_started}" ]]; then
+    local phase_ended
+    if phase_ended="$(date +%s)"; then
+      log_info "Transcripts: ${#srcs} staged and scanned, ${unchanged} unchanged, $(( phase_ended - phase_started ))s"
+    fi
+  fi
   return 0
 }
