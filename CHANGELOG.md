@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `flakelab backup --state-only`: both legs of the state root and nothing else — the merged history (read from the LIVE `~/.zsh_history`, since this mode never writes the payload's instance copy), Claude memory and, with `stateTranscripts`, transcripts, pushed AND pulled in one run. No payload copy, no rollback snapshot, no restore of activation-owned files. The pull leg skips any local transcript modified in the last 10 minutes: a live session appends through an open fd, and the rename-in-place a pull uses would orphan that inode and silently drop the session's tail. Until now nothing ever pulled outside a manual `--restore`, so with two machines pushing the state root was a write-only archive.
+- `flakelab.stateSyncInterval` (default `null`): schedules `--state-only` on its own systemd user timer (`flakelab-state-sync`, `Nice=10`, `IOSchedulingClass=idle`) at the given `OnUnitActiveSec` span, e.g. `"30min"`. Needs `stateRoot` and `backupAutostart`. The full backup stays on its 24h timer — putting THAT on a short interval would re-snapshot the payload every run and burn the 5-deep rollback ring down to hours.
+- `flakelab doctor` reports secret-gate findings held back from the state root — count, the transcripts held back whole (a held file with no synced copy at all never reaches the other machines), and the `--review-secrets` pointer. The gate's own warnings go to a journal nobody reads once the sync runs from a timer; without this the hold is invisible from the operator's seat. The doctor wrapper now exports `FLAKELAB_STATE_ROOT` for the whole-held probe.
+
 ## [0.2.0] - 2026-08-28
 
 ### Added

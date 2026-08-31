@@ -1,4 +1,6 @@
-# Scheduled `flakelab backup`, when flakelab.backupAutostart is set.
+# Scheduled `flakelab backup`, when flakelab.backupAutostart is set — the daily
+# full pass, plus (with stateRoot and stateSyncInterval) the short-interval
+# `--state-only` two-way sync of the state root.
 #
 # ExecStart calls the nix-backup WRAPPER by store path, not `flakelab backup`.
 # Deliberate: a unit should not depend on the user's PATH, and the router would
@@ -67,31 +69,76 @@ in
 # backupAutostart is declared WITHOUT a default (nix/options.nix), so an overlay
 # that omits it keeps aborting evaluation rather than silently defaulting to no
 # backups. This is the same hard read zsh.nix did before the block moved here.
-lib.optionalAttrs cfg.backupAutostart {
-  systemd.user.services.flakelab-backup = {
-    Unit.Description = "flakelab: back up home-dir data to the backup root";
-    Service = {
-      Type = "oneshot";
-      # --force, as the shell autostart passed: there is no TTY here either, and
-      # without it every differing file is kept and the run reports failure.
-      ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
+lib.optionalAttrs cfg.backupAutostart (
+  let
+    # The state-only timer moves the categories other machines wait on (merged
+    # history, Claude memory, transcripts) at a cadence the full pass cannot
+    # afford: a full run re-snapshots the payload every time, so putting IT on a
+    # short interval would burn the snapshot ring down to hours of rollback.
+    # --state-only takes no snapshot and never touches the payload, which is
+    # what makes a sub-daily interval safe to schedule at all.
+    stateSync = cfg.stateRoot != null && cfg.stateSyncInterval != null;
+  in
+  {
+    systemd.user.services = {
+      flakelab-backup = {
+        Unit.Description = "flakelab: back up home-dir data to the backup root";
+        Service = {
+          Type = "oneshot";
+          # --force, as the shell autostart passed: there is no TTY here either, and
+          # without it every differing file is kept and the run reports failure.
+          ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
+        };
+      };
+    }
+    // lib.optionalAttrs stateSync {
+      flakelab-state-sync = {
+        Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
+        Service = {
+          Type = "oneshot";
+          ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
+          # Background housekeeping on the box that is also running the
+          # sessions being copied: never compete with interactive work for
+          # CPU or the disk.
+          Nice = 10;
+          IOSchedulingClass = "idle";
+        };
+      };
     };
-  };
 
-  systemd.user.timers.flakelab-backup = {
-    Unit.Description = "flakelab: daily home-dir backup to the backup root";
-    Timer = {
-      # OnStartupSec is relative to the USER manager starting, which on WSL is
-      # the first login to the distro — the closest equivalent of the shell
-      # start this replaces, minus the once-per-terminal repetition. Two
-      # minutes so it does not compete with home-manager activation.
-      OnStartupSec = "2min";
-      OnUnitActiveSec = "24h";
-      # Jitter keeps a backup from landing on top of whatever else woke up at
-      # the same moment on a backup root shared with other things (a Windows
-      # disk on WSL, whatever mount a target's backupRoot names elsewhere).
-      RandomizedDelaySec = "10min";
+    systemd.user.timers = {
+      flakelab-backup = {
+        Unit.Description = "flakelab: daily home-dir backup to the backup root";
+        Timer = {
+          # OnStartupSec is relative to the USER manager starting, which on WSL is
+          # the first login to the distro — the closest equivalent of the shell
+          # start this replaces, minus the once-per-terminal repetition. Two
+          # minutes so it does not compete with home-manager activation.
+          OnStartupSec = "2min";
+          OnUnitActiveSec = "24h";
+          # Jitter keeps a backup from landing on top of whatever else woke up at
+          # the same moment on a backup root shared with other things (a Windows
+          # disk on WSL, whatever mount a target's backupRoot names elsewhere).
+          RandomizedDelaySec = "10min";
+        };
+        Install.WantedBy = [ "timers.target" ];
+      };
+    }
+    // lib.optionalAttrs stateSync {
+      flakelab-state-sync = {
+        Unit.Description = "flakelab: state-root sync every ${cfg.stateSyncInterval}";
+        Timer = {
+          # After the full backup's 2min login slot, so the two never race for
+          # the payload lock right at user-manager start.
+          OnStartupSec = "5min";
+          OnUnitActiveSec = cfg.stateSyncInterval;
+          # Fixed, small: enough to keep two machines' timers from meeting at
+          # the shared root every period, and deriving a fraction of an
+          # arbitrary systemd time span in Nix is not worth the parser.
+          RandomizedDelaySec = "3min";
+        };
+        Install.WantedBy = [ "timers.target" ];
+      };
     };
-    Install.WantedBy = [ "timers.target" ];
-  };
-}
+  }
+)

@@ -64,6 +64,9 @@ fold_conflict_copies() {
 
 merge_zsh_history() {
   local instance_history="${BACKUP_SHELL}/.zsh_history"
+  # --state-only never writes the payload, so its instance copy can be days
+  # stale; the live history is the input that actually holds what was typed.
+  ${STATE_ONLY} && instance_history="${HOME_DIR}/.zsh_history"
   local merged_history
   merged_history="$(merged_history_path)"
 
@@ -418,6 +421,38 @@ sync_transcript() {
   SYNC_TRANSCRIPT_WROTE=true
   STATE_WROTE=true
   log_ok "Synced transcript: ${src:t} -> ${dst:h}"
+  return 0
+}
+
+# Pull leg: state-root transcripts this box lacks, or that grew on another one.
+# A local copy written to in the last PULL_FRESH_SECONDS is a live session
+# appending through an open fd — sync_transcript places by rename, which would
+# orphan that fd's inode and silently drop the session's tail — so freshness
+# skips it; the next run picks it up once the session has gone quiet. The
+# grow-only line rule inside sync_transcript still applies on top.
+PULL_FRESH_SECONDS=600
+pull_transcripts() {
+  local transcript dst mtime
+  local now
+  if ! now="$(date +%s)"; then
+    record_failure "Could not read the clock; transcripts not pulled this run"
+    return 0
+  fi
+  for transcript in "${STATE_ROOT}"/claude/projects/*/*.jsonl(N.); do
+    is_sync_artifact "${transcript:t}" && continue
+    dst="${HOME_DIR}/.claude/projects/${transcript:h:t}/${transcript:t}"
+    if [[ -f "${dst}" ]]; then
+      if ! mtime="$(stat -c %Y "${dst}" 2> /dev/null)"; then
+        record_failure "Could not stat transcript: ${dst}"
+        continue
+      fi
+      if (( now - mtime < PULL_FRESH_SECONDS )); then
+        log_info "Session still live, not pulled: ${dst:t}"
+        continue
+      fi
+    fi
+    sync_transcript "${transcript}" "${dst}"
+  done
   return 0
 }
 
