@@ -356,5 +356,11 @@ in
       default = false;
       description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null.";
     };
+
+    stateSyncInterval = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot and backupAutostart: without a root there is nothing to sync, and a box that opted out of scheduled backups opted out of this too. The full payload pass stays on its own 24h timer either way.";
+    };
   };
 }

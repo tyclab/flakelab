@@ -1854,6 +1854,93 @@ excludes "nothing is held"                        "${OUT}" "held back"
 absent   "and no held list is created"            "${FIX_HELD}"
 
 # ---------------------------------------------------------------------------
+# --state-only: both legs of the state root, nothing else
+# ---------------------------------------------------------------------------
+
+print -r -- "--state-only without a state root is refused"
+fixture state-only-unconfigured
+run_backup --state-only --force
+check    "the run fails"        "${RC}" "1"
+contains "and says why"         "${OUT}" "--state-only needs a state root"
+
+print -r -- "--state-only refuses to be combined with --restore"
+state_fixture state-only-vs-restore
+run_backup --state-only --restore --force
+check    "the run fails"        "${RC}" "1"
+contains "and says why"         "${OUT}" "its own mode"
+
+print -r -- "--state-only pushes and pulls transcripts and touches no payload"
+transcript_fixture state-only-both-legs
+mkdir -p "${SLUG_STATE}"
+rec 1000 0 "typed-here"           > "${FIX_HOME}/.zsh_history"
+print -r -- '{"n":"local"}'       > "${SLUG_HOME}/ours.jsonl"
+print -r -- '{"n":"other"}'       > "${SLUG_STATE}/theirs.jsonl"
+# Idle for an hour: well past PULL_FRESH_SECONDS, so the pull may touch it.
+touch -d '1 hour ago' "${SLUG_HOME}/ours.jsonl"
+# Bait the payload paths a full run would write; state-only must leave them alone.
+print -r -- '{"settings":true}'   > "${FIX_HOME}/.claude/settings.json"
+mkdir -p "${FIX_HOME}/.ssh"
+print -r -- "PRIVATE"             > "${FIX_HOME}/.ssh/id_test"
+
+run_backup --state-only --force
+check   "the run exits clean"                  "${RC}" "0"
+is_file "the local transcript reached the state root" "${SLUG_STATE}/ours.jsonl"
+is_file "the other box's transcript arrived"   "${SLUG_HOME}/theirs.jsonl"
+contains "the live history reached the merged file" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "typed-here"
+absent  "no snapshot was taken"                "${FIX_ROOT}/snapshots"
+absent  "no payload history copy was written"  "${FIX_SHELL}/.zsh_history"
+absent  "no payload claude category appeared"  "${FIX_ROOT}/instances/TestDistro/claude"
+absent  "no payload ssh category appeared"     "${FIX_ROOT}/shared/ssh"
+no_scratch "and no scratch file is left in the state root" "${FIX_STATE}"
+
+print -r -- "--state-only never pulls over a transcript a live session is appending to"
+transcript_fixture state-only-live-session
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"n":1}' > "${SLUG_HOME}/live.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' } > "${SLUG_STATE}/live.jsonl"
+
+run_backup --state-only --force
+check    "the run exits clean"                "${RC}" "0"
+check    "the fresh local transcript is untouched" "$(wc -l < "${SLUG_HOME}/live.jsonl")" "1"
+contains "and the skip is logged"             "${OUT}" "Session still live, not pulled: live.jsonl"
+
+print -r -- "--state-only pulls a grown copy once the local session has gone quiet"
+transcript_fixture state-only-quiet-session
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"n":1}' > "${SLUG_HOME}/quiet.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' } > "${SLUG_STATE}/quiet.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/quiet.jsonl"
+
+run_backup --state-only --force
+check "the run exits clean"                        "${RC}" "0"
+check "the grown state-root copy replaced the local one" "$(wc -l < "${SLUG_HOME}/quiet.jsonl")" "2"
+
+print -r -- "--state-only unions memory in both directions"
+memory_fixture state-only-memory
+print -r -- "theirs" > "${MEM_STATE}/other-box.md"
+print -r -- "ours"   > "${MEM_HOME}/this-box.md"
+
+run_backup --state-only --force
+check   "the run exits clean"                 "${RC}" "0"
+is_file "this box's memory reached the state root" "${MEM_STATE}/this-box.md"
+is_file "the other box's memory arrived"      "${MEM_HOME}/other-box.md"
+
+print -r -- "--state-only still runs the gate in front of the state root"
+transcript_fixture state-only-gated
+{
+  rec 1000 0 "export TOKEN=hunter2-secret"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+FAKE_SECRET="hunter2-secret"
+
+run_backup --state-only --force
+check    "the run exits clean"           "${RC}" "0"
+excludes "the secret never reaches the merged file" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+contains "and the hold is reported"      "${OUT}" "held back"
+
+# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

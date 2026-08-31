@@ -43,9 +43,9 @@ let
   # Windows mount on WSL (the default, unset), or wherever a target with no
   # such mount points cfg.backupRoot at instead (nix/options.nix).
   backupRoot = if cfg.backupRoot != null then cfg.backupRoot else "${cfg.repoPath}/files/config";
-  # The optional state root is exported by the nix-backup wrapper below only
-  # when set; the script treats an unset variable as "everything stays in the
-  # payload".
+  # The optional state root is exported by the nix-backup and nix-doctor
+  # wrappers below only when set; nix-backup treats an unset variable as
+  # "everything stays in the payload", nix-doctor as "no held-findings check".
   # nix-doctor measures the kiro-plugin checkout against these — the same
   # derivation nix/home/default.nix clones into, so an overlay that overrides
   # kiroPluginRepo is not diagnosed against a path no activation ever writes.
@@ -380,6 +380,9 @@ rec {
   nix-doctor = pkgs.writeShellScriptBin "nix-doctor" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_TARGET=${cfg.target}
+    ${lib.optionalString (cfg.stateRoot != null) ''
+      export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
+    ''}
     export FLAKELAB_KIRO_PLUGIN_DIR="${kiroPluginDir}"
     export FLAKELAB_KIRO_PLUGIN_REMOTE="${kiroPluginPath}"
     export FLAKELAB_GITLAB_GROUPS="${toString (builtins.length cfg.gitlabGroups)}"
