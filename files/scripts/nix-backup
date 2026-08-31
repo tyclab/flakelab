@@ -123,6 +123,9 @@ DRY_RUN=false
 RESTORE=false
 STATE_ONLY=false
 REVIEW_SECRETS=false
+# Re-hold findings settled as `keep` so the next --review-secrets can re-decide
+# them; without this a keep is a one-way door. They stay excluded from the sync.
+REVISIT_KEEPS=false
 SRC_FROM=""
 SRC_INSTANCE=""
 
@@ -143,6 +146,7 @@ while (( $# > 0 )); do
     --restore) RESTORE=true ;;
     --state-only) STATE_ONLY=true ;;
     --review-secrets) REVIEW_SECRETS=true ;;
+    --revisit-keeps) REVISIT_KEEPS=true ;;
     --skip-conflicts) SKIP_CONFLICTS=true ;;
     --keep)
       if [[ "${2:-}" != <-> ]]; then
@@ -165,6 +169,8 @@ while (( $# > 0 )); do
       echo "                       history, Claude memory, transcripts); never touches the payload,"
       echo "                       takes no snapshot. Needs FLAKELAB_STATE_ROOT / flakelab.stateRoot"
       echo "  --review-secrets     decide per finding the secret gate held back: delete, keep local, allow (needs a terminal)"
+      echo "  --revisit-keeps      on a backup/--state-only run, re-hold findings settled as 'keep'"
+      echo "                       so the next --review-secrets offers them again (they stay unsynced)"
       echo "  --skip-conflicts     on restore without a TTY, keep a differing file instead of failing"
       echo "  --keep <n>           rollback snapshots to retain (default ${KEEP}); the newest is never pruned"
       echo "  --from <repo>        restore FROM another repo's backup (a repo root or its files/config dir)"
@@ -1243,6 +1249,13 @@ if ${REVIEW_SECRETS}; then
     log_error "--review-secrets and --restore are separate runs; pick one"
     exit 1
   fi
+fi
+
+# Revisiting happens where holds are made — a backup or --state-only run; the
+# other modes never scan, so the flag there can only mean the caller is confused.
+if ${REVISIT_KEEPS} && { ${RESTORE} || ${REVIEW_SECRETS} }; then
+  log_error "--revisit-keeps re-holds during a backup or --state-only run; drop --restore/--review-secrets"
+  exit 1
 fi
 
 if ${STATE_ONLY}; then

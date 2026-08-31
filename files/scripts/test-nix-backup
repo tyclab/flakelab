@@ -1380,8 +1380,8 @@ run_backup --review-secrets
 check    "the review reports the failure"          "${RC}" "1"
 contains "and says the transcript is gone"         "${OUT}" "Transcript is gone"
 check    "the entry stays held"                    "$(grep -c . "${FIX_HELD}")" "1"
-absent   "and no decision was recorded"            "${FIX_DECISIONS}"
-absent   "not even locally"                        "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl"
+contains "the delete ruling is recorded anyway"    "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
+contains "and the failure says it stands"          "${OUT}" "the delete ruling stands"
 
 print -r -- "a delete settles only when every record of that secret went"
 transcript_fixture gate-review-partial-delete
@@ -1402,18 +1402,20 @@ mv "${LIVE}" "${SLUG_HOME}/moved-away.txt"
 ANSWERS="d"
 run_backup --review-secrets
 check    "the review reports the failure"          "${RC}" "1"
-contains "and says nothing was settled for it"     "${OUT}" "nothing was settled for that secret"
+contains "and says the ruling stands as pending"   "${OUT}" "the delete ruling stands"
 excludes "the history record was still removed"    "$(< "${FIX_HOME}/.zsh_history")" "export TOKEN="
 contains "and the clean record stayed"             "$(< "${FIX_HOME}/.zsh_history")" "ls"
 check    "BOTH entries stay held"                  "$(grep -c . "${FIX_HELD}")" "2"
-absent   "no decision reached the state root"      "${FIX_DECISIONS}"
-absent   "and none was recorded locally"           "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl"
+contains "the delete ruling reached the state root" "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
 no_scratch "and no scratch file is left in the gate directory" "${FIX_HOME}/.local/state/flakelab/state-gate"
 
-ANSWERS="s"
+# The finding is decided now, so the next review offers it as a pending delete;
+# the record whose file is gone settles as carried out.
+ANSWERS="y"
 run_backup --review-secrets
 check    "the second review exits clean"           "${RC}" "0"
-contains "and offers the secret again"             "${OUT}" "2 record(s) in 1 finding(s) held back"
+contains "it offers the pending deletion"          "${OUT}" "already decided to this machine's local files"
+check    "and everything is settled"               "$(grep -c . "${FIX_HELD}")" "0"
 
 # The offer to apply a foreign delete is driven off the held list, so the record must be held.
 print -r -- "a delete ruled elsewhere is held on first sight, not silently dropped"
@@ -1551,10 +1553,10 @@ ANSWERS="d"
 run_backup --review-secrets
 chmod 755 "${FIX_HOME}"
 check    "the review reports the failure"          "${RC}" "1"
-contains "and says nothing was settled for it"     "${OUT}" "nothing was settled for that secret"
+contains "and says the ruling stands as pending"   "${OUT}" "the delete ruling stands"
 contains "the record is still in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
 check    "and the entry stays held"                "$(grep_c_held)" "1"
-absent   "and no decision reached the state root"  "${FIX_DECISIONS}"
+contains "the delete ruling reached the state root" "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
 
 print -r -- "--review-secrets without a terminal fails even with nothing held"
 state_fixture gate-review-headless
@@ -2011,6 +2013,46 @@ absent "and so is the smaller one" \
   "${SLUG_STATE}/def_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
 check "the folded file is what the pull hands this box" "$(wc -l < "${SLUG_HOME}/abc.jsonl")" "2"
 absent "no conflict copy leaks into the home"           "${SLUG_HOME}/abc_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+
+print -r -- "a keep ruling can be revisited and flipped to delete"
+state_fixture gate-revisit-keep
+secret_history
+
+run_backup --force
+check "the backup holds the finding"           "$(grep -c . "${FIX_HELD}")" "1"
+
+ANSWERS="k"
+run_backup --review-secrets
+check    "the keep settles"                    "${RC}" "0"
+check    "and prunes the held entry"           "$(grep_c_held)" "0"
+contains "the keep is recorded"                "$(< "${FIX_DECISIONS}")" '"decision":"keep"'
+
+run_backup --state-only --force
+check "a plain run does not re-hold a keep"    "$(grep_c_held)" "0"
+excludes "and the record stays out of the sync" \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+
+run_backup --state-only --force --revisit-keeps
+check    "a --revisit-keeps run holds it again" "$(grep -c . "${FIX_HELD}")" "1"
+excludes "still without syncing it"             \
+  "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "hunter2-secret"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the re-review exits clean"            "${RC}" "0"
+excludes "the record is deleted from the live history" \
+  "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+contains "keeping the clean record"             "$(< "${FIX_HOME}/.zsh_history")" "ls"
+check    "nothing stays held"                   "$(grep_c_held)" "0"
+contains "and the delete outrules the keep"     "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
+
+print -r -- "--revisit-keeps refuses the modes that never scan"
+state_fixture revisit-wrong-mode
+run_backup --review-secrets --revisit-keeps
+check    "with --review-secrets it fails"       "${RC}" "1"
+contains "and says why"                         "${OUT}" "--revisit-keeps re-holds during a backup"
+run_backup --restore --revisit-keeps
+check    "with --restore it fails too"          "${RC}" "1"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
