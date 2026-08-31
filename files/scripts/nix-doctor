@@ -504,8 +504,11 @@ log_head "Shared state"
 # nobody reads; without this check a transcript can be held out of the state
 # root forever and "constantly in sync" is unfalsifiable from the operator's seat.
 HELD_FILE="${HOME}/.local/state/flakelab/state-gate/held.jsonl"
-if [[ -s "${HELD_FILE}" ]]; then
-  heldCount=$(grep -c . "${HELD_FILE}" || true)
+# Count records, not bytes: pruning can leave a newline-only file, and a
+# "-s"-gated warning then cried about 0 findings.
+heldCount=0
+[[ -f "${HELD_FILE}" ]] && heldCount=$(grep -c . "${HELD_FILE}" || true)
+if (( heldCount > 0 )); then
   log_warn "${heldCount} secret finding(s) held back from the state root"
   # A file with a held finding AND no synced copy at all was held back WHOLE —
   # nothing of that session ever reaches the other machines until it is reviewed.
