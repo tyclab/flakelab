@@ -82,7 +82,17 @@ lib.optionalAttrs cfg.backupAutostart (
   {
     systemd.user.services = {
       flakelab-backup = {
-        Unit.Description = "flakelab: back up home-dir data to the backup root";
+        Unit = {
+          Description = "flakelab: back up home-dir data to the backup root";
+          # Both backup services are oneshots fired by their timers. Without
+          # this, sd-switch stop+starts a changed unit that is mid-run at
+          # activation time — and starting a oneshot BLOCKS until it finishes,
+          # so a long run pushes home-manager activation into its start
+          # timeout and the whole switch reports failure. keep-old leaves a
+          # running instance alone; the reloaded definition applies on the
+          # next timer fire.
+          X-SwitchMethod = "keep-old";
+        };
         Service = {
           Type = "oneshot";
           # --force, as the shell autostart passed: there is no TTY here either, and
@@ -93,7 +103,13 @@ lib.optionalAttrs cfg.backupAutostart (
     }
     // lib.optionalAttrs stateSync {
       flakelab-state-sync = {
-        Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
+        Unit = {
+          Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
+          # See flakelab-backup: a sync run regularly outlives home-manager's
+          # start timeout, and this unit runs every stateSyncInterval, so
+          # without keep-old nearly every switch races a live run.
+          X-SwitchMethod = "keep-old";
+        };
         Service = {
           Type = "oneshot";
           ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";

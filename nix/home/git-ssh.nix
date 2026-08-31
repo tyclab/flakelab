@@ -48,6 +48,12 @@ in
   # mount). The first sshKeys entry is the git/clone key, which those activations
   # pass explicitly via `ssh -i` and therefore never need the agent for.
   services.ssh-agent.enable = true;
+  # The agent's whole value is the keys loaded into the RUNNING process; its
+  # unit file changes on every package bump, and sd-switch's default restart
+  # would empty it on every such switch — mid-session, silently, until the next
+  # interactive login re-prompts. keep-old leaves the running agent (and its
+  # keys) alone; the new definition applies when the user manager next starts.
+  systemd.user.services.ssh-agent.Unit.X-SwitchMethod = "keep-old";
   programs.ssh = {
     enable = true;
     enableDefaultConfig = false;

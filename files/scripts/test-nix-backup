@@ -1000,8 +1000,12 @@ run_backup --force
 check    "the second run exits clean"             "${RC}" "0"
 same     "the synced copy is byte-identical"      "${BASE}/gate-transcript.before" "${synced}"
 excludes "and nothing was copied again"           "${OUT}" "Synced transcript"
-contains "the warn says the synced copy was left as it was" \
-  "${OUT}" "(redacted; synced copy unchanged)"
+# The redacted-and-synced file is unchanged under unchanged rulings, so the
+# scan cache skips it: the pending redaction keeps nagging through held.jsonl
+# and `flakelab doctor`, not through a per-run journal warn.
+contains "the unchanged transcript is not re-scanned" \
+  "${OUT}" "unchanged since their last scan: 1 skipped"
+excludes "so no per-run redaction warn repeats"   "${OUT}" "(redacted"
 
 # Grow-only compares the CANDIDATE against the synced copy: a clean line
 # appended locally must move exactly its own bytes from the smaller redacted base.
@@ -1012,6 +1016,56 @@ check    "the third run exits clean"              "${RC}" "0"
 check    "the synced copy grew by exactly the appended line" \
   "$(wc -c < "${synced}")" "$(( synced_bytes + ${#clean_line} + 1 ))"
 contains "and it was copied this time"            "${OUT}" "Synced transcript"
+
+# ---------------------------------------------------------------------------
+# The transcript scan cache
+# ---------------------------------------------------------------------------
+print -r -- "an unchanged clean transcript is skipped, not re-staged"
+transcript_fixture scan-cache-skip
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"clean"}' > "${SLUG_HOME}/abc.jsonl"
+run_backup --force
+check   "the first run exits clean"  "${RC}" "0"
+is_file "and syncs the transcript"   "${SLUG_STATE}/abc.jsonl"
+cache="${FIX_HOME}/.local/state/flakelab/state-sync/scan-cache.tsv"
+is_file "the scan cache is written"  "${cache}"
+check   "and is owner-only"          "$(stat -c '%a' "${cache}")" "600"
+run_backup --force
+check    "the second run exits clean"          "${RC}" "0"
+contains "and skips the unchanged transcript"  "${OUT}" "unchanged since their last scan: 1 skipped"
+excludes "so nothing is copied"                "${OUT}" "Synced transcript"
+
+print -r -- "a synced copy that disappeared is scanned and synced again"
+rm "${SLUG_STATE}/abc.jsonl"
+run_backup --force
+check    "the run exits clean"           "${RC}" "0"
+is_file  "the transcript is back"        "${SLUG_STATE}/abc.jsonl"
+excludes "and was not skipped"           "${OUT}" "skipped"
+
+print -r -- "a rulings change drops the scan cache"
+transcript_fixture scan-cache-epoch
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"clean"}' > "${SLUG_HOME}/abc.jsonl"
+run_backup --force
+run_backup --force
+contains "unchanged rulings skip the unchanged transcript" "${OUT}" "1 skipped"
+foreign_decision allow some-other-secret
+run_backup --force
+check    "the run after the ruling exits clean"        "${RC}" "0"
+excludes "a changed decisions file re-scans everything" "${OUT}" "skipped"
+run_backup --force
+contains "and the cache re-forms under the new epoch"  "${OUT}" "1 skipped"
+
+print -r -- "a transcript held back whole is never cached"
+transcript_fixture scan-cache-held
+FAKE_SECRET='x","'
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"a":"x","b":"c"}' > "${SLUG_HOME}/abc.jsonl"
+run_backup --force
+contains "the first run holds it back"  "${OUT}" "held back whole"
+run_backup --force
+contains "and so does every later run"  "${OUT}" "held back whole"
+excludes "it is never skipped"          "${OUT}" "skipped"
 
 print -r -- "a redaction that would break the JSON holds the whole file"
 transcript_fixture gate-transcript-invalid
