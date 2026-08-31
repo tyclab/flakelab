@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Transcript sync is recursive: subagent transcripts live below the session file (`<slug>/<session>/subagents/*.jsonl`) and the one-level globs in the push, pull and restore legs never saw them. A sync-artifact path segment (`@eaDir`, a conflict-named directory) keeps its whole subtree out of every leg.
+- Conflict-copy pairing understands the naming the deployed Synology Drive actually produces: the marker is inserted BEFORE the extension (`MEMORY_<host>_<date>_Conflict.md`), which the full-name prefix match could never pair — such copies were excluded from mirrors but their lines were silently lost. The append-after-name shape keeps working, and the pairing still folds dotfile conflicts (`.zsh_history_merged_…_Conflict`).
+- Transcript conflict copies are folded grow-only before both legs and then removed: a copy is the other machine's gated write that lost the rename race, so folding stays inside the state root and needs no rescan. Until now they were skipped forever and accumulated beside the file they shadowed.
+
 ### Added
 
 - `flakelab backup --state-only`: both legs of the state root and nothing else — the merged history (read from the LIVE `~/.zsh_history`, since this mode never writes the payload's instance copy), Claude memory and, with `stateTranscripts`, transcripts, pushed AND pulled in one run. No payload copy, no rollback snapshot, no restore of activation-owned files. The pull leg skips any local transcript modified in the last 10 minutes: a live session appends through an open fd, and the rename-in-place a pull uses would orphan that inode and silently drop the session's tail. Until now nothing ever pulled outside a manual `--restore`, so with two machines pushing the state root was a write-only archive.
