@@ -524,6 +524,38 @@
           assert builtins.isString wsl.system.build.toplevel.drvPath;
           assert builtins.isString vm.system.build.toplevel.drvPath;
           pkgs.runCommandLocal "flakelab-check-targets" { } "touch $out";
+
+        # Activation must never wait on the backup oneshots (see
+        # nix/home/backup.nix): both units carry the sd-switch /
+        # switch-to-configuration escape hatch in both sections it is read
+        # from. Asserted on a config with the state-sync timer FORCED on —
+        # the shipped example leaves backupAutostart off, so without
+        # extendModules the units would not render at all and the check
+        # would pass vacuously.
+        state-sync-decouple =
+          let
+            forced = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    backupAutostart = nixpkgs.lib.mkForce true;
+                    stateRoot = nixpkgs.lib.mkForce "/tmp/flakelab-check-state";
+                    stateSyncInterval = nixpkgs.lib.mkForce "30min";
+                  };
+                }
+              ];
+            };
+            hm = forced.config.home-manager.users.${forced.config.flakelab.username};
+            units = hm.systemd.user.services;
+          in
+          assert units.flakelab-backup.Unit."X-RestartIfChanged" == false;
+          assert units.flakelab-backup.Service."X-RestartIfChanged" == false;
+          assert units.flakelab-state-sync.Unit."X-RestartIfChanged" == false;
+          assert units.flakelab-state-sync.Service."X-RestartIfChanged" == false;
+          # The flag must not have displaced what the units are for.
+          assert units.flakelab-state-sync.Service.Type == "oneshot";
+          assert hm.systemd.user.timers.flakelab-state-sync.Timer.OnUnitActiveSec == "30min";
+          pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
       };
 
       # `nix develop` — the tooling this repo's gates need, at the versions

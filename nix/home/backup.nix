@@ -80,31 +80,49 @@ lib.optionalAttrs cfg.backupAutostart (
     stateSync = cfg.stateRoot != null && cfg.stateSyncInterval != null;
   in
   {
-    systemd.user.services = {
-      flakelab-backup = {
-        Unit.Description = "flakelab: back up home-dir data to the backup root";
-        Service = {
-          Type = "oneshot";
-          # --force, as the shell autostart passed: there is no TTY here either, and
-          # without it every differing file is kept and the run reports failure.
-          ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
+    systemd.user.services =
+      let
+        # Activation must never wait on, stop, or restart these oneshots: a
+        # backup pass can run for minutes, and home-manager's reloadSystemd
+        # (sd-switch) restarting a changed unit blocks until the started job
+        # finishes — long enough to time home-manager-tycorc.service out and
+        # mark the whole activation failed, and a stop first KILLS a sync
+        # mid-copy. The timer alone owns (re)starting these; a changed unit
+        # definition simply takes effect at the next timer fire, at most one
+        # interval away. Set in both sections: sd-switch reads the flag from
+        # [Unit] (alongside RefuseManualStart/X-SwitchMethod in its parser),
+        # NixOS's switch-to-configuration reads it from [Service] — covering
+        # both costs nothing and survives either tool changing underneath us.
+        neverRestartedByActivation = {
+          Unit."X-RestartIfChanged" = false;
+          Service."X-RestartIfChanged" = false;
+        };
+      in
+      {
+        flakelab-backup = lib.recursiveUpdate neverRestartedByActivation {
+          Unit.Description = "flakelab: back up home-dir data to the backup root";
+          Service = {
+            Type = "oneshot";
+            # --force, as the shell autostart passed: there is no TTY here either, and
+            # without it every differing file is kept and the run reports failure.
+            ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
+          };
+        };
+      }
+      // lib.optionalAttrs stateSync {
+        flakelab-state-sync = lib.recursiveUpdate neverRestartedByActivation {
+          Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
+            # Background housekeeping on the box that is also running the
+            # sessions being copied: never compete with interactive work for
+            # CPU or the disk.
+            Nice = 10;
+            IOSchedulingClass = "idle";
+          };
         };
       };
-    }
-    // lib.optionalAttrs stateSync {
-      flakelab-state-sync = {
-        Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
-        Service = {
-          Type = "oneshot";
-          ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
-          # Background housekeeping on the box that is also running the
-          # sessions being copied: never compete with interactive work for
-          # CPU or the disk.
-          Nice = 10;
-          IOSchedulingClass = "idle";
-        };
-      };
-    };
 
     systemd.user.timers = {
       flakelab-backup = {
