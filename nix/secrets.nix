@@ -30,6 +30,13 @@ in
   config = lib.mkIf (cfg.sopsSecretsFile != null) {
     sops = {
       defaultSopsFile = cfg.sopsSecretsFile;
+      # The systemd-unit variant, NOT the default activation script: the
+      # activation script runs before systemd mounts anything outside the
+      # initrd, so a key on its own filesystem (tycdev's scsi2 disk) would
+      # decrypt fine on `nixos-rebuild switch` and then fail every BOOT with
+      # `cannot read keyfile`. The unit variant orders itself after the key's
+      # mount (RequiresMountsFor on age.keyFile).
+      useSystemdActivation = true;
       age = {
         keyFile = cfg.sopsAgeKeyFile;
         generateKey = false;
@@ -41,13 +48,15 @@ in
       };
       gnupg.sshKeyPaths = [ ];
       secrets.tyc-env = {
+        # dotenv (like binary/ini) renders the WHOLE decrypted file — there is
+        # no per-key lookup on this path. Values, quoting and comments survive
+        # the round trip verbatim; blank lines do not (the dotenv store drops
+        # them on re-serialisation), which no `source` consumer can notice.
         format = "dotenv";
-        # "" = the whole decrypted file: zsh.nix `source`s it as-is, so the
-        # operator encrypts their existing secrets.env byte-for-byte and every
-        # quoting decision in it survives the round trip.
-        key = "";
         # 0400, owned by the login: the same exposure the 0600 home file had,
-        # minus the at-rest copy.
+        # minus the at-rest copy. Explicit, not sops-nix's default, because
+        # the shell contract depends on it.
+        mode = "0400";
         owner = cfg.username;
       };
     };

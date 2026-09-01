@@ -843,8 +843,10 @@ _generated_flake() {
   print -r -- '      # replaced, while sessionVariables, customAliases and claudeMcpServers'
   print -r -- '      # merge per key (replacing one wholesale needs lib.mkForce).'
   print -r -- '      #'
-  print -r -- '      # No secrets: the nix store is world-readable. The tokens from the same'
-  print -r -- '      # config belong in ~/.config/tyc/secrets.env instead.'
+  print -r -- '      # No plaintext secrets: the nix store is world-readable. The tokens'
+  print -r -- '      # from the same config belong in ~/.config/tyc/secrets.env instead -'
+  print -r -- '      # or, encrypted, in a sops dotenv file named by sopsSecretsFile (see'
+  print -r -- '      # the flakelab README "Secrets" for enrolment).'
   print -r -- '      nixosConfigurations.default = flakelab.lib.mkSystem {'
   # Omitted for wsl (the default target nix/options.nix falls back to anyway)
   # so an all-wsl config generates byte-identical output to before this field

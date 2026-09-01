@@ -159,11 +159,17 @@ in
           ''}
 
           # A sops-enrolled box renders the env into the /run ramfs and zsh
-          # prefers that source; its presence is worth a line. The legacy-file
-          # check below still runs while both exist — CR damage only ever lives
-          # in the hand-written file, never in a sops render.
+          # prefers that source; its presence is worth a line. A sops round
+          # trip preserves CRs inside values, so the render gets the same
+          # shape check as the legacy file below (zsh strips CRs from both at
+          # source time — this only surfaces that the committed ciphertext
+          # deserves a re-encode from a clean LF file).
           if [ -r /run/secrets/tyc-env ]; then
-            _hcOk "sops secrets env present (/run/secrets/tyc-env)"
+            if [ "$(wc -c < /run/secrets/tyc-env)" = "$(tr -d '\r' < /run/secrets/tyc-env | wc -c)" ]; then
+              _hcOk "sops secrets env present and free of carriage returns"
+            else
+              _hcBad "sops secrets env has CRLF line endings; re-encrypt secrets/secrets.env from an LF-only file"
+            fi
           fi
 
           # Only the shape is inspected, never a value: a CR trapped inside a

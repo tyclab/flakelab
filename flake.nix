@@ -586,11 +586,15 @@
             secret = forced.config.sops.secrets.tyc-env;
           in
           assert secret.format == "dotenv";
-          assert secret.key == "";
           assert secret.path == "/run/secrets/tyc-env";
+          assert secret.mode == "0400";
           assert secret.owner == forced.config.flakelab.username;
           assert !forced.config.sops.age.generateKey;
           assert forced.config.sops.age.sshKeyPaths == [ ];
+          assert forced.config.sops.gnupg.sshKeyPaths == [ ];
+          assert forced.config.sops.gnupg.home == null;
+          # The unit variant, or a key on its own mount fails every boot.
+          assert forced.config.sops.useSystemdActivation;
           assert self.nixosConfigurations.default.config.sops.secrets == { };
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
       };
