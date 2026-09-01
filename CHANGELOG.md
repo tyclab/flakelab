@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- The transcript redactor survives what the scanner actually reports (#36): overlapping length-variants of one token (each its own fingerprint) and exact-duplicate findings made the sequential literal pass fail lines that were fully redacted — every affected transcript was held back whole and a `delete` ruling could never complete. Findings are now deduplicated and applied longest-needle-first, and a needle missing from its line passes only when it sits inside a longer needle already replaced there; every other miss still refuses the write. The scrub path additionally re-scans the candidate and refuses if the ruled fingerprint survives.
 - The ssh-agent survives activation with its keys: the same `X-RestartIfChanged=false` pair the backup units carry now guards `ssh-agent.service`, whose unit file changes on every package bump — the default restart silently emptied the agent mid-session until the next interactive login re-prompted. The reloaded definition applies when the user manager next starts.
 - Both backup oneshots carry an explicit `TimeoutStartSec` (2h full, 30min state-only): with activation never clearing them, a wedged run would park the unit in `activating` and block its own timer forever.
 - ARCHITECTURE.md no longer claims the daily timer "keeps both sides converging": the daily pass only pushes; automatic two-way convergence is `flakelab.stateSyncInterval`'s `--state-only` timer, and pulls otherwise happen only through a manual `--restore`.

@@ -568,16 +568,34 @@ gate_redact_transcript() {
     return 0
   fi
 
-  # index()/substr(), not a regex: the secret is a literal. A flagged line the
-  # secret cannot be found in exits 3 and must not pass for redacted.
+  # index()/substr(), not a regex: the secret is a literal. The scanner
+  # reports overlapping VARIANTS of one token (the same JWT at three lengths,
+  # each its own finding) and exact duplicates of one finding — a naive
+  # sequential pass replaces the first and then cannot find the rest, failing
+  # a line that is in fact fully redacted (issue #36). So: duplicates are
+  # dropped, needles apply longest-first, and a needle that is missing counts
+  # as redacted ONLY when it sits inside a longer needle already replaced on
+  # that line — every other miss still exits 3 and must not pass for redacted.
   if ! LC_ALL=C awk -v spec="${spec}" '
     BEGIN {
       n = 0
       while ((getline line < spec) > 0) {
         split(line, a, "\001")
+        key = a[1] "\001" a[2] "\001" a[4]
+        if (key in seen) continue
+        seen[key] = 1
         lo[n] = a[1] + 0; hi[n] = a[2] + 0; rule[n] = a[3]; sec[n] = a[4]; n++
       }
       close(spec)
+      # Longest needle first: a long variant consumes the short ones nested
+      # inside it, which the covered check below then accounts for.
+      for (i = 1; i < n; i++) {
+        tl = lo[i]; th = hi[i]; tr = rule[i]; ts = sec[i]
+        for (j = i - 1; j >= 0 && length(sec[j]) < length(ts); j--) {
+          lo[j+1] = lo[j]; hi[j+1] = hi[j]; rule[j+1] = rule[j]; sec[j+1] = sec[j]
+        }
+        lo[j+1] = tl; hi[j+1] = th; rule[j+1] = tr; sec[j+1] = ts
+      }
       bad = 0
     }
     function redact(s, needle, repl,   p, acc) {
@@ -590,10 +608,21 @@ gate_redact_transcript() {
     }
     {
       line = $0
+      for (i = 0; i < n; i++) applied[i] = 0
       for (i = 0; i < n; i++) {
         if (NR < lo[i] || NR > hi[i]) continue
-        if (index(line, sec[i]) == 0) { bad = 1; continue }
-        line = redact(line, sec[i], "[REDACTED:" rule[i] "]")
+        if (index(line, sec[i]) > 0) {
+          line = redact(line, sec[i], "[REDACTED:" rule[i] "]")
+          applied[i] = 1
+          continue
+        }
+        covered = 0
+        for (j = 0; j < n; j++) {
+          if (j == i || !applied[j]) continue
+          if (NR < lo[j] || NR > hi[j]) continue
+          if (index(sec[j], sec[i]) > 0) { covered = 1; break }
+        }
+        if (!covered) bad = 1
       }
       print line
     }
@@ -923,6 +952,28 @@ gate_scrub_transcript() {
     log_warn "No matching finding left in ${live_path:t}; nothing to scrub."
     return 0
   fi
+  # Belt and braces for the one path that rewrites a live transcript: the
+  # redactor proved every reported occurrence destroyed, and this proves the
+  # scanner agrees — the candidate re-scans clean for the ruled fingerprint.
+  local vstage vfindings vstart vend vrule vdesc vmatch vsecret vfp
+  if ! vstage="$(mktemp -d)" || ! vfindings="$(mktemp)" \
+    || ! cp "${out}" "${vstage}/${live_path:t}" || ! gate_scan "${vstage}" "${vfindings}"; then
+    rm -rf "${stage}" "${findings}" "${out}" "${vstage}" "${vfindings}"
+    record_failure "Could not verify the redaction of ${live_path:t}; the file was NOT changed"
+    return 0
+  fi
+  while IFS=$'\x01' read -r vstart vend vrule vdesc vmatch vsecret; do
+    [[ -n "${vstart}" ]] || continue
+    [[ -n "${vsecret}" ]] || vsecret="${vmatch}"
+    [[ -n "${vsecret}" ]] || continue
+    vfp="$(gate_fingerprint "${vrule}" "${vsecret}")" || continue
+    if [[ "${vfp}" == "${fp}" ]]; then
+      rm -rf "${stage}" "${findings}" "${out}" "${vstage}" "${vfindings}"
+      record_failure "Redaction of ${live_path:t} did not survive a re-scan; the file was NOT changed"
+      return 0
+    fi
+  done < <(gate_findings_for_file "${vfindings}" "${vstage}/${live_path:t}")
+  rm -rf "${vstage}" "${vfindings}"
   if ! gate_pre_scrub "${live_path}" "transcript-${live_path:t}"; then
     rm -rf "${stage}" "${findings}" "${out}"
     return 0

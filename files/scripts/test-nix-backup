@@ -43,6 +43,8 @@ trap 'rm -rf "${BASE}"' EXIT
 #                                   flattened form, literal nowhere in the file
 #   FAKE_GITLEAKS_BROKEN=1          exit 2 and write nothing
 #   FAKE_GITLEAKS_RELPATH=1         report basenames instead of the staged paths
+#   FAKE_GITLEAKS_DUP=1             emit every finding twice — the duplicate
+#                                   accounting the real scanner produces (#36)
 if ! command -v jq > /dev/null 2>&1; then
   print -r -u2 -- "  FAIL jq is required to run this suite"
   exit 1
@@ -89,9 +91,11 @@ if (( ${#needles} > 0 )) && [[ -n "${target}" ]]; then
         [[ "${line}" == *"${s}"* ]] || continue
         reported="${f}"
         [[ "${FAKE_GITLEAKS_RELPATH:-}" == 1 ]] && reported="${f:t}"
-        findings+=("$(jq -c -n --arg f "${reported}" --argjson n "${n}" \
+        finding="$(jq -c -n --arg f "${reported}" --argjson n "${n}" \
           --arg m "${line}" --arg s "${s}" \
-          '{Description:"fake secret",StartLine:$n,EndLine:$n,File:$f,RuleID:"fake-rule",Match:$m,Secret:$s}')")
+          '{Description:"fake secret",StartLine:$n,EndLine:$n,File:$f,RuleID:"fake-rule",Match:$m,Secret:$s}')"
+        findings+=("${finding}")
+        [[ "${FAKE_GITLEAKS_DUP:-}" == 1 ]] && findings+=("${finding}")
       done
     done < "${f}"
   done
@@ -137,6 +141,7 @@ FAKE_SECRET2=""
 FAKE_SPAN=""
 FAKE_BROKEN=""
 FAKE_RELPATH=""
+FAKE_DUP=""
 ANSWERS=""
 NO_GITLEAKS=""
 
@@ -178,6 +183,7 @@ fixture() {
   FAKE_SPAN=""
   FAKE_BROKEN=""
   FAKE_RELPATH=""
+  FAKE_DUP=""
   ANSWERS=""
   NO_GITLEAKS=""
   rm -rf "${BASE}/${name}"
@@ -226,7 +232,7 @@ run_backup() {
     PATH="${run_path}" \
     FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}" \
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
-    FAKE_GITLEAKS_RELPATH="${FAKE_RELPATH}" \
+    FAKE_GITLEAKS_RELPATH="${FAKE_RELPATH}" FAKE_GITLEAKS_DUP="${FAKE_DUP}" \
     FLAKELAB_GATE_ANSWERS="${ANSWERS}" \
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}" \
     "${BACKUP}" "$@" < /dev/null 2>&1)"
@@ -1017,6 +1023,55 @@ check    "the third run exits clean"              "${RC}" "0"
 check    "the synced copy grew by exactly the appended line" \
   "$(wc -c < "${synced}")" "$(( synced_bytes + ${#clean_line} + 1 ))"
 contains "and it was copied this time"            "${OUT}" "Synced transcript"
+
+# ---------------------------------------------------------------------------
+# Overlapping and duplicate findings (issue #36)
+# ---------------------------------------------------------------------------
+print -r -- "overlapping variant secrets on one line all redact"
+transcript_fixture gate-variant-overlap
+FAKE_SECRET="jwtvariantbasebasebase"
+FAKE_SECRET2="jwtvariantbasebasebaseXnX"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"token jwtvariantbasebasebaseXnX here"}' > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the transcript is synced, not held whole" "${synced}"
+excludes "the long variant is gone"               "$(< "${synced}")" "jwtvariantbasebasebaseXnX"
+excludes "and so is the short one"                "$(< "${synced}")" "jwtvariantbasebasebase"
+contains "a placeholder stands in"                "$(< "${synced}")" "[REDACTED:fake-rule]"
+contains "the synced line is still valid JSON"    "$(jq -r '.type' "${synced}")" "user"
+excludes "nothing was held back whole"            "${OUT}" "held back whole"
+
+print -r -- "exact-duplicate findings do not fail the redaction"
+transcript_fixture gate-duplicate-findings
+FAKE_DUP=1
+secret_transcript
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the transcript is synced, not held whole" "${synced}"
+excludes "the secret is gone"                     "$(< "${synced}")" "hunter2-secret"
+excludes "nothing was held back whole"            "${OUT}" "held back whole"
+
+print -r -- "a delete ruling scrubs a variant-overlapped transcript"
+transcript_fixture gate-variant-scrub
+FAKE_SECRET="jwtvariantbasebasebase"
+FAKE_SECRET2="jwtvariantbasebasebaseXnX"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+LIVE="${SLUG_HOME}/abc.jsonl"
+print -r -- '{"type":"user","text":"token jwtvariantbasebasebaseXnX here"}' > "${LIVE}"
+
+run_backup --force
+ANSWERS="dd"
+run_backup --review-secrets
+check    "the review exits clean"                 "${RC}" "0"
+excludes "the live transcript lost both variants" "$(< "${LIVE}")" "jwtvariantbasebasebase"
+contains "and carries the placeholder"            "$(< "${LIVE}")" "[REDACTED:fake-rule]"
+check    "the scrubbed line is still valid JSON"  "$(jq -r '.type' "${LIVE}")" "user"
+check    "nothing stays held"                     "$(grep_c_held)" "0"
 
 print -r -- "a redaction that would break the JSON holds the whole file"
 transcript_fixture gate-transcript-invalid
