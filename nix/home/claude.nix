@@ -568,6 +568,10 @@ in
               pkgs.findutils
             ]
           }:$PATH"
+          # This activation runs only when the built config changed, while the
+          # marketplace clone is runtime data — nix-update therefore replays
+          # this same merge (and the marketplace refresh) unconditionally after
+          # every successful switch; keep the jq union here and there in sync.
           _settings="$HOME/.claude/settings.json"
           _marketplace="$HOME/.claude/plugins/marketplaces/${firstMarketplace}"
           # find runs only when the clone exists: on a missing directory it exits
