@@ -95,6 +95,11 @@ lib.optionalAttrs cfg.backupAutostart (
         };
         Service = {
           Type = "oneshot";
+          # keep-old means nothing external ever clears a wedged run any more,
+          # and a oneshot left "activating" blocks its own timer forever — so a
+          # run that outlives any plausible full pass is killed, failed, and
+          # the next timer fire starts fresh.
+          TimeoutStartSec = "2h";
           # --force, as the shell autostart passed: there is no TTY here either, and
           # without it every differing file is kept and the run reports failure.
           ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
@@ -112,6 +117,10 @@ lib.optionalAttrs cfg.backupAutostart (
         };
         Service = {
           Type = "oneshot";
+          # See flakelab-backup: without a timeout a wedged run parks the unit
+          # in "activating" and OnUnitActiveSec never fires again. A state-only
+          # pass that outlives two 15-min state-root lock windows is wedged.
+          TimeoutStartSec = "30min";
           ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
           # Background housekeeping on the box that is also running the
           # sessions being copied: never compete with interactive work for
