@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- The ssh-agent survives activation with its keys: the same `X-RestartIfChanged=false` pair the backup units carry now guards `ssh-agent.service`, whose unit file changes on every package bump — the default restart silently emptied the agent mid-session until the next interactive login re-prompted. The reloaded definition applies when the user manager next starts.
+- Both backup oneshots carry an explicit `TimeoutStartSec` (2h full, 30min state-only): with activation never clearing them, a wedged run would park the unit in `activating` and block its own timer forever.
+- ARCHITECTURE.md no longer claims the daily timer "keeps both sides converging": the daily pass only pushes; automatic two-way convergence is `flakelab.stateSyncInterval`'s `--state-only` timer, and pulls otherwise happen only through a manual `--restore`.
 - Home-manager activation no longer waits on, stops, or restarts the backup oneshots: both units carry `X-RestartIfChanged=false` (in `[Unit]` for sd-switch and `[Service]` for switch-to-configuration), so a switch that overlaps a running multi-minute sync cannot time `home-manager-<user>.service` out any more — and cannot kill a sync mid-copy. A changed unit definition takes effect at the next timer fire instead.
 - Transcript staging is incremental: only a transcript whose source outgrew its synced copy (or has none) is copied into the staging tree and gitleaks-scanned. A quiet run stops re-scanning the whole corpus — which had grown into the multi-minute runs that made the activation timeout above reachable in the first place — and the run logs the phase's staged/unchanged counts and elapsed seconds. A transcript held back whole stays staged every run until a ruling frees it; a partially-redacted one stops re-warning about already-held findings until it grows.
 

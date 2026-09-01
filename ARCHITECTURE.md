@@ -244,8 +244,10 @@ a NAS client or nothing at all is outside this repo's knowledge.
 <stateRoot>/claude/projects/<slug>/<session>.jsonl    # transcripts, opt-in
 ```
 
-Restore on the second machine with `flakelab backup --restore`; a daily timer
-keeps both sides converging. Memory is keyed by the checkout's **absolute path**,
+Restore on the second machine with `flakelab backup --restore`. The daily timer
+only PUSHES into the state root; automatic two-way convergence needs
+`flakelab.stateSyncInterval` set (schedules `--state-only`, which pushes AND
+pulls) — without it, pulls happen only through a manual `--restore`. Memory is keyed by the checkout's **absolute path**,
 so keep checkouts at the same path on both boxes — and never let a checkout live
 inside the synced folder.
 
