@@ -51,9 +51,14 @@ in
   # The agent's whole value is the keys loaded into the RUNNING process; its
   # unit file changes on every package bump, and sd-switch's default restart
   # would empty it on every such switch — mid-session, silently, until the next
-  # interactive login re-prompts. keep-old leaves the running agent (and its
-  # keys) alone; the new definition applies when the user manager next starts.
-  systemd.user.services.ssh-agent.Unit.X-SwitchMethod = "keep-old";
+  # interactive login re-prompts. Same flag pair as backup.nix's oneshots
+  # (sd-switch reads [Unit], switch-to-configuration reads [Service]): the
+  # running agent keeps its keys, the new definition applies when the user
+  # manager next starts.
+  systemd.user.services.ssh-agent = {
+    Unit."X-RestartIfChanged" = false;
+    Service."X-RestartIfChanged" = false;
+  };
   programs.ssh = {
     enable = true;
     enableDefaultConfig = false;

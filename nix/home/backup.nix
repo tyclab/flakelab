@@ -80,56 +80,57 @@ lib.optionalAttrs cfg.backupAutostart (
     stateSync = cfg.stateRoot != null && cfg.stateSyncInterval != null;
   in
   {
-    systemd.user.services = {
-      flakelab-backup = {
-        Unit = {
-          Description = "flakelab: back up home-dir data to the backup root";
-          # Both backup services are oneshots fired by their timers. Without
-          # this, sd-switch stop+starts a changed unit that is mid-run at
-          # activation time — and starting a oneshot BLOCKS until it finishes,
-          # so a long run pushes home-manager activation into its start
-          # timeout and the whole switch reports failure. keep-old leaves a
-          # running instance alone; the reloaded definition applies on the
-          # next timer fire.
-          X-SwitchMethod = "keep-old";
+    systemd.user.services =
+      let
+        # Activation must never wait on, stop, or restart these oneshots: a
+        # backup pass can run for minutes, and home-manager's reloadSystemd
+        # (sd-switch) restarting a changed unit blocks until the started job
+        # finishes — long enough to time home-manager-tycorc.service out and
+        # mark the whole activation failed, and a stop first KILLS a sync
+        # mid-copy. The timer alone owns (re)starting these; a changed unit
+        # definition simply takes effect at the next timer fire, at most one
+        # interval away. Set in both sections: sd-switch reads the flag from
+        # [Unit] (alongside RefuseManualStart/X-SwitchMethod in its parser),
+        # NixOS's switch-to-configuration reads it from [Service] — covering
+        # both costs nothing and survives either tool changing underneath us.
+        neverRestartedByActivation = {
+          Unit."X-RestartIfChanged" = false;
+          Service."X-RestartIfChanged" = false;
         };
-        Service = {
-          Type = "oneshot";
-          # keep-old means nothing external ever clears a wedged run any more,
-          # and a oneshot left "activating" blocks its own timer forever — so a
-          # run that outlives any plausible full pass is killed, failed, and
-          # the next timer fire starts fresh.
-          TimeoutStartSec = "2h";
-          # --force, as the shell autostart passed: there is no TTY here either, and
-          # without it every differing file is kept and the run reports failure.
-          ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
+      in
+      {
+        flakelab-backup = lib.recursiveUpdate neverRestartedByActivation {
+          Unit.Description = "flakelab: back up home-dir data to the backup root";
+          Service = {
+            Type = "oneshot";
+            # With activation never clearing these units, a wedged run would
+            # park the oneshot in "activating" and block its own timer forever
+            # — a run outliving any plausible full pass is killed and failed,
+            # and the next fire starts fresh.
+            TimeoutStartSec = "2h";
+            # --force, as the shell autostart passed: there is no TTY here either, and
+            # without it every differing file is kept and the run reports failure.
+            ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
+          };
+        };
+      }
+      // lib.optionalAttrs stateSync {
+        flakelab-state-sync = lib.recursiveUpdate neverRestartedByActivation {
+          Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
+          Service = {
+            Type = "oneshot";
+            # See flakelab-backup: a state-only pass outliving two 15-min
+            # state-root lock windows is wedged, not slow.
+            TimeoutStartSec = "30min";
+            ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
+            # Background housekeeping on the box that is also running the
+            # sessions being copied: never compete with interactive work for
+            # CPU or the disk.
+            Nice = 10;
+            IOSchedulingClass = "idle";
+          };
         };
       };
-    }
-    // lib.optionalAttrs stateSync {
-      flakelab-state-sync = {
-        Unit = {
-          Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
-          # See flakelab-backup: a sync run regularly outlives home-manager's
-          # start timeout, and this unit runs every stateSyncInterval, so
-          # without keep-old nearly every switch races a live run.
-          X-SwitchMethod = "keep-old";
-        };
-        Service = {
-          Type = "oneshot";
-          # See flakelab-backup: without a timeout a wedged run parks the unit
-          # in "activating" and OnUnitActiveSec never fires again. A state-only
-          # pass that outlives two 15-min state-root lock windows is wedged.
-          TimeoutStartSec = "30min";
-          ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
-          # Background housekeeping on the box that is also running the
-          # sessions being copied: never compete with interactive work for
-          # CPU or the disk.
-          Nice = 10;
-          IOSchedulingClass = "idle";
-        };
-      };
-    };
 
     systemd.user.timers = {
       flakelab-backup = {

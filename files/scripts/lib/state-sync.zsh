@@ -514,120 +514,44 @@ pull_transcripts() {
   return 0
 }
 
-# ---------------------------------------------------------------------------
-# Transcript scan cache
-# ---------------------------------------------------------------------------
-
-# The push leg stages and scans transcripts as one batch. Without a cache that
-# batch is EVERY local transcript EVERY run, and the cost grows with history:
-# on a box with months of sessions a 30-minute timer spends most of each run
-# re-scanning bytes the gate already ruled on. The cache records, per synced
-# transcript, the source size+mtime the gate last passed — an unchanged source
-# with its synced copy still in place is skipped before staging.
-#
-# What a verdict depends on is (bytes, rulings): the gitleaks config and the
-# decisions files change what the same bytes produce — a finding released in
-# `--review-secrets` must reach the synced copy even though the transcript
-# never changed. So the cache carries an epoch hash of all three, and a
-# mismatch drops every entry. Held-back transcripts are never cached: they
-# re-scan (and re-warn) each run until the operator reviews them.
-SCAN_CACHE_FILE="${HOME_DIR}/.local/state/flakelab/state-sync/scan-cache.tsv"
-typeset -gA SCAN_CACHE=()
-SCAN_CACHE_EPOCH=""
-
-scan_cache_epoch() {
-  local f
-  {
-    for f in "$(gate_config)" "$(gate_decisions_shared)" "${GATE_DECISIONS_LOCAL}"; do
-      if [[ -n "${f}" && -f "${f}" ]]; then
-        # CONTENT only (stdin keeps the path out of sha256sum's output): the
-        # gate config is handed in as a Nix store path, which changes on every
-        # input bump even when the rules inside did not.
-        sha256sum < "${f}" 2> /dev/null || print -r -- "unreadable"
-      else
-        print -r -- "absent"
-      fi
-    done
-  } | sha256sum | cut -d' ' -f1
-}
-
-scan_cache_load() {
-  SCAN_CACHE=()
-  SCAN_CACHE_EPOCH="$(scan_cache_epoch)"
-  [[ -n "${SCAN_CACHE_EPOCH}" && -f "${SCAN_CACHE_FILE}" ]] || return 0
-  local header size mtime rel
-  IFS= read -r header < "${SCAN_CACHE_FILE}" 2> /dev/null || return 0
-  # A cache written under other rulings proves nothing about this run.
-  [[ "${header}" == "#epoch ${SCAN_CACHE_EPOCH}" ]] || return 0
-  while IFS=$'\t' read -r size mtime rel; do
-    [[ "${size}" == <-> && "${mtime}" == <-> && -n "${rel}" ]] || continue
-    SCAN_CACHE[${rel}]="${size} ${mtime}"
-  done < <(tail -n +2 "${SCAN_CACHE_FILE}" 2> /dev/null)
-  return 0
-}
-
-# The rewritten cache holds only entries proven THIS run (a hit re-proves its
-# entry); anything else is stale by definition. Failure to persist costs one
-# re-scan, not correctness, so it records no run failure — but it does log.
-scan_cache_write() {
-  ${DRY_RUN} && return 0
-  [[ -n "${SCAN_CACHE_EPOCH}" ]] || return 0
-  local tmp rel
-  if ! ensure_dir "${SCAN_CACHE_FILE:h}" || ! tmp="$(mktemp "${SCAN_CACHE_FILE}.XXXXXX")"; then
-    log_warn "Scan cache not written (${SCAN_CACHE_FILE}); every transcript re-scans next run"
-    return 0
-  fi
-  {
-    print -r -- "#epoch ${SCAN_CACHE_EPOCH}"
-    for rel in "${(@k)SCAN_CACHE_NEXT}"; do
-      print -r -- "${SCAN_CACHE_NEXT[${rel}]% *}"$'\t'"${SCAN_CACHE_NEXT[${rel}]#* }"$'\t'"${rel}"
-    done
-  } > "${tmp}" || {
-    rm -f "${tmp}"
-    log_warn "Scan cache not written (${SCAN_CACHE_FILE}); every transcript re-scans next run"
-    return 0
-  }
-  chmod 600 "${tmp}" 2> /dev/null || true
-  if ! mv -f "${tmp}" "${SCAN_CACHE_FILE}"; then
-    rm -f "${tmp}"
-    log_warn "Scan cache not written (${SCAN_CACHE_FILE}); every transcript re-scans next run"
-  fi
-  return 0
-}
-
-# Every transcript staged and scanned in ONE gitleaks run, then synced through
+# Every STAGED transcript scanned in ONE gitleaks run, then synced through
 # the redactor. Grow-only compares the CANDIDATE (redacted or not) against the
-# synced copy, never the raw source. Sources unchanged since the gate last
-# passed them (see the scan cache above) skip the staging entirely.
+# synced copy, never the raw source.
+#
+# Staging is incremental: redaction rewrites text WITHIN lines, so the synced
+# copy always has the line count its source had when it was synced, and a
+# source with no more lines than its synced copy is one sync_transcript would
+# refuse anyway — comparing line counts up front skips the copy + gitleaks
+# pass for it entirely. Without this the phase re-staged and re-scanned the
+# whole corpus every run, which grew past what activation and a short timer
+# tolerate (the home-manager timeout of 2026-09-01). Two consequences, both
+# intended: a transcript held back whole has no synced copy and stays staged
+# every run until a ruling frees it, and a partially-redacted transcript stops
+# re-warning about already-held findings until it grows again. An unreadable
+# source falls through to staging, where the existing failure paths name it.
 backup_transcripts() {
-  local -a srcs=() dsts=() metas=() rels=()
-  local transcript rel dst meta
-  local -i skipped=0
-  typeset -gA SCAN_CACHE_NEXT=()
-  scan_cache_load
+  local -a srcs=() dsts=()
+  local transcript rel dst src_lines dst_lines
+  local -i unchanged=0
+  local phase_started
+  phase_started="$(date +%s)" || phase_started=""
   # `**` mirrors the pull leg: subagent transcripts sit below the session file.
   for transcript in "${HOME_DIR}"/.claude/projects/**/*.jsonl(N.); do
     rel="${transcript#${HOME_DIR}/.claude/projects/}"
     rel_path_is_sync_artifact "${rel}" && continue
     dst="${STATE_ROOT}/claude/projects/${rel}"
-    # stat BEFORE the copy: a transcript that grows mid-run records the
-    # pre-copy state, mismatches next run, and is re-scanned.
-    meta="$(stat -c '%s %Y' "${transcript}" 2> /dev/null)" || meta=""
-    if [[ -n "${meta}" && "${SCAN_CACHE[${rel}]:-}" == "${meta}" && -f "${dst}" ]]; then
-      SCAN_CACHE_NEXT[${rel}]="${meta}"
-      skipped=$(( skipped + 1 ))
+    if [[ -f "${dst}" ]] \
+      && src_lines="$(wc -l < "${transcript}" 2> /dev/null)" \
+      && dst_lines="$(wc -l < "${dst}" 2> /dev/null)" \
+      && (( src_lines <= dst_lines )); then
+      unchanged=$(( unchanged + 1 ))
       continue
     fi
     srcs+=("${transcript}")
     dsts+=("${dst}")
-    metas+=("${meta}")
-    rels+=("${rel}")
   done
-  (( skipped > 0 )) && log_info "Transcripts unchanged since their last scan: ${skipped} skipped"
   if (( ${#srcs} == 0 )); then
-    # Every source was proven under the current epoch; nothing needs the
-    # scanner this run, so no gate_guard — that would fail a run with no work.
-    (( skipped > 0 )) && scan_cache_write
+    (( unchanged > 0 )) && log_info "Transcripts: ${unchanged} unchanged, nothing to stage"
     return 0
   fi
   gate_guard || return 0
@@ -668,12 +592,6 @@ backup_transcripts() {
     # The held entry names the LIVE transcript: the staging tree is gone by the review.
     if gate_redact_transcript "${staged}" "${findings}" "${candidate}" "${held_file}" "" "${srcs[i]}"; then
       sync_transcript "${candidate}" "${dsts[i]}"
-      # Gate passed and the synced copy is in place (or was already ahead):
-      # these bytes need no re-scan under these rulings. Only with a usable
-      # pre-copy stat, and never in dry-run — nothing was written to prove.
-      if ! ${DRY_RUN} && [[ -n "${metas[i]}" && -f "${dsts[i]}" ]]; then
-        SCAN_CACHE_NEXT[${rels[i]}]="${metas[i]}"
-      fi
       if (( GATE_REDACT_HELD > 0 )); then
         GATE_HELD_COUNT=$(( GATE_HELD_COUNT + GATE_REDACT_COUNTABLE ))
         if ${DRY_RUN}; then
@@ -695,6 +613,13 @@ backup_transcripts() {
   done
 
   rm -rf "${stage}" "${findings}"
-  scan_cache_write
+  # One journal line per run so a phase creeping back toward activation- and
+  # timer-hostile durations is visible before it breaks something again.
+  if [[ -n "${phase_started}" ]]; then
+    local phase_ended
+    if phase_ended="$(date +%s)"; then
+      log_info "Transcripts: ${#srcs} staged and scanned, ${unchanged} unchanged, $(( phase_ended - phase_started ))s"
+    fi
+  fi
   return 0
 }
