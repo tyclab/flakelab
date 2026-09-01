@@ -540,9 +540,12 @@ scan_cache_epoch() {
   {
     for f in "$(gate_config)" "$(gate_decisions_shared)" "${GATE_DECISIONS_LOCAL}"; do
       if [[ -n "${f}" && -f "${f}" ]]; then
-        sha256sum "${f}" 2> /dev/null || print -r -- "unreadable ${f}"
+        # CONTENT only (stdin keeps the path out of sha256sum's output): the
+        # gate config is handed in as a Nix store path, which changes on every
+        # input bump even when the rules inside did not.
+        sha256sum < "${f}" 2> /dev/null || print -r -- "unreadable"
       else
-        print -r -- "absent ${f}"
+        print -r -- "absent"
       fi
     done
   } | sha256sum | cut -d' ' -f1
