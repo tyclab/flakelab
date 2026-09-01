@@ -324,10 +324,25 @@ with your own rather than reading them as defaults.
 
 ## Secrets
 
-Nothing secret lives in the repo or the Nix store. Secrets are loaded at shell
-start from `~/.config/tyc/secrets.env` (git-ignored) if present — populate it
-from a vault (`bao kv get …`) or export the variables yourself;
-`files/config/secrets.env.example` is a copyable skeleton. `provision` writes it
+Nothing secret lives in the repo or the Nix store in plaintext. Two sources,
+tried in this order at shell start:
+
+1. **sops-nix (opt-in)** — the overlay sets
+   `sopsSecretsFile = ./secrets/secrets.env;`, an age-encrypted sops **dotenv**
+   file it commits as ciphertext. sops-nix decrypts it at activation into the
+   `/run/secrets` ramfs (`/run/secrets/tyc-env`, mode 0400, owned by the login)
+   and the zsh init sources it from there — plaintext never touches a disk, a
+   repo, or a backup. Enrolment per host: `age-keygen -o <keyFile>` (default
+   `/var/lib/sops-nix/key.txt`; point `sopsAgeKeyFile` at a disk excluded from
+   image backups where one exists), add the printed recipient to the overlay's
+   `.sops.yaml`, `sops updatekeys <file>`, set the option, `flakelab update`.
+   Rotation: `sops <file>` edits values; `.sops.yaml` + `sops updatekeys`
+   changes recipients.
+2. **Legacy fallback** — `~/.config/tyc/secrets.env` (git-ignored), populated
+   from a vault (`bao kv get …`) or by hand;
+   `files/config/secrets.env.example` is a copyable skeleton.
+
+`provision` writes the fallback file
 for you from the `custom_env_vars` of the config it provisions from (it asks
 first): the names in the table below go there, everything else becomes
 `sessionVariables` in the generated flake, so no token reaches the

@@ -158,6 +158,14 @@ in
             fi
           ''}
 
+          # A sops-enrolled box renders the env into the /run ramfs and zsh
+          # prefers that source; its presence is worth a line. The legacy-file
+          # check below still runs while both exist — CR damage only ever lives
+          # in the hand-written file, never in a sops render.
+          if [ -r /run/secrets/tyc-env ]; then
+            _hcOk "sops secrets env present (/run/secrets/tyc-env)"
+          fi
+
           # Only the shape is inspected, never a value: a CR trapped inside a
           # single-quoted value makes GITLAB_TOKEN one byte too long and breaks
           # every GitLab API call with `invalid header field value`.

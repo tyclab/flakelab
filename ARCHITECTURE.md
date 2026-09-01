@@ -16,8 +16,12 @@ How flakelab is put together, and why. Usage lives in
    values are injected by the private overlay through `lib.mkSystem`. Flakes
    evaluate only git-tracked files, which is what keeps a public fork free of
    personal data.
-4. **Secrets never enter repo or store.** They arrive at runtime from a vault as
-   `~/.config/tyc/secrets.env`, sourced at shell start.
+4. **Secrets never enter repo or store in plaintext.** They arrive either as
+   the overlay's age-encrypted sops dotenv file (`sopsSecretsFile`, decrypted
+   by sops-nix into the `/run/secrets` ramfs — only ciphertext is committed or
+   stored) or, as the fallback, from a vault as `~/.config/tyc/secrets.env`;
+   the shell sources whichever is present, sops first (nix/secrets.nix,
+   nix/home/zsh.nix).
 5. **Reuse the repo-discovery logic** rather than rewriting it: `clone-repos` and
    `activate-hooks` descend from an Ansible/PowerShell predecessor, wrapped with
    a pinned PATH (`nix/scripts.nix`). They have since diverged materially — the
