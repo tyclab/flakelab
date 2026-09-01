@@ -357,6 +357,18 @@ in
       description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null.";
     };
 
+    sopsSecretsFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = "The overlay's age-encrypted sops DOTENV file (the encrypted twin of ~/.config/tyc/secrets.env). Non-null wires sops-nix (nix/secrets.nix): the file is decrypted at activation into the /run/secrets ramfs and the zsh init sources it from there, falling back to the legacy home file only when the render is absent. A `path`, so the ciphertext is copied into the world-readable Nix store — which is exactly what ciphertext is for; the plaintext never leaves /run. Decryption needs the host identity at `sopsAgeKeyFile` to be enrolled in the file's .sops.yaml recipients BEFORE this is set, or the next activation fails loudly.";
+    };
+
+    sopsAgeKeyFile = mkOption {
+      type = types.str;
+      default = "/var/lib/sops-nix/key.txt";
+      description = "Absolute path of this host's age identity (the ONE plaintext-at-rest sops leaves), read by sops-nix at activation; generate it with `age-keygen -o <path>` and enrol the printed recipient. The default sits on the root filesystem — fine for a box whose disk image is never captured whole; a guest that IS image-backed points this at its excluded secrets disk instead (tycdev: /var/lib/tyc-secrets/age.key on scsi2, backup=false). Only read when `sopsSecretsFile` is set.";
+    };
+
     stateSyncInterval = mkOption {
       type = types.nullOr types.str;
       default = null;

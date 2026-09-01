@@ -49,9 +49,12 @@
       # profileCliTools, customAliases and sessionVariables get unioned, and only
       # with the profile-derived values from flakelab/profiles/.
       #
-      # Secrets are NOT in this flake - the Nix store is world-readable. Tokens
-      # live in ~/.config/tyc/secrets.env (git-ignored, LF-only); `flakelab doctor`
-      # inside the distro verifies them.
+      # Secrets are NOT in this flake in plaintext - the Nix store is
+      # world-readable. Either commit them ENCRYPTED via sops-nix (set
+      # `sopsSecretsFile = ./secrets/secrets.env;` to an age-encrypted sops
+      # dotenv file after enrolling the host key - flakelab README "Secrets"),
+      # or keep tokens in ~/.config/tyc/secrets.env (git-ignored, LF-only);
+      # `flakelab doctor` inside the distro verifies either.
       #
       # Need something no userData field covers? mkSystem's second call form
       # takes arbitrary NixOS and home-manager modules, so an overlay never has

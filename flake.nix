@@ -27,8 +27,17 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # sops-nix decrypts the OPTIONAL overlay-held secrets file (see
+    # nix/secrets.nix). Unpinned to a branch on purpose: the project tags no
+    # releases, and flake.lock pins the revision either way.
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     # Secrets are NOT managed here: tokens come from OpenBao at runtime via the
-    # environment (see nix/home). Nothing secret in the repo or store.
+    # environment (see nix/home), or — when the overlay opts in via
+    # `sopsSecretsFile` — as an age-encrypted sops file whose ciphertext is the
+    # only thing that ever reaches a repo or the store.
   };
 
   outputs =
@@ -38,6 +47,7 @@
       nixpkgs-unstable,
       nixos-wsl,
       home-manager,
+      sops-nix,
       ...
     }:
     let
@@ -328,6 +338,11 @@
                   platformModules
                   ++ [
                     home-manager.nixosModules.home-manager
+                    # Imported unconditionally (a NixOS `imports` list cannot be
+                    # conditional); inert until the overlay sets sopsSecretsFile
+                    # — see nix/secrets.nix.
+                    sops-nix.nixosModules.sops
+                    ./nix/secrets.nix
                     ./nix/options.nix
                     {
                       # Names the source of these definitions, so a type error reads
@@ -556,6 +571,32 @@
           assert units.flakelab-state-sync.Service.Type == "oneshot";
           assert hm.systemd.user.timers.flakelab-state-sync.Timer.OnUnitActiveSec == "30min";
           pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
+
+        # The sops seam (nix/secrets.nix). Forced on with the tracked example
+        # file standing in for ciphertext — eval never decrypts, so any path
+        # will do — the module must render exactly the contract zsh.nix
+        # sources; left at its null default, it must contribute nothing.
+        sops-optional =
+          let
+            forced = self.nixosConfigurations.default.extendModules {
+              modules = [
+                { flakelab.sopsSecretsFile = ./files/config/secrets.env.example; }
+              ];
+            };
+            secret = forced.config.sops.secrets.tyc-env;
+          in
+          assert secret.format == "dotenv";
+          assert secret.path == "/run/secrets/tyc-env";
+          assert secret.mode == "0400";
+          assert secret.owner == forced.config.flakelab.username;
+          assert !forced.config.sops.age.generateKey;
+          assert forced.config.sops.age.sshKeyPaths == [ ];
+          assert forced.config.sops.gnupg.sshKeyPaths == [ ];
+          assert forced.config.sops.gnupg.home == null;
+          # The unit variant, or a key on its own mount fails every boot.
+          assert forced.config.sops.useSystemdActivation;
+          assert self.nixosConfigurations.default.config.sops.secrets == { };
+          pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
       };
 
       # `nix develop` — the tooling this repo's gates need, at the versions
