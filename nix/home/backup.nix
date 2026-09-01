@@ -103,6 +103,11 @@ lib.optionalAttrs cfg.backupAutostart (
           Unit.Description = "flakelab: back up home-dir data to the backup root";
           Service = {
             Type = "oneshot";
+            # With activation never clearing these units, a wedged run would
+            # park the oneshot in "activating" and block its own timer forever
+            # — a run outliving any plausible full pass is killed and failed,
+            # and the next fire starts fresh.
+            TimeoutStartSec = "2h";
             # --force, as the shell autostart passed: there is no TTY here either, and
             # without it every differing file is kept and the run reports failure.
             ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
@@ -114,6 +119,9 @@ lib.optionalAttrs cfg.backupAutostart (
           Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
           Service = {
             Type = "oneshot";
+            # See flakelab-backup: a state-only pass outliving two 15-min
+            # state-root lock windows is wedged, not slow.
+            TimeoutStartSec = "30min";
             ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
             # Background housekeeping on the box that is also running the
             # sessions being copied: never compete with interactive work for
