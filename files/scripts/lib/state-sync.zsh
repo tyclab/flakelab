@@ -623,3 +623,116 @@ backup_transcripts() {
   fi
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# Slug manifests and garbage collection
+# ---------------------------------------------------------------------------
+
+# Every box that syncs writes the list of Claude project slugs it currently
+# holds; the union of all manifests is what the state root is allowed to keep.
+# A slug no box claims — a renamed checkout's old name, a deleted project, a
+# machine's leftovers — is an orphan that would otherwise replicate forever:
+# the sync has no other notion of deletion.
+manifest_dir() { print -r -- "${STATE_ROOT}/.flakelab-state-manifests" }
+
+write_state_manifest() {
+  state_enabled || return 0
+  local dst
+  dst="$(manifest_dir)/${DISTRO_NAME}"
+  if ${DRY_RUN}; then
+    log_dry "Would write the slug manifest: ${dst}"
+    return 0
+  fi
+  local build slug_dir
+  if ! build="$(mktemp)"; then
+    record_failure "Could not create a work file for the slug manifest"
+    return 0
+  fi
+  for slug_dir in "${HOME_DIR}"/.claude/projects/*(N/); do
+    print -r -- "${slug_dir:t}" >> "${build}"
+  done
+  ensure_dir "${dst:h}"
+  if ! place_atomically "${build}" "${dst}"; then
+    rm -f "${build}"
+    record_failure "Could not write the slug manifest: ${dst}"
+    return 0
+  fi
+  rm -f "${build}"
+  chmod 600 "${dst}" 2> /dev/null || true
+  return 0
+}
+
+# Root slugs claimed by NO manifest are listed, and removed only under --force.
+# Refuses to judge when any manifest is stale (that box may hold slugs its old
+# manifest never recorded) or when none exist at all. The gate and shell
+# folders are out of scope: GC touches only claude/projects/<slug> trees.
+GC_MANIFEST_MAX_AGE_DAYS="${FLAKELAB_STATE_GC_MAX_AGE_DAYS:-7}"
+do_state_gc() {
+  log_info "=== State-root slug GC [${DISTRO_NAME}] ==="
+  log_state_root
+  echo ""
+  if ! state_enabled; then
+    log_error "--state-gc needs a usable state root"
+    FAILURES=$(( FAILURES + 1 ))
+    return 0
+  fi
+
+  local -a manifests=("$(manifest_dir)"/*(N.))
+  if (( ${#manifests} == 0 )); then
+    log_error "No slug manifests in $(manifest_dir) — run a backup or --state-only on every box first"
+    FAILURES=$(( FAILURES + 1 ))
+    return 0
+  fi
+
+  local m mtime now
+  if ! now="$(date +%s)"; then
+    record_failure "Could not read the clock; nothing collected"
+    return 0
+  fi
+  local -A claimed=()
+  local slug
+  for m in "${manifests[@]}"; do
+    if ! mtime="$(stat -c %Y "${m}" 2> /dev/null)"; then
+      record_failure "Could not stat manifest ${m}; nothing collected"
+      return 0
+    fi
+    if (( now - mtime > GC_MANIFEST_MAX_AGE_DAYS * 86400 )); then
+      log_error "Manifest ${m:t} is older than ${GC_MANIFEST_MAX_AGE_DAYS} day(s) — that box has not synced; refusing to collect"
+      FAILURES=$(( FAILURES + 1 ))
+      return 0
+    fi
+    while IFS= read -r slug; do
+      [[ -n "${slug}" ]] && claimed[${slug}]=1
+    done < "${m}"
+  done
+  log_info "${#manifests} manifest(s), ${#claimed} slug(s) claimed"
+
+  local -a orphans=()
+  local slug_dir
+  for slug_dir in "${STATE_ROOT}"/claude/projects/*(N/); do
+    is_sync_artifact "${slug_dir:t}" && continue
+    [[ -n "${claimed[${slug_dir:t}]:-}" ]] && continue
+    orphans+=("${slug_dir}")
+  done
+
+  if (( ${#orphans} == 0 )); then
+    log_ok "No orphaned slugs in the state root."
+    return 0
+  fi
+
+  for slug_dir in "${orphans[@]}"; do
+    if ${FORCE} && ! ${DRY_RUN}; then
+      if rm -rf "${slug_dir}"; then
+        log_ok "Removed orphaned slug: ${slug_dir:t}"
+      else
+        record_failure "Could not remove orphaned slug: ${slug_dir}"
+      fi
+    else
+      log_warn "Orphaned (no box claims it): ${slug_dir:t}"
+    fi
+  done
+  if ! ${FORCE} || ${DRY_RUN}; then
+    log_info "Nothing removed. Re-run with --force to delete the ${#orphans} slug(s) above."
+  fi
+  return 0
+}

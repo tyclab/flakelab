@@ -660,10 +660,11 @@ rec 1000 0 "typed-here"                > "${FIX_HOME}/.zsh_history"
 
 run_backup --force
 check "the run exits clean" "${RC}" "0"
-state_files="$(cd "${FIX_STATE}" && find . -type f | sort)"
+state_files="$(cd "${FIX_STATE}" && find . -type f | LC_ALL=C sort)"
 # The EXACT file list, so nothing else being there needs no per-file exclude.
-check "the state root holds exactly the history and the memory" "${state_files}" \
-"./claude/projects/some-slug/memory/MEMORY.md
+check "the state root holds exactly the history, the memory and the slug manifest" "${state_files}" \
+"./.flakelab-state-manifests/TestDistro
+./claude/projects/some-slug/memory/MEMORY.md
 ./shell/.zsh_history_merged"
 is_file "the seed is still in the backup root" "${FIX_ROOT}/shared/secrets/secrets.env"
 is_file "host-specific claude settings are still in the backup root" "${FIX_ROOT}/instances/TestDistro/claude/settings.json"
@@ -2085,6 +2086,59 @@ check    "with --review-secrets it fails"       "${RC}" "1"
 contains "and says why"                         "${OUT}" "--revisit-keeps re-holds during a backup"
 run_backup --restore --revisit-keeps
 check    "with --restore it fails too"          "${RC}" "1"
+
+print -r -- "a sync run writes this box's slug manifest"
+transcript_fixture manifest-write
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"n":1}' > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --state-only --force
+check    "the run exits clean"        "${RC}" "0"
+manifest="${FIX_STATE}/.flakelab-state-manifests/TestDistro"
+is_file  "the manifest exists"        "${manifest}"
+contains "and claims the local slug"  "$(< "${manifest}")" "some-slug"
+check    "owner-only"                 "$(stat -c '%a' "${manifest}")" "600"
+
+print -r -- "--state-gc refuses without manifests, and mixed with another mode"
+state_fixture gc-no-manifests
+mkdir -p "${FIX_STATE}/claude/projects/orphan-slug"
+run_backup --state-gc
+check    "no manifests fails"         "${RC}" "1"
+contains "and says why"               "${OUT}" "No slug manifests"
+exists   "nothing was removed"        "${FIX_STATE}/claude/projects/orphan-slug"
+run_backup --state-gc --state-only
+check    "mixed modes fail"           "${RC}" "1"
+contains "and say why"                "${OUT}" "its own mode"
+
+print -r -- "--state-gc lists orphans, removes only with --force, spares claimed slugs"
+transcript_fixture gc-orphans
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+run_backup --state-only --force
+mkdir -p "${FIX_STATE}/claude/projects/orphan-slug/memory" \
+         "${FIX_STATE}/claude/projects/other-box-slug" \
+         "${FIX_STATE}/claude/projects/@eaDir"
+print -r -- "stale memory" > "${FIX_STATE}/claude/projects/orphan-slug/memory/note.md"
+print -r -- "other-box-slug" > "${FIX_STATE}/.flakelab-state-manifests/OTHERBOX"
+
+run_backup --state-gc
+check    "the listing run exits clean"    "${RC}" "0"
+contains "the orphan is named"            "${OUT}" "Orphaned (no box claims it): orphan-slug"
+contains "and nothing is removed yet"     "${OUT}" "Nothing removed"
+exists   "the orphan is still there"      "${FIX_STATE}/claude/projects/orphan-slug"
+
+run_backup --state-gc --force
+check    "the forced run exits clean"     "${RC}" "0"
+absent   "the orphan is gone"             "${FIX_STATE}/claude/projects/orphan-slug"
+exists   "the other box's slug survives"  "${FIX_STATE}/claude/projects/other-box-slug"
+exists   "and the artifact dir is untouched" "${FIX_STATE}/claude/projects/@eaDir"
+
+print -r -- "--state-gc refuses when any box's manifest is stale"
+mkdir -p "${FIX_STATE}/claude/projects/orphan-slug"
+touch -d '10 days ago' "${FIX_STATE}/.flakelab-state-manifests/OTHERBOX"
+run_backup --state-gc --force
+check    "the stale run fails"            "${RC}" "1"
+contains "and names the stale box"        "${OUT}" "OTHERBOX is older than"
+exists   "and removes nothing"            "${FIX_STATE}/claude/projects/orphan-slug"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
