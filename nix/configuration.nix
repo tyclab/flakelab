@@ -36,6 +36,17 @@
   # system-wide); the interactive config itself lives in nix/home/zsh.nix.
   programs.zsh.enable = true;
 
+  # Keep large contiguous blocks available. A WSL session's Hyper-V socket
+  # opens with a 512 KiB ring buffer (order-7, GFP_KERNEL, vmbus_alloc_ring);
+  # on a VM that has run a day under memory pressure the buddy lists hold no
+  # such block, the allocation fails and every new session stalls for the 10 s
+  # vsock accept timeout (TYCBOOKELITE 2026-09-02: page allocation failures in
+  # dmesg, 0.3 s launches right after `echo 1 > /proc/sys/vm/compact_memory`).
+  # Proactive compaction lets kcompactd defragment in the background before an
+  # allocation has to fail; kernel default 20, range 0-100. Harmless on the
+  # Proxmox guest, where virtio has no such need but the cost is nil.
+  boot.kernel.sysctl."vm.compaction_proactiveness" = 60;
+
   # Run foreign (non-NixOS) dynamic binaries — the Kiro CLI install build and
   # any other downloaded tools used while bootstrapping/validating the migration.
   programs.nix-ld.enable = true;
