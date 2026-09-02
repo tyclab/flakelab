@@ -212,18 +212,38 @@ check_repo() {
   [[ "${rel}" == "${repo}" ]] && rel="${repo:t}"
   local out line head_branch branch upstream counts label m br_state
   local remote_url forge_line forge project jq_prog sigil forge_out parsed row
-  local iid title source draft
+  local iid title source draft skip_reason=""
   local -i tracked=0 untracked=0 dirty=0 ahead=0 behind=0 stashes=0 attention=0
   typeset -a marks=() forge_rows=() branch_rows=()
 
   [[ -e "${ABORT_FILE}" ]] && return
+
+  # Resolve the forge BEFORE any network call. A missing origin remote, or one
+  # on a host this script does not integrate with, is a property of this single
+  # repo — not evidence the rest of the sweep is unsound — so it is skipped
+  # rather than aborting the run.
+  #
+  # The ordering is the fix, not a tidy-up: such a repo would otherwise fail the
+  # fetch below and abort the entire sweep before its URL was ever looked at.
+  # One unsupported forge anywhere under a scanned root took down the whole
+  # report and every other repo went unexamined.
+  remote_url="$(git -C "${repo}" config --get remote.origin.url 2>/dev/null)"
+  if [[ -z "${remote_url}" ]]; then
+    skip_reason="no origin remote"
+  elif ! forge_line="$(gitscan_forge_of "${remote_url}")"; then
+    skip_reason="unsupported remote host"
+  fi
 
   # Refresh remote-tracking refs. This writes only .git/refs/remotes/*, so
   # ahead/behind is accurate without touching the index or working tree.
   # gitnet_retry absorbs a single transient and names a timeout kill; a
   # persistent failure still aborts the sweep — a partial report is never
   # printed as though it were complete.
-  if ! gitnet_retry git -C "${repo}" fetch --prune; then
+  #
+  # Skipped repos are not fetched at all: there is no forge to compare them
+  # against, so a fetch could only produce the abort we just decided this repo
+  # does not deserve.
+  if [[ -z "${skip_reason}" ]] && ! gitnet_retry git -C "${repo}" fetch --prune; then
     abort_run "${repo}" "git fetch --prune failed (after retry, ${GITNET_WHY})" "${GITNET_OUT}"
     return
   fi
@@ -341,55 +361,54 @@ check_repo() {
 
   # Open MRs/PRs. Work that has not landed is work this repo is waiting on, so
   # an open MR counts as attention.
-  remote_url="$(git -C "${repo}" config --get remote.origin.url 2>/dev/null)"
-  if [[ -z "${remote_url}" ]]; then
-    abort_run "${repo}" "no origin remote configured" ""
-    return
-  fi
-  if ! forge_line="$(gitscan_forge_of "${remote_url}")"; then
-    abort_run "${repo}" "unsupported remote host" "${remote_url}"
-    return
-  fi
-  IFS=$'\t' read -r forge project <<< "${forge_line}"
-
-  # @tsv, not string interpolation: it escapes tabs and newlines inside a title
-  # instead of emitting them raw, which would shift every later field and split
-  # one MR into two bogus rows.
-  # gitnet_retry on the forge call, matching the fetch path: at four-figure
-  # repo counts the API throttles, and a single transient must not discard an
-  # otherwise complete sweep.
-  if [[ "${forge}" == gitlab ]]; then
-    jq_prog='.[] | [.iid, .title, .source_branch, .draft] | @tsv'
-    sigil="!"
+  # The skip decision was taken above, before the fetch. A forge-API failure
+  # below, by contrast, is a transient that puts every other repo's result in
+  # doubt too, and rightly aborts.
+  if [[ -n "${skip_reason}" ]]; then
+    marks+=("${C_CYAN}skipped: ${skip_reason}${C_RESET}")
+    attention=1
   else
-    jq_prog='.[] | [.number, .title, .headRefName, .isDraft] | @tsv'
-    sigil="#"
-  fi
-  # Paged, not capped at the first hundred: under-reporting open MRs is the
-  # quiet version of the failure this script exists to prevent.
-  if ! gitscan_open_requests "${forge}" "${project}"; then
-    abort_run "${repo}" "${GITSCAN_FORGE_WHY}" "${GITSCAN_FORGE_JSON}"
-    return
-  fi
-  forge_out="${GITSCAN_FORGE_JSON}"
+    IFS=$'\t' read -r forge project <<< "${forge_line}"
 
-  # An empty body is a legitimate "no open MRs"; malformed JSON is not, and must
-  # not degrade into the same answer — gitscan_jq keeps those apart.
-  if ! gitscan_jq "${forge_out}" "${jq_prog}"; then
-    abort_run "${repo}" "could not parse ${forge} response" "${GITSCAN_JQ_ERR}"
-    return
-  fi
-  parsed="${GITSCAN_JQ_OUT}"
-  if [[ -n "${parsed}" ]]; then
-    while IFS=$'\t' read -r iid title source draft; do
-      [[ -z "${iid}" ]] && continue
-      # The draft flag rides as its own field rather than a "DRAFT: " prefix
-      # baked into the title: the report re-adds it, and a parser gets a boolean
-      # instead of having to strip English out of the title.
-      [[ "${draft}" == true ]] || draft=false
-      forge_rows+=("${sigil}${iid}	$(sanitize "${title}")	$(sanitize "${source}")	${draft}")
-      attention=1
-    done <<< "${parsed}"
+    # @tsv, not string interpolation: it escapes tabs and newlines inside a title
+    # instead of emitting them raw, which would shift every later field and split
+    # one MR into two bogus rows.
+    # gitnet_retry on the forge call, matching the fetch path: at four-figure
+    # repo counts the API throttles, and a single transient must not discard an
+    # otherwise complete sweep.
+    if [[ "${forge}" == gitlab ]]; then
+      jq_prog='.[] | [.iid, .title, .source_branch, .draft] | @tsv'
+      sigil="!"
+    else
+      jq_prog='.[] | [.number, .title, .headRefName, .isDraft] | @tsv'
+      sigil="#"
+    fi
+    # Paged, not capped at the first hundred: under-reporting open MRs is the
+    # quiet version of the failure this script exists to prevent.
+    if ! gitscan_open_requests "${forge}" "${project}"; then
+      abort_run "${repo}" "${GITSCAN_FORGE_WHY}" "${GITSCAN_FORGE_JSON}"
+      return
+    fi
+    forge_out="${GITSCAN_FORGE_JSON}"
+
+    # An empty body is a legitimate "no open MRs"; malformed JSON is not, and must
+    # not degrade into the same answer — gitscan_jq keeps those apart.
+    if ! gitscan_jq "${forge_out}" "${jq_prog}"; then
+      abort_run "${repo}" "could not parse ${forge} response" "${GITSCAN_JQ_ERR}"
+      return
+    fi
+    parsed="${GITSCAN_JQ_OUT}"
+    if [[ -n "${parsed}" ]]; then
+      while IFS=$'\t' read -r iid title source draft; do
+        [[ -z "${iid}" ]] && continue
+        # The draft flag rides as its own field rather than a "DRAFT: " prefix
+        # baked into the title: the report re-adds it, and a parser gets a boolean
+        # instead of having to strip English out of the title.
+        [[ "${draft}" == true ]] || draft=false
+        forge_rows+=("${sigil}${iid}	$(sanitize "${title}")	$(sanitize "${source}")	${draft}")
+        attention=1
+      done <<< "${parsed}"
+    fi
   fi
 
   emit "${rec}" ROOT "${root}"
