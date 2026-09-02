@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-02
+
 ### Fixed
 
 - The Proxmox seed's `flakelab-bootstrap` folds `OVERLAY_KNOWN_HOSTS` into the bootstrap user's own `~/.ssh/known_hosts` after the clone. The bootstrap trusted the overlay host through that file alone, so a day-two `flakelab update` — which fetches with the default known_hosts — died on "Host key verification failed" with the deploy key in place, and the guest stayed parked on its bootstrap generation (tycdev, 2026-09-02).
@@ -123,6 +125,7 @@ pin to instead of a moving `main`.
 - Flow-style YAML lists (`profiles: [a, b]`) are parsed as lists by both overlay generators, instead of reaching the overlay as a literal string.
 - `gitpublisher` no longer reads pre-commit's cold-cache "Installing environment for .../gitleaks" line as a secret finding.
 
+[0.3.0]: https://github.com/tyclab/flakelab/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tyclab/flakelab/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tyclab/flakelab/releases/tag/v0.1.0
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
