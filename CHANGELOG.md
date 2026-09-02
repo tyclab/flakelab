@@ -7,8 +7,12 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-02
+
 ### Fixed
 
+- The Proxmox seed's `flakelab-bootstrap` folds `OVERLAY_KNOWN_HOSTS` into the bootstrap user's own `~/.ssh/known_hosts` after the clone. The bootstrap trusted the overlay host through that file alone, so a day-two `flakelab update` — which fetches with the default known_hosts — died on "Host key verification failed" with the deploy key in place, and the guest stayed parked on its bootstrap generation (tycdev, 2026-09-02).
+- History conflict copies in Synology Drive's dotfile shape are folded and removed: for `.zsh_history_merged` the client treats the whole name as the extension and puts the marker in front (`_<host>_<date>_Conflict.zsh_history_merged`), a shape the pairing never matched — such a copy sat unfolded beside the merged history from 2026-09-01 until found. Its lines were all already merged, so nothing was lost; the copy just never went away.
 - `flakelab sessions --open` no longer reports `wt.exe failed` for the first session it opens: the tab counter's post-increment evaluated to zero on that pass and fell into the error branch although the tab had opened. The count was right, the line was noise.
 - `flakelab update` waits for the distro's own boot activation before switching (bounded, 180s by default via `FLAKELAB_BOOT_WAIT`; `FLAKELAB_BOOT_OK=1` skips the wait). WSL starts `home-manager-<user>.service` at boot and it runs for a minute or more; a switch typed into that window stopped and restarted the unit, and the login session the caller sat in was torn down in the same reshuffle — the terminal went silent at "setting up /sbin...", the switch exited 4 with two failed units, and the operator had to redo it from a fresh session (observed 2026-09-02). Only `starting`/`initializing` and an `activating` home-manager unit are waited on; a `degraded` boot is finished and proceeds.
 - New WSL sessions no longer stall 10 s on a VM whose memory has fragmented: `vm.compaction_proactiveness` is raised to 60 (kernel default 20) on every target, so kcompactd keeps the 512 KiB contiguous block a session's Hyper-V socket ring needs available instead of letting the allocation fail into the vsock accept timeout (seen on TYCBOOKELITE 2026-09-02 after a day of memory pressure).
@@ -122,6 +126,7 @@ pin to instead of a moving `main`.
 - Flow-style YAML lists (`profiles: [a, b]`) are parsed as lists by both overlay generators, instead of reaching the overlay as a literal string.
 - `gitpublisher` no longer reads pre-commit's cold-cache "Installing environment for .../gitleaks" line as a secret finding.
 
+[0.3.0]: https://github.com/tyclab/flakelab/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tyclab/flakelab/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tyclab/flakelab/releases/tag/v0.1.0
 [Keep a Changelog]: https://keepachangelog.com/en/1.1.0/

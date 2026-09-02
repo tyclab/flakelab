@@ -163,6 +163,7 @@ in
       getent
       util-linux
       gitMinimal
+      gnugrep
       openssh
       nix
       nixos-rebuild
@@ -240,6 +241,26 @@ in
       else
         as_user mkdir -p "$(dirname "$REPO_PATH")"
         as_user git clone --branch "$OVERLAY_REF" "$OVERLAY_URL" "$REPO_PATH"
+      fi
+
+      # The clone above trusted the overlay host through OVERLAY_KNOWN_HOSTS
+      # alone; day-two `flakelab update` fetches with the user's default
+      # known_hosts, and a box whose default file never learned the host dies
+      # there on "Host key verification failed" — deploy key in place, fetch
+      # refused, the guest parked on its bootstrap generation (tycdev,
+      # 2026-09-02). Fold the entries into the user's file once, as the user,
+      # so the day-two path trusts exactly what the bootstrap did.
+      if [ -n "$OVERLAY_KNOWN_HOSTS" ]; then
+        user_kh="$BOOTSTRAP_HOME/.ssh/known_hosts"
+        as_user mkdir -p "$BOOTSTRAP_HOME/.ssh"
+        as_user chmod 700 "$BOOTSTRAP_HOME/.ssh"
+        as_user touch "$user_kh"
+        as_user chmod 600 "$user_kh"
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in "" | "#"*) continue ;; esac
+          grep -qxF -- "$line" "$user_kh" \
+            || printf '%s\n' "$line" | as_user tee -a "$user_kh" > /dev/null
+        done < "$OVERLAY_KNOWN_HOSTS"
       fi
 
       # The lock stays the user's own file: one written by root makes their next
