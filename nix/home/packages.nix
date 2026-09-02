@@ -149,6 +149,12 @@ in
     # `npm install -g` targets ~/.npm-global (writable, unlike the nix store);
     # home.activation.pinNpm installs the pinned npm there.
     NPM_CONFIG_PREFIX = "${config.home.homeDirectory}/.npm-global";
+    # glab asks interactively whenever a flag is missing (`mr create` without
+    # --title/--description walks a questionnaire) or a step wants confirming.
+    # An agent's Bash has no terminal, so that question is a hang until the
+    # tool timeout; with prompts off the same mistake is an immediate error
+    # naming the missing flag. At a real terminal it only skips "are you sure?".
+    GLAB_NO_PROMPT = "1";
   }
   // lib.optionalAttrs isWsl {
     # wsl-open shells to the Windows default browser; a headless target has
