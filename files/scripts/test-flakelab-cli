@@ -7,7 +7,7 @@ set -uo pipefail
 # on nix/cli.nix having built anything real.
 #
 # Covers the target gate only — the sixth map (_targets) and _available() that
-# decide which of the 14 commands a target sees. Everything else about the
+# decide which of the 15 commands a target sees. Everything else about the
 # router (unknown-command handling, checkout-mode dispatch with no
 # FLAKELAB_DISPATCH_DIR) is exercised by hand today and stays out of scope
 # here; adding it is a fine follow-up, not a reason to hold this one back.
@@ -41,7 +41,7 @@ DISPATCH="${BASE}/dispatch/bin"
 mkdir -p "${DISPATCH}"
 
 typeset -a WRAPPERS=(
-  nix-update nix-update-all nix-doctor nix-backup nix-clone-repos
+  nix-update nix-update-all nix-doctor nix-backup claude-sessions nix-clone-repos
   nix-provision nix-overlay-generate build-dev-wsl-nix test-provision-nix
   get_current_wsl_distro_name clone-repos activate-hooks report-stale-repos
   glab-group-projects
@@ -54,11 +54,11 @@ STUB
   chmod +x "${DISPATCH}/${w}"
 done
 
-# The router's own _order (14) and its wsl-only subset (4) — mirrored here
+# The router's own _order (15) and its wsl-only subset (4) — mirrored here
 # rather than sourced, since the router's arrays are not meant to be sourced
 # by anything else, this suite included.
 typeset -a ORDER=(
-  update update-all doctor backup clone provision overlay-gen build-distro
+  update update-all doctor backup sessions clone provision overlay-gen build-distro
   test-provision distro-name clone-repos activate-hooks stale-repos
   glab-projects
 )
@@ -96,7 +96,7 @@ count_listed() {
 # ---------------------------------------------------------------------------
 print -r -- "no FLAKELAB_TARGET (checkout mode): every verb available"
 run_router "" --help
-check "--help lists all 14 commands" "$(count_listed)" "14"
+check "--help lists all 15 commands" "$(count_listed)" "15"
 check "--help exits 0" "${RC}" "0"
 
 run_router "" build-distro
@@ -107,7 +107,7 @@ check "build-distro exits 0 with no target set" "${RC}" "0"
 print -r -- ""
 print -r -- "FLAKELAB_TARGET=proxmox-vm: the four wsl-only verbs are gated"
 run_router "proxmox-vm" --help
-check "--help lists 10 commands (14 minus the four wsl-only verbs)" "$(count_listed)" "10"
+check "--help lists 11 commands (15 minus the four wsl-only verbs)" "$(count_listed)" "11"
 for c in "${WSL_ONLY[@]}"; do
   excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
 done

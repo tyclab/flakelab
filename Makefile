@@ -40,7 +40,7 @@ lint-nix:
 # hide every suite after it — including the ones this repo's own contribution
 # guide says to run after touching them.
 test:
-	@rc=0; for suite in test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli; do \
+	@rc=0; for suite in test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-sessions; do \
 		echo "==> $$suite"; \
 		files/scripts/$$suite || rc=1; \
 	done; \

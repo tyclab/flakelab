@@ -158,6 +158,25 @@ rec {
     exec ${zsh} ${s}/glab-group-projects "$@"
   '';
 
+  # Reads /proc and needs pgrep/ps (procps). FLAKELAB_STATE_ROOT, when set,
+  # is where --save lands so the list replicates with the transcripts it names.
+  claude-sessions = pkgs.writeShellScriptBin "claude-sessions" ''
+    ${lib.optionalString (cfg.stateRoot != null) ''
+      export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
+    ''}
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.procps
+        pkgs.gnugrep
+        pkgs.gawk
+        pkgs.jq
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/claude-sessions "$@"
+  '';
+
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''
     export PATH=${
       bin [

@@ -38,6 +38,7 @@ let
       scripts.nix-update-all
       scripts.nix-doctor
       scripts.nix-backup
+      scripts.claude-sessions
       scripts.nix-clone-repos
       scripts.nix-provision
       scripts.nix-overlay-generate

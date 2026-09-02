@@ -1,0 +1,178 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# claude-sessions — the Claude Code sessions running in this distro: list them,
+# save the list, print what brings each one back after a restart.
+#
+# A `wsl --shutdown` or a reboot kills every shell, and Claude Code keeps each
+# conversation on disk under ~/.claude/projects/<slug>/<session>.jsonl — so the
+# sessions survive, but only if the session ids are known. That is what this
+# command records before the restart.
+#
+# A session is the `claude` process itself: pgrep -x, because -f would also
+# match its helper shells, tails and subagents. Each process holds its own
+# transcript open, so the uuid among /proc/<pid>/fd is the session id. The
+# newest transcript in the project directory is NOT — two sessions in one
+# directory share it.
+#
+# Usage:
+#   claude-sessions                  table: pid, age, session id, directory
+#   claude-sessions --save [file]    also write "<dir>  <id>" lines to file
+#   claude-sessions --resume [file]  print `cd <dir> && claude --resume <id>`
+#                                    from a saved file (default: the newest
+#                                    save), or from the live sessions if none
+#   claude-sessions --json           the live sessions as a JSON array
+#
+# Save location: $FLAKELAB_STATE_ROOT/claude/sessions/<host>-<date>.txt when a
+# state root is configured (nix/options.nix stateRoot) — the list then
+# replicates with the transcripts it names — else ~/.claude/sessions/.
+#
+
+PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
+MODE=list
+FILE=""
+
+usage() {
+  cat <<'USAGE'
+Usage: claude-sessions [--save [file]] [--resume [file]] [--json]
+
+  (no flag)        list the running Claude Code sessions
+  --save [file]    list, and write "<dir>  <session-id>" lines to file
+  --resume [file]  print the resume commands from file (default: newest save,
+                   else the live sessions)
+  --json           the live sessions as a JSON array
+USAGE
+}
+
+while (( $# > 0 )); do
+  case $1 in
+    --save)   MODE=save;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
+    --resume) MODE=resume; [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
+    --json)   MODE=json ;;
+    --help|-h) usage; exit 0 ;;
+    *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 1 ;;
+  esac
+  shift
+done
+
+save_dir() {
+  if [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
+    print -r -- "${FLAKELAB_STATE_ROOT}/claude/sessions"
+  else
+    print -r -- "${HOME}/.claude/sessions"
+  fi
+}
+
+# One record per running session, unit-separator delimited (a tab is IFS
+# whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
+# into its place): <pid> US <age-seconds> US <session-id> US <cwd>.
+# A process with no transcript open yet (still starting) gets an empty id and
+# a stderr note — it has nothing to resume.
+typeset -a ROWS=()
+US=$'\x1f'
+gather() {
+  local p cwd sid age
+  for p in $(pgrep -x claude 2>/dev/null); do
+    cwd="$(readlink "${PROC_ROOT}/${p}/cwd" 2>/dev/null)" || continue
+    sid="$(
+      for f in "${PROC_ROOT}/${p}"/fd/*(@N); do readlink "$f"; done 2>/dev/null |
+        grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
+        sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
+    )"
+    age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
+    [[ -z "$sid" ]] && print -ru2 -- "note: pid ${p} in ${cwd} holds no transcript yet, skipped"
+    ROWS+=("${p}${US}${age:-0}${US}${sid}${US}${cwd}")
+  done
+}
+
+fmt_age() {
+  local -i s=${1:-0}
+  if (( s >= 86400 )); then printf '%dd%02dh' $(( s / 86400 )) $(( s % 86400 / 3600 ))
+  elif (( s >= 3600 )); then printf '%dh%02dm' $(( s / 3600 )) $(( s % 3600 / 60 ))
+  else printf '%dm' $(( s / 60 ))
+  fi
+}
+
+print_table() {
+  local row p age sid cwd
+  if (( ${#ROWS[@]} == 0 )); then
+    print -ru2 -- "no running Claude Code sessions"
+    return 0
+  fi
+  printf '%-8s %-7s %-36s %s\n' PID AGE SESSION DIRECTORY
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r p age sid cwd <<<"$row"
+    printf '%-8s %-7s %-36s %s\n' "$p" "$(fmt_age "$age")" "${sid:--}" "$cwd"
+  done
+}
+
+print_json() {
+  local row p age sid cwd
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r p age sid cwd <<<"$row"
+    jq -n --argjson pid "$p" --argjson age "$age" --arg session "$sid" --arg cwd "$cwd" \
+      --arg distro "${WSL_DISTRO_NAME:-}" \
+      '{pid: $pid, age_seconds: $age, session: (if $session == "" then null else $session end), cwd: $cwd, distro: (if $distro == "" then null else $distro end)}'
+  done | jq -s .
+}
+
+# Saved lines are "<dir>  <id>" — two spaces, the same shape --resume reads
+# back; comment lines carry host, distro and time.
+write_save() {
+  local dir row p age sid cwd n=0
+  if [[ -z "$FILE" ]]; then
+    dir="$(save_dir)"
+    mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
+    FILE="${dir}/${HOST}-$(date +%Y-%m-%dT%H%M).txt"
+  fi
+  {
+    print -r -- "# claude-sessions ${HOST}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)"
+    for row in "${ROWS[@]}"; do
+      IFS="$US" read -r p age sid cwd <<<"$row"
+      [[ -n "$sid" ]] || continue
+      print -r -- "${cwd}  ${sid}"
+      (( n++ ))
+    done
+  } > "$FILE" || { print -ru2 -- "Error: cannot write ${FILE}"; return 1 }
+  print -ru2 -- "saved ${n} session(s) to ${FILE}"
+}
+
+print_resume() {
+  local src="$FILE" line cwd sid n=0
+  if [[ -z "$src" ]]; then
+    # newest save first; (N) keeps an empty directory from being a glob error
+    local -a saves=("$(save_dir)"/*.txt(Nom))
+    src="${saves[1]:-}"
+  fi
+  if [[ -n "$src" ]]; then
+    [[ -r "$src" ]] || { print -ru2 -- "Error: cannot read ${src}"; return 1 }
+    print -r -- "# from ${src}"
+    while IFS= read -r line; do
+      [[ "$line" == \#* || -z "$line" ]] && continue
+      sid="${line##*  }"
+      cwd="${line%  *}"
+      print -r -- "cd ${(q)cwd} && claude --resume ${sid}"
+      (( n++ ))
+    done < "$src"
+  else
+    gather
+    print -r -- "# from the live sessions (no saved file)"
+    local row p age
+    for row in "${ROWS[@]}"; do
+      IFS="$US" read -r p age sid cwd <<<"$row"
+      [[ -n "$sid" ]] || continue
+      print -r -- "cd ${(q)cwd} && claude --resume ${sid}"
+      (( n++ ))
+    done
+  fi
+  (( n > 0 )) || { print -ru2 -- "nothing to resume"; return 1 }
+}
+
+case "$MODE" in
+  list)   gather; print_table ;;
+  json)   gather; print_json ;;
+  save)   gather; print_table; write_save ;;
+  resume) print_resume ;;
+esac

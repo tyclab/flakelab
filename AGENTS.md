@@ -23,6 +23,10 @@ the private overlay `flakelab-config`, which imports this flake via
     (was `build-dev-wsl-nix`), `test-provision`, `distro-name`
     (was `get_current_wsl_distro_name`), `clone-repos`, `activate-hooks`,
     `stale-repos` (was `report-stale-repos`), `glab-projects`.
+  - `sessions` (new, `claude-sessions`): the running Claude Code sessions with
+    their session ids, read from each process's open transcript in `/proc`.
+    `--save` before a `wsl --shutdown` or reboot, `--resume` prints the
+    `claude --resume` commands after. Never `pgrep -f`: that matches helpers.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,

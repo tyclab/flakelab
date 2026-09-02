@@ -215,17 +215,18 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all fourteen.
+all fifteen.
 
-| Command                   | Action                                                          |
-| ------------------------- | --------------------------------------------------------------- |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>` |
-| `flakelab update-all`     | rebuild + clone                                                 |
-| `flakelab clone`          | clone / fetch GitLab group repos                                |
-| `flakelab doctor`         | diagnose a provisioned distro                                   |
-| `flakelab backup`         | payload + optional shared state root                            |
-| `flakelab overlay-gen`    | write the private overlay from a config                         |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
+| Command                   | Action                                                                    |
+| ------------------------- | ------------------------------------------------------------------------- |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`           |
+| `flakelab update-all`     | rebuild + clone                                                           |
+| `flakelab clone`          | clone / fetch GitLab group repos                                          |
+| `flakelab doctor`         | diagnose a provisioned distro                                             |
+| `flakelab backup`         | payload + optional shared state root                                      |
+| `flakelab sessions`       | running Claude Code sessions; `--save` before a restart, `--resume` after |
+| `flakelab overlay-gen`    | write the private overlay from a config                                   |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                              |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 drift check's exit status. Without a terminal they refuse to rebuild from a
