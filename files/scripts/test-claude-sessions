@@ -130,6 +130,7 @@ check "--open calls wt.exe once per session" "$(wc -l < "${WT_LOG}")" "2"
 contains "--open targets the current window, the distro, the directory and the id" \
   "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab --cd ${WORK} -- claude --resume ${SID_A}"
 contains "--open reports the count" "${ERR}" "opened 2 tab(s)"
+excludes "--open does not report a failure for the first tab" "${ERR}" "wt.exe failed"
 unset WSL_DISTRO_NAME
 
 # state root wins over ~/.claude
