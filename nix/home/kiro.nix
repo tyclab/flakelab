@@ -18,11 +18,12 @@ let
     installKiro
     kiroPluginRepo
     kiroPlugin
-    firstSshKey
     sshAgentPreamble
     sshDefer
     flakelabWarn
     flakelabDefer
+    cloneKeyResolve
+    sshKeys
     ;
   inherit (flakelabMcp) mcpServers;
 in
@@ -89,9 +90,10 @@ in
             ]
           }:$HOME/.local/bin:$PATH"
           ${sshAgentPreamble}
+          ${cloneKeyResolve}
           if [ ! -d "${kiroPlugin}/.git" ]; then
-            if [ -f "$HOME/.ssh/${firstSshKey}" ]; then
-              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -i $HOME/.ssh/${firstSshKey}" \
+            if [ -n "$_cloneKey" ]; then
+              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -i $_cloneKey" \
                 $DRY_RUN_CMD git clone ${kiroPluginRepo} "${kiroPlugin}" || \
                 ${sshDefer "kiro-plugin not cloned, so its agents/skills/steering are not installed. Either activation had no passphrase-unlocked ssh-agent key, or the host was unreachable. Log in interactively (the zsh hook loads the key), then run: flakelab update"}
             else
@@ -101,7 +103,7 @@ in
               # user. Record the deferral the health check looks for - skipping
               # silently made it report the missing checkout as a defect and
               # failed the very rebuild that creates the user.
-              ${flakelabDefer} "kiro-plugin not cloned: no ~/.ssh/${firstSshKey} yet, so the clone was not attempted. Provisioning seeds the key after this rebuild; flakelab update then completes it."
+              ${flakelabDefer} "kiro-plugin not cloned: none of ~/.ssh/{${lib.concatStringsSep "," sshKeys}} exists yet, so the clone was not attempted. Provisioning seeds a key after this rebuild; flakelab update then completes it."
             fi
           fi
           if [ -f "${kiroPlugin}/Makefile" ]; then

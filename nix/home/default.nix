@@ -104,6 +104,19 @@ let
   inherit (cfg) sshKeys;
   firstSshKey = builtins.head sshKeys; # the git/clone key
 
+  # Resolved at activation, not at eval: the clone identity is the FIRST sshKeys
+  # entry that exists on disk, in `_cloneKey`, empty when none does. Gating on
+  # the first entry's literal name parked every git@ clone on a box that carries
+  # only a later entry — tycdev has the deploy key and no personal key, so the
+  # kiro-plugin clone and the Claude marketplaces deferred on every rebuild
+  # while `ssh -i ~/.ssh/flakelab_deploy` would have worked (2026-09-02).
+  cloneKeyResolve = ''
+    _cloneKey=""
+    for _k in ${lib.concatMapStringsSep " " lib.escapeShellArg sshKeys}; do
+      if [ -f "$HOME/.ssh/$_k" ]; then _cloneKey="$HOME/.ssh/$_k"; break; fi
+    done
+  '';
+
   # The one target fact the home modules need: what the shell may assume about
   # a Windows side (zsh's home jump today).
   isWsl = cfg.target == "wsl";
@@ -143,6 +156,7 @@ in
       isWsl
       sshKeys
       firstSshKey
+      cloneKeyResolve
       installKiro
       installClaude
       kiroPluginRepo

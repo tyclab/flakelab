@@ -20,11 +20,12 @@ let
   inherit (flakelab)
     installClaude
     isWsl
-    firstSshKey
     sshAgentPreamble
     sshDefer
     flakelabWarn
     flakelabDefer
+    cloneKeyResolve
+    sshKeys
     ;
   inherit (flakelabMcp)
     grafanaServer
@@ -231,7 +232,8 @@ in
       (
         lib.optionalString (installClaude && claudeMarketplaces != [ ]) ''
           _claude="$HOME/.local/bin/claude"
-          if [ -x "$_claude" ] && [ -f "$HOME/.ssh/${firstSshKey}" ]; then
+          ${cloneKeyResolve}
+          if [ -x "$_claude" ] && [ -n "$_cloneKey" ]; then
             export PATH="${
               lib.makeBinPath [
                 pkgs.git
@@ -239,7 +241,7 @@ in
                 pkgs.coreutils
               ]
             }:$PATH"
-            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -i $HOME/.ssh/${firstSshKey}"
+            export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -i $_cloneKey"
             ${sshAgentPreamble}
           ${lib.concatMapStringsSep "\n" (m: ''
             if ! "$_claude" plugin marketplace list 2>/dev/null | grep -q ${lib.escapeShellArg m.name}; then
@@ -286,7 +288,7 @@ in
             # Claude is there but the key is not: same first-rebuild state as the
             # kiro-plugin clone (kiro.nix). Say so instead of skipping in silence -
             # an operator who is never told has no reason to run `flakelab update`.
-            ${flakelabDefer} "claude marketplaces and plugins not installed: no ~/.ssh/${firstSshKey} yet, so the git@ marketplaces could not be fetched. Provisioning seeds the key after this rebuild; flakelab update then completes it."
+            ${flakelabDefer} "claude marketplaces and plugins not installed: none of ~/.ssh/{${lib.concatStringsSep "," sshKeys}} exists yet, so the git@ marketplaces could not be fetched. Provisioning seeds a key after this rebuild; flakelab update then completes it."
           fi
         ''
       );
