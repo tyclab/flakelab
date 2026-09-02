@@ -350,15 +350,40 @@ sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE
 # BUILT config changed — and the marketplace clone is runtime data, not a build
 # input. A merged marketplace change under an unchanged system config therefore
 # never landed (observed 2026-09-01: a permissions update sat in the clone
-# while settings.json kept the previous set through two switches). Replay both
-# unconditionally after every successful switch; failures warn, never fail the
-# update — the switch itself succeeded.
+# while settings.json kept the previous set through two switches). Replay
+# these unconditionally after every successful switch; failures warn, never
+# fail the update — the switch itself succeeded.
 _claude_marketplaces="$HOME/.claude/plugins/marketplaces"
 if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   for _m in "${_claude_marketplaces}"/*(N/); do
     claude plugin marketplace update "${_m:t}" > /dev/null 2>&1 \
       || print -P "%F{yellow}⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch%f"
   done
+  # `plugin update` sits in the same activation and is skipped the same way:
+  # `plugin install` is a no-op on an installed plugin, so a plugin bump merged
+  # after the last config change stays on its installed version through every
+  # no-op switch (observed 2026-09-02: the marketplace clone at skills 13.2.1,
+  # the cache at 13.2.0). An update costs ~12s per plugin, so only a plugin
+  # whose fetched version differs from the installed one is updated — readable
+  # only for plugins the marketplace ships from its own tree (`./` sources,
+  # every TycLabs one); externally sourced plugins stay with the activation.
+  # </dev/null bounds the confirmation prompt a marketplace-declared install
+  # command would raise, which then warns instead of hanging.
+  _installed="$HOME/.claude/plugins/installed_plugins.json"
+  if [ -f "${_installed}" ] && command -v jq > /dev/null 2>&1; then
+    for _m in "${_claude_marketplaces}"/*(N/); do
+      [ -f "${_m}/.claude-plugin/marketplace.json" ] || continue
+      jq -r '.plugins[] | select(.source | type == "string" and startswith("./")) | "\(.name) \(.source)"' \
+        "${_m}/.claude-plugin/marketplace.json" 2> /dev/null | while read -r _name _src; do
+        _key="${_name}@${_m:t}"
+        _have="$(jq -r --arg k "${_key}" '.plugins[$k][0].version // empty' "${_installed}" 2> /dev/null)"
+        _want="$(jq -r '.version // empty' "${_m}/${_src}/.claude-plugin/plugin.json" 2> /dev/null)"
+        { [ -n "${_have}" ] && [ -n "${_want}" ] && [ "${_have}" != "${_want}" ]; } || continue
+        claude plugin update "${_key}" < /dev/null > /dev/null 2>&1 \
+          || print -P "%F{yellow}⚠ claude plugin ${_key} not updated; it stays on ${_have} (marketplace has ${_want})%f"
+      done
+    done
+  fi
   _settings="$HOME/.claude/settings.json"
   _recommended="$(find "${_claude_marketplaces}" -type f -name recommended-permissions.json 2> /dev/null | head -1)"
   if [ -n "${_recommended}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
