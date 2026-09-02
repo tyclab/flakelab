@@ -88,7 +88,12 @@
         # glab: 26.05 stays on 1.99.0 for the release; the agent skills rely on
         # `glab ci status --wait` (1.108) and `--jq` (1.100), and Renovate's lock
         # maintenance only moves it when it comes from the channel that moves.
-        inherit (pkgsUnstable) bitwarden-cli glab opentofu playwright-driver;
+        inherit (pkgsUnstable)
+          bitwarden-cli
+          glab
+          opentofu
+          playwright-driver
+          ;
       };
 
       # nixpkgs (both the pinned channel above and nixpkgs-unstable — the overlay
