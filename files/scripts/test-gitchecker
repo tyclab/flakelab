@@ -337,11 +337,21 @@ assert_has "aborting" "abort is announced"
 assert_lacks "current" "no report is printed after an abort"
 write_stub glab 0 /dev/null
 
-# An unsupported forge host aborts rather than reporting an empty MR list.
+# A repo that cannot be checked — no origin, or one on a forge this script does
+# not integrate with — is a property of that one clone, not of the sweep: it is
+# reported as skipped (attention, never "current") and the sibling repos in the
+# same root are still examined. Only the network aborts the run.
 mk_repo "${TESTROOT}/roots/other" bb bitbucket.org t/bb >/dev/null
+mk_repo "${TESTROOT}/roots/other" fine gitlab.com t/fine >/dev/null
+git init -q -b main "${TESTROOT}/roots/other/orphan"
+git -C "${TESTROOT}/roots/other/orphan" commit -q --allow-empty -m seed
 run_gc --repos-dir "${TESTROOT}/roots/other"
-assert_rc 2 "unsupported forge host exits 2"
-assert_has "unsupported remote host" "unsupported host is named"
+assert_rc 1 "an uncheckable repo is attention, not an abort"
+assert_has "skipped: unsupported remote host" "unsupported host is named"
+assert_has "skipped: no origin remote" "a missing origin is named"
+assert_lacks "aborting" "the sweep is not aborted"
+assert_has "fine" "the sibling repo is still examined"
+assert_has "current" "and still reported"
 
 # A title carrying a tab or newline must not shift the other fields or spawn a
 # bogus extra row — the record format has to survive arbitrary forge text.

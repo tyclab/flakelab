@@ -25,7 +25,10 @@ set -uo pipefail
 # stashes, rebases and checks out nothing in any mode.
 #
 # The network is mandatory — every run fetches and queries the forge, and any
-# failure aborts the whole run rather than printing a stale "current".
+# network failure aborts the whole run rather than printing a stale "current".
+# A repo that has no origin, or one on a forge this script does not integrate
+# with, is not a network failure: it is reported as skipped (attention) and the
+# rest of the sweep goes on, the same way gitcleaner treats it.
 #
 # Two callers, one scan. An operator gets the grouped, coloured report; a
 # non-interactive caller (an agent, a script) passes --json and gets one
