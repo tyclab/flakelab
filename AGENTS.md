@@ -24,9 +24,12 @@ the private overlay `flakelab-config`, which imports this flake via
     (was `get_current_wsl_distro_name`), `clone-repos`, `activate-hooks`,
     `stale-repos` (was `report-stale-repos`), `glab-projects`.
   - `sessions` (new, `claude-sessions`): the running Claude Code sessions with
-    their session ids, read from each process's open transcript in `/proc`.
+    their session ids, from Claude Code's own registry
+    `~/.claude/sessions/<pid>.json` (open transcript in `/proc` as fallback).
     `--save` before a `wsl --shutdown` or reboot, `--resume` prints the
-    `claude --resume` commands after. Never `pgrep -f`: that matches helpers.
+    `claude --resume` commands after, `--open` puts each in its own Windows
+    Terminal tab. Never `pgrep -f`: that matches helpers. Saves go to
+    `~/.local/state/flakelab/sessions/`, never into `~/.claude/sessions`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,

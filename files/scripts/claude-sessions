@@ -12,10 +12,14 @@ set -uo pipefail
 # command records before the restart.
 #
 # A session is the `claude` process itself: pgrep -x, because -f would also
-# match its helper shells, tails and subagents. Each process holds its own
-# transcript open, so the uuid among /proc/<pid>/fd is the session id. The
-# newest transcript in the project directory is NOT — two sessions in one
-# directory share it.
+# match its helper shells, tails and subagents. Claude Code registers each one
+# in ~/.claude/sessions/<pid>.json (pid, sessionId, cwd, startedAt) — that is
+# the id, and it is there before the first message is sent. The registry is
+# not pruned on exit, so a pid is only a session while it is a live `claude`
+# process. A live process with no registry file (an older Claude Code) falls
+# back to the transcript it holds open in /proc/<pid>/fd. The newest
+# transcript in the project directory is never the answer — two sessions in
+# one directory share it.
 #
 # Usage:
 #   claude-sessions                  table: pid, age, session id, directory
@@ -23,25 +27,36 @@ set -uo pipefail
 #   claude-sessions --resume [file]  print `cd <dir> && claude --resume <id>`
 #                                    from a saved file (default: the newest
 #                                    save), or from the live sessions if none
+#   claude-sessions --open [file]    the same sessions, each in its own new
+#                                    Windows Terminal tab (WSL only)
 #   claude-sessions --json           the live sessions as a JSON array
+#
+# The --resume lines are one per terminal: pasted into one shell they run in
+# sequence, the second only after the first session exits. --open is the
+# WSL answer to that.
 #
 # Save location: $FLAKELAB_STATE_ROOT/claude/sessions/<host>-<date>.txt when a
 # state root is configured (nix/options.nix stateRoot) — the list then
-# replicates with the transcripts it names — else ~/.claude/sessions/.
+# replicates with the transcripts it names — else
+# ~/.local/state/flakelab/sessions/. Never ~/.claude/sessions: that directory
+# is Claude Code's own registry.
 #
 
 PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
+REGISTRY="${HOME}/.claude/sessions"
 MODE=list
 FILE=""
 
 usage() {
   cat <<'USAGE'
-Usage: claude-sessions [--save [file]] [--resume [file]] [--json]
+Usage: claude-sessions [--save [file]] [--resume [file]] [--open [file]] [--json]
 
   (no flag)        list the running Claude Code sessions
   --save [file]    list, and write "<dir>  <session-id>" lines to file
-  --resume [file]  print the resume commands from file (default: newest save,
-                   else the live sessions)
+  --resume [file]  print the resume commands, one per terminal, from file
+                   (default: newest save, else the live sessions)
+  --open [file]    open each of those sessions in its own Windows Terminal
+                   tab (WSL only)
   --json           the live sessions as a JSON array
 USAGE
 }
@@ -50,6 +65,7 @@ while (( $# > 0 )); do
   case $1 in
     --save)   MODE=save;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --resume) MODE=resume; [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
+    --open)   MODE=open;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --json)   MODE=json ;;
     --help|-h) usage; exit 0 ;;
     *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 1 ;;
@@ -61,28 +77,38 @@ save_dir() {
   if [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
     print -r -- "${FLAKELAB_STATE_ROOT}/claude/sessions"
   else
-    print -r -- "${HOME}/.claude/sessions"
+    print -r -- "${HOME}/.local/state/flakelab/sessions"
   fi
 }
 
 # One record per running session, unit-separator delimited (a tab is IFS
 # whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
 # into its place): <pid> US <age-seconds> US <session-id> US <cwd>.
-# A process with no transcript open yet (still starting) gets an empty id and
-# a stderr note — it has nothing to resume.
+# A process with no id from either source (still starting, on an older Claude
+# Code) gets an empty id and a stderr note — it has nothing to resume.
 typeset -a ROWS=()
 US=$'\x1f'
 gather() {
-  local p cwd sid age
+  local p cwd sid age reg started now
+  now="$(date +%s)"
   for p in $(pgrep -x claude 2>/dev/null); do
     cwd="$(readlink "${PROC_ROOT}/${p}/cwd" 2>/dev/null)" || continue
-    sid="$(
-      for f in "${PROC_ROOT}/${p}"/fd/*(@N); do readlink "$f"; done 2>/dev/null |
-        grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
-        sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
-    )"
-    age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
-    [[ -z "$sid" ]] && print -ru2 -- "note: pid ${p} in ${cwd} holds no transcript yet, skipped"
+    sid=""; age=""
+    reg="${REGISTRY}/${p}.json"
+    if [[ -r "$reg" ]]; then
+      sid="$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)"
+      started="$(jq -r '.startedAt // empty' "$reg" 2>/dev/null)"
+      [[ "$started" == <-> ]] && age=$(( now - started / 1000 ))
+    fi
+    if [[ -z "$sid" ]]; then
+      sid="$(
+        for f in "${PROC_ROOT}/${p}"/fd/*(@N); do readlink "$f"; done 2>/dev/null |
+          grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
+          sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
+      )"
+    fi
+    [[ -n "$age" ]] || age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
+    [[ -z "$sid" ]] && print -ru2 -- "note: pid ${p} in ${cwd} has no session id yet, skipped"
     ROWS+=("${p}${US}${age:-0}${US}${sid}${US}${cwd}")
   done
 }
@@ -139,8 +165,11 @@ write_save() {
   print -ru2 -- "saved ${n} session(s) to ${FILE}"
 }
 
-print_resume() {
-  local src="$FILE" line cwd sid n=0
+# PAIRS: "<cwd> US <sid>" per session to bring back — from FILE, else the
+# newest save, else the live sessions. Prints the source as a comment.
+typeset -a PAIRS=()
+collect_pairs() {
+  local src="$FILE" line cwd sid row p age
   if [[ -z "$src" ]]; then
     # newest save first; (N) keeps an empty directory from being a glob error
     local -a saves=("$(save_dir)"/*.txt(Nom))
@@ -153,21 +182,45 @@ print_resume() {
       [[ "$line" == \#* || -z "$line" ]] && continue
       sid="${line##*  }"
       cwd="${line%  *}"
-      print -r -- "cd ${(q)cwd} && claude --resume ${sid}"
-      (( n++ ))
+      PAIRS+=("${cwd}${US}${sid}")
     done < "$src"
   else
     gather
     print -r -- "# from the live sessions (no saved file)"
-    local row p age
     for row in "${ROWS[@]}"; do
       IFS="$US" read -r p age sid cwd <<<"$row"
       [[ -n "$sid" ]] || continue
-      print -r -- "cd ${(q)cwd} && claude --resume ${sid}"
-      (( n++ ))
+      PAIRS+=("${cwd}${US}${sid}")
     done
   fi
-  (( n > 0 )) || { print -ru2 -- "nothing to resume"; return 1 }
+  (( ${#PAIRS[@]} > 0 )) || { print -ru2 -- "nothing to resume"; return 1 }
+}
+
+print_resume() {
+  local pair cwd sid
+  collect_pairs || return 1
+  print -r -- "# one line per terminal — in one shell they run in sequence"
+  for pair in "${PAIRS[@]}"; do
+    IFS="$US" read -r cwd sid <<<"$pair"
+    print -r -- "cd ${(q)cwd} && claude --resume ${sid}"
+  done
+}
+
+# One Windows Terminal tab per session, attached to the calling distro.
+# `-w 0` targets the terminal window this shell lives in (a new one when it
+# has none). wt.exe reaches WSL through the interop PATH; when interop is off
+# there is no Windows to open tabs in, and --resume is the answer.
+open_tabs() {
+  local pair cwd sid n=0
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
+  command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
+  collect_pairs || return 1
+  for pair in "${PAIRS[@]}"; do
+    IFS="$US" read -r cwd sid <<<"$pair"
+    wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${cwd}" -- claude --resume "${sid}" </dev/null >/dev/null 2>&1 &&
+      (( n++ )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+  done
+  print -ru2 -- "opened ${n} tab(s)"
 }
 
 case "$MODE" in
@@ -175,4 +228,5 @@ case "$MODE" in
   json)   gather; print_json ;;
   save)   gather; print_table; write_save ;;
   resume) print_resume ;;
+  open)   open_tabs ;;
 esac

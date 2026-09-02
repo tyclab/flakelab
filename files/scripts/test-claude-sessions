@@ -26,9 +26,12 @@ mkdir -p "${HOME}"
 
 # ---------------------------------------------------------------------------
 # Three "processes": two sessions sharing one directory (the case the
-# newest-transcript heuristic gets wrong), one still starting with no
-# transcript open. Transcript fds are symlinks the way /proc presents them;
-# the stray non-transcript uuid on pid 200 must not win the vote.
+# newest-transcript heuristic gets wrong), one still starting with neither a
+# registry entry nor a transcript open. Pid 100 is registered in
+# ~/.claude/sessions the way Claude Code does it (and its registry id wins
+# over the transcript it holds open); pid 200 has no registry file and falls
+# back to its open transcript — the stray non-transcript uuid must not win
+# the vote. A registry file for a dead pid (999) is not a session.
 PROC="${BASE}/proc"
 SID_A=11111111-2222-3333-4444-555555555555
 SID_B=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
@@ -41,9 +44,14 @@ mk_proc() {
   local -i i=3
   for t in "$@"; do ln -s "$t" "${PROC}/${pid}/fd/${i}"; (( i++ )); done
 }
-mk_proc 100 "${WORK}" "${HOME}/.claude/projects/-work/${SID_A}.jsonl" "${HOME}/.claude/projects/-work/${SID_A}.jsonl" /dev/null
+SID_OLD=99999999-0000-0000-0000-000000000000
+mk_proc 100 "${WORK}" "${HOME}/.claude/projects/-work/${SID_OLD}.jsonl" "${HOME}/.claude/projects/-work/${SID_OLD}.jsonl" /dev/null
 mk_proc 200 "${WORK}" "${HOME}/.claude/projects/-work/${SID_B}.jsonl" "${HOME}/.claude/projects/-work/${SID_B}.jsonl" "/tmp/claude/${SID_A}/scratch"
 mk_proc 300 "${BASE}/other" /dev/null
+mkdir -p "${HOME}/.claude/sessions"
+NOW_MS=$(( $(date +%s) * 1000 ))
+print -r -- "{\"pid\":100,\"sessionId\":\"${SID_A}\",\"cwd\":\"${WORK}\",\"startedAt\":$(( NOW_MS - 7261000 ))}" > "${HOME}/.claude/sessions/100.json"
+print -r -- "{\"pid\":999,\"sessionId\":\"${SID_OLD}\",\"cwd\":\"${WORK}\",\"startedAt\":${NOW_MS}}" > "${HOME}/.claude/sessions/999.json"
 
 STUBS="${BASE}/bin"
 mkdir -p "${STUBS}"
@@ -54,7 +62,12 @@ print -l 100 200 300
 STUB
 cat > "${STUBS}/ps" <<'STUB'
 #!/usr/bin/env zsh
-case "$4" in 100) print 7261 ;; 200) print 90000 ;; *) print 5 ;; esac
+case "$4" in 100) print 1 ;; 200) print 90000 ;; *) print 5 ;; esac
+STUB
+# wt.exe stand-in: records its argv, one call per line
+cat > "${STUBS}/wt.exe" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${WT_LOG}"
 STUB
 chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
@@ -71,9 +84,10 @@ ERR=""
 print -r -- "list"
 run
 check "list exits 0" "${RC}" "0"
-contains "pid 100 resolves to its own transcript" "${OUT}" "100      2h01m   ${SID_A}"
-contains "pid 200 resolves to its own transcript, not the shared directory's newest" "${OUT}" "200      1d01h   ${SID_B}"
-contains "a process with no transcript is noted on stderr" "${ERR}" "note: pid 300 in ${BASE}/other holds no transcript yet"
+contains "pid 100 takes id and age from its registry file, not its open transcript" "${OUT}" "100      2h01m   ${SID_A}"
+contains "pid 200 falls back to its own transcript, not the shared directory's newest" "${OUT}" "200      1d01h   ${SID_B}"
+excludes "a registry file for a dead pid is not a session" "${OUT}" "999"
+contains "a process with no id is noted on stderr" "${ERR}" "note: pid 300 in ${BASE}/other has no session id yet"
 contains "the directory with a space is printed intact" "${OUT}" "${WORK}"
 
 run --json
@@ -87,8 +101,9 @@ print -r -- ""
 print -r -- "save + resume round trip"
 run --save
 check "--save exits 0" "${RC}" "0"
-SAVED="$(ls "${HOME}"/.claude/sessions/*.txt 2>/dev/null | head -1)"
-[[ -n "${SAVED}" ]] && ok "--save writes under ~/.claude/sessions without a state root" || bad "--save wrote nothing under ~/.claude/sessions"
+SAVED="$(ls "${HOME}"/.local/state/flakelab/sessions/*.txt 2>/dev/null | head -1)"
+[[ -n "${SAVED}" ]] && ok "--save writes under ~/.local/state/flakelab/sessions without a state root" || bad "--save wrote nothing under ~/.local/state/flakelab/sessions"
+[[ -z "$(ls "${HOME}"/.claude/sessions/*.txt 2>/dev/null)" ]] && ok "--save leaves Claude's own ~/.claude/sessions alone" || bad "--save wrote into ~/.claude/sessions"
 contains "--save reports the count, transcript-less process excluded" "${ERR}" "saved 2 session(s) to"
 check "saved lines are '<dir>  <id>'" "$(grep -v '^#' "${SAVED}" | head -1)" "${WORK}  ${SID_A}"
 
@@ -102,6 +117,21 @@ excludes "--resume never prints an id-less row" "${OUT}" "${BASE}/other"
 run --resume "${BASE}/missing.txt"
 check "--resume on a missing file exits 1" "${RC}" "1"
 
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "--open: one Windows Terminal tab per session"
+export WT_LOG="${BASE}/wt.log"
+run --open
+check "--open without a distro exits 2" "${RC}" "2"
+export WSL_DISTRO_NAME=flakelab
+run --open
+check "--open exits 0" "${RC}" "0"
+check "--open calls wt.exe once per session" "$(wc -l < "${WT_LOG}")" "2"
+contains "--open targets the current window, the distro, the directory and the id" \
+  "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab --cd ${WORK} -- claude --resume ${SID_A}"
+contains "--open reports the count" "${ERR}" "opened 2 tab(s)"
+unset WSL_DISTRO_NAME
+
 # state root wins over ~/.claude
 export FLAKELAB_STATE_ROOT="${BASE}/state"
 run --save
@@ -111,7 +141,7 @@ unset FLAKELAB_STATE_ROOT
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "resume with nothing saved falls back to the live sessions"
-rm -rf "${HOME}/.claude/sessions"
+rm -rf "${HOME}/.local/state/flakelab/sessions"
 run --resume
 check "live fallback exits 0" "${RC}" "0"
 contains "live fallback says so" "${OUT}" "# from the live sessions (no saved file)"
