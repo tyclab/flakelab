@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `flakelab update` also updates an installed Claude plugin whose version in the freshly fetched marketplace differs from the installed one, after each successful switch (plugins a marketplace ships from its own tree; externally sourced ones stay with activation). `claude plugin update` lived only in home-manager activation, which is skipped when the built config did not change, and `plugin install` is a no-op on an installed plugin — so a plugin release merged after the last config change stayed on its installed version through every no-op switch, with the freshly fetched marketplace clone already at the new one (observed 2026-09-02: marketplace at skills 13.2.1, cache at 13.2.0). Failures warn and never fail the update.
+
 ## [0.3.0] - 2026-09-02
 
 ### Fixed
