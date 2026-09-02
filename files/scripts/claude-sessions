@@ -218,7 +218,7 @@ open_tabs() {
   for pair in "${PAIRS[@]}"; do
     IFS="$US" read -r cwd sid <<<"$pair"
     wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${cwd}" -- claude --resume "${sid}" </dev/null >/dev/null 2>&1 &&
-      (( n++ )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+      (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
   done
   print -ru2 -- "opened ${n} tab(s)"
 }
