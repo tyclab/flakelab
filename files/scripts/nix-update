@@ -224,6 +224,43 @@ _nix_check_base() {
   return 1
 }
 
+# A switch that overlaps the distro's OWN boot activation kills the caller.
+# WSL starts `home-manager-<user>.service` at boot and it runs for a minute or
+# more (plugin installs, marketplace fetches); switch-to-configuration stops
+# and restarts that unit, and the session scope the login shell sits in gets
+# torn down in the same reshuffle. Observed 2026-09-02: `flakeup` typed 30s
+# after boot went silent at "setting up /sbin...", the switch exited 4 with
+# two failed units, and the operator had to redo it from a fresh session. So
+# wait for the boot to settle first — bounded, and only while the manager still
+# reports it is starting or that unit is still activating. `degraded` is a
+# finished boot with failed units and is NOT waited on. systemctl resolves from
+# the caller's PATH like sudo does: it must talk to the RUNNING systemd.
+_nix_wait_boot() {
+  [[ -n "${FLAKELAB_BOOT_OK:-}" ]] && return 0
+  command -v systemctl > /dev/null 2>&1 || return 0
+  local _unit="home-manager-${USER:-$(id -un)}.service" _limit="${FLAKELAB_BOOT_WAIT:-180}"
+  local _state _hm _said=0 _deadline=$(( SECONDS + _limit ))
+  while true; do
+    _state="$(systemctl is-system-running 2> /dev/null)"
+    _hm="$(systemctl is-active "${_unit}" 2> /dev/null)"
+    if [[ "${_state}" != (initializing|starting) && "${_hm}" != (activating|reloading) ]]; then
+      (( _said )) && print -P "%F{green}✓ boot activation finished%f"
+      return 0
+    fi
+    if (( SECONDS >= _deadline )); then
+      print -P "%F{red}✗ still booting after ${_limit}s (system: ${_state:-?}, ${_unit}: ${_hm:-?}) — refusing to switch into a running boot activation%f"
+      print -P "%F{red}  inspect: systemctl status ${_unit}; retry once it settles, or set FLAKELAB_BOOT_OK=1 to switch anyway%f"
+      return 1
+    fi
+    if (( ! _said )); then
+      print -P "%F{yellow}⚠ the distro is still booting (system: ${_state:-?}, ${_unit}: ${_hm:-?}) — waiting up to ${_limit}s; a switch now would stop that activation and tear down this login session%f"
+      _said=1
+    fi
+    sleep 2
+  done
+}
+_nix_wait_boot || exit 1
+
 # Order matters: an accepted pull moves HEAD, and the default-branch check
 # must measure where that left it.
 _nix_check_remote || exit 1
