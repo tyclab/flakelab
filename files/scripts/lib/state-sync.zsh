@@ -62,6 +62,12 @@ sync_conflict_copies() {
       reply+=("${f}")
     elif [[ -n "${stem}" && "${f:t}" == "${stem}"*".${ext}" ]]; then
       reply+=("${f}")
+    elif [[ -z "${stem}" && "${f:t}" == *"${tail}" ]]; then
+      # Synology Drive on a dotfile: the whole name is the "extension", the
+      # stem is empty, so the marker lands in FRONT of the name
+      # (_<host>_<date>_Conflict.zsh_history_merged). Observed 2026-09-01,
+      # a copy that then sat unfolded beside the merged history for a day.
+      reply+=("${f}")
     fi
   done
   return 0

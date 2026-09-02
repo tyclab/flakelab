@@ -550,6 +550,7 @@ mkdir -p "${FIX_STATE}/shell"
 rec 1000 0 "in-the-merged-file"   > "${FIX_STATE}/shell/.zsh_history_merged"
 rec 1100 0 "only-in-the-conflict" > "${FIX_STATE}/shell/.zsh_history_merged_OTHERBOX_Jan-09-003137-2026_Conflict"
 rec 1200 0 "only-in-syncthing"    > "${FIX_STATE}/shell/.zsh_history_merged.sync-conflict-20260109-003137-ABCDEF"
+rec 1300 0 "only-in-synology"     > "${FIX_STATE}/shell/_OTHERBOX_Jan-09-003137-2026_Conflict.zsh_history_merged"
 rec 2000 0 "typed-here"           > "${FIX_HOME}/.zsh_history"
 
 run_backup --force
@@ -560,6 +561,8 @@ contains "and the second's"                             "${merged}" "only-in-syn
 contains "and the live entry"                           "${merged}" "typed-here"
 absent   "the folded conflict copy is removed" "${FIX_STATE}/shell/.zsh_history_merged_OTHERBOX_Jan-09-003137-2026_Conflict"
 absent   "and so is the other one"             "${FIX_STATE}/shell/.zsh_history_merged.sync-conflict-20260109-003137-ABCDEF"
+contains "and the Synology dotfile-shaped copy's" "${merged}" "only-in-synology"
+absent   "which is removed as well"            "${FIX_STATE}/shell/_OTHERBOX_Jan-09-003137-2026_Conflict.zsh_history_merged"
 # "conflict cop" alone also matches "Could not remove folded history conflict copy".
 contains "the removal is logged" "${OUT}" "Removed folded history conflict copy"
 
