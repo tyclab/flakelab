@@ -333,10 +333,14 @@ tried in this order at shell start:
    file it commits as ciphertext. sops-nix decrypts it at activation into the
    `/run/secrets` ramfs (`/run/secrets/tyc-env`, mode 0400, owned by the login)
    and the zsh init sources it from there — plaintext never touches a disk, a
-   repo, or a backup. Enrolment per host: `age-keygen -o <keyFile>` (default
-   `/var/lib/sops-nix/key.txt`; point `sopsAgeKeyFile` at a disk excluded from
-   image backups where one exists), add the printed recipient to the overlay's
-   `.sops.yaml`, `sops updatekeys <file>`, set the option, `flakelab update`.
+   repo, or a backup. `sops` and `age` ship _with_ the option
+   (`nix/secrets.nix` installs them under the same `mkIf`), so a first enrolment
+   borrows them: `nix shell nixpkgs#sops nixpkgs#age`. Enrolment per host:
+   `age-keygen -o <keyFile>` (default `/var/lib/sops-nix/key.txt`; point
+   `sopsAgeKeyFile` at a disk excluded from image backups where one exists), add
+   the printed recipient to the overlay's `.sops.yaml`,
+   `sops updatekeys <file>`, set the option, `flakelab update` — which puts both
+   on PATH for every rotation after that.
    Rotation: `sops <file>` edits values; `.sops.yaml` + `sops updatekeys`
    changes recipients.
 2. **Legacy fallback** — `~/.config/tyc/secrets.env` (git-ignored), populated
