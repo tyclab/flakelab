@@ -98,6 +98,7 @@ GITLAB_REPOS="${FLAKELAB_GITLAB_REPOS-0}"
 needs_glab() { (( GITLAB_GROUPS > 0 )) }
 needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) || [[ -n "${KIRO_PLUGIN_REMOTE}" ]] }
 SECRETS="${HOME}/.config/tyc/secrets.env"
+SOPS_RENDER="/run/secrets/tyc-env"
 WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
 
 # Exported by the nix-doctor wrapper (nix/scripts.nix) from flakelab.target. Run
@@ -293,10 +294,44 @@ fi
 # Secrets (shape only — never a value)
 # ---------------------------------------------------------------------------
 log_head "Secrets"
-if [[ ! -f "${SECRETS}" ]]; then
-  log_fail "no ${SECRETS}"
+# A sops-enrolled box (flakelab.sopsSecretsFile set) sources ONLY the ramfs
+# render — zsh.nix compiles the legacy path out entirely — so the home file
+# being gone is the finished state there, not a finding. Check whichever
+# source the shell actually reads; demanding the legacy file on an enrolled
+# box reports FAIL at exactly the moment the cutover is complete.
+if [[ -r "${SOPS_RENDER}" ]]; then
+  local rmode rkeys
+  rmode="$(stat -c '%a' "${SOPS_RENDER}")"
+  if [[ "${rmode}" == "400" ]]; then
+    log_ok "sops render mode 400"
+  else
+    log_fail "sops render is mode ${rmode}, expected 400"
+    log_hint "sops-nix sets this from secrets.tyc-env.mode; a drifted mode means a hand-edit under /run"
+  fi
+  if grep -q $'\r' "${SOPS_RENDER}"; then
+    log_fail "sops render has CRLF line endings; every token carries a trailing CR"
+    log_hint "re-encrypt secrets/secrets.env from an LF-only plaintext"
+  else
+    log_ok "sops render free of carriage returns"
+  fi
+  rkeys=$(grep -cE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' "${SOPS_RENDER}" || true)
+  if (( rkeys > 0 )); then
+    log_ok "sops render defines ${rkeys} key(s)"
+  else
+    log_fail "sops render defines no keys"
+    log_hint "the ciphertext decrypted to an empty dotenv; check secrets/secrets.env"
+  fi
+  # Not a failure, but it is dead weight that can drift out of sync with the
+  # fleet and be sourced by anything that reads the path directly.
+  if [[ -f "${SECRETS}" ]]; then
+    log_warn "legacy ${SECRETS} still present; the render supersedes it"
+    log_hint "the shell no longer reads it — remove it once you are confident in the render"
+  fi
+elif [[ ! -f "${SECRETS}" ]]; then
+  log_fail "no ${SECRETS} and no ${SOPS_RENDER}"
   log_hint "populate it from OpenBao, or: flakelab backup --restore"
   log_hint "see files/config/secrets.env.example for the expected keys"
+  log_hint "on a sops-enrolled box the render is missing: systemctl status sops-install-secrets.service"
 else
   local mode keys
   mode="$(stat -c '%a' "${SECRETS}")"
