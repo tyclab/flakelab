@@ -3,8 +3,8 @@
 # `cfg` is the flakelab option set (nix/options.nix) — the callers in nix/home/
 # pass `osConfig.flakelab`. The fields read here are repoPath, flakeAttr,
 # username, kiroPluginRepo, gitlabGroups, repos, sshKeys, cloneExclude,
-# stateRoot, stateTranscripts, stateTranscriptSecrets, target, hostName and
-# backupRoot; every one has
+# stateRoot, stateTranscripts, stateTranscriptSecrets, sopsSecretsFile, target,
+# hostName and backupRoot; every one has
 # its type and default declared there, which is why nothing below needs an
 # `or` fallback any more.
 { pkgs, cfg }:
@@ -320,6 +320,7 @@ rec {
 
   nix-backup = pkgs.writeShellScriptBin "nix-backup" ''
     export FLAKELAB_BACKUP_ROOT=${backupRoot}
+    ${lib.optionalString (cfg.sopsSecretsFile != null) "export FLAKELAB_SOPS_RENDER=1"}
     ${
       # Instance identity for a target with no WSL_DISTRO_NAME to read at run
       # time — gated at EVAL time on cfg.target rather than leaving the script

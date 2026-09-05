@@ -132,11 +132,13 @@ FAKE_GITLEAKS
 chmod +x "${BASE}/bin/gitleaks"
 
 # Per-scenario knobs, reset by fixture: STATE/TRANSCRIPTS/TRANSCRIPT_SECRETS feed FLAKELAB_STATE_*,
+# SOPS feeds FLAKELAB_SOPS_RENDER,
 # FAKE_* steer the scanner, ANSWERS feeds FLAKELAB_GATE_ANSWERS, NO_GITLEAKS
 # runs on a PATH without any gitleaks.
 STATE=""
 TRANSCRIPTS=""
 TRANSCRIPT_SECRETS=""
+SOPS=""
 FAKE_SECRET=""
 FAKE_SECRET2=""
 FAKE_SPAN=""
@@ -180,6 +182,7 @@ fixture() {
   STATE=""
   TRANSCRIPTS=""
   TRANSCRIPT_SECRETS=""
+  SOPS=""
   FAKE_SECRET=""
   FAKE_SECRET2=""
   FAKE_SPAN=""
@@ -231,7 +234,7 @@ run_backup() {
   [[ -n "${NO_GITLEAKS}" ]] && run_path="$(nogl_path)"
   OUT="$(FLAKELAB_BACKUP_ROOT="${FIX_ROOT}" FLAKELAB_HOME_DIR="${FIX_HOME}" \
     FLAKELAB_STATE_ROOT="${STATE}" FLAKELAB_STATE_TRANSCRIPTS="${TRANSCRIPTS}" \
-    FLAKELAB_STATE_TRANSCRIPT_SECRETS="${TRANSCRIPT_SECRETS}" \
+    FLAKELAB_STATE_TRANSCRIPT_SECRETS="${TRANSCRIPT_SECRETS}" FLAKELAB_SOPS_RENDER="${SOPS}" \
     PATH="${run_path}" \
     FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}" \
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
@@ -681,6 +684,31 @@ check "the state root holds exactly the history, the memory and the slug manifes
 is_file "the seed is still in the backup root" "${FIX_ROOT}/shared/secrets/secrets.env"
 is_file "host-specific claude settings are still in the backup root" "${FIX_ROOT}/instances/TestDistro/claude/settings.json"
 absent  "memory is not ALSO written to the backup root" "${FIX_ROOT}/instances/TestDistro/claude/projects"
+
+print -r -- "with the sops render the legacy secrets.env is neither archived nor restored"
+fixture sops-skips-legacy-secrets
+SOPS=1
+mkdir -p "${FIX_HOME}/.config/tyc" "${FIX_ROOT}/shared/secrets"
+print -r -- "GITLAB_TOKEN='x'" > "${FIX_HOME}/.config/tyc/secrets.env"
+print -r -- "GITLAB_TOKEN='old'" > "${FIX_ROOT}/shared/secrets/secrets.env"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+
+run_backup --force
+check    "the run exits clean"                        "${RC}" "0"
+contains "the archive step is skipped"                "${OUT}" "the legacy file is not archived"
+check    "and the seed copy is left as it was"        "$(< "${FIX_ROOT}/shared/secrets/secrets.env")" "GITLAB_TOKEN='old'"
+contains "with a warning that it is still there"      "${OUT}" "plaintext secrets.env is still in the backup root"
+
+rm -f "${FIX_HOME}/.config/tyc/secrets.env"
+run_restore --force
+check    "the restore exits clean"                    "${RC}" "0"
+contains "the restore step is skipped"                "${OUT}" "the legacy file is not restored"
+absent   "and no plaintext lands in the home"         "${FIX_HOME}/.config/tyc/secrets.env"
+
+rm -f "${FIX_ROOT}/shared/secrets/secrets.env"
+run_backup --force
+check    "a backup with no seed copy exits clean"     "${RC}" "0"
+excludes "and does not warn"                          "${OUT}" "plaintext secrets.env is still"
 
 print -r -- "a memory backup into the state root never deletes the other box's files"
 memory_fixture state-memory-additive
