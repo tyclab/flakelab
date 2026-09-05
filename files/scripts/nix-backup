@@ -29,6 +29,15 @@ STATE_TRANSCRIPTS=false
 case "${FLAKELAB_STATE_TRANSCRIPTS:-}" in
   1|true|yes) STATE_TRANSCRIPTS=true ;;
 esac
+# Set by the nix wrapper when sops-nix renders the secrets: the legacy
+# ~/.config/tyc/secrets.env is then neither read by the shell nor part of the
+# seed — the ciphertext lives in the overlay, the host's age identity stays on
+# the host — so it is neither archived nor restored. Restoring it would put a
+# plaintext copy back that nothing reads and everything has to be rid of again.
+SOPS_RENDER=false
+case "${FLAKELAB_SOPS_RENDER:-}" in
+  1|true|yes) SOPS_RENDER=true ;;
+esac
 # What the secret gate does with a secret found in a transcript. The synced
 # copy is redacted either way; `review` also holds the finding for
 # --review-secrets, `redact` lets the redacted copy stand and asks nothing.
@@ -203,6 +212,8 @@ while (( $# > 0 )); do
       echo "  FLAKELAB_STATE_TRANSCRIPT_SECRETS  review (default): hold each transcript secret for --review-secrets;"
       echo "                       redact: the redacted synced copy is the ruling, nothing is held or asked"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
+      echo "  FLAKELAB_SOPS_RENDER        1 when sops-nix renders the secrets (set by the nix wrapper): the legacy"
+      echo "                       ~/.config/tyc/secrets.env is neither archived nor restored"
       echo ""
       echo "Exits non-zero if any file failed to copy or failed verification."
       echo ""
@@ -985,8 +996,12 @@ do_restore() {
   restore_file "${BACKUP_GIT}/ignore"      "${HOME_DIR}/.config/git/ignore"
 
   log_info "--- secrets.env ---"
-  mkdir -p "${HOME_DIR}/.config/tyc" && chmod 700 "${HOME_DIR}/.config/tyc"
-  restore_private_file "${BACKUP_SECRETS}/secrets.env" "${HOME_DIR}/.config/tyc/secrets.env"
+  if ${SOPS_RENDER}; then
+    log_info "Skipped: secrets come from the sops render, the legacy file is not restored"
+  else
+    mkdir -p "${HOME_DIR}/.config/tyc" && chmod 700 "${HOME_DIR}/.config/tyc"
+    restore_private_file "${BACKUP_SECRETS}/secrets.env" "${HOME_DIR}/.config/tyc/secrets.env"
+  fi
 
   log_info "--- k9s ---"
   restore_dir "${BACKUP_K9S}/config"   "${HOME_DIR}/.config/k9s"
@@ -1108,8 +1123,14 @@ do_backup() {
   backup_file "${HOME_DIR}/.config/git/ignore" "${BACKUP_GIT}/ignore"
 
   log_info "--- secrets.env ---"
-  ensure_private_dir "${BACKUP_SECRETS}"
-  backup_private_file "${HOME_DIR}/.config/tyc/secrets.env" "${BACKUP_SECRETS}/secrets.env"
+  if ${SOPS_RENDER}; then
+    log_info "Skipped: secrets come from the sops render, the legacy file is not archived"
+    [[ -f "${BACKUP_SECRETS}/secrets.env" ]] \
+      && log_warn "A plaintext secrets.env is still in the backup root: ${BACKUP_SECRETS}/secrets.env — the sops file supersedes it; remove it"
+  else
+    ensure_private_dir "${BACKUP_SECRETS}"
+    backup_private_file "${HOME_DIR}/.config/tyc/secrets.env" "${BACKUP_SECRETS}/secrets.env"
+  fi
 
   log_info "--- k9s ---"
   backup_dir "${HOME_DIR}/.config/k9s"              "${BACKUP_K9S}/config"
