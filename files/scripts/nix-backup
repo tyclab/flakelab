@@ -29,6 +29,17 @@ STATE_TRANSCRIPTS=false
 case "${FLAKELAB_STATE_TRANSCRIPTS:-}" in
   1|true|yes) STATE_TRANSCRIPTS=true ;;
 esac
+# What the secret gate does with a secret found in a transcript. The synced
+# copy is redacted either way; `review` also holds the finding for
+# --review-secrets, `redact` lets the redacted copy stand and asks nothing.
+TRANSCRIPT_SECRETS="${FLAKELAB_STATE_TRANSCRIPT_SECRETS:-review}"
+case "${TRANSCRIPT_SECRETS}" in
+  review|redact) ;;
+  *)
+    print -r -u2 -- "FLAKELAB_STATE_TRANSCRIPT_SECRETS must be review or redact, not: ${TRANSCRIPT_SECRETS}"
+    exit 1
+    ;;
+esac
 state_enabled() { ${STATE_CONFIGURED} && ${STATE_USABLE} }
 state_unavailable() { ${STATE_CONFIGURED} && ! ${STATE_USABLE} }
 # Set once history or transcripts reached the state root; the closing warning reads it.
@@ -189,6 +200,8 @@ while (( $# > 0 )); do
       echo "  FLAKELAB_INSTANCE           instance name off WSL, where WSL_DISTRO_NAME is unset (set by the nix wrapper from hostName)"
       echo "  FLAKELAB_STATE_ROOT         optional shared-state root (a synced folder, never a git checkout)"
       echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts in the state root"
+      echo "  FLAKELAB_STATE_TRANSCRIPT_SECRETS  review (default): hold each transcript secret for --review-secrets;"
+      echo "                       redact: the redacted synced copy is the ruling, nothing is held or asked"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
       echo ""
       echo "Exits non-zero if any file failed to copy or failed verification."

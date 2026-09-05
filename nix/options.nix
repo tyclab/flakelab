@@ -357,6 +357,15 @@ in
       description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null.";
     };
 
+    stateTranscriptSecrets = mkOption {
+      type = types.enum [
+        "review"
+        "redact"
+      ];
+      default = "review";
+      description = "What the secret gate does with a secret it finds in a transcript. Under both, the synced copy carries [REDACTED:<rule>] in its place and the secret itself never reaches stateRoot. `review` also holds the finding for `flakelab backup --review-secrets`, where the operator decides per secret whether the LOCAL transcript is scrubbed too — a question that returns with every new secret a session captures. `redact` lets the redacted copy stand as the ruling: nothing is held, nothing is asked, the local file is left as it is. A delete already ruled elsewhere in the fleet is offered under both, since only this box can apply it to its own files. Ignored unless stateTranscripts is set. Exported as FLAKELAB_STATE_TRANSCRIPT_SECRETS.";
+    };
+
     sopsSecretsFile = mkOption {
       type = types.nullOr types.path;
       default = null;

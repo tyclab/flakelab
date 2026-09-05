@@ -499,7 +499,7 @@ gate_redact_transcript() {
     return 1
   fi
 
-  local start end rule desc match secret fp decision red pv ptext id entry now
+  local start end rule desc match secret fp decision red pv ptext id entry now needle trail
   local -i held=0 countable=0 ln
   local -a checked=() secrets=()
   now="$(gate_now)"
@@ -523,7 +523,15 @@ gate_redact_transcript() {
       decision="$(gate_decision "${fp}")"
       [[ "${decision}" == allow ]] && continue
     fi
-    print -r -- "${start}"$'\x01'"${end}"$'\x01'"${rule}"$'\x01'"${secret}" >> "${spec}"
+    # The needle is the secret minus a dangling backslash: a rule that admits
+    # `\` (gitleaks' jwt does) runs through the `\"` that closes a token quoted
+    # inside a JSON string and reports the `\` as part of the secret. Replacing
+    # that whole would leave a bare `"` behind and an invalid line; the
+    # fingerprint still names the secret exactly as reported.
+    needle="${secret}"
+    trail="${secret##*[^\\]}"
+    (( ${#trail} % 2 )) && needle="${secret[1,-2]}"
+    print -r -- "${start}"$'\x01'"${end}"$'\x01'"${rule}"$'\x01'"${needle}" >> "${spec}"
     for (( ln = start; ln <= end; ln++ )); do
       checked+=("${ln}")
     done
@@ -536,6 +544,11 @@ gate_redact_transcript() {
     elif [[ "${decision}" == delete ]] && gate_decided_here "${fp}"; then
       continue
     fi
+    # Policy `redact`: for a finding nobody has ruled on, the redaction IS the
+    # ruling — the secret stays out of the synced copy, the local file is left
+    # alone and nothing is held for a review. A delete ruled elsewhere is still
+    # offered: this box owns the file it names.
+    [[ "${TRANSCRIPT_SECRETS}" == redact && -z "${decision}" ]] && continue
     countable=$(( countable + 1 ))
     if [[ -n "${held_file}" ]]; then
       if [[ -z "${decision}" || "${decision}" == delete ]] \
