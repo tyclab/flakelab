@@ -156,26 +156,42 @@ in
     initContent = ''
       export GPG_TTY="$(tty)"
 
-      ${homeJump}# Load runtime secrets. Preferred source: the sops-nix render in the
-      # /run/secrets ramfs (a box whose overlay sets `sopsSecretsFile` — the
-      # path is nix/secrets.nix's secrets.tyc-env default). Fallback: the
-      # legacy hand-written env file, populated from OpenBao (e.g.
-      # `bao kv get`). Either way nothing secret is baked into the repo or
-      # the Nix store.
+      ${homeJump}# Load runtime secrets from EXACTLY ONE source, chosen at build time by
+      # whether the overlay set `sopsSecretsFile`:
+      #   set  -> the sops-nix render in the /run/secrets ramfs only
+      #           (path is nix/secrets.nix's secrets.tyc-env default)
+      #   null -> the legacy hand-written env file only, populated from
+      #           OpenBao (e.g. `bao kv get`)
+      # Either way nothing secret is baked into the repo or the Nix store.
       #
-      # BOTH sources go through `tr -d '\r'`: a file written from PowerShell
-      # keeps CRLF line endings, and because the values are single-quoted
-      # (export K='v') the CR lands INSIDE the value — a 62-character
-      # GITLAB_TOKEN arrives as 63 and every GitLab API call dies with
+      # No runtime fallback between them, deliberately. An enrolled box whose
+      # render is missing must start a shell with NO secrets and fail loudly;
+      # silently sourcing a stale home file instead is how a box ends up
+      # running secret values that diverged from the fleet's months ago.
+      #
+      # Whichever source is compiled in goes through `tr -d '\r'`: a file
+      # written from PowerShell keeps CRLF line endings, and because the
+      # values are single-quoted (export K='v') the CR lands INSIDE the
+      # value — a 62-character GITLAB_TOKEN arrives as 63 and every
+      # GitLab API call dies with
       # `invalid header field value for "Private-Token"`. A sops round trip
       # PRESERVES such CRs (verified on an encrypt/decrypt of a CRLF dotenv),
       # so encrypting an existing CRLF secrets.env would reproduce the same
       # failure from the ramfs render without the filter.
-      if [[ -r /run/secrets/tyc-env ]]; then
-        set -a; source =(tr -d '\r' < /run/secrets/tyc-env); set +a
-      elif [[ -r "$HOME/.config/tyc/secrets.env" ]]; then
-        set -a; source =(tr -d '\r' < "$HOME/.config/tyc/secrets.env"); set +a
-      fi
+      ${
+        if cfg.sopsSecretsFile != null then
+          ''
+            if [[ -r /run/secrets/tyc-env ]]; then
+              set -a; source =(tr -d '\r' < /run/secrets/tyc-env); set +a
+            fi
+          ''
+        else
+          ''
+            if [[ -r "$HOME/.config/tyc/secrets.env" ]]; then
+              set -a; source =(tr -d '\r' < "$HOME/.config/tyc/secrets.env"); set +a
+            fi
+          ''
+      }
 
       # Bitwarden CLI session. `bw unlock` yields a per-unlock token that stays
       # valid until `bw lock`/`bw logout` — not a durable secret, so it belongs

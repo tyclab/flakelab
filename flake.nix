@@ -593,6 +593,10 @@
               ];
             };
             secret = forced.config.sops.secrets.tyc-env;
+            zshOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username}.programs.zsh.initContent;
+            zshOn = zshOf forced;
+            zshOff = zshOf self.nixosConfigurations.default;
+            hasInfix = nixpkgs.lib.hasInfix;
           in
           assert secret.format == "dotenv";
           assert secret.path == "/run/secrets/tyc-env";
@@ -605,6 +609,14 @@
           # The unit variant, or a key on its own mount fails every boot.
           assert forced.config.sops.useSystemdActivation;
           assert self.nixosConfigurations.default.config.sops.secrets == { };
+          # zsh.nix compiles in EXACTLY ONE secrets source per box — no runtime
+          # fallback. An enrolled box must never be able to silently source a
+          # stale home file when the render is missing, and an un-enrolled one
+          # must never reference a path sops-nix has not created.
+          assert hasInfix "/run/secrets/tyc-env" zshOn;
+          assert !hasInfix ".config/tyc/secrets.env" zshOn;
+          assert hasInfix ".config/tyc/secrets.env" zshOff;
+          assert !hasInfix "/run/secrets/tyc-env" zshOff;
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
       };
 
