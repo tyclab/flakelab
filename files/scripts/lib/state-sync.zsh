@@ -605,7 +605,11 @@ backup_transcripts() {
         else
           local note=""
           ${SYNC_TRANSCRIPT_WROTE} || note="; synced copy unchanged"
-          log_warn "Secret gate: ${GATE_REDACT_HELD} secret(s) held back from the synced copy of ${srcs[i]:t} (redacted${note})"
+          if [[ "${TRANSCRIPT_SECRETS}" == redact ]] && (( GATE_REDACT_COUNTABLE == 0 )); then
+            log_info "Secret gate: redacted ${GATE_REDACT_HELD} secret(s) out of the synced copy of ${srcs[i]:t}${note}"
+          else
+            log_warn "Secret gate: ${GATE_REDACT_HELD} secret(s) held back from the synced copy of ${srcs[i]:t} (redacted${note})"
+          fi
         fi
       fi
     else

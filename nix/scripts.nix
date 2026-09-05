@@ -3,7 +3,8 @@
 # `cfg` is the flakelab option set (nix/options.nix) — the callers in nix/home/
 # pass `osConfig.flakelab`. The fields read here are repoPath, flakeAttr,
 # username, kiroPluginRepo, gitlabGroups, repos, sshKeys, cloneExclude,
-# stateRoot, stateTranscripts, target, hostName and backupRoot; every one has
+# stateRoot, stateTranscripts, stateTranscriptSecrets, target, hostName and
+# backupRoot; every one has
 # its type and default declared there, which is why nothing below needs an
 # `or` fallback any more.
 { pkgs, cfg }:
@@ -332,7 +333,10 @@ rec {
     }
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
-      ${lib.optionalString cfg.stateTranscripts "export FLAKELAB_STATE_TRANSCRIPTS=1"}
+      ${lib.optionalString cfg.stateTranscripts ''
+        export FLAKELAB_STATE_TRANSCRIPTS=1
+        export FLAKELAB_STATE_TRANSCRIPT_SECRETS=${cfg.stateTranscriptSecrets}
+      ''}
     ''}
     # The secret gate's rule set, as a store path: the gate scans with the same
     # rules on every machine, and a checkout run is the only case that has to

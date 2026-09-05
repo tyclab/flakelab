@@ -131,11 +131,12 @@ exit 0
 FAKE_GITLEAKS
 chmod +x "${BASE}/bin/gitleaks"
 
-# Per-scenario knobs, reset by fixture: STATE/TRANSCRIPTS feed FLAKELAB_STATE_*,
+# Per-scenario knobs, reset by fixture: STATE/TRANSCRIPTS/TRANSCRIPT_SECRETS feed FLAKELAB_STATE_*,
 # FAKE_* steer the scanner, ANSWERS feeds FLAKELAB_GATE_ANSWERS, NO_GITLEAKS
 # runs on a PATH without any gitleaks.
 STATE=""
 TRANSCRIPTS=""
+TRANSCRIPT_SECRETS=""
 FAKE_SECRET=""
 FAKE_SECRET2=""
 FAKE_SPAN=""
@@ -178,6 +179,7 @@ fixture() {
   FIX_DECISIONS="${FIX_STATE}/.flakelab-state-gate/decisions.jsonl"
   STATE=""
   TRANSCRIPTS=""
+  TRANSCRIPT_SECRETS=""
   FAKE_SECRET=""
   FAKE_SECRET2=""
   FAKE_SPAN=""
@@ -229,6 +231,7 @@ run_backup() {
   [[ -n "${NO_GITLEAKS}" ]] && run_path="$(nogl_path)"
   OUT="$(FLAKELAB_BACKUP_ROOT="${FIX_ROOT}" FLAKELAB_HOME_DIR="${FIX_HOME}" \
     FLAKELAB_STATE_ROOT="${STATE}" FLAKELAB_STATE_TRANSCRIPTS="${TRANSCRIPTS}" \
+    FLAKELAB_STATE_TRANSCRIPT_SECRETS="${TRANSCRIPT_SECRETS}" \
     PATH="${run_path}" \
     FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}" \
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
@@ -1026,6 +1029,76 @@ check    "the third run exits clean"              "${RC}" "0"
 check    "the synced copy grew by exactly the appended line" \
   "$(wc -c < "${synced}")" "$(( synced_bytes + ${#clean_line} + 1 ))"
 contains "and it was copied this time"            "${OUT}" "Synced transcript"
+
+print -r -- "a secret that ends inside a JSON escape is redacted without breaking the line"
+transcript_fixture gate-escape-boundary
+# gitleaks' jwt rule admits a backslash, so a token quoted inside a JSON string
+# is reported with the `\` of the closing `\"` attached; replaced whole, a bare
+# `"` would be left behind and the line would no longer parse.
+FAKE_SECRET='hunter2-secret-and-a-good-deal-more\'
+LIVE="${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"token \"hunter2-secret-and-a-good-deal-more\" here"}' > "${LIVE}"
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the transcript is synced"               "${synced}"
+contains "with the secret replaced and the escape intact" "$(< "${synced}")" '[REDACTED:fake-rule]\" here'
+excludes "and the secret gone"                    "$(< "${synced}")" "hunter2-secret"
+contains "the synced line is still valid JSON"    "$(jq -r '.type' "${synced}")" "user"
+contains "the redaction is held for review"       "$(< "${FIX_HELD}")" '"kind":"transcript"'
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                 "${RC}" "0"
+contains "the local transcript is scrubbed the same way" "$(< "${LIVE}")" '[REDACTED:fake-rule]\" here'
+excludes "with the secret gone from it"           "$(< "${LIVE}")" "hunter2-secret"
+contains "and still valid JSON"                   "$(jq -r '.type' "${LIVE}")" "user"
+
+print -r -- "policy redact: the redacted synced copy is the ruling and nothing is held"
+transcript_fixture gate-transcript-redact-policy
+secret_transcript
+TRANSCRIPT_SECRETS=redact
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+contains "the synced copy is redacted"            "$(< "${synced}")" "[REDACTED:fake-rule]"
+excludes "and the secret gone"                    "$(< "${synced}")" "hunter2-secret"
+contains "the local transcript keeps its text"    "$(< "${LIVE}")" "hunter2-secret"
+check    "nothing is held for review"             "$(cat "${FIX_HELD}" 2> /dev/null | wc -l)" "0"
+excludes "and nothing is reported held"           "${OUT}" "held back"
+contains "the redaction is logged as information" "${OUT}" "redacted 1 secret(s) out of the synced copy of abc.jsonl"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "a review has nothing to do"             "${RC}" "0"
+contains "and says so"                            "${OUT}" "Nothing has been held back"
+
+print -r -- "policy redact still offers a delete ruled elsewhere, since only this box can apply it"
+transcript_fixture gate-redact-policy-foreign-delete
+secret_transcript
+TRANSCRIPT_SECRETS=redact
+foreign_decision delete "${FAKE_SECRET}"
+
+run_backup --force
+check    "the run exits clean"                    "${RC}" "0"
+contains "the finding is held to apply the ruling" "$(< "${FIX_HELD}")" '"kind":"transcript"'
+contains "and reported"                           "${OUT}" "held back"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the review exits clean"                 "${RC}" "0"
+contains "it asks once before touching local files" "${OUT}" "already decided to this machine's local files"
+excludes "and the local transcript is scrubbed"   "$(< "${LIVE}")" "hunter2-secret"
+
+print -r -- "an unknown transcript-secrets policy is refused"
+transcript_fixture gate-policy-invalid
+TRANSCRIPT_SECRETS=bogus
+run_backup --force
+check    "the run fails"                          "${RC}" "1"
+contains "and names the setting"                  "${OUT}" "FLAKELAB_STATE_TRANSCRIPT_SECRETS must be review or redact"
 
 # ---------------------------------------------------------------------------
 # Overlapping and duplicate findings (issue #36)
