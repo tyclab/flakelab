@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Provisions a fresh NixOS-WSL developer distro from the private overlay flake.
 
@@ -555,6 +555,32 @@ $KeyWin = Join-Path $KeyDirWin 'id_ed25519'
 $SecretsDirWin = Join-Path $OverlayWin 'files\config\shared\secrets'
 $SecretsWin = Join-Path $SecretsDirWin 'secrets.env'
 $Marker = Join-Path $OverlayWin '.migrated-from-wslkube'
+
+# The overlay's sops-nix ciphertext, when its flake.nix declares one
+# (flakelab.sopsSecretsFile). sops-nix then renders the runtime secrets on every
+# activation and nix/home/zsh.nix compiles the legacy path out entirely, so the
+# plaintext seed above is deliberately ABSENT on an enrolled box - that is the
+# finished state, not a gap. Every check that demands $SecretsWin has to know
+# it, or provisioning reports MISSING and prints seeding instructions at exactly
+# the moment the cutover completes. Mirrors nix-doctor's SOPS_RENDER branch.
+function Get-SopsSecretsPath {
+    $flakeWin = Join-Path $OverlayWin 'flake.nix'
+    if (-not (Test-Path $flakeWin)) { return '' }
+    # Anchored at the line start so a COMMENTED-OUT switch - the pre-cutover
+    # state the overlay template ships - does not read as enrolled.
+    $m = @(Select-String -Path $flakeWin -Pattern '^\s*sopsSecretsFile\s*=\s*\.?/?([^;\s]+)\s*;')
+    if ($m.Count -eq 0) { return '' }
+    return (Join-Path $OverlayWin ($m[0].Matches[0].Groups[1].Value -replace '/', '\'))
+}
+
+# THE predicate for "does this box still need the plaintext seed?". A function,
+# not a captured variable: `generate` writes flake.nix and `provision` writes
+# secrets.env mid-run, so both inputs can change after startup.
+function Test-SecretsSeedNeeded {
+    if (Test-Path $SecretsWin) { return $false }
+    $sops = Get-SopsSecretsPath
+    return -not ($sops -and (Test-Path $sops))
+}
 
 # Username comes from the applied flake, not from a fixed file: the overlay sets
 # it inline in flake.nix, this repo in nix/users/default.nix.
@@ -1399,9 +1425,16 @@ function Show-ManualSeedInstructions([string]$reason) {
     Write-Host ("      1. private SSH key : {0}" -f $KeyWin) -ForegroundColor DarkGray
     Write-Host ("         (any further key named in the flake's sshKeys is copied and" ) -ForegroundColor DarkGray
     Write-Host ("          agent-loaded too; LF line endings only - OpenSSH rejects a CRLF key)") -ForegroundColor DarkGray
-    Write-Host ("      2. secrets.env      : {0}" -f $SecretsWin) -ForegroundColor DarkGray
-    Write-Host ("         copy {0} and fill it in (LF only), for these names:" -f (Join-Path $RepoWin 'files\config\secrets.env.example')) -ForegroundColor DarkGray
-    foreach ($k in $SecretKeyNames) { Write-Host ("           {0}" -f $k) -ForegroundColor DarkGray }
+    if (Test-SecretsSeedNeeded) {
+        Write-Host ("      2. secrets.env      : {0}" -f $SecretsWin) -ForegroundColor DarkGray
+        Write-Host ("         copy {0} and fill it in (LF only), for these names:" -f (Join-Path $RepoWin 'files\config\secrets.env.example')) -ForegroundColor DarkGray
+        foreach ($k in $SecretKeyNames) { Write-Host ("           {0}" -f $k) -ForegroundColor DarkGray }
+    }
+    else {
+        # Writing the plaintext file here would re-create exactly what the sops
+        # cutover retired, and nothing would source it.
+        Write-Host ("      2. secrets.env      : not needed - sops-nix renders them from {0}" -f (Get-SopsSecretsPath)) -ForegroundColor DarkGray
+    }
     Write-Host ("    then inside the distro:  flakelab update   (and  flakelab doctor  to see what is still deferred)") -ForegroundColor DarkGray
     Write-Host ("    (With a wslkube checkout at {0}, 'migrate' seeds both for you.)" -f $WslkubeWin) -ForegroundColor DarkGray
 }
@@ -1462,7 +1495,7 @@ function Copy-OverlayFilesIntoDistro {
 
     $missing = @()
     if (-not (Test-Path $KeyWin)) { $missing += 'SSH key' }
-    if (-not (Test-Path $SecretsWin)) { $missing += 'secrets.env' }
+    if (Test-SecretsSeedNeeded) { $missing += 'secrets.env' }
     if ($missing.Count -gt 0) {
         Show-ManualSeedInstructions ("overlay is missing {0} - the distro is built but unconfigured." -f ($missing -join ' + '))
     }
@@ -1951,11 +1984,11 @@ function Invoke-Provision {
         Set-OverlayFromConfig $ConfigPath
         Set-OverlaySecretsAndKey $ConfigPath
     }
-    if (-not (Test-Path $KeyWin) -or -not (Test-Path $SecretsWin)) {
+    if ((-not (Test-Path $KeyWin)) -or (Test-SecretsSeedNeeded)) {
         # Checked up front, before the long rebuild: a -Config run on a fresh box has
         # no distro to pull a key from, and `migrate` is no fallback either - it
         # throws without a wslkube checkout.
-        $what = @(); if (-not (Test-Path $KeyWin)) { $what += 'SSH key' }; if (-not (Test-Path $SecretsWin)) { $what += 'secrets.env' }
+        $what = @(); if (-not (Test-Path $KeyWin)) { $what += 'SSH key' }; if (Test-SecretsSeedNeeded) { $what += 'secrets.env' }
         $why = if ($ConfigPath) { "no {0} in the overlay ({1} carries none)." -f ($what -join ' and '), (Split-Path $ConfigPath -Leaf) }
         else { "no {0} in the overlay - no config to harvest them from (no -Config, no wslkube checkout at {1})." -f ($what -join ' and '), $WslkubeWin }
         Show-ManualSeedInstructions $why
@@ -1988,7 +2021,10 @@ function Invoke-Status {
     elseif (Test-Path (Join-Path $OverlayWin 'flake.nix')) { 'present' }
     else { 'MISSING (run: init)' }
     $keyState = if (Test-Path $KeyWin) { 'present' } else { 'MISSING' }
-    $secretsState = if (Test-Path $SecretsWin) { 'present' } else { 'MISSING' }
+    $sopsSecretsWin = Get-SopsSecretsPath
+    $secretsState = if (Test-Path $SecretsWin) { 'present' }
+    elseif ($sopsSecretsWin -and (Test-Path $sopsSecretsWin)) { 'sops: {0}' -f $sopsSecretsWin }
+    else { 'MISSING' }
     $payloadState = if (Test-Path (Join-Path $OverlayWin "files\config\instances\$DistroName")) { 'staged' } else { 'none' }
     $migratedState = if (Test-Path $Marker) { Get-Content $Marker -TotalCount 1 } else { 'no' }
     $wslkubeState = if (Test-Path $WslkubeWin) { $WslkubeWin } else { 'absent' }
