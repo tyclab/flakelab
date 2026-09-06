@@ -390,11 +390,16 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   if [ -n "${_recommended}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     # Same merge as the activation's (nix/home/claude.nix, claudePermissions) and
     # it must stay character-for-character the same filter: additive and unique on
-    # both lists, so nothing a developer added by hand is ever removed; then
-    # allow minus ask, because the union can never drop a rule the marketplace
-    # moved from allow to ask and precedence only helps where the ask rule's own
-    # pattern matches. recommended-ask.json is optional — an absent file unions
-    # `[]`, the identity, and can never write an empty ask over existing rules.
+    # both lists, so nothing a developer added by hand is ever removed; then the
+    # alias-aware gate — canonicalise every mcp rule to its short
+    # `mcp__<server>__<tool>` name, promote into ask every allow rule that
+    # canonicalises onto a gated tool, and subtract ask from allow. Plain set
+    # difference is not enough: a plugin server answers to two names, the
+    # marketplace ships both in the allow list and only the long one in the ask
+    # list, and deleting rather than promoting would drop the call through to the
+    # permission mode instead of to a human. The WHY in full is in claude.nix.
+    # recommended-ask.json is optional — an absent file unions `[]`, the identity,
+    # and can never write an empty ask over existing rules.
     _allowRules="$(cat "${_recommended}")"
     _askRules="[]"
     if [ -n "${_asked}" ]; then
@@ -402,8 +407,27 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     fi
     _tmp="$(mktemp)"
     if jq --argjson allow "${_allowRules}" --argjson ask "${_askRules}" '
+           def canon:
+             if startswith("mcp__") then
+               (.[5:] | split("__")) as $p
+               | if ($p | length) < 2 then .
+                 else
+                   (if ($p[0] | startswith("plugin_"))
+                    then ($p[0] | sub("^plugin_.*_"; ""))
+                    else $p[0] end) as $s
+                   | "mcp__" + $s + "__" + ($p[1:] | join("__"))
+                 end
+             else . end;
            .permissions.allow = ((.permissions.allow // []) + $allow | unique)
-         | .permissions.ask = ((.permissions.ask // []) + $ask | unique)
+         | .permissions.ask   = ((.permissions.ask   // []) + $ask   | unique)
+         | [ .permissions.ask[] | select(startswith("mcp__")) | canon ] as $gated
+         | .permissions.ask = (
+               .permissions.ask
+             + $gated
+             + [ .permissions.allow[]
+                 | select(startswith("mcp__"))
+                 | select(canon as $c | $gated | index($c)) ]
+             | unique)
          | .permissions.allow = (.permissions.allow - .permissions.ask)
          | if (.permissions.ask | length) == 0 then del(.permissions.ask) else . end
          ' "${_settings}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then

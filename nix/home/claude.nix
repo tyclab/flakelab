@@ -431,17 +431,25 @@ in
   # ~/.claude/projects is where Claude Code writes session transcripts, and a
   # transcript is the whole session: every prompt, file excerpt, command output
   # and any secret value that passed through one of them. Claude Code creates the
-  # transcript FILES 600 but the directory at the process umask — 022, which
-  # nothing in this flake overrides — so the directory stood 755 (observed on a
-  # provisioned box, 2026-09-06) and its contents were listable, and traversable,
-  # by every other local account.
+  # transcript FILES 600 but the DIRECTORY at the process umask — 022, which
+  # nothing in this flake overrides — so it stood 755 on a provisioned box
+  # (observed 2026-09-06).
   #
-  # 700 is the half the file mode cannot cover. The names alone are disclosure
-  # (each subdirectory is a slug of a project path: which repo, which host, which
-  # customer a session touched), and a directory another user can traverse is one
-  # they can read a transcript out of in the window between create and Claude's
-  # own chmod. The files stay Claude's to mode; this only closes the door they
-  # sit behind.
+  # 755 there was not itself an exposure on that box: ~/.claude above it happened
+  # to be 700, so no other account could traverse down to projects at all. That is
+  # exactly the problem. Nothing asserted that 700 — not this flake, not Claude
+  # Code, not a documented guarantee — so the confidentiality of every transcript
+  # rested on an incidental mode that any tool, restore or adopter's umask is free
+  # to widen, silently and with no error anywhere. Asserting 700 on BOTH makes it
+  # true by construction instead of by luck, and makes projects independent of
+  # whatever ~/.claude happens to be.
+  #
+  # 700 on the directory is the half the file mode cannot cover. The names alone
+  # are disclosure (each subdirectory is a slug of a project path: which repo,
+  # which host, which customer a session touched), and a directory another user
+  # can traverse is one they can read a transcript out of in the window between
+  # create and Claude's own chmod. The files stay Claude's to mode; this only
+  # closes the door they sit behind.
   #
   # Reasserted every activation rather than fixed once, because Claude recreates
   # this directory itself whenever it is missing — at the umask again. mkdir -p
@@ -459,8 +467,10 @@ in
         lib.optionalString installClaude ''
           export PATH="${lib.makeBinPath [ pkgs.coreutils ]}:$PATH"
           mkdir -p "$HOME/.claude/projects"
+          chmod 700 "$HOME/.claude" || \
+            ${flakelabWarn} "could not set mode 700 on $HOME/.claude; whether other local accounts can traverse it is left to the umask."
           chmod 700 "$HOME/.claude/projects" || \
-            ${flakelabWarn} "could not set mode 700 on $HOME/.claude/projects; session transcripts stay readable to other local accounts."
+            ${flakelabWarn} "could not set mode 700 on $HOME/.claude/projects; session transcripts are protected only by whatever mode $HOME/.claude happens to carry."
         ''
       );
 
@@ -611,18 +621,59 @@ in
   # collects matchingDenyRules / matchingAskRules / matchingAllowRules in that
   # order), so a rule in ask outranks the same rule in allow.
   #
-  # "Outranks WHEN IT MATCHES" is why the subtraction below exists rather than
-  # trusting that precedence. The union is additive and unique — that is what
-  # makes it safe — but additive also means a rule can never leave. Most of the
-  # ask list used to be IN recommended-permissions.json (32 of the 36 were still
-  # in this box's allow list on 2026-09-06, from the days before the marketplace
-  # narrowed it), and a union alone would leave them sitting in allow forever:
-  # unremovable by any upstream change, and matching wherever the ask rule's own
-  # pattern does not. So after both unions, every rule now in ask is subtracted
-  # from allow. The two lists come out disjoint, which is also the only shape a
-  # human can read the file and believe.
+  # "Outranks WHEN IT MATCHES" is what the merge below has to engineer around,
+  # because a union alone gets it wrong twice.
   #
-  # The subtraction reads the MERGED ask list, not the file, so it also keeps its
+  # First: a union is additive, so a rule can never leave. Most of the ask list
+  # used to be IN recommended-permissions.json (32 of the 36 were still in this
+  # box's allow list on 2026-09-06, from the days before the marketplace narrowed
+  # it), and unioning alone would leave them in allow forever, unremovable by any
+  # upstream change. So after both unions, everything in ask is subtracted from
+  # allow.
+  #
+  # Second — and this is why the subtraction is ALIAS-AWARE rather than plain set
+  # difference — an MCP tool is addressable under two different names, and a rule
+  # is matched by exact tool name. A plugin-provided server answers to both
+  # `mcp__<server>__<tool>` and `mcp__plugin_<plugin>_<server>__<tool>`;
+  # recommended-permissions.json ships both forms for every Home Assistant tool
+  # (63 and 63, counted in the marketplace clone on 2026-09-06) while
+  # recommended-ask.json lists only the long one. A plain `allow - ask` therefore
+  # deleted the 35 long-form rules and left 32 short-form twins sitting in allow —
+  # ha_call_service, ha_fire_event, ha_set_state, ha_delete_automation,
+  # ha_restart_core among them — and an ask rule spelled with the long name does
+  # not match a call made under the short one, so the checkpoint had a net effect
+  # of zero on the half it exists for. Both spellings are live tool names on a
+  # provisioned box (65 short / 68 long distinct names appear in this box's own
+  # transcripts).
+  #
+  # So the jq below canonicalises every mcp rule to its short form (`canon`) and
+  # gates on that: each mcp rule in ask contributes its canonical twin, every
+  # allow rule that canonicalises onto a gated tool is PROMOTED into ask, and only
+  # then is ask subtracted from allow. Promoted, not merely deleted: deleting the
+  # allow rule leaves the call matching no rule at all, and a call that matches no
+  # rule falls through to the permission mode — which on a claudeAgentDefaults box
+  # is auto, i.e. the classifier decides, unattended. Only an explicit ask rule
+  # returns a decision before the mode gets one.
+  #
+  # The canonicalisation folds `plugin_<plugin>_` off the server segment, taking
+  # the last underscore, which is exact for every server name without an
+  # underscore in it. Where it is not exact it can only over-match — two plugins
+  # exposing the same server-and-tool name would gate both — and over-matching
+  # costs a prompt, never a silent run. That is the direction to be wrong in.
+  #
+  # Bash rules are deliberately left to plain exact-string subtraction. Their
+  # names are patterns, not identifiers, so set arithmetic cannot decide coverage:
+  # `Bash(glab mr merge:*)` survives in allow next to the ask rule
+  # `Bash(glab mr merge *)`, and that is safe, verified against the matcher rather
+  # than assumed. A trailing ` *` is compiled to an OPTIONAL argument group (the
+  # rule-to-regex builder rewrites a trailing `" .*"` with a single star into
+  # `"( .*)?"`), so `Bash(glab mr merge *)` matches a BARE `glab mr merge` too;
+  # and the resolver runs the ask rules of its prefix pass before it returns the
+  # allow result of its exact pass, so ask wins on every invocation both rules
+  # touch (Claude Code 2.1.263). The two lists are therefore disjoint as MCP tool
+  # identities, and ask-dominant, not disjoint, as Bash patterns.
+  #
+  # The whole thing reads the MERGED ask list, not the file, so it keeps its
   # promise for ask rules an operator added by hand — including the manual jq an
   # operator runs while the marketplace release carrying recommended-ask.json is
   # still unmerged.
@@ -697,8 +748,27 @@ in
             fi
             _tmp="$(mktemp)"
             if jq --argjson allow "$_allowRules" --argjson ask "$_askRules" '
+                   def canon:
+                     if startswith("mcp__") then
+                       (.[5:] | split("__")) as $p
+                       | if ($p | length) < 2 then .
+                         else
+                           (if ($p[0] | startswith("plugin_"))
+                            then ($p[0] | sub("^plugin_.*_"; ""))
+                            else $p[0] end) as $s
+                           | "mcp__" + $s + "__" + ($p[1:] | join("__"))
+                         end
+                     else . end;
                    .permissions.allow = ((.permissions.allow // []) + $allow | unique)
-                 | .permissions.ask = ((.permissions.ask // []) + $ask | unique)
+                 | .permissions.ask   = ((.permissions.ask   // []) + $ask   | unique)
+                 | [ .permissions.ask[] | select(startswith("mcp__")) | canon ] as $gated
+                 | .permissions.ask = (
+                       .permissions.ask
+                     + $gated
+                     + [ .permissions.allow[]
+                         | select(startswith("mcp__"))
+                         | select(canon as $c | $gated | index($c)) ]
+                     | unique)
                  | .permissions.allow = (.permissions.allow - .permissions.ask)
                  | if (.permissions.ask | length) == 0 then del(.permissions.ask) else . end
                  ' "$_settings" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then

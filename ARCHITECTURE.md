@@ -222,10 +222,19 @@ symlinks, because Claude rewrites these files itself:
   clone without `recommended-permissions.json` warns, because no retry fixes
   that. `recommended-ask.json` is optional: absent, it unions an empty array, so
   an ask list already in place is never emptied. Both unions are additive, and
-  then every rule in `ask` is **subtracted** from `allow` — a union can never
-  drop a rule the marketplace moved from one list to the other, and Claude ranks
-  ask above allow only where the ask rule itself matches. The two lists stay
-  disjoint.
+  the gate that follows is **alias-aware**: an MCP tool answers to both
+  `mcp__<server>__<tool>` and `mcp__plugin_<plugin>_<server>__<tool>`, rules match
+  by exact name, and the marketplace ships both spellings in `allow` but only the
+  long one in `ask`. Every mcp rule is canonicalised to its short name; an `allow`
+  rule that canonicalises onto a gated tool is **promoted into `ask`**, not just
+  dropped, because a call matching no rule falls through to the permission mode
+  rather than to a human. Then `ask` is subtracted from `allow`. Bash rules stay
+  plain string subtraction — their names are patterns, and a `Bash(… *)` ask rule
+  already outranks a `Bash(…:*)` allow rule on every invocation both touch.
+- **`~/.claude` and `~/.claude/projects`** — chmod 700, reasserted every
+  activation. Claude Code writes transcript files 600 but creates the transcript
+  directory at the umask; asserting both modes stops that confidentiality from
+  resting on an incidental mode nothing guarantees.
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
   shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.
 
