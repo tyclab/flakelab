@@ -386,12 +386,27 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   fi
   _settings="$HOME/.claude/settings.json"
   _recommended="$(find "${_claude_marketplaces}" -type f -name recommended-permissions.json 2> /dev/null | head -1)"
+  _asked="$(find "${_claude_marketplaces}" -type f -name recommended-ask.json 2> /dev/null | head -1)"
   if [ -n "${_recommended}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
+    # Same merge as the activation's (nix/home/claude.nix, claudePermissions) and
+    # it must stay character-for-character the same filter: additive and unique on
+    # both lists, so nothing a developer added by hand is ever removed; then
+    # allow minus ask, because the union can never drop a rule the marketplace
+    # moved from allow to ask and precedence only helps where the ask rule's own
+    # pattern matches. recommended-ask.json is optional — an absent file unions
+    # `[]`, the identity, and can never write an empty ask over existing rules.
+    _allowRules="$(cat "${_recommended}")"
+    _askRules="[]"
+    if [ -n "${_asked}" ]; then
+      _askRules="$(cat "${_asked}")"
+    fi
     _tmp="$(mktemp)"
-    # Same union as the activation's merge: additive on permissions.allow, so
-    # nothing a developer added by hand is ever removed here.
-    if jq -s '.[0] * {permissions: {allow: ((.[0].permissions.allow // []) + .[1] | unique)}}' \
-         "${_settings}" "${_recommended}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
+    if jq --argjson allow "${_allowRules}" --argjson ask "${_askRules}" '
+           .permissions.allow = ((.permissions.allow // []) + $allow | unique)
+         | .permissions.ask = ((.permissions.ask // []) + $ask | unique)
+         | .permissions.allow = (.permissions.allow - .permissions.ask)
+         | if (.permissions.ask | length) == 0 then del(.permissions.ask) else . end
+         ' "${_settings}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
     else
       print -P "%F{yellow}⚠ Claude pre-approved permissions not merged into settings.json%f"

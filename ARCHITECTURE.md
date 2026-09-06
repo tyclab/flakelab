@@ -54,8 +54,9 @@ that defaults to off, because every activation here runs on every adopter's box:
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`) that would
   defeat it. Off, those keys and those vars are left exactly as the user has
   them. Everything else `claudeDisableAttribution` asserts — attribution, the
-  classifier rules, `installMethod`, `autoUpdatesChannel`, the force-push deny
-  floor — is unconditional, and the whole activation is gated on `installClaude`.
+  classifier rules, `installMethod`, `autoUpdatesChannel`, `cleanupPeriodDays`,
+  the force-push deny floor — is unconditional, and the whole activation is gated
+  on `installClaude`.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow
@@ -203,19 +204,28 @@ symlinks, because Claude rewrites these files itself:
 
 - **`settings.json`** — attribution, the classifier rules (`claudeAutoMode`),
   `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
-  the output style when `claudeOutputStyle` names one,
+  `cleanupPeriodDays = 30`, the output style when `claudeOutputStyle` names one,
   the bridge environment, the statusline, and a `permissions.deny` **floor**
   against force-pushing. The floor is unioned in, so rules added by hand
   survive; nothing else in the file is asserted whole except `autoMode`. The
   permission mode is not among them unless `claudeAgentDefaults` says so.
+  `cleanupPeriodDays` is transcript retention in days — Claude Code's own
+  default, written down so it is readable off the box and cannot move under a
+  vendor release.
 - **`~/.claude.json`** — user-scope MCP servers from `claudeMcpServers`,
   installed mode 600, since the same file holds Claude's account and OAuth
   state.
-- **`permissions.allow`** — merged from the marketplace clone's
-  `recommended-permissions.json`, located by searching the clone rather than by
-  a fixed path (it has moved once already, and a wrong path defers forever
-  instead of failing). A missing clone defers; a clone without the file warns,
-  because no retry fixes that.
+- **`permissions.allow` and `permissions.ask`** — merged from the marketplace
+  clone's `recommended-permissions.json` and `recommended-ask.json`, located by
+  searching the clone rather than by a fixed path (it has moved once already, and
+  a wrong path defers forever instead of failing). A missing clone defers; a
+  clone without `recommended-permissions.json` warns, because no retry fixes
+  that. `recommended-ask.json` is optional: absent, it unions an empty array, so
+  an ask list already in place is never emptied. Both unions are additive, and
+  then every rule in `ask` is **subtracted** from `allow` — a union can never
+  drop a rule the marketplace moved from one list to the other, and Claude ranks
+  ask above allow only where the ask rule itself matches. The two lists stay
+  disjoint.
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
   shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.
 

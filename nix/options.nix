@@ -312,7 +312,7 @@ in
     claudeAgentDefaults = mkOption {
       type = types.bool;
       default = false;
-      description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\", skipAutoPermissionPrompt, remoteControlAtStartup, and removal of the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would otherwise defeat the feature-flag evaluation Remote Control depends on. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the force-push deny floor) is written regardless.";
+      description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\", skipAutoPermissionPrompt, remoteControlAtStartup, and removal of the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would otherwise defeat the feature-flag evaluation Remote Control depends on. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, cleanupPeriodDays, autoMode, the force-push deny floor, the marketplace allow/ask permission merge, and mode 700 on the transcript directory ~/.claude/projects) is written regardless.";
     };
 
     claudeMdExtra = mkOption {

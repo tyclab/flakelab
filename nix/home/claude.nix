@@ -355,6 +355,32 @@ in
   # the claudeAutoUpdatesChannel option. Neither was ever written by a rebuild,
   # so a clean build produced a settings.json missing keys a provisioned box has.
   #
+  # cleanupPeriodDays is transcript RETENTION, and it is asserted here at the
+  # vendor default rather than left unset on purpose. Claude Code's own settings
+  # schema documents the key as "Number of days to retain chat transcripts before
+  # automatic cleanup (default: 30). Minimum 1. Use a large value for long
+  # retention; use --no-session-persistence to disable transcript writes
+  # entirely." (.describe() on cleanupPeriodDays, Claude Code 2.1.263). Unset,
+  # that 30 is a built-in nobody can read off the box and a vendor release is
+  # free to move; written, the retention of ~/.claude/projects — which holds
+  # every prompt, file excerpt and command output a session ever saw — is a fact
+  # in this flake and the same on every adopter's machine. 30 keeps the vendor's
+  # behaviour exactly as it is today; changing the policy is a separate decision
+  # from making it visible, and this change only makes it visible.
+  #
+  # Deliberately NOT 0 and deliberately not "unset means forever": the binary
+  # rejects 0 ("cleanupPeriodDays must be at least 1 ... 0 is rejected because it
+  # previously silently disabled all transcript writes"), and an invalid value
+  # does not fall back — Claude reports "Transcript retention cleanup is paused
+  # until the settings errors above are fixed" and sweeps nothing at all. Which
+  # is why this is a constant here and not an option: the failure mode of a wrong
+  # value is silent unbounded retention.
+  #
+  # It rides in THIS activation, not in claudePermissions below, although both
+  # write settings.json: claudePermissions is gated on a marketplace clone
+  # existing, and transcript retention must not depend on whether a plugin
+  # marketplace was ever fetched.
+  #
   # Everything above is written for every adopter. Auto mode, its consent flag,
   # Remote Control at startup and the four env-var deletions are NOT: they are
   # the opt-in bundle claudeAgentDefaultsJq carries (flakelab.claudeAgentDefaults,
@@ -385,6 +411,7 @@ in
             | .env += $e
             | .installMethod = "native"
             | .autoUpdatesChannel = "${claudeAutoUpdatesChannel}"
+            | .cleanupPeriodDays = 30
             | .autoMode = $am[0]
             | .permissions.deny = ((.permissions.deny // []) + $d | unique)
             ${claudeOutputStyleJq}
@@ -397,6 +424,43 @@ in
           # merge above replaces the inode, so the mode is reasserted every
           # activation rather than set once.
           chmod 600 "$_settings"
+        ''
+      );
+
+  # ── Claude Code transcript directory mode ──────────────────────────────────
+  # ~/.claude/projects is where Claude Code writes session transcripts, and a
+  # transcript is the whole session: every prompt, file excerpt, command output
+  # and any secret value that passed through one of them. Claude Code creates the
+  # transcript FILES 600 but the directory at the process umask — 022, which
+  # nothing in this flake overrides — so the directory stood 755 (observed on a
+  # provisioned box, 2026-09-06) and its contents were listable, and traversable,
+  # by every other local account.
+  #
+  # 700 is the half the file mode cannot cover. The names alone are disclosure
+  # (each subdirectory is a slug of a project path: which repo, which host, which
+  # customer a session touched), and a directory another user can traverse is one
+  # they can read a transcript out of in the window between create and Claude's
+  # own chmod. The files stay Claude's to mode; this only closes the door they
+  # sit behind.
+  #
+  # Reasserted every activation rather than fixed once, because Claude recreates
+  # this directory itself whenever it is missing — at the umask again. mkdir -p
+  # first so the mode is right on a box where Claude is installed but has never
+  # run, i.e. BEFORE the first transcript lands rather than after.
+  #
+  # Its own entry and not a line appended to claudeDisableAttribution: this is a
+  # different file with a different dependency (installClaudeCode alone — no
+  # settings.json, no marketplace, no plugin), and an activation named in
+  # health.nix's entryAfter list is one a failure can be attributed to by name.
+  # Folding it into a neighbour would hide it inside an entry about settings.
+  home.activation.claudeTranscriptPrivacy =
+    lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" ]
+      (
+        lib.optionalString installClaude ''
+          export PATH="${lib.makeBinPath [ pkgs.coreutils ]}:$PATH"
+          mkdir -p "$HOME/.claude/projects"
+          chmod 700 "$HOME/.claude/projects" || \
+            ${flakelabWarn} "could not set mode 700 on $HOME/.claude/projects; session transcripts stay readable to other local accounts."
         ''
       );
 
@@ -525,7 +589,7 @@ in
         ''
       );
 
-  # ── Claude Code pre-approved permissions ───────────────────────────────────
+  # ── Claude Code pre-approved permissions, and the ask tier ─────────────────
   # Without a pre-approved list Claude prompts for routine work, and no rebuild
   # ever wrote one. The rules are NOT copied into this repo: the marketplace ships
   # recommended-permissions.json and updates it as it grows tools, so the clone is
@@ -536,6 +600,39 @@ in
   # is only safe while something narrower sits behind it. That backstop is the auto
   # mode classifier (claudeAutoMode above), which evaluates every call the list
   # pre-approves and blocks on semantics rather than pattern.
+  #
+  # THE ASK TIER (permissions.ask, merged from recommended-ask.json in the same
+  # clone) is the third answer neither of the other two lists can give. deny is a
+  # wall: an operator sitting at the keyboard cannot pass it either. allow is
+  # silence. ask is "a human sees this one before it happens" — which is the right
+  # answer for a call that is legitimate but must never run unattended: merging an
+  # MR, and every Home Assistant tool that writes to the house. Claude Code ranks
+  # the three the same way (deny 3, ask 2, allow 1 in its own resolver, and it
+  # collects matchingDenyRules / matchingAskRules / matchingAllowRules in that
+  # order), so a rule in ask outranks the same rule in allow.
+  #
+  # "Outranks WHEN IT MATCHES" is why the subtraction below exists rather than
+  # trusting that precedence. The union is additive and unique — that is what
+  # makes it safe — but additive also means a rule can never leave. Most of the
+  # ask list used to be IN recommended-permissions.json (32 of the 36 were still
+  # in this box's allow list on 2026-09-06, from the days before the marketplace
+  # narrowed it), and a union alone would leave them sitting in allow forever:
+  # unremovable by any upstream change, and matching wherever the ask rule's own
+  # pattern does not. So after both unions, every rule now in ask is subtracted
+  # from allow. The two lists come out disjoint, which is also the only shape a
+  # human can read the file and believe.
+  #
+  # The subtraction reads the MERGED ask list, not the file, so it also keeps its
+  # promise for ask rules an operator added by hand — including the manual jq an
+  # operator runs while the marketplace release carrying recommended-ask.json is
+  # still unmerged.
+  #
+  # recommended-ask.json is OPTIONAL where recommended-permissions.json is not:
+  # it arrives with a marketplace release that may not have landed yet, and its
+  # absence must leave permissions.ask exactly as it is. Hence the `[]` fallback —
+  # unioning an empty array is the identity, so a missing file cannot write `[]`
+  # over rules already there. That is the one failure mode worth engineering
+  # against here: it would un-gate all 36 in a single silent rebuild.
   #
   # claudeDisableAttribution writes those rules on every box that has Claude at
   # all, independently of claudeAgentDefaults — which is why this is gated on
@@ -584,13 +681,27 @@ in
           # (Crashed a second machine's provision on 2026-08-20; the box this was
           # written on had the clone, so it never showed.)
           _recommended=""
+          _asked=""
           if [ -d "$_marketplace" ]; then
             _recommended="$(find "$_marketplace" -type f -name recommended-permissions.json 2>/dev/null | head -1 || true)"
+            _asked="$(find "$_marketplace" -type f -name recommended-ask.json 2>/dev/null | head -1 || true)"
           fi
           if [ -n "$_recommended" ] && [ -f "$_settings" ]; then
+            # Both lists go in as JSON arguments rather than as jq inputs, so the
+            # ask side has a `[]` to fall back on without a second jq invocation
+            # or a second settings.json rewrite to get wrong.
+            _allowRules="$(cat "$_recommended")"
+            _askRules="[]"
+            if [ -n "$_asked" ]; then
+              _askRules="$(cat "$_asked")"
+            fi
             _tmp="$(mktemp)"
-            if jq -s '.[0] * {permissions: {allow: ((.[0].permissions.allow // []) + .[1] | unique)}}' \
-                 "$_settings" "$_recommended" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+            if jq --argjson allow "$_allowRules" --argjson ask "$_askRules" '
+                   .permissions.allow = ((.permissions.allow // []) + $allow | unique)
+                 | .permissions.ask = ((.permissions.ask // []) + $ask | unique)
+                 | .permissions.allow = (.permissions.allow - .permissions.ask)
+                 | if (.permissions.ask | length) == 0 then del(.permissions.ask) else . end
+                 ' "$_settings" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
               mv "$_tmp" "$_settings"
             else
               ${flakelabWarn} "could not merge recommended permissions into $_settings."
