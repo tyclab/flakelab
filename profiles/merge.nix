@@ -1,12 +1,5 @@
 # Folds userData.profiles into effective gitlabGroups, profileCliTools,
-# customAliases and sessionVariables. Wired into flake.nix mkSystem.
-#
-# `teams` / `teamCliTools` are accepted as aliases so an overlay using the older
-# field names evaluates unchanged.
-#
-# There are deliberately no `install*Mcp` booleans: each MCP server in
-# nix/home/mcp.nix is gated on the presence of its non-secret env var, so a flag
-# cannot drift from the config it gates.
+# customAliases and sessionVariables; `teams` / `teamCliTools` are older aliases.
 { lib }:
 userData:
 let
@@ -14,9 +7,7 @@ let
   known = builtins.attrNames registry;
   profiles = userData.profiles or userData.teams or [ ];
 
-  # An entry is either a name from the registry or a profile attrset itself, so a
-  # private overlay can keep its real profiles in its own checkout and import
-  # them here without adding them to this (shareable) registry.
+  # An entry is either a registry name or a profile attrset an overlay imports itself.
   selected = map (
     p:
     if builtins.isAttrs p then
@@ -26,11 +17,7 @@ let
         or (throw "profiles: unknown profile '${p}' (known: ${lib.concatStringsSep ", " known})")
   ) profiles;
 
-  # Selecting nothing is the silent failure this warns about: the key was renamed
-  # `teams` -> `profiles`, so an overlay that sets neither still evaluates and
-  # every profile's gitlabGroups and profileCliTools vanish with no output at
-  # all - selecting a profile is the only thing that installs them. A warning,
-  # not an error - a fork that wants none of them is legitimate.
+  # Warn, not error: a fork wanting no profiles at all is legitimate.
   warnIfNoProfiles =
     lib.warnIf (profiles == [ ])
       "profiles: none selected, so profiles/ contributes nothing (known: ${lib.concatStringsSep ", " known}). Set `profiles = [ ... ]` in the flake that calls mkSystem.";

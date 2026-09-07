@@ -1,10 +1,6 @@
-# Small tool convergences: the npm 12 pin and the Bitwarden CLI endpoint.
-#
-# Both activation entries here are already named in health.nix's
-# flakelabHealthCheck entryAfter list. Any entry added to this module must be
-# appended there too (or use `lib.hm.dag.entryBefore [ "flakelabHealthCheck" ]`),
-# or the health check stops being the last entry and reports on work that has
-# not run yet.
+# Small tool convergences: the npm pin and the Bitwarden CLI endpoint.
+# An activation entry added here must also be named in health.nix's
+# flakelabHealthCheck entryAfter list, or that check stops running last.
 {
   lib,
   pkgs,
@@ -19,24 +15,16 @@ let
     flakelabDefer
     ;
 
-  # npm pin (parity with wslkube 9875c2f): Node 24 bundles npm 11.x, which
-  # breaks pre-commit's `language: node` hooks — pre-commit installs them via
-  # `npm install -g git+file://<cache>` and npm 11 refuses its own install with
-  # EALLOWGIT, blocking EVERY commit in repos with a node hook. npm 12 fixes it
-  # and supports node ^24.15.0. See wslkube variables.yaml for the full trail.
+  # The npm nodejs bundles refuses pre-commit's node-hook install with EALLOWGIT,
+  # blocking every commit in a repo with a node hook.
   # renovate: datasource=npm depName=npm
   npmVersion = "12.0.2";
 
-  # The vault lives in the EU region; the bw CLI defaults to the US endpoint
-  # and `bw login` fails against it (parity with wslkube's bitwarden_server).
   inherit (cfg) bitwardenServer;
 in
 {
-  # ── npm 12 pin (npmVersion in the let above) ───────────────────────────────
-  # `npm install -g` into the Nix store is read-only, so the pinned npm lands in
-  # ~/.npm-global (NPM_CONFIG_PREFIX, sessionVariables) and its bin dir is
-  # PREPENDED to PATH in .zshenv (envExtra, zsh.nix) so it beats the bundled npm 11
-  # from the nix profile in every zsh context, including pre-commit hook installs.
+  # The pinned npm lands in ~/.npm-global, whose bin dir .zshenv prepends so it beats
+  # the nix profile's in every zsh context, hook installs included.
   home.activation.pinNpm = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] ''
     export PATH="${
       lib.makeBinPath [
@@ -51,14 +39,8 @@ in
     fi
   '';
 
-  # ── Bitwarden CLI region (bitwardenServer in the let above) ────────────────
-  # `bw config server` drops the stored session when the endpoint changes, so
-  # read the current value and only write when the CLI actually points
-  # elsewhere. Local config write, no network — a failure is a defect, not a
-  # deferral.
-  # null (the default) skips the activation entirely rather than asserting an
-  # endpoint: rewriting someone's region on every rebuild is only correct for a
-  # fleet that declared one.
+  # `bw config server` drops the stored session when the endpoint changes, so only
+  # write when the CLI actually points elsewhere. Null skips the activation entirely.
   home.activation.bwConfigServer = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
     lib.optionalString (bitwardenServer != null) ''
       export PATH="${

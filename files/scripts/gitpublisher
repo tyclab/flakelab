@@ -2,45 +2,11 @@
 
 set -uo pipefail
 
-#
-# gitpublisher — publish the working tree as a GitLab MR: branch, commit
-# through the hooks, push, open (or update) the MR.
-#
-# Every guard is an exit code rather than an instruction, so a caller cannot
-# reason its way past one:
-#
-#   - never on the default branch: uncommitted work there needs --branch, and
-#     the branch name is a naming decision this tool refuses to invent
-#   - the hooks ARE the lint gate: the commit runs them, nothing bypasses
-#     them, and their verdict is final after at most one retry
-#   - the one retry exists for formatters only: it fires when the failed
-#     commit left rewritten files behind, restages, and tries once more —
-#     never for a secret finding, which ends the run unretried
-#   - nothing leaves the host before a clean commit: push follows the hooks'
-#     green, never precedes it
-#   - the repo's merge defaults decide how the MR merges: no squash or
-#     remove-source flags, ever. This tool opens; it does not merge.
-#
-# A branch that already has an open MR is pushed to and reported as updated,
-# never duplicated.
-#
-# Usage:
-#   gitpublisher --title "type(scope): subject" [--repo PATH] [--branch NAME]
-#                [--message-file FILE] [--description-file FILE] [--draft]
-#                [--target-branch BRANCH] [--json]
-#
-# Exit status:
-#   0  MR opened or updated; the URL is on stdout (or in the JSON)
-#   1  stopped at a gate: a hook failure the single formatter retry did not
-#      clear, or a secret finding (never retried)
-#   2  preflight or usage failure: not a repo, not a GitLab remote, no auth,
-#      nothing to publish, on the default branch without --branch, or a
-#      fetch/push/create that failed
-#
+# Publish the working tree as a GitLab MR: branch, commit through the hooks, push,
+# open or update. Every guard is an exit code, so a caller cannot reason past one;
+# `--help` below is the contract. This tool opens; it never merges.
 
-# Shared plumbing: tool/auth preflight, forge routing, and (via git-net.zsh)
-# the retry shape. Sibling lookup, so this works both from the nix store copy
-# the wrapper executes and the repo.
+# Sibling lookup, so this works from the nix store copy and the repo alike.
 GITSCAN_PROG=gitpublisher
 source "${0:A:h}/lib/gitscan.zsh" || exit 2
 
@@ -109,18 +75,14 @@ done
 (( JSON )) && GITSCAN_DIE_JSON=1
 
 [[ -n "${TITLE}" ]] || die "--title is required — it is the commit subject and the MR title"
-# Absolute before anything is checked, because the run `cd`s into --repo below and
-# `git -C` resolves -F against that directory: a relative path checked here from
-# the caller's cwd and read there from the clone are two different files, and the
-# mismatch surfaces as a failed commit the retry logic misreads as a lint gate.
+# Absolute before anything is checked: the run `cd`s into --repo, so a relative path
+# is two different files and the mismatch reads as a lint-gate failure.
 [[ -n "${MSG_FILE}" ]] && MSG_FILE="${MSG_FILE:A}"
 [[ -n "${DESC_FILE}" ]] && DESC_FILE="${DESC_FILE:A}"
 [[ -n "${MSG_FILE}" && ! -r "${MSG_FILE}" ]] && die "message file not readable: ${MSG_FILE}"
-# A message git would refuse anyway, refused here instead: git would refuse it from
-# inside the hook run — after the hooks have already done their work, with the
-# failure reading as a gate verdict rather than as the usage error it is. `-s` is
-# not enough on its own: git's default `whitespace` cleanup strips blank lines, so
-# a file holding only newlines is non-zero on disk and empty as a message.
+# Refused here rather than from inside the hook run, where it would read as a gate
+# verdict. `-s` is not enough: git's cleanup strips blank lines, so a file of
+# newlines is non-zero on disk and empty as a message.
 [[ -n "${MSG_FILE}" && ! -s "${MSG_FILE}" ]] && die "message file is empty: ${MSG_FILE}"
 [[ -n "${MSG_FILE}" && -z "${$(<"${MSG_FILE}")//[[:space:]]/}" ]] \
   && die "message file is blank: ${MSG_FILE}"
@@ -131,10 +93,8 @@ gitscan_timeouts
 
 REPO="${${REPO:-${PWD}}:A}"
 git -C "${REPO}" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repo: ${REPO}"
-# glab reads repo context from the cwd whatever --repo says — asked from
-# outside a clone it stops to prompt, and a prompt inside the timeout wrapper
-# is a hang. Standing in the repo is the fix; the explicit --repo and
-# --source-branch flags stay, so the answer never depends on it.
+# glab reads repo context from the cwd whatever --repo says, and outside a clone it
+# prompts, which is a hang under the timeout wrapper.
 cd "${REPO}" || die "cannot enter ${REPO}"
 
 remote_url="$(git -C "${REPO}" config --get remote.origin.url 2>/dev/null)"
@@ -143,15 +103,13 @@ forge_line="$(gitscan_forge_of "${remote_url}")" || die "not a forge this tool c
 IFS=$'\t' read -r forge project <<< "${forge_line}"
 [[ "${forge}" == gitlab ]] || die "gitlab remotes only — ${project} is on ${forge}"
 
-# Fresh origin/<default> is what "ahead of" and the fallback description are
-# judged against; a stale one publishes an MR carrying other people's commits.
+# A stale origin/<default> publishes an MR carrying other people's commits.
 gitnet_retry git -C "${REPO}" fetch origin \
   || die "fetch failed in ${REPO} (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
 
 default_branch="$(git -C "${REPO}" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
 default_branch="${default_branch#origin/}"
-# Without origin/HEAD there is no answer to "ahead of what", and guessing
-# main/master is how the wrong diff gets published.
+# Without origin/HEAD there is no answer to "ahead of what".
 [[ -n "${default_branch}" ]] || die "${REPO}: no origin/HEAD — run 'git remote set-head origin -a'"
 head_branch="$(git -C "${REPO}" symbolic-ref --short -q HEAD 2>/dev/null)"
 [[ -n "${head_branch}" ]] || die "${REPO}: detached HEAD — check out a branch first"
@@ -163,8 +121,7 @@ if [[ "${head_branch}" == "${default_branch}" ]]; then
   [[ -n "${BRANCH}" ]] || die "on ${default_branch} with changes — name the branch: --branch type/slug"
   out="$(git -C "${REPO}" switch -c "${BRANCH}" 2>&1)" || die "could not create ${BRANCH}: ${out}"
 else
-  # Two names for where the work should go is an ambiguity, not an order of
-  # preference — the caller has to resolve it.
+  # Two names for where the work goes is an ambiguity the caller must resolve.
   [[ -n "${BRANCH}" && "${BRANCH}" != "${head_branch}" ]] \
     && die "already on ${head_branch} — drop --branch or switch branches first"
   BRANCH="${head_branch}"
@@ -173,17 +130,13 @@ fi
 typeset -i COMMITTED=0 RETRIED=0
 commit_sha=""
 
-# gate_stop <name> <output> — a hook verdict ends the run, and rides out
-# verbatim: the caller decides what to do with a red, this tool never edits
-# its way past one. Exit 1, distinct from the 2 of a run that never engaged.
+# gate_stop <name> <output> — a hook verdict ends the run and rides out verbatim.
+# Exit 1, distinct from the 2 of a run that never engaged.
 gate_stop() {
   local name="$1" output="$2"
   if (( JSON )); then
-    # The report reaches jq on STDIN: one argv element caps at ~128 KB
-    # (MAX_ARG_STRLEN), which a real pre-commit report passes, and `--arg` then
-    # fails the exec outright — no JSON at all, the stop reported as nothing.
-    # `-Rs` slurps it whole, and printf without a newline keeps it byte-identical
-    # to what the caller read.
+    # Via stdin, not --arg: a real pre-commit report passes MAX_ARG_STRLEN and the
+    # exec would fail outright, reporting the stop as nothing at all.
     printf '%s' "${output}" | jq -Rs --arg gate "${name}" \
       --arg branch "${BRANCH}" --argjson retried "${RETRIED}" \
       '{ok: false, aborted: null, action: null, url: null, iid: null,
@@ -196,41 +149,19 @@ gate_stop() {
   exit 1
 }
 
-# hook_found_secret <hook output> — did the SECRET scanner fail, as opposed to
-# merely being mentioned?
-#
-# A bare `grep -qi gitleaks` cannot tell those apart. On a cold cache pre-commit
-# prints "[INFO] Installing environment for https://github.com/gitleaks/gitleaks"
-# before it runs anything, so the first commit on a fresh clone — where some
-# OTHER hook then fails — was reported as a secret finding and the publish
-# stopped on a leak that does not exist.
-#
-# What names a FAILING hook is pre-commit's own marker line, `- hook id:
-# <id>`, printed once per red hook and only for red ones. The RuleID/Finding
-# arm covers gitleaks invoked directly, whose verbose report carries those
-# labels. `leaks found` is deliberately NOT matched: the success line reads
-# "no leaks found".
-#
-# A HERE-STRING, not a pipe: `grep -q` exits at the first match and closes the
-# pipe, so with a match early in a long hook report the writer takes SIGPIPE and
-# `set -o pipefail` makes the whole pipeline 141 — the finding is then read as
-# "no secret" and the publish is misreported as a lint stop. The report only has
-# to outgrow the pipe buffer for that, which a real pre-commit run does.
+# hook_found_secret <hook output> — did the secret scanner FAIL, as opposed to being
+# mentioned? Matching the tool name alone reports a cold-cache install line as a
+# finding, so this keys on pre-commit's own `- hook id:` marker, printed for red
+# hooks only; `leaks found` is not matched, since the success line says "no leaks
+# found". A here-string, not a pipe: `grep -q` closing the pipe early makes
+# pipefail return 141 and the finding reads as "no secret".
 hook_found_secret() {
   grep -qE '^[[:space:]]*-[[:space:]]*hook id:[[:space:]]*gitleaks[[:space:]]*$|^[[:space:]]*(RuleID|Finding):' <<< "$1"
 }
 
-# commit_attempt — one pass through the hooks; the failure text lands in
-# COMMIT_OUT for the caller to judge.
-#
-# The message is resolved here rather than at the call sites so the formatter
-# retry commits the same message as the first attempt: with `-m "${TITLE}"`
-# inlined twice, a later edit to one of them would silently give the retry a
-# different commit message than the run that failed.
-#
-# `-F` takes the file verbatim — subject, blank line, body — which is the only
-# way this tool can author a commit body at all. `--title` is still the MR title
-# and remains the subject when no file is given.
+# commit_attempt — one pass through the hooks; the failure text lands in COMMIT_OUT.
+# The message is resolved here, not at the call sites, so the retry cannot drift
+# from the attempt that failed. `-F` takes the file verbatim.
 commit_attempt() {
   typeset -g COMMIT_OUT=""
   typeset -a commit_args
@@ -245,11 +176,10 @@ commit_attempt() {
 if [[ -n "${dirty}" ]]; then
   git -C "${REPO}" add -A
   if ! commit_attempt; then
-    # A secret finding is terminal however the tree looks: the secret leaves
-    # the change by hand before anything leaves the host.
+    # A secret finding is terminal however the tree looks.
     hook_found_secret "${COMMIT_OUT}" && gate_stop secret "${COMMIT_OUT}"
-    # The single retry exists for formatters that rewrote files. No rewritten
-    # files means the hooks want a fix this tool must not invent.
+    # The retry is for formatters that rewrote files; nothing rewritten means the
+    # hooks want a fix this tool must not invent.
     git -C "${REPO}" diff --quiet 2>/dev/null && gate_stop lint "${COMMIT_OUT}"
     RETRIED=1
     git -C "${REPO}" add -A
@@ -262,8 +192,7 @@ if [[ -n "${dirty}" ]]; then
 fi
 commit_sha="$(git -C "${REPO}" rev-parse --short HEAD 2>/dev/null)"
 
-# A branch with no commits beyond origin/<default> has an empty diff, and an
-# empty MR is the "nothing to publish" the clean-tree check cannot see.
+# An empty diff is the "nothing to publish" the clean-tree check cannot see.
 typeset -i ahead=0
 ahead="$(git -C "${REPO}" rev-list --count "refs/remotes/origin/${default_branch}..HEAD" 2>/dev/null || print -n 0)"
 (( ahead == 0 )) && die "nothing to publish: no commits on ${BRANCH} beyond origin/${default_branch}"
@@ -271,8 +200,7 @@ ahead="$(git -C "${REPO}" rev-list --count "refs/remotes/origin/${default_branch
 gitnet_retry git -C "${REPO}" push -u origin HEAD \
   || die "push failed for ${BRANCH} (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
 
-# An open MR pins this branch already; pushing updated it, and opening a
-# second one is the duplicate glab would happily create.
+# The push already updated an existing MR; opening a second is a duplicate.
 ACTION=opened
 gitnet_retry glab mr list --repo "${project}" --source-branch "${BRANCH}" \
     --output json --per-page 100 \
@@ -287,8 +215,7 @@ if [[ "${ACTION}" == opened ]]; then
   if [[ -n "${DESC_FILE}" ]]; then
     description="$(<"${DESC_FILE}")"
   else
-    # Without a body from the caller the commits speak for themselves: one
-    # bullet per subject, oldest first — never an invented summary.
+    # One bullet per commit subject, oldest first; never an invented summary.
     description="$(git -C "${REPO}" log --reverse --format='- %s' \
       "refs/remotes/origin/${default_branch}..HEAD" 2>/dev/null)"
   fi
@@ -300,9 +227,8 @@ if [[ "${ACTION}" == opened ]]; then
     || die "glab mr create failed (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
 fi
 
-# Read the MR back rather than scraping create's chatter: the URL reported is
-# one the forge just confirmed. The branch is pushed and the MR exists by now,
-# so a failed read-back must say so instead of reporting a bare failure.
+# Read the MR back rather than scraping create's chatter, so the reported URL is one
+# the forge confirmed; by now the MR exists, so a failed read-back must say so.
 url=""
 iid=""
 if gitnet_retry glab mr view "${BRANCH}" --repo "${project}" --output json; then

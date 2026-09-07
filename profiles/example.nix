@@ -1,13 +1,11 @@
-# Example profile: one GitLab group and the CLI tools its repos need. Copy it to
-# `profiles/<name>.nix` and add the name to default.nix to add another.
+# Example profile: copy to `profiles/<name>.nix` and add the name to default.nix.
 {
   gitlabGroups = [ "example-group" ];
 
-  # These repos are Ansible-driven.
+  # CLI tools its repos need.
   profileCliTools = [ "ansible" ];
 
-  # Left empty deliberately: alias bodies and host URLs depend on the real hosts,
-  # which belong in the private overlay, not a shared profile.
+  # Shell aliases and non-secret env vars for its hosts.
   customAliases = { };
   sessionVariables = { };
 }
