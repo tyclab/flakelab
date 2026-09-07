@@ -147,58 +147,61 @@ check    "exactly once"                     "$(switches)" "1"
 excludes "with no skipped-check line"       "${OUT}" "no drift check"
 excludes "and no warning at all"            "${OUT}" "⚠"
 
-print -r -- "a repository behind its remote is refused without a terminal"
+print -r -- "a clean repository behind its remote is pulled and switched"
 d="$(mk_remote behind)"
 git clone -q "${BASE}/behind.git" "${BASE}/behind-other"
-print -r -- '# upstream' >> "${BASE}/behind-other/flake.nix"
-git -C "${BASE}/behind-other" commit -q -am upstream
-git -C "${BASE}/behind-other" push -q origin main
+push_upstream() {
+  print -r -- "$1" >> "${BASE}/behind-other/flake.nix"
+  git -C "${BASE}/behind-other" commit -q -am "$1"
+  git -C "${BASE}/behind-other" push -q origin main
+}
+push_upstream '# upstream'
 run_update "${d}"
-check    "it refuses"                       "${RC}" "1"
-check    "with no switch"                   "$(switches)" "0"
-contains "naming the stale tree"            "${OUT}" "stale"
-contains "and the commit count"             "${OUT}" "1 commit(s) behind remote"
-
-print -r -- "FLAKELAB_STALE_OK=1 waives that refusal"
-FLAKELAB_STALE_OK=1 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 check    "exactly once"                     "$(switches)" "1"
-
-# ---------------------------------------------------------------------------
-# 3b. --pull: the same stale tree, brought up to date instead of refused
-# ---------------------------------------------------------------------------
-print -r -- "--pull rebases a clean repository onto its remote and switches"
-run_update "${d}" --pull
-check    "it switches"                      "${RC}" "0"
-check    "exactly once"                     "$(switches)" "1"
-contains "after pulling"                    "${OUT}" "pulled --rebase"
+contains "naming the commit count"          "${OUT}" "1 commit(s) behind remote"
+contains "and the pull"                     "${OUT}" "pulled --rebase"
 check    "and HEAD is the remote's"         "$(git -C "${d}" rev-parse HEAD)" "$(git -C "${d}" rev-parse origin/main)"
 excludes "with no stale refusal"            "${OUT}" "stale"
 
-print -r -- "--pull refuses a dirty tree instead of stashing it"
-print -r -- '# upstream 2' >> "${BASE}/behind-other/flake.nix"
-git -C "${BASE}/behind-other" commit -q -am upstream2
-git -C "${BASE}/behind-other" push -q origin main
+print -r -- "FLAKELAB_STALE_OK=1 rebuilds the stale tree as it is"
+push_upstream '# upstream 2'
+before="$(git -C "${d}" rev-parse HEAD)"
+FLAKELAB_STALE_OK=1 run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "saying so"                        "${OUT}" "FLAKELAB_STALE_OK=1"
+check    "and HEAD is untouched"            "$(git -C "${d}" rev-parse HEAD)" "${before}"
+
+print -r -- "a dirty repository behind its remote is refused, not stashed"
 print -r -- '# local edit' >> "${d}/flake.nix"
-run_update "${d}" --pull
+run_update "${d}"
 check    "it refuses"                       "${RC}" "1"
 check    "with no switch"                   "$(switches)" "0"
-contains "naming the uncommitted change"    "${OUT}" "uncommitted changes"
-contains "as the reason"                    "${OUT}" "commit or stash first"
+contains "naming the uncommitted change"    "${OUT}" "commit or stash first"
 check    "and the edit is still there"      "$(git -C "${d}" status --porcelain)" " M flake.nix"
 git -C "${d}" checkout -q -- flake.nix
 
-print -r -- "--pull aborts a conflicting rebase and refuses"
+print -r -- "a conflicting rebase is aborted and refused"
 print -r -- '# upstream 2' > "${d}/flake.nix"
 print -r -- '# mine' >> "${d}/flake.nix"
 git -C "${d}" commit -q -am mine
 before="$(git -C "${d}" rev-parse HEAD)"
-run_update "${d}" --pull
+run_update "${d}"
 check    "it refuses"                       "${RC}" "1"
 check    "with no switch"                   "$(switches)" "0"
 contains "naming the failed pull"           "${OUT}" "pull --rebase failed"
 check    "HEAD is untouched"                "$(git -C "${d}" rev-parse HEAD)" "${before}"
 check    "and no rebase is left in progress" "$([[ -d "${d}/.git/rebase-merge" || -d "${d}/.git/rebase-apply" ]] && print yes || print no)" "no"
+
+print -r -- "the fetch prunes remote branches that are gone"
+git -C "${BASE}/behind-other" push -q origin main:gone
+git -C "${d}" fetch -q
+check    "origin/gone is known before"      "$(git -C "${d}" branch -r --list origin/gone | tr -d ' ')" "origin/gone"
+git -C "${BASE}/behind-other" push -q origin --delete gone
+FLAKELAB_STALE_OK=1 run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "and origin/gone is pruned"        "$(git -C "${d}" branch -r --list origin/gone | tr -d ' ')" ""
 
 # ---------------------------------------------------------------------------
 # 4. The switch's own status and the --all tail survive

@@ -33,23 +33,21 @@ _url_path() {
 }
 
 _run_clone=0
-_run_pull=0
 while (( $# )); do
   case "$1" in
     --all) _run_clone=1 ;;
-    --pull) _run_pull=1 ;;
     -h|--help)
-      print -r -- "${_self} [--all] [--pull]"
+      print -r -- "${_self} [--all]"
       print -r -- ""
-      print -r -- "  Rebuild this distro from ${_repo} after a pre-flight that checks the"
-      print -r -- "  checkout against its remote and against the default branch (skipped,"
-      print -r -- "  and said so, when it is not a checkout or has no remote)."
+      print -r -- "  Rebuild this distro from ${_repo} after a pre-flight: fetch --all --prune,"
+      print -r -- "  pull --rebase a clean checkout that is behind its remote, and refuse one"
+      print -r -- "  that is dirty or conflicts (skipped, and said so, when it is not a"
+      print -r -- "  checkout or has no remote). A branch behind the default branch is"
+      print -r -- "  warned about and, at a terminal, offered a rebase."
       print -r -- ""
       print -r -- "  --all   also run nix-clone-repos after a successful switch"
-      print -r -- "  --pull  rebase onto the remote when behind it, without asking; refuses"
-      print -r -- "          on uncommitted changes or a conflict, and restores the tree"
       print -r -- ""
-      print -r -- "  FLAKELAB_STALE_OK=1  waive the stale/unverified-tree refusal (automation)"
+      print -r -- "  FLAKELAB_STALE_OK=1  rebuild the checkout as it is: behind, dirty, or unverified"
       exit 0
       ;;
     *)
@@ -60,14 +58,19 @@ while (( $# )); do
   shift
 done
 
-# --pull: the answer is known, so no prompt and no terminal needed. Uncommitted
-# changes refuse rather than autostash: a stash the operator did not ask for is
-# one they will not look for. A conflict is aborted so nothing half-applied waits
-# for the next run.
+# A clean checkout behind its own upstream has nothing to lose, so it is pulled
+# without asking, terminal or not. Uncommitted changes refuse rather than
+# autostash: a stash the operator did not ask for is one they will not look for.
+# A conflict is aborted so nothing half-applied waits for the next run.
+# FLAKELAB_STALE_OK=1 is the one override: rebuild the tree as it is.
 _nix_pull() {
   local _dir="${_repo}" _out
+  if [[ "${FLAKELAB_STALE_OK:-}" == 1 ]]; then
+    print -P "%F{yellow}  FLAKELAB_STALE_OK=1 — rebuilding the stale tree as it is%f"
+    return 0
+  fi
   if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
-    print -P "%F{red}✗ --pull: uncommitted changes in ${_dir} — commit or stash first; refusing to rebuild from a stale tree%f"
+    print -P "%F{red}✗ uncommitted changes in ${_dir} — commit or stash first, or set FLAKELAB_STALE_OK=1 to rebuild the stale tree%f"
     return 1
   fi
   if _out="$(git -C "$_dir" pull --rebase 2>&1)"; then
@@ -75,41 +78,20 @@ _nix_pull() {
     return 0
   fi
   git -C "$_dir" rebase --abort 2>/dev/null || true
-  print -P "%F{red}✗ --pull: pull --rebase failed — tree restored, refusing to rebuild from a stale tree%f"
+  print -P "%F{red}✗ pull --rebase failed — tree restored; resolve it by hand, or set FLAKELAB_STALE_OK=1 to rebuild the stale tree%f"
   print -r -- "$_out"
   return 1
 }
 
-# `read -k 1`, not `read -q`: the answer must be testable, or a non-"y" read
-# silently skips the pull and the rebuild runs the stale tree. With no terminal a
-# stale tree refuses; FLAKELAB_STALE_OK=1 is the waiver for automation.
-_nix_offer_pull() {
-  local _dir="${_repo}" _reply=""
-  if (( _run_pull )); then
-    _nix_pull
-    return
-  fi
-  if [[ ! -t 0 ]]; then
-    [[ "${FLAKELAB_STALE_OK:-}" == 1 ]] && return 0
-    print -P "%F{red}✗ stale flakelab tree and no terminal to ask — git -C ${_repo} pull --rebase, or set FLAKELAB_STALE_OK=1 to rebuild anyway%f"
-    return 1
-  fi
-  read -k 1 "_reply?Pull --rebase now? [y/N] "
-  echo
-  [[ "$_reply" == [yY] ]] || return 0
-  if ! git -C "$_dir" pull --rebase; then
-    print -P "%F{red}✗ flakelab pull failed — refusing to rebuild from a stale tree%f"
-    return 1
-  fi
-}
-
-# No ControlMaster: one fetch, so there is no second connection to reuse. An
-# explicit GIT_SSH_COMMAND from the environment wins.
+# --all --prune: every remote, and refs that are gone upstream go here too, so a
+# merged branch does not linger as a stale origin/ ref. No ControlMaster: one
+# fetch, so there is no second connection to reuse. An explicit GIT_SSH_COMMAND
+# from the environment wins.
 _nix_fetch() {
   local _dir="$1"
   local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
   local -a GITNET_TIMEOUT_CMD=(timeout 20)
-  gitnet_retry git -C "$_dir" fetch -q && return 0
+  gitnet_retry git -C "$_dir" fetch -q --all --prune && return 0
   print -P "%F{yellow}⚠ Could not check for flakelab updates — fetch failed after retry (${GITNET_WHY})%f"
   [[ -n "$GITNET_OUT" ]] && print -r -- "$GITNET_OUT"
   return 1
@@ -140,10 +122,10 @@ _nix_check_remote() {
   local _ahead=$(git -C "$_dir" rev-list --count @{u}..HEAD 2>/dev/null)
   if [[ "$_behind" -gt 0 && "$_ahead" -gt 0 ]]; then
     print -P "%F{yellow}⚠ repo has diverged (${_ahead} ahead, ${_behind} behind)%f"
-    _nix_offer_pull || return 1
+    _nix_pull || return 1
   elif [[ "$_behind" -gt 0 ]]; then
     print -P "%F{yellow}⚠ repo is ${_behind} commit(s) behind remote%f"
-    _nix_offer_pull || return 1
+    _nix_pull || return 1
   elif [[ "$_ahead" -gt 0 ]]; then
     print -P "%F{cyan}ℹ repo is ${_ahead} commit(s) ahead of remote (unpushed)%f"
   fi
