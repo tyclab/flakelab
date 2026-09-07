@@ -110,6 +110,12 @@ backupautostart: false
 # Git editor. Omit to keep git's default.
 giteditor: 'code'
 
+# This overlay's own git remote. SSH URL, like `repos`. Set, the generated
+# overlay gets it as `origin` (nothing is pushed for you), `flakelab update`
+# checks drift against it once pushed, and the clone sweep excludes the repo it
+# names rather than guessing from the overlay's folder name.
+# overlay_url: git@gitlab.com:your-group/flakelab-config.git
+
 # Extra repos beyond group discovery, cloned into ~/git/<rel_path>/<repo-name>.
 # SSH URLs only. These bypass cloneExclude - naming a repo here is explicit.
 # repos:

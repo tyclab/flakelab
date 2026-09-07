@@ -131,9 +131,12 @@ overwrites an existing one, so hand-edits survive. `-Force` regenerates it from
 the config; `generate` writes it and stops, for a look (or a `nix eval`) before
 anything is imported. Either leaves the overlay as a git repository — one
 commit, no remote — so hand-edits and `-Force` regenerations are diffs to
-review, never commits made for you. Adding a remote and pushing is yours to do;
-`flakelab update` checks drift only once there is one. A box provisioned
-before this keeps its plain directory and rebuilds the same way.
+review, never commits made for you. `overlay_url` in the config names its
+remote: it is added as `origin` and the clone sweep excludes the repository it
+names instead of guessing from the folder name. The push is yours to do;
+`flakelab update` checks drift only once there is a remote, and `flakelab
+doctor` points out an origin that was never pushed to. A box provisioned before
+this keeps its plain directory and rebuilds the same way.
 
 A `provision` applies the overlay **twice** — the SSH-dependent steps need a
 user that only the first switch creates. The second switch runs **only if a
@@ -437,7 +440,8 @@ OVERLAY_KNOWN_HOSTS=~/.ssh/known_hosts.flakelab
 systemd parses that file itself rather than handing it to a shell: a `#` starts
 a comment only at the start of a line, a trailing one is part of the value, and
 nothing but a leading `~/` in the three path keys is expanded. `OVERLAY_URL` is
-the only required key.
+the only required key, and a seed built from an overlay that sets
+`overlayUrl` defaults to that.
 
 | Key                    | Default                                                        |
 | ---------------------- | -------------------------------------------------------------- |
