@@ -14,8 +14,17 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `test-nix-update`: an offline suite for `flakelab update`'s pre-flight, with `sudo` shimmed. Wired into `make test` and `nix flake check`.
 - `GLAB_NO_PROMPT=1` in every login session: glab fails at once with the missing flag named instead of opening an interactive question, which in an agent's terminal-less shell was a hang until the tool timeout. At a real terminal it only skips the confirmation prompts.
 
+### Changed
+
+- `flakelab update` / `update-all` pull a clean overlay checkout that is behind its remote (`git pull --rebase`) instead of asking at a terminal and refusing without one, and the fetch in front of it is `--all --prune`. Uncommitted changes refuse rather than autostash; a conflicting rebase is aborted and refused with the tree restored. `FLAKELAB_STALE_OK=1` is the one override and now covers a dirty tree too. The prompt only ever had one useful answer, and the no-terminal refusal turned every `flakeup` from an agent shell into a manual pull first.
+
+### Removed
+
+- The `cwsl` alias (`claude` started in the overlay checkout). Never used: Claude Code is opened where the work is, and the overlay is one `cd` away like any other repo. `kwsl` stays for Kiro.
+
 ### Fixed
 
+- The proxmox-vm target links `/bin/bash` (tmpfiles, like NixOS-WSL does on the WSL distro). The clones hardcode it — `SHELL := /bin/bash` in Makefiles, `#!/bin/bash` in the Claude statusline — so on a PVE guest `flakelab activate-hooks` failed the hook install for those repos and the statusline never ran, while the same overlay was fine on WSL.
 - The flakelab user lingers (`users.users.<name>.linger = true`), so `user@<uid>` and the ssh-agent it hosts survive the end of a session. Each `wsl.exe -u <user> -- …` is its own logind session and the user manager stopped shortly after the last one ended, taking the loaded key with it: the provisioner's second switch could not reach the key `-SshPassphrase` had just loaded, the clone sweep forked a passphrase prompt per repo, and the backup timer never fired without a live session.
 - `clone-repos` runs ssh in `BatchMode`: with `--max-jobs` workers a passphrase prompt per repo landed on one terminal, and no tty test could suppress them. It now refuses up front, in one line, when the key is encrypted and the agent holds nothing, and falls back to the user agent's fixed socket when `SSH_AUTH_SOCK` is missing from a non-login invocation.
 - `flakelab update` / `update-all` no longer treat an overlay that is not a git checkout, or has no remote, as an unverifiable tree. The pre-flight ran `git fetch` in whatever `repoPath` named: on the plain directory `provision` wrote that was `fatal: not a git repository`, retried after a 2 s sleep, then a "rebuild anyway?" prompt at a terminal and a refusal without one (`FLAKELAB_STALE_OK=1` to get past it), followed by advice to run `git remote set-head origin -a` on a directory with no origin. Both shapes now get one info line and the switch; uncommitted changes in a remote-less repository are still warned about. A checkout with a remote keeps the drift check unchanged.

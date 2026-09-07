@@ -236,10 +236,12 @@ all fifteen.
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                            |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
-drift check's exit status. Without a terminal they refuse to rebuild from a
-stale or unverifiable flake tree (`FLAKELAB_STALE_OK=1` waives it per
-invocation); a checkout behind the default branch warns and, at a terminal,
-offers a rebase. An overlay that is not a git checkout, or has no remote, has
+pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean
+one behind its remote is pulled (`--rebase`), a dirty or conflicting one is
+refused with the tree untouched, and an unverifiable one is refused without a
+terminal (`FLAKELAB_STALE_OK=1` rebuilds it as it is, per invocation). A
+checkout behind the default branch warns and, at a terminal, offers a rebase.
+An overlay that is not a git checkout, or has no remote, has
 nothing to be behind: one line says the check was skipped and the switch runs.
 
 They also re-lock a **`path:`** flakelab input before the switch, saying so in
@@ -256,8 +258,8 @@ only deferred is in
 failing check with `touch ~/.local/state/flakelab/skip-healthcheck`.
 
 `gitchecker`, `gitcleaner` and `gitpublisher` are **not** subcommands — they stay
-standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro) and `c`/`cc`/`cwsl` (Claude Code) —
-base / full-trust / in-repo.
+standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro: base / full-trust / in-repo) and
+`c`/`cc` (Claude Code: base / full-trust).
 
 **Repo discovery is GitLab-only.** `flakelab clone` enumerates groups through
 `glab`, so `gitlabGroups` and the profiles are a GitLab concept; repos on other

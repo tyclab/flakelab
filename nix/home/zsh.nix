@@ -56,7 +56,6 @@ in
       kwsl = ''(cd "${cfg.repoPath}" && kiro-cli chat)'';
 
       c = "claude";
-      cwsl = ''(cd "${cfg.repoPath}" && claude)'';
     }
     # Trust-all outranks the agent's deniedCommands, so the destructive floor does
     # not apply under `kk`; hence the opt-in.
