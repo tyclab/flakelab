@@ -54,7 +54,23 @@ SSH_MUX_DIR="$(mktemp -d)"
 RESULT_FILE="$(mktemp)"
 trap 'rm -f "${RESULT_FILE}"; rm -rf "${SSH_MUX_DIR}"' EXIT
 
-export GIT_SSH_COMMAND="ssh -i ${KEY_FILE} -o StrictHostKeyChecking=accept-new ${GITNET_SSH_BASE} -o ControlMaster=auto -o ControlPath=${SSH_MUX_DIR}/%r@%h:%p -o ControlPersist=60"
+# BatchMode: this forks --max-jobs workers and ssh prompts on /dev/tty, so no
+# -t test could stop N passphrase prompts landing on one terminal. A changed
+# host key fails outright instead of asking, which is the right answer here.
+export GIT_SSH_COMMAND="ssh -i ${KEY_FILE} -o BatchMode=yes -o StrictHostKeyChecking=accept-new ${GITNET_SSH_BASE} -o ControlMaster=auto -o ControlPath=${SSH_MUX_DIR}/%r@%h:%p -o ControlPersist=60"
+
+# A non-login invocation carries no SSH_AUTH_SOCK; the user agent's socket is
+# at a fixed path (nix/home/git-ssh.nix), the same fallback activation uses.
+if [[ -z "${SSH_AUTH_SOCK:-}" && -S "/run/user/$(id -u)/ssh-agent" ]]; then
+  export SSH_AUTH_SOCK="/run/user/$(id -u)/ssh-agent"
+fi
+# An unencrypted key needs no agent; an encrypted one with an empty agent cannot
+# authenticate at all, so say so once instead of forking workers that each fail.
+if ! ssh-keygen -y -P "" -f "${KEY_FILE}" > /dev/null 2>&1 \
+  && ! ssh-add -l > /dev/null 2>&1; then
+  print -ru2 -- "${KEY_FILE} is passphrase-protected and the ssh-agent holds no key. Load it first: ssh-add ${KEY_FILE}"
+  exit 1
+fi
 
 # Process a single repo: clone, or fetch + rebase local branch onto upstream.
 # On rebase conflict: abort (restore pre-rebase state) and flag REBASE_CONFLICT.
