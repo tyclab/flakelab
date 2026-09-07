@@ -19,15 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      # `nix develop` appends the host PATH after the dev shell's, so the node
-      # and go hooks (markdownlint-cli2, prettier, gitleaks) resolve the runner
-      # image's toolchains, while pre-commit, zsh and shellcheck come from the
-      # dev shell at the versions flake.lock pins.
-      #
-      # One shell for both halves. Deliberately NOT `make lint-nix`: that target
-      # also builds statix and deadnix, which the test job's `nix flake check`
-      # already builds as checks — the formatting diff is the only part CI is
-      # missing here.
+      # `nix develop` appends the host PATH, so the node and go hooks resolve the
+      # runner's toolchains while the rest comes from the dev shell's pinned versions.
+      # Not `make lint-nix`: the test job's `nix flake check` builds those linters.
       - run: nix develop -c bash -c 'make lint && nix fmt && git diff --exit-code'
 
   test:
@@ -35,8 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      # No `--no-build`: checks.x86_64-linux holds the six offline suites plus
-      # statix and deadnix, so this runs them instead of only evaluating.
+      # No `--no-build`: this must run the suites, not only evaluate them.
       - run: nix flake check --print-build-logs
 
   gitleaks:
@@ -46,9 +39,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      # History, not the working tree: the pre-commit gitleaks hook already
-      # scans file content, and is skippable with `--no-verify`. Run from this
-      # flake's own `packages.gitleaks`, so the version is the locked nixpkgs
-      # revision rather than whatever the moving `nixos-26.05` branch ref
-      # resolves to on the day.
+      # History, not the working tree, which the pre-commit hook covers - and that
+      # hook is skippable. From packages.gitleaks, so the version is the locked one.
       - run: nix run .#gitleaks -- git . --redact --no-banner --log-level error

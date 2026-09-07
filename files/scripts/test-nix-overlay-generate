@@ -2,28 +2,12 @@
 
 set -uo pipefail
 
-#
-# Offline test suite for nix-overlay-generate.
-#
-# Same shape as test-nix-backup and test-gitpublisher: the real script, driven
-# end to end against throwaway --out directories under a mktemp root, so no test
-# touches the caller's own files. The tracked templates/overlay/ and profiles/
-# ARE the fixtures for everything the generator reads out of the checkout - the
-# point of this suite is that the shipped template and the shipped example
-# config produce a usable overlay, which a hand-made copy of either would stop
-# proving the moment one of them changed.
-#
-# NO `nix` HERE, deliberately. `nix flake metadata` on a generated overlay is
-# the real acceptance check, and it is run by hand (see the MR that added this
-# file), but it cannot live in this suite: `nix flake check` builds it inside a
-# sandbox with no nix, no network and no store access, and a case that quietly
-# skipped there would be the exact silent green flake.nix's suiteCheck bans skip
-# lines to prevent. So every assertion below is on FILE CONTENT - placeholder
-# resolved, values substituted, secrets absent, stub git-ignored - which is what
-# can be checked truthfully offline.
-#
-# Usage: files/scripts/test-nix-overlay-generate
-#
+# Offline test suite for nix-overlay-generate: the real script against throwaway
+# --out directories, with the TRACKED templates/overlay/ and profiles/ as the
+# fixtures, so a hand-made copy cannot stop proving anything.
+# No `nix` here: the flake-check sandbox has none, and a case that skipped there
+# would be the silent green suiteCheck bans skip lines to prevent. Every assertion
+# is on file content.
 
 SCRIPT_DIR="${0:A:h}"
 GEN="${SCRIPT_DIR}/nix-overlay-generate"
@@ -32,8 +16,8 @@ EXAMPLE="${REPO_ROOT}/files/config/user_data.example.yaml"
 TEMPLATE="${REPO_ROOT}/templates/overlay/flake.nix"
 typeset -i PASS=0 FAIL=0
 
-# Both end in `return 0`: `(( PASS++ ))` yields the value BEFORE the increment,
-# so the first call returns 1 and an `&& ok || bad` chain would run both arms.
+# Both end in `return 0`: `(( PASS++ ))` yields the pre-increment value, so an
+# `&& ok || bad` chain would run both arms on the first call.
 ok()   { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
 bad()  { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
 check() { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
@@ -44,9 +28,8 @@ exists() { [[ -e "$2" ]] && ok "$1" || bad "$1 (no such path: $2)" }
 BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
 
-# run_gen — the real script, sandboxed to an --out under BASE. Sets OUT and RC
-# rather than printing: a `$(run_gen)` would run the function in a subshell, and
-# the exit status it recorded there would never reach the assertion here.
+# Sets OUT and RC rather than printing: a `$(run_gen)` would record the status in a
+# subshell, where no assertion can reach it.
 typeset -i RC=0
 OUT=""
 run_gen() {
@@ -54,9 +37,8 @@ run_gen() {
   RC=$?
 }
 
-# run_gen_at <script> <args...> — run_gen against a COPY of the script rather
-# than ${GEN}. Same OUT/RC contract, for the cases whose subject is the checkout
-# the script sits in.
+# run_gen_at <script> <args...> — same contract against a copy of the script, for the
+# cases whose subject is the checkout it sits in.
 run_gen_at() {
   local script="$1"
   shift
@@ -64,10 +46,8 @@ run_gen_at() {
   RC=$?
 }
 
-# mk_fake_checkout <dir> <profile>... — the three directories the generator reads
-# next to itself, populated from the tracked ones plus a stub profile per name.
-# That is a complete checkout as far as it is concerned. Never REPO_ROOT: the
-# cases using it are about what the script writes into the checkout it finds.
+# mk_fake_checkout <dir> <profile>... — a complete checkout as far as the generator is
+# concerned. Never REPO_ROOT: these cases are about what it writes into a checkout.
 mk_fake_checkout() {
   local dir="$1"
   shift
@@ -79,9 +59,7 @@ mk_fake_checkout() {
   for p in "$@"; do print -r -- '{ }' > "${dir}/profiles/${p}.nix"; done
 }
 
-# out <name> — a fresh, empty overlay directory path (not created; the script
-# creates it, and half these cases are about what it does when it does not
-# exist).
+# out <name> — an overlay directory path, deliberately not created.
 out() {
   OUTDIR="${BASE}/$1"
   rm -rf "${OUTDIR}"
@@ -90,38 +68,22 @@ out() {
 
 flake_of() { print -r -- "$(< "$1/flake.nix")" }
 
-# `stat -c` is GNU, `stat -f` is BSD, and macOS is a platform the script under
-# test explicitly supports - so a suite that only knows the GNU spelling cannot
-# run where the feature is aimed. Both arms read the same thing; if neither
-# works the output is empty and the assertion fails loudly rather than passing.
+# GNU and BSD spellings, since the script supports macOS; neither working leaves the
+# output empty and the assertion fails loudly.
 file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" }
-# The same discriminator both writers use - setup-wsl-nix.ps1 matches
-# `#\s*flakelab-url:` and nix-overlay-generate matches `# flakelab-url:`. Counting a
-# bare `flakelab-url:` instead would also count the prose above the anchor, which
-# is exactly the false positive that would let a template with NO anchor pass.
+# The same discriminator both writers use: counting a bare `flakelab-url:` would also
+# count prose, and let a template with no anchor pass.
 markers_in() { grep -c '#[[:space:]]*flakelab-url:' "$1" }
 
 print -r -- "test-nix-overlay-generate"
 
-# ---------------------------------------------------------------------------
-# 1. The shipped template is substitutable at all
-# ---------------------------------------------------------------------------
-# Two writers rewrite the flakelab input line by this marker - this script and
-# setup-wsl-nix.ps1's New-OverlaySkeleton. Losing it, or growing a second one,
-# breaks both, and then nothing points a scaffold at a flakelab that exists. That
-# matters because the DEFAULT does not: the `%FLAKELAB_PATH%` literal it replaced
-# was unresolvable by construction (nix read it as a relative path and looked
-# for a directory of that name inside the store copy), and the mirror named in
-# its place is not published yet. The anchor is what keeps "point this at
-# something real" a one-line rewrite either way.
+# Two writers rewrite the input line by this marker, so losing it - or growing a
+# second - leaves nothing pointing a scaffold at a flakelab that exists.
 print -r -- "the shipped templates/overlay/flake.nix carries the substitution anchor"
 check "exactly one flakelab-url: anchor line" "$(markers_in "${TEMPLATE}")" "1"
 excludes "and no %FLAKELAB_PATH% literal is left" "$(< "${TEMPLATE}")" '%FLAKELAB_PATH%'
 contains "the anchor line is the input URL"   "$(< "${TEMPLATE}")" 'inputs.flakelab.url = "github:tyclab/flakelab"; # flakelab-url:'
 
-# ---------------------------------------------------------------------------
-# 2. A bare scaffold: no config, no flags
-# ---------------------------------------------------------------------------
 print -r -- "a bare scaffold is the template with the input URL resolved"
 o="$(out bare)"
 run_gen --out "${o}"
@@ -138,15 +100,8 @@ contains "the hand-edit placeholders are kept" "${f}" 'username = "CHANGEME";'
 check "the .gitignore is the template's, verbatim" \
   "$(< "${o}/.gitignore")" "$(< "${REPO_ROOT}/templates/overlay/.gitignore")"
 
-# ---------------------------------------------------------------------------
-# 2b. Store mode refuses to default the flakelab input
-# ---------------------------------------------------------------------------
-# `flakelab overlay-gen` execs this script out of the flake source in the nix
-# store, so ${0:A:h:h:h} is a store path. Defaulting the input to `path:<that>`
-# would write an immutable, garbage-collectable ref into the overlay and pin the
-# operator to a frozen snapshot. The script must refuse instead - and must still
-# work when the ref is supplied. NIX_STORE points the check at a throwaway
-# prefix so this runs without writing into the real store.
+# In store mode the input must not default to `path:<store path>`, which would pin the
+# operator to a collectable snapshot; NIX_STORE points this at a throwaway prefix.
 print -r -- "running from the store refuses to default the flakelab input"
 STORE_FAKE="${BASE}/fakestore"
 mk_fake_checkout "${STORE_FAKE}/src" example
@@ -172,20 +127,13 @@ f="$(flake_of "${o}")"
 contains "the input is the ref that was passed" "${f}" 'inputs.flakelab.url = "github:tyclab/flakelab";'
 excludes "and no store path leaks in"           "${f}" "${STORE_FAKE}"
 
-# ---------------------------------------------------------------------------
-# 3. The secrets contract
-# ---------------------------------------------------------------------------
-# The generator's whole relationship with secrets: it creates an empty, private,
-# git-ignored file and stops. Anything else would put a token in a git repo the
-# adopter is about to push, or in the world-readable nix store.
+# Anything more than an empty private git-ignored stub puts a token in a git repo
+# about to be pushed, or in the world-readable store.
 print -r -- "the secrets stub is empty, private and git-ignored"
 check "it is zero bytes"      "$(wc -c < "${o}/files/config/shared/secrets/secrets.env")" "0"
 check "and owner-only"        "$(file_mode "${o}/files/config/shared/secrets/secrets.env")" "600"
 contains "the overlay .gitignore names it" "$(< "${o}/.gitignore")" "secrets.env"
 
-# ---------------------------------------------------------------------------
-# 4. Generation from the shipped example config
-# ---------------------------------------------------------------------------
 print -r -- "the shipped user_data.example.yaml generates a filled-in overlay"
 o="$(out fromexample)"
 run_gen --out "${o}" --config "${EXAMPLE}"
@@ -194,8 +142,8 @@ f="$(flake_of "${o}")"
 excludes "nothing is left to hand-edit" "${f}" "CHANGEME"
 check    "the anchor survives"          "$(markers_in "${o}/flake.nix")" "1"
 
-# Every option nix/options.nix declares WITHOUT a default has to be emitted even
-# when the config is silent about it, or mkSystem aborts. This is that list.
+# Every option declared without a default must be emitted even when the config is
+# silent about it, or mkSystem aborts.
 print -r -- "every option with no default is emitted"
 contains "username"        "${f}" 'username = "tycuser";'
 contains "gitName"         "${f}" 'gitName = "Your Name";'
@@ -210,10 +158,8 @@ contains "cloneExclude keeps the overlay out too" "${f}" '"fromexample"'
 
 print -r -- "lists and maps come across"
 contains "the profile"    "${f}" 'profiles = [ "example" ];'
-# The comment above that list is the one place the generated overlay states what
-# selecting a profile does. setup-wsl-nix.ps1's New-OverlayFlakeText emits the
-# same two lines by hand; nothing drives PowerShell here, so this pins one writer
-# and the other stays a manual match.
+# setup-wsl-nix.ps1 emits the same two lines by hand, and nothing drives PowerShell
+# here, so that writer stays a manual match.
 contains "and the comment states the mechanism" "${f}" \
   'Selecting a profile is the only thing that'
 contains "naming what it installs" "${f}" 'installs its gitlabGroups and profileCliTools.'
@@ -222,18 +168,12 @@ contains "the ssh identity"   "${f}" 'sshKeys = [ "id_ed25519" ];'
 contains "an alias"           "${f}" 'k = "kiro-cli chat";'
 contains "and the second one" "${f}" 'kk = "kiro-cli chat --trust-all-tools";'
 contains "a non-secret endpoint" "${f}" 'HASS_URL = "http://homeassistant.example.lan:8123";'
-# `PROXMOX_API_URL: 'https://...' # base URL, no /api2/json` - the trailing
-# comment is not part of the value, and a value carrying one would be a URL nix
-# happily accepts and nothing on the box can reach.
+# A trailing comment is not part of the value: carrying one gives a URL nix accepts
+# and nothing on the box can reach.
 contains "an inline comment is not part of the value" "${f}" 'PROXMOX_API_URL = "https://pve.example.lan:8006";'
 excludes "so no comment text leaks into a value" "${f}" 'no /api2/json"'
 
-# ---------------------------------------------------------------------------
-# 5. No secret from the config reaches the flake
-# ---------------------------------------------------------------------------
-# The nix store is world-readable and the overlay is a git repo about to be
-# pushed. custom_env_vars is split by NAME, exactly as setup-wsl-nix.ps1 splits
-# it, and the secret half is dropped rather than written anywhere.
+# custom_env_vars is split by name and the secret half dropped, not written anywhere.
 print -r -- "no secret from the config reaches the flake"
 for k in GITLAB_TOKEN GH_TOKEN HASS_TOKEN PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET \
          SYNOLOGY_PASSWORD SYNOLOGY_DEVICE_ID GRAFANA_SERVICE_ACCOUNT_TOKEN WHATSAPP_API_KEY; do
@@ -245,18 +185,12 @@ contains "saying where they belong instead"       "${OUT}" ".config/tyc/secrets.
 check "the stub it wrote is still empty" \
   "$(wc -c < "${o}/files/config/shared/secrets/secrets.env")" "0"
 
-# ---------------------------------------------------------------------------
-# 6. Regenerating the same input twice changes nothing
-# ---------------------------------------------------------------------------
 print -r -- "a second --force run reproduces the first byte for byte"
 first="${f}"
 run_gen --out "${o}" --config "${EXAMPLE}" --force
 check "the second run is clean"       "${RC}" "0"
 check "and the flake is unchanged"    "$(flake_of "${o}")" "${first}"
 
-# ---------------------------------------------------------------------------
-# 7. An existing overlay is kept unless --force says otherwise
-# ---------------------------------------------------------------------------
 print -r -- "an existing flake.nix is kept without --force"
 o="$(out keep)"
 run_gen --out "${o}" --config "${EXAMPLE}"
@@ -268,17 +202,13 @@ contains "and it says so"            "${OUT}" "keeping existing flake.nix"
 run_gen --out "${o}" --config "${EXAMPLE}" --force
 contains "--force overwrites it" "$(flake_of "${o}")" 'username = "tycuser";'
 
-# The one file --force must NOT touch: it is the only thing in the overlay that
-# can already hold real tokens, and no regeneration is worth losing them.
+# The one file --force must not touch: it can already hold real tokens.
 print -r -- "--force never overwrites a secrets.env that already has content"
 print -r -- 'GITLAB_TOKEN="already-here"' > "${o}/files/config/shared/secrets/secrets.env"
 run_gen --out "${o}" --config "${EXAMPLE}" --force
 check "the operator's file survives" \
   "$(< "${o}/files/config/shared/secrets/secrets.env")" 'GITLAB_TOKEN="already-here"'
 
-# ---------------------------------------------------------------------------
-# 8. --dry-run writes nothing
-# ---------------------------------------------------------------------------
 print -r -- "--dry-run writes nothing"
 o="$(out dry)"
 run_gen --out "${o}" --config "${EXAMPLE}" --dry-run
@@ -286,9 +216,6 @@ check    "it exits clean"          "${RC}" "0"
 contains "it says what it would do" "${OUT}" "flake.nix"
 [[ -e "${o}/flake.nix" ]] && bad "no flake.nix is created" || ok "no flake.nix is created"
 
-# ---------------------------------------------------------------------------
-# 9. Flags without a config, and flags over a config
-# ---------------------------------------------------------------------------
 print -r -- "value flags alone generate an overlay"
 o="$(out flags)"
 run_gen --out "${o}" --user ada --git-name 'Ada Lovelace' --git-email ada@example.com \
@@ -301,7 +228,7 @@ contains "--flakelab-ref is honoured"     "${f}" 'inputs.flakelab.url = "github:
 contains "an unset locale falls back"   "${f}" 'locale = "en_US.UTF-8";'
 contains "an unset editor means null"   "${f}" 'gitEditor = null;'
 contains "an unset autostart means false" "${f}" 'backupAutostart = false;'
-# Off Windows there is no C:\Users\<name> to read, and the option is required.
+# Off Windows there is no C:\Users\<name> to read.
 contains "windowsUsername falls back to the Linux user" "${f}" 'windowsUsername = "ada";'
 contains "and the flake says why"       "${f}" 'non-Windows run falls back'
 
@@ -314,10 +241,8 @@ contains "and for locale"              "${f}" 'locale = "en_GB.UTF-8";'
 contains "and for profiles"            "${f}" 'profiles = [ "example" ];'
 contains "unnamed keys still come from the config" "${f}" 'gitEmail = "you@example.com";'
 
-# --profiles REPLACES the config's list rather than adding to it, which takes two
-# known profiles to see and the shipped checkout has one. A copy of the script
-# plus templates/overlay/ and a two-entry profiles/ is a complete checkout as far
-# as it is concerned (same construction as the write-over-the-checkout case).
+# --profiles replaces the config's list, which takes two known profiles to see and
+# the shipped checkout has one.
 TWO="${BASE}/twocheckout"
 TWO_GEN="${TWO}/files/scripts/nix-overlay-generate"
 mk_fake_checkout "${TWO}" p-one p-two
@@ -337,10 +262,8 @@ f="$(flake_of "${o}")"
 contains "the flag's profile is selected"  "${f}" 'profiles = [ "p-two" ];'
 excludes "and the config's is gone"        "${f}" '"p-one"'
 
-# A config naming two profiles must emit BOTH. `_nix_list` has a separate
-# one-element arm, so a list that collapsed to its first entry would still look
-# right in every single-profile case above - and the box would silently lose one
-# profile's groups and CLI tools.
+# `_nix_list` has a separate one-element arm, so a list collapsing to its first entry
+# would look right in every single-profile case above.
 print -r -- "a config listing two profiles emits both"
 cat > "${BASE}/bothprofiles.yaml" <<'YAML'
 user: two
@@ -356,12 +279,8 @@ check    "it generates"            "${RC}" "0"
 f="$(flake_of "${o}")"
 contains "both are in the list"    "${f}" $'profiles = [\n          "p-one"\n          "p-two"\n        ];'
 
-# ---------------------------------------------------------------------------
-# 10. Nix string escaping
-# ---------------------------------------------------------------------------
-# `${` is nix antiquotation: an alias like `echo ${FOO}` written raw turns the
-# rest of the flake into an interpolation and the eval error names no file the
-# adopter wrote. Backslash goes first or the escapes added after it double.
+# `${` is nix antiquotation: written raw it turns the rest of the flake into an
+# interpolation. Backslash goes first, or the escapes added after it double.
 print -r -- "values that mean something to nix are escaped"
 cat > "${BASE}/escape.yaml" <<'YAML'
 user: esc
@@ -380,13 +299,9 @@ f="$(flake_of "${o}")"
 contains 'antiquotation is escaped'  "${f}" 'echo \${FOO}'
 contains 'a quote is escaped'        "${f}" '\"quoted\"'
 contains 'a backslash is doubled'    "${f}" 'back\\slash'
-# A quoted scalar's closing quote is the LAST one on the line, so a '#' inside
-# it is part of the value and not the start of a comment.
+# A quoted scalar's closing quote is the last on the line, so a '#' inside is value.
 contains 'a # inside a quoted scalar survives' "${f}" 'gitName = "Ada # Lovelace";'
 
-# ---------------------------------------------------------------------------
-# 11. repos: — the list-of-maps form
-# ---------------------------------------------------------------------------
 print -r -- "repos: entries become { relPath; url; }"
 cat > "${BASE}/repos.yaml" <<'YAML'
 user: rep
@@ -406,13 +321,9 @@ f="$(flake_of "${o}")"
 contains "the first entry"  "${f}" '{ relPath = ""; url = "git@gitlab.com:example-group/example-repo.git"; }'
 contains "the second entry" "${f}" '{ relPath = "vendor"; url = "git@gitlab.com:someone/other.git"; }'
 
-# ---------------------------------------------------------------------------
-# 12. Refusals
-# ---------------------------------------------------------------------------
-# Each of these is a wrong overlay that would fail much later and much worse:
-# a profile name nothing declares aborts inside profiles/merge.nix, a missing
-# git identity makes every repo on the box commit as a placeholder, and writing
-# over the checkout destroys the flake the overlay imports.
+# Each is a wrong overlay that fails later and worse: an unknown profile aborts inside
+# merge.nix, a missing identity commits as a placeholder, and writing over the
+# checkout destroys the flake the overlay imports.
 print -r -- "wrong input is refused up front"
 o="$(out unknownprofile)"
 run_gen --out "${o}" --user u --git-name N --git-email n@example.com --profiles notaprofile
@@ -421,9 +332,7 @@ contains "naming the bad one"         "${OUT}" "notaprofile"
 contains "and listing the real ones"  "${OUT}" "example"
 [[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
 
-# A config with everything BUT the Linux username: the .ps1 throws on this too,
-# and mkSystem's own message for it names a store path rather than the file the
-# adopter has open.
+# mkSystem's own message for a missing username names a store path, not the config.
 cat > "${BASE}/nouser.yaml" <<'YAML'
 gitfullname: Nameless Person
 gitmail: nameless@example.com
@@ -446,11 +355,8 @@ run_gen --out "${o}" --user 'not-allowed' --git-name N --git-email n@example.com
 check    "a dashed username fails" "${RC}" "1"
 contains "naming the rule"         "${OUT}" "dash"
 
-# Aimed at a THROWAWAY checkout, never at REPO_ROOT: this case exists because
-# the guard might one day regress, and the run it is asserting about is exactly
-# the one that would then scribble a secrets stub and the shared/ dirs into the
-# working tree. A copy of the script plus the two directories it reads next to
-# itself is a complete checkout as far as it is concerned.
+# A throwaway checkout, never REPO_ROOT: a regressed guard would scribble a secrets
+# stub and the shared/ dirs into the working tree.
 FAKE="${BASE}/fakecheckout"
 mk_fake_checkout "${FAKE}" example
 run_gen_at "${FAKE}/files/scripts/nix-overlay-generate" --out "${FAKE}" \
@@ -467,14 +373,8 @@ run_gen --out "$(out badflag)" --frobnicate
 check    "an unknown flag fails"   "${RC}" "1"
 contains "naming it"               "${OUT}" "frobnicate"
 
-# ---------------------------------------------------------------------------
-# 13. No profiles AND no groups is refused, not warned about
-# ---------------------------------------------------------------------------
-# The failure this repo has already been bitten by: with no profile selected,
-# profiles/ contributes nothing - no profile packages, no group clones - and the build
-# still succeeds. There is no legitimate reason to generate that overlay, so it
-# is an error. A config that names groups but no profile still only warns: the
-# box does get clones, and a fork wanting none of the profiles is legitimate.
+# With nothing selected the build still succeeds and the box gets nothing, so it is an
+# error; groups without a profile only warns, since the box does get clones.
 print -r -- "an overlay that would install nothing is refused"
 cat > "${BASE}/noprofiles.yaml" <<'YAML'
 user: bare
@@ -504,15 +404,8 @@ contains "with a warning"            "${OUT}" "no profiles selected"
 contains "and an empty list in the flake" "$(flake_of "${o}")" 'profiles = [ ];'
 contains "and the group survives"    "$(flake_of "${o}")" 'gitlabGroups = [ "somegroup" ];'
 
-# ---------------------------------------------------------------------------
-# 14. A key written in the other shape is coerced, not dropped
-# ---------------------------------------------------------------------------
-# The .ps1's Get-UserDataList wraps a scalar into a one-element list, and the
-# [string] cast it puts on sshkeyautoadd joins a list on spaces. Reading only
-# the array this parser classified a block into instead would make an inline
-# `gitlab_groups: mygroup` vanish from the overlay with NOTHING said - the same
-# silent-drop failure the profile validation refuses. Same file, same overlay,
-# whichever generator wrote it.
+# Reading only the array this parser classified a block into would make an inline
+# `gitlab_groups: mygroup` vanish with nothing said.
 print -r -- "a key written in the other shape is still read"
 cat > "${BASE}/shapes.yaml" <<'YAML'
 user: shape
@@ -535,13 +428,8 @@ contains "keeping the git identity first"                   "${f}" '"id_ed25519"
 contains "and the second key"                               "${f}" '"id_rsa"'
 excludes "no warning about a profile-less box"              "${OUT}" "no profiles selected"
 
-# ---------------------------------------------------------------------------
-# 15. An inline comment starts at the FIRST ' #', not the last
-# ---------------------------------------------------------------------------
-# The .ps1 strips leftmost (`-replace '\s+#.*$'`). Stripping from the LAST one
-# instead leaves `# first` inside the value, and a sessionVariable is what GATES
-# an MCP server - a URL with a comment welded to it fails at first call, not at
-# eval.
+# Stripping from the last ' #' leaves a comment inside the value, and a URL with one
+# welded to it fails at first call rather than at eval.
 print -r -- "an inline comment starts at the first ' #'"
 cat > "${BASE}/comments.yaml" <<'YAML'
 user: cmt
@@ -558,15 +446,11 @@ run_gen --out "${o}" --config "${BASE}/comments.yaml"
 f="$(flake_of "${o}")"
 contains "the whole comment is stripped" "${f}" 'HASS_URL = "http://a.example";'
 excludes "not just its tail"             "${f}" '# first'
-# No whitespace in front of it, so it is a URL fragment and not a comment.
+# No leading whitespace, so it is a URL fragment and not a comment.
 contains "a bare '#' inside a value survives" "${f}" 'GRAFANA_URL = "https://g.example/#/dash";'
 
-# ---------------------------------------------------------------------------
-# 16. team:/teams: are read as profiles:
-# ---------------------------------------------------------------------------
-# profiles/merge.nix still honours the older name, and a wslkube config carried
-# over from that era uses it. Dropping it silently is the no-profiles failure
-# above with no warning attached, because the key WAS in the file.
+# merge.nix still honours the older name, and dropping it silently is the no-profiles
+# failure above with no warning, because the key was in the file.
 print -r -- "a wslkube-era teams: block is read as profiles:"
 cat > "${BASE}/teams.yaml" <<'YAML'
 user: legacy
@@ -580,19 +464,11 @@ run_gen --out "${o}" --config "${BASE}/teams.yaml"
 contains "the profile is selected" "$(flake_of "${o}")" 'profiles = [ "example" ];'
 excludes "and no no-profiles warning is printed" "${OUT}" "no profiles selected"
 
-# ---------------------------------------------------------------------------
-# 17. A wslkube checkout: variables.yaml is layered under user_data.yaml
-# ---------------------------------------------------------------------------
-# wslkube splits its config the way Ansible loads it - shared defaults in
-# variables.yaml, per-host overrides in files/config/user_data.yaml. Reading
-# only the second misses gitlab_groups, clone_exclude, claude_plugins and the
-# marketplace, and the overlay comes out selecting nothing: green build, no
-# profile packages, empty ~/git, nothing said. main_playbook.yaml is part of the fixture
-# because auto-detection keys on it too - a lone variables.yaml three levels up
-# is not evidence of a wslkube checkout.
+# Reading only user_data.yaml misses the shared defaults and the overlay selects
+# nothing: green build, empty ~/git, nothing said. main_playbook.yaml is in the fixture
+# because auto-detection keys on it too.
 print -r -- "a wslkube checkout is read as two layered files"
-# NOT ${BASE}/wslkube: out() rm -rf's ${BASE}/<name>, and `out wslkube`
-# below would delete this fixture out from under the case using it.
+# Not ${BASE}/wslkube: `out wslkube` below would rm -rf this fixture.
 WK="${BASE}/wk-src"
 mkdir -p "${WK}/files/config"
 print -r -- '# stub' > "${WK}/main_playbook.yaml"
@@ -623,33 +499,25 @@ run_gen --out "${o}" --config "${WK}/files/config/user_data.yaml"
 f="$(flake_of "${o}")"
 check    "it generates"                     "${RC}" "0"
 contains "it says it layered them"          "${OUT}" "layering ${WK}/variables.yaml"
-# The whole point: neither key is in user_data.yaml.
+# Neither key is in user_data.yaml.
 contains "profiles are DERIVED from the groups" "${OUT}" "profiles derived from gitlab_groups"
 contains "example, from example-group"      "${f}" 'profiles = [ "example" ];'
-# family-recipes is claimed by no profile, so it stays; example-group is already
-# unioned in by profiles/merge.nix and listing it again would be a duplicate.
+# No profile claims family-recipes, while example-group is already unioned in.
 contains "only the unclaimed group is personal" "${f}" 'gitlabGroups = [ "family-recipes" ];'
 contains "clone_exclude is unioned in"      "${f}" '"wslkube"'
 contains "and the overlay itself still excluded" "${f}" '"flakelab"'
 contains "the marketplace comes across"     "${f}" 'name = "Example-tools";'
 contains "as the canonical PLURAL option"   "${f}" 'claudePluginMarketplaces = ['
 excludes "not the legacy singular"          "${f}" 'claudePluginMarketplace ='
-# claude_plugins is in variables.yaml, claude_mcp_plugins in user_data.yaml -
-# mkSystem takes one list, so the two concatenate rather than one winning.
+# mkSystem takes one list, so the two files' plugin sets concatenate.
 contains "always-on plugins from variables.yaml" "${f}" '"agents"'
 contains "opt-in MCP plugins from user_data.yaml" "${f}" '"mcp-whatsapp"'
 contains "kiro_plugin_repo, which wslkube hardcodes in tasks/" "${f}" 'kiroPluginRepo = "git@example.com:group/kiro-plugin.git";'
-# whatsapp_mcp_dir is in neither file, and wslkube keeps it in a task file too.
 contains "an enabled mcp-whatsapp with no dir warns" "${OUT}" "whatsapp_mcp_dir is unset"
 excludes "and no whatsappMcpDir is invented" "${f}" 'whatsappMcpDir'
 
-# ---------------------------------------------------------------------------
-# 18. user_data.yaml wins over variables.yaml - in either shape
-# ---------------------------------------------------------------------------
-# Ansible's precedence. The shape change is the interesting half: the parser
-# files a block list and a scalar in DIFFERENT arrays, so an override written
-# inline would leave the overridden list in place for _as_list to find and the
-# value that lost would silently win.
+# The shape change is the interesting half: block lists and scalars land in different
+# arrays, so an inline override would leave the losing value for _as_list to find.
 print -r -- "user_data.yaml overrides variables.yaml, across shapes"
 cat > "${WK}/files/config/user_data.yaml" <<'YAML'
 user: tycorc
@@ -667,11 +535,8 @@ contains "and so does the inline list"   "${f}" 'gitlabGroups = [ "family-recipe
 excludes "the overridden block list is gone" "${f}" '"example-group"'
 contains "so no profile is derived"      "${OUT}" "no profiles selected"
 
-# ---------------------------------------------------------------------------
-# 19. --wslkube names the checkout when the config was copied out
-# ---------------------------------------------------------------------------
-# Auto-detection needs the config to still sit at <root>/files/config/. A copy
-# anywhere else is the case the flag is for.
+# Auto-detection needs the config at <root>/files/config/; a copy elsewhere needs the
+# flag.
 print -r -- "--wslkube finds variables.yaml for a config copied out of the tree"
 cp "${WK}/files/config/user_data.yaml" "${BASE}/copied.yaml"
 o="$(out copied-nowk)"
@@ -685,12 +550,8 @@ contains "so clone_exclude comes across" "$(flake_of "${o}")" '"wslkube"'
 run_gen --out "$(out nowk)" --config "${BASE}/copied.yaml" --wslkube "${BASE}/not-a-checkout"
 check    "a --wslkube that is not one fails" "${RC}" "1"
 
-# ---------------------------------------------------------------------------
-# 20. Explicit --gitlab-groups does NOT infer profiles
-# ---------------------------------------------------------------------------
-# Derivation is for a MIGRATED config, which has no profile concept to state.
-# A group named on the command line with no --profiles is an explicit request,
-# and inferring profiles from it would be the surprising reading.
+# Derivation is for a migrated config; a group named on the command line is an
+# explicit request, and inferring profiles from it would surprise the caller.
 print -r -- "a command-line group is not turned into a profile"
 o="$(out flaggroups)"
 run_gen --out "${o}" --user u --git-name N --git-email n@example.com \
@@ -701,11 +562,7 @@ excludes "nothing is derived"           "${OUT}" "profiles derived"
 contains "profiles stay empty"          "${f}" 'profiles = [ ];'
 contains "and the group stays personal" "${f}" 'gitlabGroups = [ "example-group" ];'
 
-# ---------------------------------------------------------------------------
-# 21. state_root / state_transcripts pass through only when set
-# ---------------------------------------------------------------------------
-# state_root and state_transcripts are emitted only when set: both options have a
-# default, so an absent key must leave the overlay on it.
+# Both options have a default, so an absent key must leave the overlay on it.
 print -r -- "state_root and state_transcripts pass through only when set"
 cat > "${BASE}/state.yaml" <<'YAML'
 user: bare
@@ -744,13 +601,8 @@ f="$(flake_of "${o}")"
 contains "the flag wins over the config"    "${f}" 'stateRoot = "/mnt/e/other";'
 contains "and so does the transcripts flag" "${f}" 'stateTranscripts = false;'
 
-# ---------------------------------------------------------------------------
-# 22. repos: alone is a selection - the GitHub-only adopter
-# ---------------------------------------------------------------------------
-# gitlab_groups is not the only way a box gets repositories, and an adopter with
-# no GitLab at all has none: they name their clones under `repos:`. Refusing
-# that config - which the profiles/groups check did, because it ran before
-# repos was ever read - locked out exactly the audience the README invites.
+# An adopter with no GitLab names their clones under `repos:`, so the profiles/groups
+# refusal must run after repos is read.
 print -r -- "repos: alone generates, without a profile or a group"
 cat > "${BASE}/reposonly.yaml" <<'YAML'
 user: bare
@@ -773,8 +625,8 @@ excludes "nothing claims it would clone nothing" "${OUT}" "clone no repos"
 contains "the profile warning says the repos are still cloned" \
   "${OUT}" "'repos:' entries are still cloned"
 
-# A `repos:` block whose entries carry no url emits NOTHING, so counting raw
-# entries instead of usable ones would let the empty overlay back through.
+# Entries with no url emit nothing, so counting raw entries lets the empty overlay
+# back through.
 print -r -- "url-less repos entries do not count as a selection"
 cat > "${BASE}/reposnourl.yaml" <<'YAML'
 user: bare
@@ -788,13 +640,8 @@ run_gen --out "${o}" --config "${BASE}/reposnourl.yaml"
 check    "it fails"                  "${RC}" "1"
 contains "for the same reason"       "${OUT}" "no profiles, no gitlab_groups and no repos"
 
-# ---------------------------------------------------------------------------
-# 23. Flow-style lists are lists, not strings
-# ---------------------------------------------------------------------------
-# `profiles: [example]` is valid YAML and a shape a hand-written config reaches
-# for. Read as a SCALAR it reached the overlay as the literal string
-# "[example]": an unknown profile at best, and for gitlab_groups a group name
-# nobody can clone, written into a green overlay with nothing said.
+# Read as a scalar, a flow-style list reaches the overlay as the literal string
+# "[example]": an unknown profile, or a group name nobody can clone.
 print -r -- "flow-style profiles: and gitlab_groups: parse as lists"
 cat > "${BASE}/flow.yaml" <<'YAML'
 user: bare
@@ -813,8 +660,7 @@ contains "both groups survive"     "${f}" '"alpha"'
 contains "the quoted one too"      "${f}" '"beta"'
 excludes "and no bracket rides in" "${f}" '"[alpha'
 
-# `[]` is how a config says "none of these", and it must not come back as the
-# two-character string that reads as one entry.
+# `[]` must not come back as the two-character string that reads as one entry.
 print -r -- "an empty flow list is empty, not a one-entry list"
 cat > "${BASE}/flowempty.yaml" <<'YAML'
 user: bare
@@ -832,20 +678,9 @@ contains "profiles are empty"      "${f}" 'profiles = [ ];'
 excludes "not a literal []"        "${f}" '"[]"'
 contains "and the group survives"  "${f}" 'gitlabGroups = [ "somegroup" ];'
 
-# ---------------------------------------------------------------------------
-# 24. A checkout path with a space still produces a usable flake URL
-# ---------------------------------------------------------------------------
-# `path:` is a URL. A raw space in it makes nix's URL parse fail, and nix then
-# reads the WHOLE string - scheme included - as a relative filesystem path, so
-# every rebuild from the generated overlay dies on a path with "path:" inside
-# it. C:\Users\First Last\git\ is the ordinary Windows layout, so this is the
-# default experience, not a corner.
-#
-# The acceptance check is `nix flake metadata` on the result, and it is run BY
-# HAND (see the MR that added this case): there is no nix in the `nix flake
-# check` sandbox this suite runs in, and a case that skipped there would be the
-# silent green flake.nix's suiteCheck bans skip lines to prevent. What is
-# asserted here is the URL the generator writes.
+# A raw space makes nix read the whole `path:` string as a relative filesystem path,
+# so every rebuild from the overlay dies - and `C:\Users\First Last\git\` is the
+# ordinary Windows layout. Only the URL is asserted; `nix flake metadata` is by hand.
 print -r -- "a checkout under a path with a space encodes the space"
 SPACED="${BASE}/with space/flakelab"
 mkdir -p "${SPACED}/files/scripts"
@@ -865,14 +700,8 @@ f="$(flake_of "${o}")"
 contains "the space is percent-encoded" "${f}" "path:${BASE}/with%20space/flakelab"
 excludes "and no raw space is left in the URL" "${f}" "path:${BASE}/with space"
 
-# ---------------------------------------------------------------------------
-# 25. --target proxmox-vm drops windowsUsername and emits target first
-# ---------------------------------------------------------------------------
-# nix/options.nix declares target as a readOnly enum ["wsl" "proxmox-vm"] that
-# only mkSystem may set, and windowsUsername as nullOr, default null - the
-# WSL-only zsh home-jump has nothing to jump from on any other target. Both
-# facts are asserted against the shipped example config, the same fixture
-# case 4 pins the wsl (default) output against.
+# Asserted against the shipped example config, the same fixture the wsl output above
+# is pinned against.
 print -r -- "--target proxmox-vm emits target first and drops windowsUsername"
 o="$(out proxmoxvm)"
 run_gen --out "${o}" --config "${EXAMPLE}" --target proxmox-vm
@@ -891,7 +720,6 @@ contains "naming the bad value"        "${OUT}" "bogus"
 contains "and the known set"           "${OUT}" "wsl, proxmox-vm"
 [[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
 
-# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))
