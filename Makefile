@@ -29,7 +29,7 @@ lint-nix:
 # The offline suites. test-provision-nix is not here: it imports a distro, which
 # wipes host interop. All suites run, then the target fails if any of them did.
 test:
-	@rc=0; for suite in test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-sessions; do \
+	@rc=0; for suite in test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-sessions test-nix-update; do \
 		echo "==> $$suite"; \
 		files/scripts/$$suite || rc=1; \
 	done; \

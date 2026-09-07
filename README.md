@@ -58,7 +58,7 @@ flowchart LR
     SYS --> VMIMG[".#proxmoxImage<br/>seed"]
 ```
 
-Not drawn: `nix flake check` (the seven offline suites plus statix/deadnix) and
+Not drawn: `nix flake check` (the eight offline suites plus statix/deadnix) and
 `devShells.default` guard every change with the same pinned tooling.
 
 ## Bootstrap
@@ -129,7 +129,11 @@ skipped.
 The generated overlay flake is the profile from then on: `provision` never
 overwrites an existing one, so hand-edits survive. `-Force` regenerates it from
 the config; `generate` writes it and stops, for a look (or a `nix eval`) before
-anything is imported.
+anything is imported. Either leaves the overlay as a git repository — one
+commit, no remote — so hand-edits and `-Force` regenerations are diffs to
+review, never commits made for you. Adding a remote and pushing is yours to do;
+`flakelab update` checks drift only once there is one. A box provisioned
+before this keeps its plain directory and rebuilds the same way.
 
 A `provision` applies the overlay **twice** — the SSH-dependent steps need a
 user that only the first switch creates. The second switch runs **only if a
@@ -232,7 +236,8 @@ all fifteen.
 drift check's exit status. Without a terminal they refuse to rebuild from a
 stale or unverifiable flake tree (`FLAKELAB_STALE_OK=1` waives it per
 invocation); a checkout behind the default branch warns and, at a terminal,
-offers a rebase.
+offers a rebase. An overlay that is not a git checkout, or has no remote, has
+nothing to be behind: one line says the check was skipped and the switch runs.
 
 They also re-lock a **`path:`** flakelab input before the switch, saying so in
 one line. An overlay generated from a checkout points at it with `path:`, which
@@ -479,7 +484,7 @@ nixosConfigurations.tycdev = flakelab.lib.mkSystem {
 ## Test and lint
 
 ```bash
-make test          # the seven offline suites, seconds
+make test          # the eight offline suites, seconds
 nix flake check    # the same suites + statix/deadnix; what CI runs
 ```
 
