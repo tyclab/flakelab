@@ -1,27 +1,16 @@
 ---
-# Pre-commit hook suite. `make lint` runs it over the whole tree; CI runs the
-# same target, so a green local run is the same gate.
-#
-# Install: `make install-hooks` (or `pre-commit install`)
-# Run on whole tree: `pre-commit run --all-files`
+# Pre-commit hook suite; `make lint` runs it over the whole tree, as CI does.
 
 repos:
   - repo: https://github.com/gitleaks/gitleaks
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
     hooks:
-      # The upstream entry is `gitleaks git --staged`, which reads the staged DIFF:
-      # zero bytes under `pre-commit run --all-files`, reported as "Passed" — a green
-      # over nothing. `gitleaks dir` reads file CONTENT instead, so the same hook is
-      # real at commit time and under --all-files. One path at a time via xargs, and
-      # not because of speed: given more than one path `gitleaks dir` silently
-      # ignores all of them and scans the whole working tree, untracked `.terraform/`
-      # provider dumps included. Git HISTORY is out of scope here — CI's `gitleaks`
-      # job covers it.
+      # Not the upstream `gitleaks git --staged`, which is a green over zero bytes
+      # under --all-files. One path at a time: given several, `gitleaks dir` ignores
+      # them all and scans the whole working tree. History is CI's `gitleaks` job.
       - id: gitleaks
-        # `--config` is REQUIRED here: gitleaks resolves .gitleaks.toml relative to
-        # the SCAN TARGET, and this entry hands it individual file paths, so without
-        # it every repo's allowlist is silently discarded and known false positives
-        # (vendored i18n strings, *.example templates) turn the gate red.
+        # `--config` is required: gitleaks resolves .gitleaks.toml relative to the scan
+        # target, so with file paths every repo's allowlist is silently discarded.
         entry: sh -c 'cfg=; if [ -f .gitleaks.toml ]; then cfg="--config .gitleaks.toml"; fi; printf "%s\0" "$@" | xargs -0 -n1 -P4 gitleaks dir $cfg --redact --verbose --no-banner --log-level error' --
         pass_filenames: true
 
@@ -37,19 +26,17 @@ repos:
       - id: markdownlint-cli2
         language_version: system
 
-  # shellcheck-py (pip wheel), NOT koalaman/shellcheck-precommit: the latter is a
-  # docker_image hook and fails in CI runners without a Docker daemon. No-op in
-  # repos with no shell scripts.
+  # Not koalaman/shellcheck-precommit: a docker_image hook fails in CI runners
+  # without a Docker daemon.
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
     hooks:
       - id: shellcheck
         args: [--severity=warning]
-        # shellcheck supports sh/bash/dash/ksh only (SC1071); skip zsh scripts.
+        # shellcheck supports sh/bash/dash/ksh only (SC1071).
         exclude_types: [zsh]
 
-  # Closes the hole left by the shellcheck exclusion above: without this, zsh
-  # scripts are linted by nothing at all. No-op in repos with no zsh files.
+  # Without this, the zsh scripts excluded above are linted by nothing at all.
   - repo: local
     hooks:
       - id: zsh-syntax
@@ -66,12 +53,8 @@ repos:
         types_or: [markdown, json]
         language_version: system
 
-  # Python is linted by nothing else in this fleet. The select is explicit and
-  # narrow on purpose: ruff's own default set is style-heavy — 1234 findings over
-  # the fleet's python as it stands — while E9 + F are the defect rules (syntax
-  # errors, undefined names, unused imports), which every repo passes today, so
-  # each red here is a new defect rather than a taste argument. No-op in repos
-  # with no python files.
+  # Narrow select on purpose: E9 + F are the defect rules, so each red is a new
+  # defect rather than a taste argument.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: aab412d509121cb5f7533134b7e67f9fab59c682  # frozen: v0.16.4
     hooks:
