@@ -178,6 +178,12 @@ in
       description = "Kiro plugin repo (agents/steering/hooks/skills via `make install-global`); null skips it. The checkout path is derived from the remote so it lands under the GitLab group structure `flakelab clone` already uses.";
     };
 
+    overlayUrl = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Git URL of this overlay's own remote; null means it has none. The generators add it as `origin` (nothing is pushed for you), `flakelab clone` excludes the repository it names instead of guessing from the overlay's folder name, and a proxmox-vm seed built from this overlay uses it as the bootstrap's OVERLAY_URL default. `flakelab update` checks drift against whatever `origin` the checkout has.";
+    };
+
     installKiro = mkOption {
       type = types.bool;
       default = true;

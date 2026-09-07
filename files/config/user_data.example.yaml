@@ -65,6 +65,11 @@ backupautostart: false
 # Git editor. Omit to keep git's default.
 giteditor: 'code'
 
+# This overlay's own git remote, SSH URL like `repos`: added as `origin` (never
+# pushed for you), the drift check's yardstick once pushed, and the repo the
+# clone sweep excludes instead of guessing from the folder name.
+# overlay_url: git@gitlab.com:your-group/flakelab-config.git
+
 # Extra repos beyond group discovery, SSH URLs only; these bypass clone_exclude.
 # repos:
 #   - rel_path: ''

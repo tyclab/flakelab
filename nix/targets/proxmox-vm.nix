@@ -154,7 +154,10 @@ in
     script = ''
       set -euo pipefail
 
-      : "''${OVERLAY_URL:?flakelab-bootstrap: OVERLAY_URL is required in /etc/flakelab/bootstrap.env}"
+      # bootstrap.env wins; a seed built from an overlay that states its own
+      # remote (flakelab.overlayUrl) needs no OVERLAY_URL line at all.
+      OVERLAY_URL="''${OVERLAY_URL:-${lib.optionalString (cfg.overlayUrl != null) cfg.overlayUrl}}"
+      : "''${OVERLAY_URL:?flakelab-bootstrap: OVERLAY_URL is required in /etc/flakelab/bootstrap.env (or flakelab.overlayUrl in the overlay the seed was built from)}"
       OVERLAY_REF="''${OVERLAY_REF:-main}"
       OVERLAY_ATTR="''${OVERLAY_ATTR:-default}"
       BOOTSTRAP_USER="''${BOOTSTRAP_USER:-${cfg.username}}"

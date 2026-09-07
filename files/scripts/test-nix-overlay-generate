@@ -792,6 +792,65 @@ exists   "flake.nix is written"          "${o}/flake.nix"
 contains "and it names the step"         "${OUT}" "git: not found"
 
 # ---------------------------------------------------------------------------
+# 27. overlay_url: the overlay's own remote, stated once and derived from
+# ---------------------------------------------------------------------------
+# The clone sweep has always excluded the overlay by its FOLDER name, which
+# assumes the folder is named after the repository - and says nothing about
+# where that repository is. With overlay_url the flake carries the URL, the
+# exclusion is the repository the URL names, and the fresh repository gets it
+# as origin. Nothing is pushed: the first push is the operator's, which is why
+# the branch tracks nothing yet.
+print -r -- "overlay_url is emitted, excluded by repo name and added as origin"
+cat > "${BASE}/ovl.yaml" <<'YAML'
+user: tycorc
+gitfullname: Overlay Person
+gitmail: ovl@example.com
+profiles:
+  - example
+overlay_url: git@example.com:group/flakelab-config.git
+YAML
+o="$(out ovl-dir)"
+run_gen --out "${o}" --config "${BASE}/ovl.yaml"
+f="$(flake_of "${o}")"
+check    "it generates"                     "${RC}" "0"
+contains "the flake carries the URL"        "${f}" 'overlayUrl = "git@example.com:group/flakelab-config.git";'
+contains "cloneExclude names the repository" "${f}" '"flakelab-config"'
+excludes "not the folder"                   "${f}" '"ovl-dir"'
+contains "flakelab is still excluded"       "${f}" '"flakelab"'
+check    "origin is the URL"                "$(git -C "${o}" remote get-url origin 2>/dev/null)" "git@example.com:group/flakelab-config.git"
+git -C "${o}" rev-parse -q --verify '@{u}' > /dev/null 2>&1 && bad "and nothing was pushed" || ok "and nothing was pushed"
+contains "and the summary says so"          "${OUT}" "origin git@example.com:group/flakelab-config.git, not pushed"
+
+print -r -- "--overlay-url is the flag form"
+o="$(out ovl-flag)"
+run_gen --out "${o}" --user u --git-name N --git-email n@example.com --profiles example \
+  --overlay-url ssh://git@example.com/group/boxes.git
+f="$(flake_of "${o}")"
+check    "it generates"                     "${RC}" "0"
+contains "the flake carries the URL"        "${f}" 'overlayUrl = "ssh://git@example.com/group/boxes.git";'
+contains "cloneExclude names the repository" "${f}" '"boxes"'
+check    "origin is the URL"                "$(git -C "${o}" remote get-url origin 2>/dev/null)" "ssh://git@example.com/group/boxes.git"
+
+print -r -- "without overlay_url nothing changes"
+o="$(out ovl-none)"
+run_gen --out "${o}" --config "${EXAMPLE}"
+f="$(flake_of "${o}")"
+excludes "no overlayUrl line"               "${f}" 'overlayUrl'
+contains "the folder name is the exclusion" "${f}" '"ovl-none"'
+check    "and no remote"                    "$(git -C "${o}" remote)" ""
+
+# An existing repository keeps its own remotes: the URL goes into the flake,
+# the operator's origin is not rewritten under them.
+print -r -- "an existing origin is not rewritten"
+o="$(out ovl-keep)"
+mkdir -p "${o}"
+git -C "${o}" init -q
+git -C "${o}" remote add origin git@example.com:mine/elsewhere.git
+run_gen --out "${o}" --config "${BASE}/ovl.yaml"
+check    "it generates"                     "${RC}" "0"
+check    "origin is untouched"              "$(git -C "${o}" remote get-url origin)" "git@example.com:mine/elsewhere.git"
+
+# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

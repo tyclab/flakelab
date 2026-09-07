@@ -493,6 +493,24 @@ else
   log_hint "flakelab clone   (needs GITLAB_TOKEN, a 600 glab config and a loaded key)"
 fi
 
+# The overlay itself. Three shapes, none a fault: a plain directory and a
+# repository with no remote get no drift check from `flakelab update`, and
+# say so there. What IS worth a line is a remote whose branch tracks nothing -
+# the generators add origin but never push, so this is the push that never
+# happened, and until it does the remote is a name, not a copy.
+overlay="${FLAKELAB_REPO_ROOT:-}"
+if [[ -z "${overlay}" ]] || ! git -C "${overlay}" rev-parse --git-dir > /dev/null 2>&1; then
+  log_ok "overlay is not a git checkout (no drift check)"
+elif [[ -z "$(git -C "${overlay}" remote 2>/dev/null)" ]]; then
+  log_ok "overlay is a repository with no remote (no drift check)"
+elif ! git -C "${overlay}" rev-parse -q --verify '@{u}' > /dev/null 2>&1; then
+  branch="$(git -C "${overlay}" branch --show-current 2>/dev/null)"
+  log_warn "overlay has a remote but ${branch:-its branch} tracks nothing - never pushed?"
+  log_hint "git -C ${overlay} push -u origin ${branch:-<branch>}"
+else
+  log_ok "overlay tracks $(git -C "${overlay}" rev-parse --abbrev-ref '@{u}' 2>/dev/null)"
+fi
+
 # ---------------------------------------------------------------------------
 # npm
 # ---------------------------------------------------------------------------
