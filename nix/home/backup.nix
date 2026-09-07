@@ -1,61 +1,6 @@
-# Scheduled `flakelab backup`, when flakelab.backupAutostart is set — the daily
-# full pass, plus (with stateRoot and stateSyncInterval) the short-interval
-# `--state-only` two-way sync of the state root.
-#
-# ExecStart calls the nix-backup WRAPPER by store path, not `flakelab backup`.
-# Deliberate: a unit should not depend on the user's PATH, and the router would
-# only add a hop to the same wrapper. The wrapper is what exports
-# FLAKELAB_BACKUP_ROOT and pins the PATH, so the unit's environment is unchanged
-# by the CLI refactor.
-#
-# This replaces a line in programs.zsh.initContent that did
-# `( nix-backup --force > /dev/null 2>&1 & )` (the command is `flakelab backup`
-# now), i.e. forked a FULL backup pass
-# off every interactive shell start, with its output thrown away. That is a
-# real behaviour change, not a move, and the honest description of it is:
-#
-#   before  every interactive shell, silently, however many that is per day
-#   after   two minutes after the user manager starts, then every 24h
-#
-# It is a frequency REDUCTION. nix-backup has no rate limiter to lean on — the
-# only concurrency control it has is an flock (`acquire_lock`, files/scripts/
-# nix-backup:216-240: LOCK_FILE="${BACKUP_ROOT}/.backup.lock", LOCK_WAIT=300),
-# and that serialises overlapping runs, it does not skip a recent one. So the
-# old shape genuinely re-copied the whole payload per shell, and ten terminals
-# meant ten passes queueing on that lock. A timer is the mechanism the old
-# comment ("Autostart") was reaching for.
-#
-# Not silent any more, either: the unit's stdout/stderr land in the journal
-# (`journalctl --user -u flakelab-backup`), and Type=oneshot means a non-zero
-# exit — which nix-backup returns on a partial backup — is recorded as a
-# failed unit instead of vanishing into /dev/null.
-#
-# Environment, checked rather than assumed (2026-08-21, this distro):
-#   FLAKELAB_BACKUP_ROOT  exported by the nix-backup wrapper itself
-#                       (nix/scripts.nix), so the unit needs nothing for it.
-#   FLAKELAB_STATE_ROOT / FLAKELAB_STATE_TRANSCRIPTS
-#                       exported by the same wrapper when flakelab.stateRoot /
-#                       stateTranscripts are set; absent otherwise.
-#   USER / HOME         present in the user manager environment
-#                       (`systemctl --user show-environment`), which is what
-#                       nix-backup's HOME_DIR default reads.
-#   WSL_DISTRO_NAME     NOT in the user manager environment. nix-backup falls
-#                       back to its sibling get_current_wsl_distro_name, which
-#                       needs wsl.exe interop. Verified working from a unit:
-#                       `systemd-run --user --pipe --wait \
-#                          /mnt/c/Windows/system32/wsl.exe --list --running --quiet`
-#                       printed the distro name, and a full
-#                       `systemd-run --user … nix-backup --dry-run` resolved
-#                       its destination to instances/<distro>, not
-#                       instances/unknown.
-#   secrets.env         not needed. nix-backup reads no token and sources no
-#                       secrets file; it only COPIES ~/.config/tyc/secrets.env
-#                       as payload, which needs no shell state.
-#
-# This module declares no activation entry. Should it ever grow one, append it
-# to health.nix's flakelabHealthCheck entryAfter list (or give it
-# `lib.hm.dag.entryBefore [ "flakelabHealthCheck" ]`), or the health check stops
-# being the last entry and reports on work that has not run yet.
+# Timers for `flakelab backup` when backupAutostart is set: the daily full pass and
+# the short-interval `--state-only` sync. ExecStart calls the nix-backup wrapper by
+# store path, since a unit must not depend on the user's PATH.
 {
   lib,
   pkgs,
@@ -66,33 +11,18 @@ let
   cfg = osConfig.flakelab;
   scripts = import ../scripts.nix { inherit pkgs cfg; };
 in
-# backupAutostart is declared WITHOUT a default (nix/options.nix), so an overlay
-# that omits it keeps aborting evaluation rather than silently defaulting to no
-# backups. This is the same hard read zsh.nix did before the block moved here.
 lib.optionalAttrs cfg.backupAutostart (
   let
-    # The state-only timer moves the categories other machines wait on (merged
-    # history, Claude memory, transcripts) at a cadence the full pass cannot
-    # afford: a full run re-snapshots the payload every time, so putting IT on a
-    # short interval would burn the snapshot ring down to hours of rollback.
-    # --state-only takes no snapshot and never touches the payload, which is
-    # what makes a sub-daily interval safe to schedule at all.
+    # Only --state-only is safe sub-daily: a full pass re-snapshots the payload and
+    # would burn the snapshot ring down to hours of rollback.
     stateSync = cfg.stateRoot != null && cfg.stateSyncInterval != null;
   in
   {
     systemd.user.services =
       let
-        # Activation must never wait on, stop, or restart these oneshots: a
-        # backup pass can run for minutes, and home-manager's reloadSystemd
-        # (sd-switch) restarting a changed unit blocks until the started job
-        # finishes — long enough to time home-manager-tycorc.service out and
-        # mark the whole activation failed, and a stop first KILLS a sync
-        # mid-copy. The timer alone owns (re)starting these; a changed unit
-        # definition simply takes effect at the next timer fire, at most one
-        # interval away. Set in both sections: sd-switch reads the flag from
-        # [Unit] (alongside RefuseManualStart/X-SwitchMethod in its parser),
-        # NixOS's switch-to-configuration reads it from [Service] — covering
-        # both costs nothing and survives either tool changing underneath us.
+        # Activation must never restart these oneshots: it would block on a running
+        # pass until home-manager times out, or kill a sync mid-copy. Both sections,
+        # because sd-switch reads [Unit] and switch-to-configuration reads [Service].
         neverRestartedByActivation = {
           Unit."X-RestartIfChanged" = false;
           Service."X-RestartIfChanged" = false;
@@ -103,13 +33,11 @@ lib.optionalAttrs cfg.backupAutostart (
           Unit.Description = "flakelab: back up home-dir data to the backup root";
           Service = {
             Type = "oneshot";
-            # With activation never clearing these units, a wedged run would
-            # park the oneshot in "activating" and block its own timer forever
-            # — a run outliving any plausible full pass is killed and failed,
-            # and the next fire starts fresh.
+            # Without this a wedged run parks in "activating" and blocks its own
+            # timer forever.
             TimeoutStartSec = "2h";
-            # --force, as the shell autostart passed: there is no TTY here either, and
-            # without it every differing file is kept and the run reports failure.
+            # --force: no TTY here, so without it every differing file is kept and
+            # the run reports failure.
             ExecStart = "${scripts.nix-backup}/bin/nix-backup --force";
           };
         };
@@ -119,13 +47,10 @@ lib.optionalAttrs cfg.backupAutostart (
           Unit.Description = "flakelab: two-way state-root sync (history, memory, transcripts)";
           Service = {
             Type = "oneshot";
-            # See flakelab-backup: a state-only pass outliving two 15-min
-            # state-root lock windows is wedged, not slow.
+            # A state-only pass this long is wedged, not slow.
             TimeoutStartSec = "30min";
             ExecStart = "${scripts.nix-backup}/bin/nix-backup --state-only --force";
-            # Background housekeeping on the box that is also running the
-            # sessions being copied: never compete with interactive work for
-            # CPU or the disk.
+            # Never compete with interactive work on the box being copied.
             Nice = 10;
             IOSchedulingClass = "idle";
           };
@@ -136,15 +61,11 @@ lib.optionalAttrs cfg.backupAutostart (
       flakelab-backup = {
         Unit.Description = "flakelab: daily home-dir backup to the backup root";
         Timer = {
-          # OnStartupSec is relative to the USER manager starting, which on WSL is
-          # the first login to the distro — the closest equivalent of the shell
-          # start this replaces, minus the once-per-terminal repetition. Two
-          # minutes so it does not compete with home-manager activation.
+          # Relative to user-manager start (first login on WSL), late enough not to
+          # compete with home-manager activation.
           OnStartupSec = "2min";
           OnUnitActiveSec = "24h";
-          # Jitter keeps a backup from landing on top of whatever else woke up at
-          # the same moment on a backup root shared with other things (a Windows
-          # disk on WSL, whatever mount a target's backupRoot names elsewhere).
+          # Jitter: the backup root is shared with whatever else wakes up then.
           RandomizedDelaySec = "10min";
         };
         Install.WantedBy = [ "timers.target" ];
@@ -154,13 +75,10 @@ lib.optionalAttrs cfg.backupAutostart (
       flakelab-state-sync = {
         Unit.Description = "flakelab: state-root sync every ${cfg.stateSyncInterval}";
         Timer = {
-          # After the full backup's 2min login slot, so the two never race for
-          # the payload lock right at user-manager start.
+          # After the full backup's login slot, so the two never race for the lock.
           OnStartupSec = "5min";
           OnUnitActiveSec = cfg.stateSyncInterval;
-          # Fixed, small: enough to keep two machines' timers from meeting at
-          # the shared root every period, and deriving a fraction of an
-          # arbitrary systemd time span in Nix is not worth the parser.
+          # Keeps two machines' timers from meeting at the shared root every period.
           RandomizedDelaySec = "3min";
         };
         Install.WantedBy = [ "timers.target" ];

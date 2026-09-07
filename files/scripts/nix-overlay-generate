@@ -1,66 +1,21 @@
 #!/usr/bin/env zsh
 # Scaffold a private flakelab overlay from a flakelab checkout - on Linux or macOS.
+# Reads the same wslkube-shaped user_data.yaml setup-wsl-nix.ps1 does
+# (files/config/user_data.example.yaml is the schema) and writes the overlay
+# directory; it never provisions, imports or rebuilds anything.
 #
-# The overlay is the recommended way to adopt this flake (README "Where
-# configuration lives"): a tiny private flake that calls `flakelab.lib.mkSystem` with real
-# personal values, so nothing personal ever reaches the shareable repo. Until
-# now the only thing that could WRITE one was `setup-wsl-nix.ps1 generate`,
-# which is Windows PowerShell, and `nix flake new -t <flakelab>#overlay` was not a
-# substitute: the template shipped a literal `path:%FLAKELAB_PATH%` that only the
-# .ps1 knew how to fill in, so a bare scaffold was unresolvable BY CONSTRUCTION.
-# nix read it as a relative path input and failed with `path
-# '/nix/store/<hash>-source/path:%FLAKELAB_PATH%/flake.nix' does not exist` - a
-# store path naming a directory nobody could have created. An adopter on Linux
-# or macOS - the public audience this repo is going open source for - had no
-# path from "cloned flakelab" to "buildable overlay" at all.
+# The YAML is parsed by hand in zsh, mirroring setup-wsl-nix.ps1's reader so the two
+# cannot disagree: the schema is flat by construction, and neither PyYAML nor python3
+# is available in `nix develop` or the flake-check sandbox this script's suite runs in.
+# Anything outside that subset (nested maps, block scalars, anchors) is not read.
 #
-# This script is that path. It never calls PowerShell, never touches wsl.exe and
-# never needs a distro: it reads the SAME wslkube-shaped user_data.yaml the .ps1
-# reads (files/config/user_data.example.yaml is the schema) and writes the
-# overlay directory. What it does NOT do is provision, import or rebuild
-# anything - that is still `setup-wsl-nix.ps1 provision` on Windows, or
-# `nixos-rebuild switch --flake <overlay>#default` on a machine that already
-# runs NixOS-WSL.
+# No secrets are written: the secret half of custom_env_vars is dropped, and the only
+# secret artefact is an empty mode-600 secrets.env stub for the operator to fill in.
 #
-# YAML, parsed by hand in zsh. Deliberate, and the alternatives were weighed:
-#   - PyYAML is not a dependency this repo has anywhere, and demanding a pip
-#     install to scaffold a flake is a worse first five minutes than the one
-#     this script exists to fix.
-#   - A python3 helper needs python3, which is in NEITHER `nix develop` (see
-#     flake.nix devShells: pre-commit, statix, deadnix, shellcheck, zsh, jq,
-#     gnumake) NOR the `nix flake check` sandbox this script's suite runs in.
-#     Adding it there to parse eight flat keys is a dependency for nothing.
-#   - The schema is FLAT by construction - scalars, string lists, string maps
-#     and lists of two-key maps, nothing deeper - which is exactly why
-#     setup-wsl-nix.ps1 parses it by hand too (it has to: stock Windows
-#     PowerShell 5.1 ships no YAML reader). One hand parser per language beats
-#     one hand parser plus one dependency, and the semantics below are a
-#     deliberate mirror of ConvertFrom-YamlScalar / Read-UserDataYaml so the two
-#     readers cannot disagree about the same file.
-# Anything outside that subset (nested maps, block scalars, anchors, flow style)
-# is not in the schema and is not read here.
-#
-# SECRETS: none. Exactly like the .ps1's flake generation, `custom_env_vars` is
-# split by NAME against the secret list below; the non-secret half becomes the
-# overlay's `sessionVariables` and the secret half is DROPPED - not written
-# anywhere, not echoed, only counted and named in the summary. The only secret
-# artefact is an EMPTY, mode-600, git-ignored `secrets.env` stub for the
-# operator to fill in by hand. Filling it is not this script's job and never
-# will be: the nix store is world-readable and the overlay is a git repo.
-#
-# Primarily a BOOTSTRAP tool: it runs from a flakelab checkout, before any
-# distro exists, and it needs that checkout's `templates/overlay/` and
-# `profiles/` next to it. That is why it long went unwrapped - a
-# `writeShellScriptBin` built from `../files/scripts` hands the script a store
-# path with neither directory, and the die-check below fires.
-#
-# It IS wrapped now, as `flakelab overlay-gen`, but only because that wrapper
-# execs it out of the WHOLE flake source (nix/scripts.nix, `srcRoot`), so both
-# directories are where it looks. One thing does NOT survive the move: the
-# `path:<this checkout>` default for the flakelab input, which under the wrapper
-# would name an immutable, garbage-collectable store path. Store mode therefore
-# requires an explicit --flakelab-ref - see the guard further down. Run the
-# checkout copy when you want the self-referencing default.
+# It needs its checkout's `templates/overlay/` and `profiles/` beside it, which is why
+# `flakelab overlay-gen` execs it out of the whole flake source. In that store mode the
+# `path:` default for the flakelab input would name a collectable path, so an explicit
+# --flakelab-ref is required there - run the checkout copy for the default.
 set -uo pipefail
 
 _self="${0:t}"
@@ -69,18 +24,11 @@ die() { print -ru2 -- "${_self}: $*"; exit 1 }
 warn() { print -ru2 -- "${_self}: warning: $*" }
 say() { print -r -- "> $*" }
 
-# _url_path <filesystem path> -> the path as the body of a `path:` flake URL.
-#
-# `path:` is a URL, and nix parses it as one: a raw space makes the parse fail
-# and nix falls back to reading the WHOLE string - scheme included - as a
-# relative filesystem path, so `nix flake metadata "path:/a b/c"` reports "no
-# such file or directory" for `<cwd>/path:/a b/c`. `%20` locks and evaluates
-# normally. `#` and `?` are worse than broken: they are the fragment and query
-# delimiters, so a directory containing either silently truncates the path.
-#
-# `%` goes FIRST or the escapes added after it are escaped again. The pattern
-# side escapes `#` (EXTENDED_GLOB's zero-or-more) and `?` (any character),
-# which a user's ~/.zshenv can turn on for any script it starts.
+# _url_path <filesystem path> -> the body of a `path:` flake URL. Unescaped, a space
+# makes nix read the whole string as a relative path, and `#`/`?` are the fragment and
+# query delimiters, which silently truncate it. `%` goes first, or the escapes added
+# after it are escaped again; `#` and `?` are escaped on the pattern side because
+# EXTENDED_GLOB, which a user's ~/.zshenv may set, gives them meaning there.
 _url_path() {
   local s="$1"
   s="${s//\%/%25}"
@@ -151,15 +99,13 @@ Examples:
 EOF
 }
 
-# --- the checkout this script lives in ---------------------------------------
-# files/scripts/<self> -> the repo root. templates/overlay/ and profiles/ both
-# come from here, so a copy of this file on its own cannot work - see the header.
+# templates/overlay/ and profiles/ come from here, so a lone copy of this file cannot
+# work.
 _checkout="${0:A:h:h:h}"
 _template="${_checkout}/templates/overlay"
 [[ -f "${_template}/flake.nix" && -f "${_template}/.gitignore" ]] \
   || die "no templates/overlay/ next to this script (looked in ${_checkout}) - run it from a flakelab checkout, e.g. ./files/scripts/${_self}"
 
-# --- arguments ---------------------------------------------------------------
 _out=""
 _config=""
 _wslkube=""
@@ -186,9 +132,8 @@ _profiles_given=false
 _groups_given=false
 _sshkeys_given=false
 
-# `${=${1//,/ }}` — commas become spaces, then word splitting drops the empties:
-# `--profiles 'a, b'` and `--profiles 'a b'` are the same request, and neither
-# may produce a phantom blank entry that fails profile validation with no name.
+# Commas become spaces and splitting drops the empties, so `--profiles 'a, b'` and
+# `--profiles 'a b'` are one request and neither yields a phantom blank entry.
 _need() { [[ -n "${2:-}" ]] || die "$1 needs a value" }
 
 while (( $# )); do
@@ -205,8 +150,7 @@ while (( $# )); do
     --git-email)         shift; _need --git-email "${1:-}"; _git_email="$1"; _have_values=true ;;
     --locale)            shift; _need --locale "${1:-}"; _locale="$1"; _have_values=true ;;
     --windows-username)  shift; _need --windows-username "${1:-}"; _windows_user="$1"; _have_values=true ;;
-    # The one flag whose EMPTY value is meaningful: `--git-editor ''` is "leave
-    # git's own default", which the flake spells `gitEditor = null;`.
+    # The one flag whose empty value is meaningful: `gitEditor = null;`.
     --git-editor)        shift; _git_editor="${1:-}"; _git_editor_given=true; _have_values=true ;;
     --backup-autostart)  shift; _need --backup-autostart "${1:-}"; _backup_autostart="$1"; _have_values=true ;;
     --state-root)        shift; _need --state-root "${1:-}"; _state_root="$1"; _have_values=true ;;
@@ -223,32 +167,18 @@ done
 
 [[ -n "${_out}" ]] || { usage >&2; exit 1 }
 
-# --- paths -------------------------------------------------------------------
-# ${_out:A} resolves symlinks and `..` without requiring the directory to exist
-# yet, which is the normal case: this is what creates it.
+# `:A` resolves symlinks and `..` without requiring the directory to exist yet.
 _out="${_out:A}"
 [[ "${_out}" != "${_checkout}" ]] \
   || die "refusing to write the overlay over the flakelab checkout itself (${_checkout}) - point --out at a NEW directory, e.g. ${_checkout:h}/flakelab-config"
 [[ -e "${_out}" && ! -d "${_out}" ]] && die "--out ${_out} exists and is not a directory"
 
-# The `path:<this checkout>` default only makes sense from a real checkout.
-# Under the `flakelab overlay-gen` wrapper ${_checkout} is the immutable store
-# copy of the flake source, and defaulting to it would write a trap into the
-# generated overlay: `flakelab update` would rebuild that frozen snapshot
-# forever — the operator's `git pull` on their actual checkout silently inert,
-# and self-perpetuating, because each rebuild re-roots the same old source —
-# until nix.gc (automatic, 30-day, nix/configuration.nix) collects the path and
-# evaluation fails outright with "path ... does not exist". Refuse instead. The
-# operator knows which flakelab they track; this script cannot guess it, and
-# repoPath is no help because it names the OVERLAY once one exists.
+# Refuse to default the input to a store path: the overlay would rebuild that frozen
+# snapshot forever, the operator's `git pull` silently inert, until nix.gc collects it
+# and evaluation fails on "path ... does not exist".
 if [[ -z "${_flakelab_ref}" ]]; then
-  # $NIX_STORE names the store dir and is set inside every nix build and
-  # `nix develop`; the literal is the fallback for a plain login shell. Not a
-  # test-only seam - a store at a non-default prefix is a real configuration -
-  # but it is also what lets test-nix-overlay-generate exercise this branch
-  # without writing into the real store. `%/` strips a trailing slash, without
-  # which `NIX_STORE=/nix/store/` makes the glob below match nothing and the
-  # guard silently passes.
+  # $NIX_STORE, with the literal as the fallback for a plain login shell; `%/` strips a
+  # trailing slash, without which the glob below matches nothing and the guard passes.
   _store="${${NIX_STORE:-/nix/store}%/}"
   if [[ "${_checkout}" == "${_store}"/* ]]; then
     die "running from the nix store (${_checkout}), so there is no checkout to default the flakelab input to.
@@ -257,8 +187,8 @@ Pass --flakelab-ref explicitly, e.g.:
   --flakelab-ref github:tyclab/flakelab             track the public mirror
 Or run the checkout copy instead: ./files/scripts/${_self} --out ... (it defaults to that checkout)."
   fi
-  # Encoded here and NOT for a --flakelab-ref the caller passed: that one is
-  # already a URL, and re-encoding it would turn a correct `%20` into `%2520`.
+  # Not for a caller-passed --flakelab-ref: that is already a URL, and re-encoding
+  # would turn a correct `%20` into `%2520`.
   _flakelab_ref="path:$(_url_path "${_checkout}")"
 fi
 
@@ -267,21 +197,11 @@ if [[ -n "${_config}" ]]; then
   _config="${_config:A}"
 fi
 
-# wslkube splits its config across TWO files the way Ansible loads them:
-# variables.yaml holds the shared defaults, files/config/user_data.yaml the
-# per-host overrides, and main_playbook.yaml includes both. Reading only
-# user_data.yaml misses everything that was never host-specific - gitlab_groups,
-# clone_exclude, claude_plugins and claude_plugin_marketplace all live in
-# variables.yaml - and the overlay comes out with no groups at all.
-#
-# That is not a visible failure. The flake still builds, and nix-clone-repos is
-# GENERATED, so it bakes in "nothing to clone" and the box comes up with no
-# profile packages and an empty ~/git. setup-wsl-nix.ps1 reads both; so does this.
-#
-# Auto-detection is keyed on main_playbook.yaml as well as variables.yaml: a
-# lone variables.yaml three directories up is not evidence of a wslkube
-# checkout, and silently layering some unrelated file under the config would be
-# a worse failure than not finding one.
+# A wslkube config is two files: variables.yaml holds the shared defaults and
+# user_data.yaml the per-host overrides, so reading only the latter yields an overlay
+# with no groups, which still builds and leaves the box with an empty ~/git.
+# Detection needs main_playbook.yaml too: a lone variables.yaml is not evidence of a
+# wslkube checkout, and layering an unrelated file under the config is worse than none.
 if [[ -n "${_wslkube}" ]]; then
   _wslkube="${_wslkube:A}"
   [[ -d "${_wslkube}" ]] || die "--wslkube ${_wslkube} is not a directory"
@@ -294,16 +214,12 @@ elif [[ -n "${_config}" ]]; then
   fi
 fi
 
-# --- the flat-YAML reader ----------------------------------------------------
-# See the header for why this is hand-written. State lives in four associative
-# arrays keyed by the top-level key; `YIC` carries the item count for the
-# list-of-maps form, `YMK` the key order for the map form (nix output should
-# follow the file, not zsh's hash order).
+# State lives in four associative arrays keyed by the top-level key; YIC carries the
+# item count for the list-of-maps form, YMK the key order for the map form, so the nix
+# output follows the file rather than zsh's hash order.
 typeset -A YS YL YM YMK YI YIC
 
-# _trim / _yaml_scalar report through REPLY rather than stdout: a $(...) per
-# line would fork once per line of the config for no reason, and REPLY is the
-# zsh convention for exactly this.
+# Through REPLY, not stdout: a $(...) per line would fork once per config line.
 _trim() {
   local s="$1"
   while [[ "$s" == [[:space:]]* ]]; do s="${s#?}"; done
@@ -311,11 +227,8 @@ _trim() {
   REPLY="$s"
 }
 
-# The three scalar styles that occur in real configs (`user: alice`,
-# `giteditor: 'code'`, `"quoted"`), and an inline comment is not part of the
-# value. Both quoted patterns are anchored and greedy, so the CLOSING quote is
-# the last one before end-of-line or the comment - a value may therefore contain
-# a '#' or the other quote character. Mirrors ConvertFrom-YamlScalar.
+# The three scalar styles real configs use, minus any inline comment. Both quoted
+# patterns are anchored and greedy, so a value may contain '#' or the other quote.
 _yaml_scalar() {
   local s q="'" bs='\' dq='"'
   _trim "$1"; s="$REPLY"
@@ -329,51 +242,31 @@ _yaml_scalar() {
     REPLY="${s//$bs$dq/$dq}"
     return 0
   fi
-  # Unquoted: an inline comment needs whitespace in front of it, so a bare value
-  # containing '#' (a URL fragment, say) survives.
-  #
-  # `%%` removes the LONGEST matching suffix, i.e. the match starting EARLIEST -
-  # so the comment starts at the FIRST ` #`, which is what the .ps1's leftmost
-  # `-replace '\s+#.*$'` does. A greedy `=~` here would strip from the LAST one
-  # instead and quietly leave `# first` inside the value of
-  # `KEY: value # first # second`.
-  #
-  # The '#' is backslash-escaped because it is EXTENDED_GLOB's zero-or-more
-  # operator: unescaped and with that option on (a user's ~/.zshenv may set it,
-  # which a script inherits), `[[:space:]]#*` matches the empty suffix and this
-  # expansion deletes the whole value. Escaped, it is a literal under both.
+  # An inline comment needs leading whitespace, so a bare value containing '#'
+  # survives. `%%` cuts at the FIRST ` #`, where a greedy `=~` would cut at the last
+  # and leave a comment inside the value. The '#' is escaped because EXTENDED_GLOB,
+  # which a script inherits from ~/.zshenv, would otherwise match the empty suffix
+  # and delete the whole value.
   s="${s%%[[:space:]]\#*}"
   _trim "$s"
 }
 
-# One top-level key plus the raw indented lines under it. A block is a list of
-# maps if its first item carries a key, a string list if it carries none, and a
-# map otherwise - the same three-way classification Read-UserDataYaml makes.
+# One top-level key plus its indented lines. A block is a list of maps if its first
+# item carries a key, a string list if it carries none, and a map otherwise.
 _yaml_flush() {
   local k="$1" scalar="$2"
   shift 2
   [[ -n "$k" ]] || return 0
-  # Layering (variables.yaml, then user_data.yaml) means the SECOND definition of
-  # a key has to replace the first outright, not just the array its own shape
-  # lands in. Without this, `gitlab_groups: one` over a block list leaves YL set
-  # and _as_list - which prefers YL - keeps returning the value that was just
-  # overridden. Clearing all four here also makes a key repeated within one file
-  # last-wins, which is what a reader would assume it already did.
+  # A second definition must replace the first outright, not just the array its own
+  # shape lands in, or a scalar over a block list leaves the old value winning.
   local _pk
   unset "YS[$k]" "YL[$k]" "YMK[$k]" "YIC[$k]"
   for _pk in "${(@k)YM}"; do [[ "$_pk" == "$k/"* ]] && unset "YM[$_pk]"; done
   for _pk in "${(@k)YI}"; do [[ "$_pk" == "$k/"* ]] && unset "YI[$_pk]"; done
   if (( $# == 0 )); then
-    # Flow-style list - `profiles: [dev, ops]`, `gitlab_groups: ["x"]`. YAML
-    # says it is a list; a reader that only knows the block form keeps it as a
-    # SCALAR, and the scalar then reaches the overlay as the literal string
-    # "[dev, ops]": a profile of that name, unknown, or a gitlabGroups entry
-    # nobody can clone. Parsed here rather than at the two call sites so every
-    # key gets it, in the same place the block forms are classified.
-    #
-    # Simple lists only, which is what a user_data.yaml carries: one level, no
-    # nesting, and a comma inside a quoted element is not honoured (it splits).
-    # `[]` yields an EMPTY list rather than a scalar - the point of writing it.
+    # Flow-style lists, which a block-only reader would keep as the literal scalar
+    # "[dev, ops]". Simple lists only: no nesting, and a comma inside a quoted element
+    # splits. `[]` yields an empty list rather than a scalar.
     if [[ "$scalar" == '['*']' ]]; then
       local _el
       local -a _flow=()
@@ -399,7 +292,7 @@ _yaml_flush() {
       else
         continue
       fi
-      # Captured BEFORE _yaml_scalar, which runs its own =~ and clobbers $match.
+      # Captured before _yaml_scalar, whose own =~ clobbers $match.
       mk="${match[1]}"; mv="${match[2]}"
       _yaml_scalar "$mv"
       YI[$k/$idx/$mk]="$REPLY"
@@ -433,7 +326,7 @@ _yaml_flush() {
 _yaml_load() {
   local file="$1" line key="" scalar="" kk vv
   local -a block=()
-  # `|| [[ -n "$line" ]]` so a final line with no trailing newline is still read.
+  # The `|| [[ -n ... ]]` reads a final line with no trailing newline.
   while IFS= read -r line || [[ -n "$line" ]]; do
     _trim "$line"
     [[ -z "$REPLY" ]] && continue
@@ -452,24 +345,14 @@ _yaml_load() {
   _yaml_flush "$key" "$scalar" "${block[@]}"
 }
 
-# Read straight out of the arrays rather than through accessor functions: a
-# `$(...)` accessor forks, and - worse - `arr=(${(f)"$(...)"})` on an ABSENT key
-# yields a one-element array holding "", which reads downstream as a profile
-# named "" instead of no profiles at all. The `[[ -n ... ]]` guards below are
-# what keep an absent key an empty array.
-#
-# The two coercions below exist because the SHAPE a key is written in is not
-# fixed by the schema, and the .ps1 accepts either: `Get-UserDataList`
-# (setup-wsl-nix.ps1) wraps a scalar into a one-element list, and the
-# `[string]$value` cast it applies to sshkeyautoadd joins a list on spaces.
-# Reading only the array this parser happened to classify a block into would
-# make `gitlab_groups: mygroup` (inline, not a block list) vanish from the
-# overlay with nothing said - a silent drop, which is the failure class the
-# profile validation below refuses. Same user_data.yaml, same overlay, from
-# either generator.
+# Read straight out of the arrays: a `$(...)` accessor on an absent key yields a
+# one-element array holding "", which reads downstream as a profile named "".
+# The two coercions exist because the schema does not fix which shape a key is written
+# in, and reading only the array this parser classified it into would silently drop
+# `gitlab_groups: mygroup`.
 
-# _as_list <key> -> the `reply` array. A block list as itself, a scalar as a
-# one-element list, an absent key as empty.
+# _as_list <key> -> `reply`: a block list as itself, a scalar as one element, an
+# absent key as empty.
 _as_list() {
   reply=()
   if [[ -n "${YL[$1]:-}" ]]; then
@@ -479,8 +362,7 @@ _as_list() {
   fi
 }
 
-# _as_words <key> -> REPLY, a space-separated scalar. A block list is flattened
-# to words, which is what the .ps1's `[string]$array` does before it splits.
+# _as_words <key> -> REPLY, a space-separated scalar; a block list is flattened.
 _as_words() {
   if [[ -n "${YS[$1]:-}" ]]; then
     REPLY="${YS[$1]}"
@@ -491,10 +373,8 @@ _as_words() {
   fi
 }
 
-# --- nix emission ------------------------------------------------------------
-# Backslash goes FIRST so the escapes added after it are not doubled; `${` is
-# nix antiquotation, which a shell alias like `${FOO}` would otherwise trigger
-# inside the generated flake. Mirrors ConvertTo-NixString.
+# Backslash first, so the escapes added after it are not doubled; `${` is nix
+# antiquotation and must not survive into the generated flake.
 _nix_str() {
   local s="$1" bs='\' dq='"' anti='\${'
   s="${s//$bs/$bs$bs}"
@@ -518,8 +398,7 @@ _nix_bool() {
   esac
 }
 
-# `nix fmt` would collapse a one-element list onto one line anyway, and an
-# overlay is not formatted by CI - emit it that way to begin with.
+# `nix fmt` would collapse a one-element list onto one line anyway.
 _nix_list() {
   local name="$1" indent="$2"
   shift 2
@@ -537,19 +416,14 @@ _nix_list() {
   print -r -- "${indent}];"
 }
 
-# --- values ------------------------------------------------------------------
 typeset -a _profiles=() _groups=() _sshkeys=()
 typeset -a _skipped_secrets=()
-# The wslkube-only half of the schema. These four keys never appear in a config
-# written for this generator - they exist because a wslkube one carries them.
+# Keys only a wslkube-written config carries.
 typeset -a _claude_plugins=() _clone_exclude_extra=()
 _mkt_name="" _mkt_url="" _kiro_repo="" _whatsapp_dir=""
 
-# NAMES of the runtime secrets ~/.config/tyc/secrets.env must define - the same
-# set as files/config/secrets.env.example and as $SecretKeyNames in
-# setup-wsl-nix.ps1, plus the retired names that script keeps out of the flake
-# too (WHATSAPP_API_KEY). Values never live here; a custom_env_vars entry whose
-# NAME is on this list is dropped rather than written to the world-readable store.
+# Names only: a custom_env_vars entry named here is dropped rather than written to the
+# world-readable store. Keep in step with setup-wsl-nix.ps1's $SecretKeyNames.
 typeset -a _secret_names=(
   GITLAB_TOKEN GH_TOKEN HASS_TOKEN
   PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET
@@ -560,8 +434,7 @@ typeset -a _secret_names=(
 typeset -a _session_lines=()
 
 if [[ -n "${_config}" ]]; then
-  # Ansible's own order: the shared defaults first, the per-host overrides
-  # second and winning.
+  # Shared defaults first, per-host overrides second and winning.
   if [[ -n "${_wslkube}" ]]; then
     say "layering ${_wslkube}/variables.yaml under ${_config}"
     _yaml_load "${_wslkube}/variables.yaml"
@@ -577,8 +450,7 @@ if [[ -n "${_config}" ]]; then
   [[ -n "${_state_root}" ]] || _state_root="${YS[state_root]:-}"
   [[ -n "${_state_transcripts}" ]] || _state_transcripts="${YS[state_transcripts]:-}"
   ${_git_editor_given} || _git_editor="${YS[giteditor]:-}"
-  # `team:`/`teams:` are read as aliases because profiles/merge.nix still
-  # honours the older name and a wslkube config may carry it.
+  # `team:`/`teams:` are read as aliases, as profiles/merge.nix still honours them.
   if ! ${_profiles_given}; then
     for _k in profiles teams team; do
       _as_list "${_k}"
@@ -592,17 +464,14 @@ if [[ -n "${_config}" ]]; then
     _as_list gitlab_groups
     _groups=("${reply[@]}")
   fi
-  # sshkeyautoadd is a single space-separated scalar in wslkube's schema, and
-  # the FIRST key is the git identity - so the order words arrive in matters.
+  # The first key is the git identity, so the word order matters.
   if ! ${_sshkeys_given}; then
     _as_words sshkeyautoadd
     [[ -n "${REPLY}" ]] && _sshkeys=(${=REPLY})
   fi
 
-  # The custom_env_vars split, done HERE and not while emitting the flake: the
-  # flake text is produced in a $(...) subshell, so a _skipped_secrets built in
-  # there would never reach the summary and the operator would be told nothing
-  # about the tokens that were dropped.
+  # Split here, not while emitting: the flake text is built in a $(...) subshell, so a
+  # list built there would never reach the summary and the drops would go unreported.
   for _k in ${(f)"${YMK[custom_env_vars]:-}"}; do
     [[ -n "${_k}" ]] || continue
     if (( ${_secret_names[(Ie)$_k]} )); then
@@ -614,15 +483,9 @@ if [[ -n "${_config}" ]]; then
     _session_lines+=("          $(_nix_attr_name "${_k}") = $(_nix_str "${_v}");")
   done
 
-  # Read here rather than while emitting, for the same reason the secrets split
-  # is: the flake text is produced in a $(...) subshell, so a warning raised in
-  # there would never reach the operator.
-  #
-  # wslkube keeps the always-on plugin set (claude_plugins) and the marketplace
-  # they resolve against in variables.yaml, and the opt-in MCP servers
-  # (claude_mcp_plugins) in user_data.yaml. mkSystem takes ONE claudePlugins
-  # list, so the two concatenate. Without the marketplace every install fails
-  # silently - activation only warns - and the box comes up with zero plugins.
+  # Read here so a warning reaches the operator rather than dying in the subshell.
+  # mkSystem takes one claudePlugins list, so the always-on and opt-in sets
+  # concatenate; without the marketplace every install fails silently.
   _mkt_name="${YM[claude_plugin_marketplace/name]:-}"
   _mkt_url="${YM[claude_plugin_marketplace/url]:-}"
   if [[ -n "${YMK[claude_plugin_marketplace]:-}" ]] \
@@ -634,11 +497,8 @@ if [[ -n "${_config}" ]]; then
   _as_list claude_mcp_plugins; _claude_plugins+=("${reply[@]}")
   _claude_plugins=("${(@u)_claude_plugins}")
 
-  # wslkube hardcodes both of these in its TASK files - the kiro repo in
-  # tasks/kiro.yaml, the whatsapp server dir in tasks/claude.yaml - so a
-  # migrated config carries neither and regeneration silently drops them. They
-  # are config keys here rather than constants because both name a private repo
-  # path, which has no place in a shareable template.
+  # Config keys, not constants: both name a private repo path. A wslkube config
+  # carries neither, so a migrated one must add them.
   _kiro_repo="${YS[kiro_plugin_repo]:-}"
   _whatsapp_dir="${YS[whatsapp_mcp_dir]:-}"
   if [[ -z "${_whatsapp_dir}" ]] && (( ${_claude_plugins[(Ie)mcp-whatsapp]} )); then
@@ -653,10 +513,8 @@ ${_groups_given} && _groups=("${_groups_flag[@]}")
 ${_sshkeys_given} && _sshkeys=("${_sshkeys_flag[@]}")
 
 if ${_have_values}; then
-  # Validated up front, ahead of every other field: nix/options.nix's `target`
-  # is `types.enum [ "wsl" "proxmox-vm" ]`, and a value outside that set would
-  # otherwise reach mkSystem only to abort eval there, naming a generated
-  # overlay file instead of the config the operator actually has open.
+  # Validated first: an out-of-enum value would otherwise abort eval inside mkSystem,
+  # naming the generated overlay instead of the config the operator has open.
   [[ -n "${_target}" ]] || _target="wsl"
   case "${_target}" in
     wsl | proxmox-vm) ;;
@@ -667,31 +525,23 @@ if ${_have_values}; then
     || die "no Linux username - set 'user:' in the config or pass --user. There is no sane default for it."
   [[ -n "${_git_name}" && -n "${_git_email}" ]] \
     || die "no git identity - set 'gitfullname:'/'gitmail:' in the config or pass --git-name/--git-email. Without them every repo this box touches commits as a placeholder."
-  # No dashes: the option's own description says so, and a dashed name breaks
-  # the home-manager user attribute downstream.
+  # No dashes: a dashed name breaks the home-manager user attribute downstream.
   [[ "${_user}" == *-* ]] && die "username '${_user}' contains a dash - the Linux user (and the home-manager user built from it) must not"
   if [[ -z "${_locale}" ]]; then
     _locale='en_US.UTF-8'
     warn "no locale in the config - defaulting to ${_locale}"
   fi
-  # windowsUsername is the C:\Users\<name> folder, meaningful only on the wsl
-  # target - proxmox-vm has no Windows side to fall back to, so the field is
-  # left unset here and the emitter omits it (nix/options.nix defaults it to
-  # null already; a target other than wsl wants exactly that).
+  # Meaningful only on wsl, so it is left unset and omitted on any other target.
   if [[ "${_target}" == "wsl" ]]; then
     [[ -n "${_windows_user}" ]] || _windows_user="${_user}"
   fi
   [[ -n "${_repo_path}" ]] || _repo_path="${_out}"
 
-  # Profile names are validated against the checkout's profiles/ rather than a
-  # hard-coded list: adding profiles/<name>.nix must be enough. A name that is
-  # not there aborts eval inside merge.nix later, which is a much worse place to
-  # find out; a name silently DROPPED means a box with none of that profile's
-  # groups or CLI tools and nothing saying so.
+  # Validated against the checkout's profiles/, not a hard-coded list, so adding
+  # profiles/<name>.nix is enough; an unknown name would otherwise abort eval inside
+  # merge.nix, and a dropped one would leave the box short with nothing said.
   typeset -a _known=()
-  # group -> profile, read out of profiles/<name>.nix rather than hard-coded, so
-  # the mapping cannot drift from the profiles themselves. Which groups a
-  # profile already brings is knowable only from the profile.
+  # group -> profile, read out of the profiles themselves so it cannot drift.
   typeset -A _group_profile=()
   for _p in "${_checkout}"/profiles/*.nix(N); do
     case "${_p:t:r}" in
@@ -707,14 +557,9 @@ if ${_have_values}; then
     done
   done
 
-  # A wslkube config carries no profile concept at all - only a flat
-  # gitlab_groups - so a migrated one would select NOTHING and say so in a
-  # warning nobody reads at the end of a long run. Derive instead: a group a
-  # profile already declares selects that profile.
-  #
-  # Only when BOTH came from the config. --gitlab-groups with no --profiles is
-  # an explicit request on the command line, and inferring profiles the caller
-  # did not ask for would be the surprising reading of it.
+  # A wslkube config has only a flat gitlab_groups, so derive the profiles: a group a
+  # profile declares selects that profile. Only when both came from the config, since
+  # inferring profiles for an explicit --gitlab-groups would surprise the caller.
   if (( ${#_profiles} == 0 )) && (( ${#_groups} > 0 )) \
      && ! ${_profiles_given} && ! ${_groups_given}; then
     typeset -a _derived=()
@@ -733,9 +578,7 @@ if ${_have_values}; then
   (( ${#_unknown} == 0 )) \
     || die "unknown profile(s): ${(j:, :)_unknown} - known: ${(j:, :)_known}"
 
-  # A group a SELECTED profile already brings would otherwise be listed twice:
-  # profiles/merge.nix unions the profile's own gitlabGroups in, so what belongs
-  # here is the personal remainder.
+  # merge.nix unions a selected profile's own groups in, so this is the remainder.
   typeset -a _personal=()
   for _g in "${_groups[@]}"; do
     _pn="${_group_profile[$_g]:-}"
@@ -744,56 +587,33 @@ if ${_have_values}; then
   done
   _groups=("${_personal[@]}")
 
-  # `repos:` is the THIRD way a box gets repositories, and the only one an
-  # adopter with no GitLab at all can use - a GitHub-only config names its
-  # clones there and has neither profiles nor gitlab_groups. Counted here, and
-  # only entries carrying a url: `repos:` full of url-less entries emits
-  # nothing (see the emission below, which skips them), so counting raw entries
-  # would let the empty overlay through the refusal it exists to catch.
+  # Only entries carrying a url are counted: the emission skips the rest, so counting
+  # raw entries would let an empty overlay through the refusal below.
   typeset -i _repos_n=0 _ri
   for (( _ri = 1; _ri <= ${YIC[repos]:-0}; _ri++ )); do
     [[ -n "${YI[repos/$_ri/url]:-}" ]] && (( ++_repos_n ))
   done
 
-  # No profile, no group AND no repos produces a box with no profile packages
-  # and an empty ~/git, with every step still reporting success - the exact
-  # failure this repo shipped once already. There is no legitimate reason to
-  # generate that overlay, so refuse rather than warn.
+  # No profile, group or repo produces a box with an empty ~/git while every step
+  # reports success, so refuse rather than warn.
   if (( ${#_profiles} == 0 )) && (( ${#_groups} == 0 )) && (( _repos_n == 0 )); then
     die "no profiles, no gitlab_groups and no repos resolved - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: ${(j:, :)_known}), 'gitlab_groups:' or 'repos:', or pass --profiles/--gitlab-groups; a wslkube checkout keeps gitlab_groups in its variables.yaml, which is read only when the config sits inside that checkout or --wslkube names it."
   fi
-  # Still worth saying with `repos:` set - what is missing is the profile
-  # packages, not the clones - so the text names what a profile brings and what
-  # it does not.
   if (( ${#_profiles} == 0 )); then
     warn "no profiles selected - selecting a profile is the only thing that installs its gitlabGroups and profileCliTools, so the box gets neither; 'repos:' entries are still cloned. Known: ${(j:, :)_known}"
   fi
 fi
 
-# --- the flake text ----------------------------------------------------------
-# templates/overlay/flake.nix puts the input URL on ONE line carrying the
-# `flakelab-url:` marker, and both writers of that template - setup-wsl-nix.ps1's
-# New-OverlaySkeleton and this script - rewrite the line by the marker rather
-# than by the URL, so the day the template's default changes neither silently
-# no-ops.
-#
-# Scope, precisely: that is the TEMPLATE only. Neither writer rewrites an
-# existing overlay's flake.nix, and the .ps1's own generated overlay
-# (New-OverlayFlakeText) emits the input line WITHOUT a marker. The line this
-# script generates carries one anyway, so re-pointing a generated overlay is an
-# edit of one marked line rather than a hunt through the file.
-#
-# The match is `#` + optional whitespace + `flakelab-url:` - the same expression
-# the .ps1 uses (`#\s*flakelab-url:`), so a template neither of them can find the
-# anchor in is impossible to write.
+# Both writers of the template rewrite its input line by the `flakelab-url:` marker,
+# not by the URL, so neither silently no-ops when the template's default changes.
+# The template only: neither rewrites an existing overlay's flake.nix.
 _anchor_re='#[[:space:]]*flakelab-url:'
 _input_line() {
   print -r -- "  inputs.flakelab.url = $(_nix_str "$1"); # flakelab-url: substitution anchor (${_self})"
 }
 
-# The template, with its anchor line replaced. Counted first: a template that
-# lost the marker would otherwise be copied out with whatever URL it happens to
-# carry, silently pointing the overlay somewhere nobody asked for.
+# Counted first: a template that lost the marker would be copied out with whatever URL
+# it carries, pointing the overlay somewhere nobody asked for.
 _template_flake() {
   local -a lines
   lines=("${(@f)$(< "${_template}/flake.nix")}")
@@ -848,10 +668,8 @@ _generated_flake() {
   print -r -- '      # or, encrypted, in a sops dotenv file named by sopsSecretsFile (see'
   print -r -- '      # the flakelab README "Secrets" for enrolment).'
   print -r -- '      nixosConfigurations.default = flakelab.lib.mkSystem {'
-  # Omitted for wsl (the default target nix/options.nix falls back to anyway)
-  # so an all-wsl config generates byte-identical output to before this field
-  # existed; emitted first for every other target, since it selects the whole
-  # module set mkSystem builds from.
+  # Omitted for wsl, which is the option's own default; first for any other target,
+  # since it selects the whole module set.
   if [[ "${_target}" != "wsl" ]]; then
     print -r -- "        target = $(_nix_str "${_target}");"
   fi
@@ -859,9 +677,7 @@ _generated_flake() {
   print -r -- "        gitName = $(_nix_str "${_git_name}");"
   print -r -- "        gitEmail = $(_nix_str "${_git_email}");"
   print -r -- "        locale = $(_nix_str "${_locale}");"
-  # gitEditor and backupAutostart are declared WITHOUT a default, and `null` /
-  # `false` is what "leave git's own default" / "no autostart" mean - so absence
-  # is emitted, not omitted.
+  # Both are declared without a default, so absence is emitted, not omitted.
   if [[ -n "${_git_editor}" ]]; then
     print -r -- "        gitEditor = $(_nix_str "${_git_editor}");"
   else
@@ -888,8 +704,7 @@ _generated_flake() {
   print -r -- '        # Keep this overlay and flakelab itself out of ~/git.'
   typeset -a _excl=(flakelab)
   [[ "${_out:t}" != flakelab ]] && _excl+=("${_out:t}")
-  # wslkube's own clone_exclude is unioned in, not replaced: it names repos that
-  # exist only on the Windows mount, and dropping it re-clones them into ~/git.
+  # Unioned, not replaced: it names repos that exist only on the Windows mount.
   (( ${#_clone_exclude_extra} > 0 )) && _excl+=("${_clone_exclude_extra[@]}")
   _nix_list cloneExclude '        ' "${(@u)_excl}"
   print -r -- ''
@@ -907,9 +722,8 @@ _generated_flake() {
     _nix_list sshKeys '        ' "${_sshkeys[@]}"
   fi
 
-  # claudePluginMarketplaces is the canonical PLURAL option; the singular
-  # claudePluginMarketplace is honoured only while the list is empty, so a
-  # generated overlay emits the form that does not depend on that fallback.
+  # The plural option is canonical, so emit the form that does not depend on the
+  # singular fallback.
   if [[ -n "${_mkt_name}" && -n "${_mkt_url}" ]]; then
     print -r -- ''
     print -r -- '        # `name` must match the name declared in the marketplace'\''s own'
@@ -939,8 +753,7 @@ _generated_flake() {
     print -r -- "        whatsappMcpDir = $(_nix_str "${_whatsapp_dir}");"
   fi
 
-  # `repos:` is a LIST of {rel_path,url} in the config and of {relPath,url}
-  # here. These bypass cloneExclude, which is what naming a repo means.
+  # {rel_path,url} in the config, {relPath,url} here; these bypass cloneExclude.
   typeset -a _repo_lines=()
   local -i i n="${YIC[repos]:-0}"
   for (( i = 1; i <= n; i++ )); do
@@ -977,8 +790,7 @@ _generated_flake() {
     print -r -- '        };'
   fi
 
-  # The non-secret half of custom_env_vars, split above. The other half is named
-  # in the summary and written nowhere.
+  # The non-secret half; the other is named in the summary and written nowhere.
   if (( ${#_session_lines} > 0 )); then
     print -r -- ''
     print -r -- '        # NON-SECRET custom_env_vars only - the tokens are not in this file.'
@@ -993,7 +805,6 @@ _generated_flake() {
   print -r -- '}'
 }
 
-# --- write -------------------------------------------------------------------
 if ${_have_values}; then
   _flake_text="$(_generated_flake)" || die "failed to generate the flake text"
 else
@@ -1004,9 +815,8 @@ fi
 _wrote=()
 _kept=()
 
-# _place <relative path> <mode> <content...> — writes through a temp file so a
-# half-written flake never survives a full disk, and honours --force/--dry-run
-# in ONE place so the two paths cannot disagree about what "keep" means.
+# _place <relative path> <mode> <content...> — through a temp file, so a half-written
+# flake never survives a full disk, and --force/--dry-run are honoured in one place.
 _place() {
   local rel="$1" mode="$2" content="$3"
   local dst="${_out}/${rel}"
@@ -1039,10 +849,8 @@ _place flake.nix 644 "${_flake_text}"
 _place .gitignore 644 "$(< "${_template}/.gitignore")"
 _place files/config/shared/ssh/keys/.gitkeep 644 ""
 
-# The secrets stub is created EMPTY and never overwritten, --force included: it
-# is the one file in the overlay that may already hold real tokens, and no
-# regeneration is worth losing them. Filling it is the operator's job (see
-# flakelab files/config/secrets.env.example for the names).
+# Empty and never overwritten, --force included: it is the one file that may already
+# hold real tokens. Filling it is the operator's job.
 _secrets_rel='files/config/shared/secrets/secrets.env'
 if [[ -e "${_out}/${_secrets_rel}" ]]; then
   _kept+=("${_secrets_rel}")
@@ -1054,7 +862,6 @@ else
   _wrote+=("${_secrets_rel}")
 fi
 
-# --- summary -----------------------------------------------------------------
 say "overlay: ${_out}"
 say "flakelab input: ${_flakelab_ref}"
 for _f in "${_wrote[@]}"; do say "  wrote ${_f}"; done
@@ -1077,8 +884,8 @@ fi
 say "  2. fill ${_out}/${_secrets_rel} (names: flakelab files/config/secrets.env.example)"
 say "  3. drop the private key(s) named in sshKeys into ${_out}/files/config/shared/ssh/keys/ (LF only)"
 say "  4. check it evaluates:  nix flake metadata ${_out}"
-# The last step differs per target: a proxmox-vm overlay is never applied by
-# the Windows provisioner, the seed guest's flakelab-bootstrap pulls it in.
+# The last step differs per target: a proxmox-vm overlay is pulled in by the seed
+# guest's flakelab-bootstrap, never by the Windows provisioner.
 if [[ "${_target}" == "wsl" ]]; then
   say "  5. apply it:  sudo nixos-rebuild switch --flake ${_out}#default"
   say "     (on a machine with no distro yet, provision from Windows instead:"
