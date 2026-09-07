@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `test-nix-update`: an offline suite for `flakelab update`'s pre-flight, with `sudo` shimmed. Wired into `make test` and `nix flake check`.
 - `GLAB_NO_PROMPT=1` in every login session: glab fails at once with the missing flag named instead of opening an interactive question, which in an agent's terminal-less shell was a hang until the tool timeout. At a real terminal it only skips the confirmation prompts.
 
+### Changed
+
+- `flakelab update` / `update-all` pull a clean overlay checkout that is behind its remote (`git pull --rebase`) instead of asking at a terminal and refusing without one, and the fetch in front of it is `--all --prune`. Uncommitted changes refuse rather than autostash; a conflicting rebase is aborted and refused with the tree restored. `FLAKELAB_STALE_OK=1` is the one override and now covers a dirty tree too. The prompt only ever had one useful answer, and the no-terminal refusal turned every `flakeup` from an agent shell into a manual pull first.
+
 ### Fixed
 
 - The proxmox-vm target links `/bin/bash` (tmpfiles, like NixOS-WSL does on the WSL distro). The clones hardcode it — `SHELL := /bin/bash` in Makefiles, `#!/bin/bash` in the Claude statusline — so on a PVE guest `flakelab activate-hooks` failed the hook install for those repos and the statusline never ran, while the same overlay was fine on WSL.
