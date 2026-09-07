@@ -71,6 +71,12 @@ in
     pkgs.cloud-init
   ];
 
+  # The clones hardcode /bin/bash (`SHELL := /bin/bash` in Makefiles, `#!/bin/bash`
+  # in the Claude statusline), and NixOS-WSL links it on the WSL distro. A plain
+  # NixOS guest only has /bin/sh, so the hook install and the statusline broke here
+  # and nowhere else.
+  systemd.tmpfiles.rules = [ "L+ /bin/bash - - - - ${pkgs.bashInteractive}/bin/bash" ];
+
   # By label on a single growing partition, as the seed image is built, so PVE's
   # disk size is what the guest ends up with.
   fileSystems."/" = {
