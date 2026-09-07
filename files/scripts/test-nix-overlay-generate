@@ -892,6 +892,77 @@ contains "and the known set"           "${OUT}" "wsl, proxmox-vm"
 [[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
 
 # ---------------------------------------------------------------------------
+# 26. The overlay is a git repository: local, one commit, no remote
+# ---------------------------------------------------------------------------
+# The overlay is the profile from the first write on, and every hand-edit and
+# --force regeneration after that is worth a diff. So the generator leaves a
+# repository behind, not a folder: initialised, one commit, no remote - where
+# it is published is the operator's call, and nix-update's pre-flight reads
+# all three shapes (no repository, no remote, remote). The commit goes through
+# the overlay's own .gitignore, which is what keeps the secrets stub out of it.
+print -r -- "a generated overlay is a local git repository"
+o="$(out gitinit)"
+run_gen --out "${o}" --config "${EXAMPLE}"
+check    "it generates"                  "${RC}" "0"
+exists   "with a .git"                   "${o}/.git"
+check    "on one commit"                 "$(git -C "${o}" rev-list --count HEAD 2>/dev/null)" "1"
+check    "with no remote"                "$(git -C "${o}" remote)" ""
+check    "and a clean tree"              "$(git -C "${o}" status --porcelain)" ""
+tracked="$(git -C "${o}" ls-files)"
+contains "flake.nix is tracked"          "${tracked}" "flake.nix"
+contains ".gitignore is tracked"         "${tracked}" ".gitignore"
+excludes "the secrets stub is not"       "${tracked}" "secrets.env"
+check    "core.autocrlf is off"          "$(git -C "${o}" config --get core.autocrlf)" "false"
+contains "and it says so"                "${OUT}" "git: initialised"
+
+# A repository that is already there - a remote, an unborn branch, history -
+# is the operator's, and the generator commits nothing into it.
+print -r -- "an existing repository is left alone"
+o="$(out gitkeep)"
+mkdir -p "${o}"
+git -C "${o}" init -q
+git -C "${o}" remote add origin git@example.com:group/overlay.git
+run_gen --out "${o}" --config "${EXAMPLE}"
+check    "it generates"                  "${RC}" "0"
+check    "no commit is made"             "$(git -C "${o}" rev-list --count HEAD 2>/dev/null || print 0)" "0"
+check    "the remote survives"           "$(git -C "${o}" remote)" "origin"
+contains "and the new files are left uncommitted" "${OUT}" "git: left uncommitted"
+
+# --force over the repository above: the regeneration is a diff to review,
+# never a commit made behind the operator's back.
+print -r -- "--force leaves the regeneration uncommitted"
+o="${BASE}/gitinit"
+run_gen --out "${o}" --user other --git-name Other --git-email other@example.com \
+  --profiles example --force
+check    "it regenerates"                "${RC}" "0"
+check    "still on one commit"           "$(git -C "${o}" rev-list --count HEAD 2>/dev/null)" "1"
+contains "with flake.nix modified"       "$(git -C "${o}" status --porcelain)" "M flake.nix"
+
+print -r -- "--dry-run initialises nothing"
+o="$(out gitdry)"
+run_gen --out "${o}" --config "${EXAMPLE}" --dry-run
+check    "it exits clean"                "${RC}" "0"
+[[ -e "${o}/.git" ]] && bad "no .git is created" || ok "no .git is created"
+contains "and says what it would do"     "${OUT}" "git: would initialise"
+
+# No git is not an error: the overlay is complete without it, and the summary
+# names the step the operator can take later.
+print -r -- "without git the overlay is still written"
+NOGIT="${BASE}/nogit"
+mkdir -p "${NOGIT}"
+for f in ${^path}/*(N-*); do
+  [[ "${f:t}" == git ]] && continue
+  [[ -e "${NOGIT}/${f:t}" ]] || ln -s "${f}" "${NOGIT}/${f:t}"
+done
+o="$(out gitless)"
+OUT="$(PATH="${NOGIT}" "${GEN}" --out "${o}" --config "${EXAMPLE}" 2>&1)"
+RC=$?
+check    "it generates"                  "${RC}" "0"
+exists   "flake.nix is written"          "${o}/flake.nix"
+[[ -e "${o}/.git" ]] && bad "no .git is created" || ok "no .git is created"
+contains "and it names the step"         "${OUT}" "git: not found"
+
+# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

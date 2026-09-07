@@ -68,7 +68,8 @@ while (( $# )); do
       print -r -- "${_self} [--all]"
       print -r -- ""
       print -r -- "  Rebuild this distro from ${_repo} after a pre-flight that checks the"
-      print -r -- "  checkout against its remote and against the default branch."
+      print -r -- "  checkout against its remote and against the default branch (skipped,"
+      print -r -- "  and said so, when it is not a checkout or has no remote)."
       print -r -- ""
       print -r -- "  --all   also run nix-clone-repos after a successful switch"
       print -r -- ""
@@ -261,10 +262,35 @@ _nix_wait_boot() {
 }
 _nix_wait_boot || exit 1
 
+# The overlay comes in three shapes, and the drift check applies to one of
+# them. A plain directory is what `provision` wrote before the overlay became
+# a repository, and what a hand-made overlay still is; a repository with no
+# remote is what the generator leaves now; the proxmox-vm bootstrap clones
+# from one with a remote. Nothing can be behind a remote that does not exist,
+# so the first two get one line and the switch - not a fetch, which used to
+# fail with "not a git repository", retry, and refuse the rebuild without a
+# terminal, then advise `git remote set-head origin -a` on a repository that
+# has no origin. Uncommitted changes are still worth a warning in a local
+# repository: that is drift against its own history.
+_nix_repo_shape() {
+  if ! git -C "${_repo}" rev-parse --git-dir > /dev/null 2>&1; then
+    print -P "%F{cyan}ℹ ${_repo} is not a git checkout — no drift check (git init it to get one)%f"
+    return 1
+  fi
+  [[ -n "$(git -C "${_repo}" remote 2>/dev/null)" ]] && return 0
+  if [[ -n "$(git -C "${_repo}" status --porcelain 2>/dev/null)" ]]; then
+    print -P "%F{yellow}⚠ ${_repo} has uncommitted changes%f"
+  fi
+  print -P "%F{cyan}ℹ ${_repo} has no git remote — no drift check (add one to get it)%f"
+  return 1
+}
+
 # Order matters: an accepted pull moves HEAD, and the default-branch check
 # must measure where that left it.
-_nix_check_remote || exit 1
-_nix_check_base || exit 1
+if _nix_repo_shape; then
+  _nix_check_remote || exit 1
+  _nix_check_base || exit 1
+fi
 
 # A `path:` flakelab input is MUTABLE; its lock entry is not. flake.lock pins
 # the checkout's narHash, and nix serves the store path that hash already names

@@ -483,6 +483,7 @@
         nix-overlay-generate = suiteCheck "nix-overlay-generate";
         flakelab-cli = suiteCheck "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
+        nix-update = suiteCheck "nix-update";
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 

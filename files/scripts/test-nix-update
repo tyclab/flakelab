@@ -1,0 +1,201 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for nix-update's pre-flight: the real script against throwaway
+# overlays under a mktemp root, with `sudo` shimmed so the switch it ends in is
+# recorded instead of run. Under test is the shape gate in front of the drift
+# check - a plain directory, a repository with no remote, a repository with one
+# - and that the switch still happens, or is refused, for the right reason.
+# Nothing here is a terminal, so every case takes the non-interactive branch:
+# the one automation and agents hit.
+#
+# The PATH is rebuilt from symlinks with four names left out. `sudo` and
+# `nix-clone-repos` are shimmed below; `claude` and `systemctl` are simply
+# absent, so the marketplace refresh and the boot-settle wait skip themselves
+# instead of talking to the real ones. HOME is a fresh directory for the same
+# reason: no ~/.claude, no ~/.gitconfig.
+#
+# Usage: files/scripts/test-nix-update
+#
+
+SCRIPT_DIR="${0:A:h}"
+UPDATE="${SCRIPT_DIR}/nix-update"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+TOOLS="${BASE}/tools"
+mkdir -p "${TOOLS}"
+for f in ${^path}/*(N-*); do
+  case "${f:t}" in
+    sudo|nix-clone-repos|claude|systemctl) continue ;;
+  esac
+  [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
+done
+
+# `sudo` records its argv and exits with SUDO_RC, so the switch is observable
+# without a root and a failing rebuild's status can be checked for surviving.
+SHIM="${BASE}/bin"
+mkdir -p "${SHIM}"
+cat > "${SHIM}/sudo" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$@" >> "${SUDO_LOG}"
+exit "${SUDO_RC:-0}"
+STUB
+chmod +x "${SHIM}/sudo"
+
+export HOME="${BASE}/home"
+mkdir -p "${HOME}"
+git config --global user.name "test-nix-update"
+git config --global user.email "t@example.invalid"
+git config --global init.defaultBranch main
+export SUDO_LOG="${BASE}/sudo.log"
+
+typeset -i RC=0
+OUT=""
+# run_update <overlay> <args...> - sets OUT and RC; stdin is /dev/null so the
+# script sees no terminal.
+run_update() {
+  local repo="$1"
+  shift
+  : > "${SUDO_LOG}"
+  OUT="$(PATH="${SHIM}:${TOOLS}" FLAKELAB_REPO_ROOT="${repo}" "${UPDATE}" "$@" 2>&1 < /dev/null)"
+  RC=$?
+}
+switches() { grep -c "nixos-rebuild switch" "${SUDO_LOG}" }
+
+# Fixtures: the three overlay shapes. Each has a flake.nix so the directory
+# looks like an overlay; none has a flake.lock, so the re-lock step is a no-op.
+mk_plain() {
+  local d="${BASE}/$1"
+  mkdir -p "${d}"
+  print -r -- '{ }' > "${d}/flake.nix"
+  print -r -- "${d}"
+}
+mk_local() {
+  local d
+  d="$(mk_plain "$1")"
+  git -C "${d}" init -q
+  git -C "${d}" add -A
+  git -C "${d}" commit -q -m init
+  print -r -- "${d}"
+}
+mk_remote() {
+  local d
+  d="$(mk_local "$1")"
+  git init -q --bare "${BASE}/$1.git"
+  git -C "${d}" remote add origin "${BASE}/$1.git"
+  git -C "${d}" push -q -u origin main > /dev/null 2>&1
+  git -C "${d}" remote set-head origin -a > /dev/null
+  print -r -- "${d}"
+}
+
+print -r -- "test-nix-update"
+
+# ---------------------------------------------------------------------------
+# 1. A plain directory switches, with the drift check named as skipped
+# ---------------------------------------------------------------------------
+# What `provision` left behind before the overlay became a repository, and what
+# a hand-made overlay still is. Nothing can be stale against a remote that does
+# not exist, so the switch runs and the one line says why nothing was checked.
+print -r -- "a plain directory is not a drift failure"
+d="$(mk_plain plain)"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "from the overlay, as path:"       "$(< "${SUDO_LOG}")" "--flake path:${d}#default"
+contains "and says the check was skipped"   "${OUT}" "not a git checkout"
+excludes "with no fetch attempted"          "${OUT}" "fetch failed"
+excludes "and no origin/HEAD advice"        "${OUT}" "origin/HEAD"
+excludes "and no stale refusal"             "${OUT}" "stale"
+
+# ---------------------------------------------------------------------------
+# 2. A repository with no remote: local history, nothing to be behind
+# ---------------------------------------------------------------------------
+print -r -- "a repository without a remote switches"
+d="$(mk_local local)"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "and says why nothing was fetched" "${OUT}" "no git remote"
+excludes "with no origin/HEAD advice"       "${OUT}" "origin/HEAD"
+excludes "and no stale refusal"             "${OUT}" "stale"
+
+print -r -- "a dirty local repository is still warned about"
+print -r -- '# edit' >> "${d}/flake.nix"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and names the uncommitted change" "${OUT}" "uncommitted changes"
+
+# ---------------------------------------------------------------------------
+# 3. A repository with a remote keeps the drift check it always had
+# ---------------------------------------------------------------------------
+print -r -- "a repository in sync with its remote switches quietly"
+d="$(mk_remote synced)"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+excludes "with no skipped-check line"       "${OUT}" "no drift check"
+excludes "and no warning at all"            "${OUT}" "⚠"
+
+print -r -- "a repository behind its remote is refused without a terminal"
+d="$(mk_remote behind)"
+git clone -q "${BASE}/behind.git" "${BASE}/behind-other"
+print -r -- '# upstream' >> "${BASE}/behind-other/flake.nix"
+git -C "${BASE}/behind-other" commit -q -am upstream
+git -C "${BASE}/behind-other" push -q origin main
+run_update "${d}"
+check    "it refuses"                       "${RC}" "1"
+check    "with no switch"                   "$(switches)" "0"
+contains "naming the stale tree"            "${OUT}" "stale"
+contains "and the commit count"             "${OUT}" "1 commit(s) behind remote"
+
+print -r -- "FLAKELAB_STALE_OK=1 waives that refusal"
+FLAKELAB_STALE_OK=1 run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+
+# ---------------------------------------------------------------------------
+# 4. The switch's own status and the --all tail survive
+# ---------------------------------------------------------------------------
+print -r -- "a failed switch keeps nixos-rebuild's exit status"
+d="$(mk_local rcpass)"
+SUDO_RC=100 run_update "${d}"
+check    "exit 100 comes through"           "${RC}" "100"
+
+print -r -- "--all runs the clone sweep after the switch"
+cat > "${SHIM}/nix-clone-repos" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "ran:nix-clone-repos"
+STUB
+chmod +x "${SHIM}/nix-clone-repos"
+run_update "${d}" --all
+check    "it exits clean"                   "${RC}" "0"
+contains "and the sweep ran"                "${OUT}" "ran:nix-clone-repos"
+rm -f "${SHIM}/nix-clone-repos"
+
+print -r -- "--all without nix-clone-repos on PATH fails after the switch"
+run_update "${d}" --all
+check    "it exits 1"                       "${RC}" "1"
+check    "after switching"                  "$(switches)" "1"
+contains "and says what did not run"        "${OUT}" "nix-clone-repos is not on PATH"
+
+print -r -- "usage"
+run_update "${d}" --help
+check    "--help exits 0"                   "${RC}" "0"
+run_update "${d}" --bogus
+check    "an unknown flag exits 2"          "${RC}" "2"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))
