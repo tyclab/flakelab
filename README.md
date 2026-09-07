@@ -258,8 +258,8 @@ only deferred is in
 failing check with `touch ~/.local/state/flakelab/skip-healthcheck`.
 
 `gitchecker`, `gitcleaner` and `gitpublisher` are **not** subcommands — they stay
-standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro) and `c`/`cc`/`cwsl` (Claude Code) —
-base / full-trust / in-repo.
+standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro: base / full-trust / in-repo) and
+`c`/`cc` (Claude Code: base / full-trust).
 
 **Repo discovery is GitLab-only.** `flakelab clone` enumerates groups through
 `glab`, so `gitlabGroups` and the profiles are a GitLab concept; repos on other
