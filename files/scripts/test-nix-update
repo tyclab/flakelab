@@ -165,6 +165,42 @@ check    "it switches"                      "${RC}" "0"
 check    "exactly once"                     "$(switches)" "1"
 
 # ---------------------------------------------------------------------------
+# 3b. --pull: the same stale tree, brought up to date instead of refused
+# ---------------------------------------------------------------------------
+print -r -- "--pull rebases a clean repository onto its remote and switches"
+run_update "${d}" --pull
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "after pulling"                    "${OUT}" "pulled --rebase"
+check    "and HEAD is the remote's"         "$(git -C "${d}" rev-parse HEAD)" "$(git -C "${d}" rev-parse origin/main)"
+excludes "with no stale refusal"            "${OUT}" "stale"
+
+print -r -- "--pull refuses a dirty tree instead of stashing it"
+print -r -- '# upstream 2' >> "${BASE}/behind-other/flake.nix"
+git -C "${BASE}/behind-other" commit -q -am upstream2
+git -C "${BASE}/behind-other" push -q origin main
+print -r -- '# local edit' >> "${d}/flake.nix"
+run_update "${d}" --pull
+check    "it refuses"                       "${RC}" "1"
+check    "with no switch"                   "$(switches)" "0"
+contains "naming the uncommitted change"    "${OUT}" "uncommitted changes"
+contains "as the reason"                    "${OUT}" "commit or stash first"
+check    "and the edit is still there"      "$(git -C "${d}" status --porcelain)" " M flake.nix"
+git -C "${d}" checkout -q -- flake.nix
+
+print -r -- "--pull aborts a conflicting rebase and refuses"
+print -r -- '# upstream 2' > "${d}/flake.nix"
+print -r -- '# mine' >> "${d}/flake.nix"
+git -C "${d}" commit -q -am mine
+before="$(git -C "${d}" rev-parse HEAD)"
+run_update "${d}" --pull
+check    "it refuses"                       "${RC}" "1"
+check    "with no switch"                   "$(switches)" "0"
+contains "naming the failed pull"           "${OUT}" "pull --rebase failed"
+check    "HEAD is untouched"                "$(git -C "${d}" rev-parse HEAD)" "${before}"
+check    "and no rebase is left in progress" "$([[ -d "${d}/.git/rebase-merge" || -d "${d}/.git/rebase-apply" ]] && print yes || print no)" "no"
+
+# ---------------------------------------------------------------------------
 # 4. The switch's own status and the --all tail survive
 # ---------------------------------------------------------------------------
 print -r -- "a failed switch keeps nixos-rebuild's exit status"

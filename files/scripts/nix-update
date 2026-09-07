@@ -33,17 +33,21 @@ _url_path() {
 }
 
 _run_clone=0
+_run_pull=0
 while (( $# )); do
   case "$1" in
     --all) _run_clone=1 ;;
+    --pull) _run_pull=1 ;;
     -h|--help)
-      print -r -- "${_self} [--all]"
+      print -r -- "${_self} [--all] [--pull]"
       print -r -- ""
       print -r -- "  Rebuild this distro from ${_repo} after a pre-flight that checks the"
       print -r -- "  checkout against its remote and against the default branch (skipped,"
       print -r -- "  and said so, when it is not a checkout or has no remote)."
       print -r -- ""
       print -r -- "  --all   also run nix-clone-repos after a successful switch"
+      print -r -- "  --pull  rebase onto the remote when behind it, without asking; refuses"
+      print -r -- "          on uncommitted changes or a conflict, and restores the tree"
       print -r -- ""
       print -r -- "  FLAKELAB_STALE_OK=1  waive the stale/unverified-tree refusal (automation)"
       exit 0
@@ -56,11 +60,35 @@ while (( $# )); do
   shift
 done
 
+# --pull: the answer is known, so no prompt and no terminal needed. Uncommitted
+# changes refuse rather than autostash: a stash the operator did not ask for is
+# one they will not look for. A conflict is aborted so nothing half-applied waits
+# for the next run.
+_nix_pull() {
+  local _dir="${_repo}" _out
+  if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
+    print -P "%F{red}✗ --pull: uncommitted changes in ${_dir} — commit or stash first; refusing to rebuild from a stale tree%f"
+    return 1
+  fi
+  if _out="$(git -C "$_dir" pull --rebase 2>&1)"; then
+    print -P "%F{green}✓ pulled --rebase: now at $(git -C "$_dir" rev-parse --short HEAD)%f"
+    return 0
+  fi
+  git -C "$_dir" rebase --abort 2>/dev/null || true
+  print -P "%F{red}✗ --pull: pull --rebase failed — tree restored, refusing to rebuild from a stale tree%f"
+  print -r -- "$_out"
+  return 1
+}
+
 # `read -k 1`, not `read -q`: the answer must be testable, or a non-"y" read
 # silently skips the pull and the rebuild runs the stale tree. With no terminal a
 # stale tree refuses; FLAKELAB_STALE_OK=1 is the waiver for automation.
 _nix_offer_pull() {
   local _dir="${_repo}" _reply=""
+  if (( _run_pull )); then
+    _nix_pull
+    return
+  fi
   if [[ ! -t 0 ]]; then
     [[ "${FLAKELAB_STALE_OK:-}" == 1 ]] && return 0
     print -P "%F{red}✗ stale flakelab tree and no terminal to ask — git -C ${_repo} pull --rebase, or set FLAKELAB_STALE_OK=1 to rebuild anyway%f"

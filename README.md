@@ -238,8 +238,10 @@ all fifteen.
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 drift check's exit status. Without a terminal they refuse to rebuild from a
 stale or unverifiable flake tree (`FLAKELAB_STALE_OK=1` waives it per
-invocation); a checkout behind the default branch warns and, at a terminal,
-offers a rebase. An overlay that is not a git checkout, or has no remote, has
+invocation; `--pull` instead rebases a clean checkout onto its remote first,
+and refuses on uncommitted changes or a conflict); a checkout behind the
+default branch warns and, at a terminal, offers a rebase. An overlay that is
+not a git checkout, or has no remote, has
 nothing to be behind: one line says the check was skipped and the switch runs.
 
 They also re-lock a **`path:`** flakelab input before the switch, saying so in
