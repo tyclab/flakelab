@@ -22,6 +22,11 @@
     # Home Manager writes ~/.zshrc but does not change the login shell, so without
     # this the distro lands in bash and no initContent runs.
     shell = pkgs.zsh;
+    # Every `wsl.exe -u <user> -- …` is its own logind session, and user@<uid>
+    # stops shortly after the last one ends, taking the ssh-agent and its loaded
+    # key with it: the provisioner's second switch, the clone sweep and the
+    # backup timer all ran into an empty agent. Lingering keeps user@<uid> up.
+    linger = true;
   };
 
   # Makes zsh a valid login shell; the interactive config is in nix/home/zsh.nix.
