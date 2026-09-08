@@ -1384,7 +1384,13 @@ rmdir "$_tmpdir" 2>/dev/null
 if ssh-add -l >/dev/null 2>&1; then
   echo "AGENT: $(ssh-add -l 2>/dev/null | grep -c '^') key(s) loaded"
 else
+  # The caller gates the SECOND switch on this exit code, so an agent that is
+  # empty HERE has to fail: the socket died between the add and this probe, or
+  # none of the declared keys was readable from KEYDIR. Reporting success sends
+  # the switch into an empty agent - the SSH steps defer again, silently, and
+  # the "log in once and run flakelab update" warning never prints.
   echo "AGENT: empty"
+  rc=1
 fi
 exit $rc
 '@
