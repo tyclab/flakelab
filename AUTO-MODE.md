@@ -56,8 +56,13 @@ jq '.autoMode | {classifyAllShell, allow, soft_deny, hard_deny}' ~/.claude/setti
 claude auto-mode config   # from a plain shell, not inside a session
 ```
 
-Layers 1 and 3 are unioned on every `flakelab update`, so a hand edit that adds
-survives and one that removes is undone. Layer 4 is asserted whole. Retiring a
-floor rule means listing it in `claudeDenyStale`, not deleting it — the union
-alone would leave it on every box that already merged it. Fix rules in the flake,
-never in the file.
+Layers 1, 2 and 3 are unioned on every `flakelab update`, so a hand edit that
+adds survives and one that removes is undone. Layer 4 is asserted whole.
+Retiring a floor rule means listing it in `claudeDenyStale`, not deleting it —
+the union alone would leave it on every box that already merged it. Fix rules in
+the flake, never in the file.
+
+Layers 2 and 3 come from the marketplace clone, found by name:
+`recommended-ask.json` and `recommended-permissions.json`. A rule in both
+prompts, since ask outranks allow — that is how an operation leaves the
+allowlist without the allowlist dropping it in the same release.
