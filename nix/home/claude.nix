@@ -427,11 +427,17 @@ in
         ''
       );
 
-  # Merges the marketplace's own recommended-permissions.json, unioned so a
+  # Merges the marketplace's own recommended-permissions.json and, when it ships
+  # one, recommended-ask.json — allow and ask respectively, both unioned so a
   # hand-added rule is kept. Such a list is only safe behind the auto-mode
   # classifier, which is written on every box that has Claude at all.
-  # The file is located with `find`, not assumed: a hardcoded path the marketplace
-  # does not have would defer forever instead of failing.
+  # Ask outranks allow (precedence 2 against 1), so a rule in both prompts; that
+  # is how the marketplace moves an operation out of the allowlist without
+  # needing the allowlist to drop it in the same release.
+  # Each file is located with `find`, not assumed: a hardcoded path the
+  # marketplace does not have would defer forever instead of failing. The ask
+  # file is optional — a marketplace predating it merges allow alone and warns
+  # about nothing.
   home.activation.claudePermissions =
     lib.hm.dag.entryAfter
       [
@@ -456,8 +462,10 @@ in
           # Guarded: on a missing directory find exits non-zero, which under the
           # activation script's `set -e` silently aborts the whole activation.
           _recommended=""
+          _recommendedask=""
           if [ -d "$_marketplace" ]; then
             _recommended="$(find "$_marketplace" -type f -name recommended-permissions.json 2>/dev/null | head -1 || true)"
+            _recommendedask="$(find "$_marketplace" -type f -name recommended-ask.json 2>/dev/null | head -1 || true)"
           fi
           if [ -n "$_recommended" ] && [ -f "$_settings" ]; then
             _tmp="$(mktemp)"
@@ -468,9 +476,20 @@ in
               ${flakelabWarn} "could not merge recommended permissions into $_settings."
             fi
             rm -f "$_tmp"
-          elif [ ! -d "$_marketplace" ]; then
+          fi
+          if [ -n "$_recommendedask" ] && [ -f "$_settings" ]; then
+            _tmp="$(mktemp)"
+            if jq -s '.[0] * {permissions: {ask: ((.[0].permissions.ask // []) + .[1] | unique)}}' \
+                 "$_settings" "$_recommendedask" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+              mv "$_tmp" "$_settings"
+            else
+              ${flakelabWarn} "could not merge the recommended ask tier into $_settings."
+            fi
+            rm -f "$_tmp"
+          fi
+          if [ ! -d "$_marketplace" ]; then
             ${flakelabDefer} "Claude pre-approved permissions not merged: marketplace clone $_marketplace not there yet. Retry: flakelab update"
-          else
+          elif [ -z "$_recommended" ]; then
             # Distinct from the defer above: the clone is present, so no retry fixes it.
             ${flakelabWarn} "Claude pre-approved permissions not merged: no recommended-permissions.json anywhere under $_marketplace."
           fi
