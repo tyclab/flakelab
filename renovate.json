@@ -21,6 +21,15 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Track commit-SHA pins in the Nix let bindings annotated with `# renovate-digest: ...`. A separate marker keyword from the `# renovate:` one below, because a digest pin has no version to compare and would otherwise be read as a currentValue.",
+      "managerFilePatterns": ["/^nix/.*\\.nix$/"],
+      "matchStrings": [
+        "#\\s*renovate-digest:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n[^\\n]*?\"(?<currentDigest>[0-9a-f]{40})\""
+      ],
+      "currentValueTemplate": "main"
+    },
+    {
+      "customType": "regex",
       "description": "Track version pins in the Nix let bindings annotated with `# renovate: ...` comments",
       "managerFilePatterns": ["/^nix/.*\\.nix$/"],
       "matchStrings": [
@@ -29,6 +38,12 @@
     }
   ],
   "packageRules": [
+    {
+      "description": "A third-party git-SHA pin is never automerged: nothing else vouches for an unreviewed upstream commit. The 14-day hold keeps main-branch churn between releases out of the PR queue.",
+      "matchDatasources": ["git-refs"],
+      "automerge": false,
+      "minimumReleaseAge": "14 days"
+    },
     {
       "description": [
         "@playwright/mcp runs in --extension mode: the Playwright MCP Bridge Chrome extension auto-updates and cannot be pinned, so a server lagging behind it is rejected with 'unsupported protocol version' and the browser bridge simply stops working.",

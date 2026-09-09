@@ -378,7 +378,7 @@ by `flakelab backup --restore`, which `provision` runs for you.
 | `PROXMOX_TOKEN_ID`              | proxmox MCP                                      |
 | `PROXMOX_TOKEN_SECRET`          | proxmox MCP                                      |
 | `SYNOLOGY_PASSWORD`             | synology MCP                                     |
-| `SYNOLOGY_DEVICE_ID`            | synology MCP (skips DSM 2FA re-prompts)          |
+| `SYNOLOGY_DEVICE_ID`            | synology MCP (the only way to log in with 2FA)   |
 | `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki) |
 
 The non-secret half of each pair (`HASS_URL`, `PROXMOX_API_URL`, …) lives in

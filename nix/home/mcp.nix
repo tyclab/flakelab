@@ -25,8 +25,10 @@ let
   hassMcpVersion = "1.0.10";
   # renovate: datasource=npm depName=@itunified.io/mcp-proxmox
   proxmoxMcpVersion = "2026.4.10-1";
-  # renovate: datasource=pypi depName=mcp-synology
-  synologyMcpVersion = "0.5.2";
+  # Upstream cuts GitHub releases but publishes nothing to PyPI, so the pin is the
+  # 1.6.0 release commit. A tag can be moved by a compromised account, a SHA cannot.
+  # renovate-digest: datasource=git-refs depName=https://github.com/atom2ueki/mcp-server-synology
+  synologyMcpRev = "95c62c74e8526dd299bfe527063d8e3360ae9ebf";
   # renovate: datasource=pypi depName=mcp-grafana
   grafanaMcpVersion = "1.1.0";
 
@@ -65,15 +67,34 @@ let
     ];
   };
 
-  # mcp-synology declares an unbounded 'mcp>=1.0' but imports a module the SDK
-  # removed in 2.0.0, so without the 'mcp<2' pin the server crashes on startup.
+  # DSM hands out its long-lived device token only through the server's settings
+  # file -- no env var reads it, and SYNOLOGY_OTP_CODE is spent on the first login.
+  # The wrapper materialises that file on tmpfs at start so the password stays in
+  # the runtime environment, the same reason homeassistantServer is wrapped.
+  #
+  # The three assignments on the exec line are not defaults being restated: the
+  # server reads a generic VERIFY_SSL and defaults it to false for self-signed DSM
+  # certs, XIAOZHI bridges it to a foreign WebSocket endpoint, and MCP_HTTP opens an
+  # unauthenticated listener. None of the three may follow a stray shell variable.
   synologyServer = {
-    command = "uvx";
+    command = "sh";
     args = [
-      "--with"
-      "mcp<2"
-      "mcp-synology==${synologyMcpVersion}"
-      "serve"
+      "-c"
+      ''
+        set -eu
+        if [ -n "''${SYNOLOGY_DEVICE_ID:-}" ]; then
+          umask 077
+          d="''${XDG_RUNTIME_DIR:-$HOME/.cache}/synology-mcp"
+          mkdir -p "$d/synology-mcp"
+          jq -n --arg u "$SYNOLOGY_URL" --arg n "$SYNOLOGY_USERNAME" \
+            --arg p "$SYNOLOGY_PASSWORD" --arg i "$SYNOLOGY_DEVICE_ID" \
+            '{synology:{nas:{url:$u,username:$n,password:$p,device_id:$i}}}' \
+            > "$d/synology-mcp/settings.json"
+          export XDG_CONFIG_HOME="$d"
+        fi
+        VERIFY_SSL="''${SYNOLOGY_VERIFY_SSL:-true}" ENABLE_XIAOZHI=false MCP_HTTP=false \
+          exec uvx --from "git+https://github.com/atom2ueki/mcp-server-synology@${synologyMcpRev}" synology-mcp
+      ''
     ];
   };
 
@@ -106,7 +127,7 @@ let
         // lib.optionalAttrs (cfg.sessionVariables ? PROXMOX_API_URL) {
           proxmox = proxmoxServer;
         }
-        // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_HOST) {
+        // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_URL) {
           synology = synologyServer;
         }
         // lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL) {

@@ -87,10 +87,9 @@ custom_env_vars:
   HASS_URL: 'http://homeassistant.example.lan:8123'
   PROXMOX_API_URL: 'https://pve.example.lan:8006' # base URL, no /api2/json
   PROXMOX_VERIFY_SSL: 'false' # PVE self-signed cert lacks the .lan SAN
-  SYNOLOGY_HOST: 'nas.example.com' # bare host, NO port
-  SYNOLOGY_PORT: '5001'
-  SYNOLOGY_HTTPS: 'true'
-  SYNOLOGY_USERNAME: 'mcp-service'
+  SYNOLOGY_URL: 'https://nas.example.com:5001' # scheme, host and port in one value
+  SYNOLOGY_VERIFY_SSL: 'true'
+  SYNOLOGY_USERNAME: 'mcp-service' # non-admin, not in administrators
   GRAFANA_URL: 'https://grafana.example.lan'
   WHATSAPP_BRIDGE_HOST: 'localhost:8180'
   # Placeholders: replace them outside this repo.
@@ -100,5 +99,5 @@ custom_env_vars:
   PROXMOX_TOKEN_ID: '<user@pam!tokenname>'
   PROXMOX_TOKEN_SECRET: '<your-proxmox-token-secret>'
   SYNOLOGY_PASSWORD: '<your-dsm-password>'
-  SYNOLOGY_DEVICE_ID: '<optional-dsm-trusted-device-id>'
+  SYNOLOGY_DEVICE_ID: '<dsm-trusted-device-id, required on a 2FA account>'
   GRAFANA_SERVICE_ACCOUNT_TOKEN: '<your-grafana-service-account-token>'
