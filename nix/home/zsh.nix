@@ -86,14 +86,15 @@ in
       # browsers by revision, so a harness pinning PW_VERSION must track playwright-driver.
       export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
       export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-    '';
-    initContent = ''
-      export GPG_TTY="$(tty)"
 
-      ${homeJump}# Runtime secrets from exactly one source, chosen at build time by
-      # whether the overlay set `sopsSecretsFile`. No runtime fallback: an enrolled
-      # box with no render must start with no secrets rather than source a stale file.
+      # Runtime secrets from exactly one source, chosen at build time by whether
+      # the overlay set `sopsSecretsFile`. No runtime fallback: an enrolled box
+      # with no render must start with no secrets rather than source a stale file.
       # The `tr -d` strips CRs, which land inside the quoted value and corrupt tokens.
+      # This lives in .zshenv, not .zshrc: an agent's `zsh -c` is not interactive
+      # and never reads .zshrc, so tokens placed there reach a human terminal and
+      # nothing else — `glab` then reports "no token found" mid-session while the
+      # operator's own shell works.
       ${
         if cfg.sopsSecretsFile != null then
           ''
@@ -108,6 +109,11 @@ in
             fi
           ''
       }
+    '';
+    initContent = ''
+      export GPG_TTY="$(tty)"
+
+      ${homeJump}
 
       # `bwu` unlocks on the TTY and parks the per-unlock token in a mode-600 file
       # every shell exports from, so it never rides a command line or a transcript.

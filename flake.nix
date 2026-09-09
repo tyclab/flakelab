@@ -410,7 +410,9 @@
               ];
             };
             secret = forced.config.sops.secrets.tyc-env;
-            zshOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username}.programs.zsh.initContent;
+            # .zshenv, not .zshrc: a non-interactive `zsh -c` reads only the former,
+            # so secrets placed in the interactive file strand every agent on the box.
+            zshOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username}.programs.zsh.envExtra;
             zshOn = zshOf forced;
             zshOff = zshOf self.nixosConfigurations.default;
             hasInfix = nixpkgs.lib.hasInfix;
