@@ -67,6 +67,10 @@ let
     ];
   };
 
+  # Fallback only: kiroMcpMerge prefers the mcp-synology plugin's own definition from
+  # the Claude marketplace clone, so this runs when that clone is absent. Both are the
+  # same pin; bumping it here alone does not change what Kiro runs.
+  #
   # DSM hands out its long-lived device token only through the server's settings
   # file -- no env var reads it, and SYNOLOGY_OTP_CODE is spent on the first login.
   # The wrapper materialises that file on tmpfs at start so the password stays in
