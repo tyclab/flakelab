@@ -46,10 +46,25 @@ let
   # terminate the shell quote.
   claudeAutoModeFile = pkgs.writeText "claude-automode.json" (builtins.toJSON claudeAutoMode);
 
-  # The permissions.deny floor, unioned into whatever is already there. Deny rules
-  # are glob matchers, so there is one rule per shape; combined short flags (`-uf`)
-  # and `git -c` prefixes are not covered, and the auto-mode classifier is that net.
+  # permissions.deny is the one layer neither the classifier nor the operator can
+  # clear — precedence 3, short-circuits before auto mode. The invariant above
+  # claudeAutoMode therefore binds hardest here: destructive-but-legitimate work
+  # belongs in soft_deny. Force-push is not in this floor because the forge already
+  # refuses it on main (allow_force_pushes false, enforce_admins on) for every
+  # clone and every token, which a client-side glob cannot do. See AUTO-MODE.md.
+  #
+  # Kept: --mirror deletes every remote ref the local does not have, on refs branch
+  # protection does not cover. Globs match raw command text across `&&` and `|`,
+  # quoted bodies included, so `--mirror` is the whole reason a rule can be this
+  # blunt and still be safe — no legitimate workflow here types it.
   claudeDeny = [
+    "Bash(git push --mirror*)"
+    "Bash(git -C * push --mirror*)"
+  ];
+
+  # Rules this floor used to assert. Subtracted before the union so a box that
+  # already merged them converges instead of carrying them forever.
+  claudeDenyStale = [
     "Bash(git push --force*)"
     "Bash(git push -f*)"
     "Bash(git push * --force*)"
@@ -62,7 +77,6 @@ let
     "Bash(git -C * push * +*)"
     "Bash(git push * :*)"
     "Bash(git push --delete*)"
-    "Bash(git push --mirror*)"
   ];
 
   # The opt-in agent-box bundle, as a jq fragment appended to the seeded merge below
@@ -281,18 +295,19 @@ in
           _attrs='{"commit":"","pr":"","sessionUrl":false}'
           _env='{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1","DISABLE_FEEDBACK_COMMAND":"1","DISABLE_ERROR_REPORTING":"1"}'
           _deny=${lib.escapeShellArg (builtins.toJSON claudeDeny)}
+          _denystale=${lib.escapeShellArg (builtins.toJSON claudeDenyStale)}
           mkdir -p "$HOME/.claude"
           # Seeding with `{}` lets one merge cover the create case; `-s`, not `-f`, so
           # a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} '
+          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --argjson ds "$_denystale" --slurpfile am ${claudeAutoModeFile} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
             | .installMethod = "native"
             | .autoUpdatesChannel = "${claudeAutoUpdatesChannel}"
             | .autoMode = $am[0]
-            | .permissions.deny = ((.permissions.deny // []) + $d | unique)
+            | .permissions.deny = (((.permissions.deny // []) - $ds) + $d | unique)
             ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings" || {
