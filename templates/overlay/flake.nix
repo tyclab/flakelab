@@ -65,10 +65,9 @@
         #   HASS_URL = "http://homeassistant.example.lan:8123";
         #   PROXMOX_API_URL = "https://pve.example.lan:8006"; # no /api2/json
         #   PROXMOX_VERIFY_SSL = "false";
-        #   SYNOLOGY_HOST = "nas.example.com"; # bare host, NO port
-        #   SYNOLOGY_PORT = "443";
-        #   SYNOLOGY_HTTPS = "true";
-        #   SYNOLOGY_USERNAME = "mcp-service";
+        #   SYNOLOGY_URL = "https://nas.example.com:443"; # scheme, host and port
+        #   SYNOLOGY_VERIFY_SSL = "true";
+        #   SYNOLOGY_USERNAME = "mcp-service"; # non-admin, not in administrators
         #   GRAFANA_URL = "https://grafana.example.lan";
         #   WHATSAPP_BRIDGE_HOST = "localhost:8180";
         # };
