@@ -277,9 +277,13 @@ the state root has to converge on its own:
   and the gate's `decisions.jsonl` — is merged in and then removed; every other
   conflict copy, and the metadata litter (`@eaDir`, `.DS_Store`, `Thumbs.db`,
   `desktop.ini`), is ignored on restore and never copied into `$HOME`.
-- **Memory** backs up and restores additively; `MEMORY.md` restores as the
-  line-union of both sides, topic files are last-writer-wins. Deletions
-  therefore do not propagate.
+- **Memory** backs up and restores additively and newest-wins: a topic file
+  the destination changed since the last sync is kept, so a memory rewritten
+  between a run's push and its pull survives the pull. `MEMORY.md` merges one
+  line per memory file — the side whose topic file was just placed wins that
+  file's line, a kept file keeps its own, a line naming no file dedupes by its
+  text — so a hook edited in place replaces the old line. Deletions do not propagate: a topic file
+  removed on one side comes back from the other.
 - **Transcripts** are opt-in (`stateTranscripts`) and grow-only in both
   directions: a copy with fewer lines never overwrites one with more, `--force`
   included. Lines, not bytes — a redacted copy can outweigh its source.

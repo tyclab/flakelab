@@ -290,11 +290,26 @@ restore_zsh_history() {
 # Claude memory
 # ---------------------------------------------------------------------------
 
-# Exact-line union of N index files onto the LAST argument. The FIRST input keeps
-# its line order and only lines the later ones add are appended, so once every
-# side holds the same set the output stops changing. Always returns 0; failure
-# is signalled through FAILURES, which callers read before removing a folded copy.
+# One line per memory file. A line's identity is the file its link names
+# (`- [title](file.md) — hook`); a line naming no file is its own identity. The
+# first input's order holds and a file keeps the slot it first appeared in, but
+# its TEXT comes from the --prefer input when that carries the file — the side
+# whose topic files the mirror just placed — else from the first input to carry
+# it. --kept names a file listing the topic files the mirror left alone: their
+# line stays the first input's, so a hook follows its file whichever side won.
+# So a hook edited in place replaces the old line instead of living beside it,
+# and once every side holds the same lines the output stops changing. Always
+# returns 0; failure is signalled through FAILURES, which callers read before
+# removing a folded copy.
 merge_memory_index() {
+  local prefer="" kept=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --prefer) prefer="$2"; shift 2 ;;
+      --kept)   kept="$2";   shift 2 ;;
+      *)        break ;;
+    esac
+  done
   # With one argument awk would read stdin and hang on a terminal nobody is at.
   if (( $# < 2 )); then
     record_failure "merge_memory_index needs a destination and at least one input"
@@ -308,7 +323,35 @@ merge_memory_index() {
     record_failure "Could not merge memory index: ${dst}"
     return 0
   fi
-  if LC_ALL=C awk '!seen[$0]++' "${inputs[@]}" > "${build}" && place_atomically "${build}" "${dst}"; then
+  if LC_ALL=C awk -v prefer="${prefer}" -v keptfile="${kept}" '
+      BEGIN {
+        if (keptfile != "") {
+          while ((getline rel < keptfile) > 0) kept["file:" rel] = 1
+          close(keptfile)
+        }
+      }
+      function key(line,    m) {
+        if (match(line, /^- \[[^]]*\]\([^)]+\)/)) {
+          m = substr(line, RSTART, RLENGTH)
+          sub(/^- \[[^]]*\]\(/, "", m)
+          sub(/\)$/, "", m)
+          return "file:" m
+        }
+        return "line:" line
+      }
+      {
+        k = key($0)
+        if (!(k in text)) {
+          order[++n] = k
+          text[k] = $0
+          fixed[k] = (FILENAME == prefer) || (k in kept)
+        } else if (FILENAME == prefer && !fixed[k]) {
+          text[k] = $0
+          fixed[k] = 1
+        }
+      }
+      END { for (i = 1; i <= n; i++) print text[order[i]] }
+    ' "${inputs[@]}" > "${build}" && place_atomically "${build}" "${dst}"; then
     rm -f "${build}"
     chmod 644 "${dst}" 2> /dev/null || record_failure "Cannot set mode 644 on ${dst}"
     log_ok "Merged memory index: ${dst}"
@@ -319,16 +362,20 @@ merge_memory_index() {
   return 0
 }
 
-# Mirror a memory directory and union MEMORY.md instead of copying it — the
-# index is the one memory file every machine rewrites. backup: additive into a
-# shared dir; existing lines, then the conflict copies', then ours; the copies
-# are removed once folded. restore: local lines first, then the incoming index
-# and its conflict copies, which stay (the backup run owns the state root's tidiness).
+# Mirror a memory directory newest-wins and merge MEMORY.md instead of copying
+# it — the index is the one memory file every machine rewrites. Topic files:
+# additive, and a copy the destination changed since the last sync is kept, so
+# a memory rewritten between this run's push and its pull survives the pull.
+# Index: backup merges into the shared dir — existing lines, then the conflict
+# copies', then ours, ours winning a file both name; the copies are removed once
+# folded. restore: local lines first, then the incoming index (winning a file
+# both name) and its conflict copies, which stay (the backup run owns the state
+# root's tidiness).
 sync_memory_dir() {
   local mode="$1" src="$2" dst="$3"
   if [[ "${mode}" == backup ]]; then
     if [[ ! -d "${src}" ]] || ${DRY_RUN}; then
-      backup_dir "${src}" "${dst}" false
+      backup_dir "${src}" "${dst}" false true
       return 0
     fi
   else
@@ -361,9 +408,9 @@ sync_memory_dir() {
   fi
 
   if [[ "${mode}" == backup ]]; then
-    backup_dir "${src}" "${dst}" false
+    backup_dir "${src}" "${dst}" false true
   else
-    restore_dir "${src}" "${dst}"
+    restore_dir "${src}" "${dst}" true
   fi
 
   local -a inputs=()
@@ -385,7 +432,16 @@ sync_memory_dir() {
       log_warn "Owned by the flake, not restoring: ${index}"
     else
       local failures_before=${FAILURES}
-      merge_memory_index "${inputs[@]}" "${index}"
+      local -a prefer=()
+      [[ -f "${incoming}" ]] && prefer=(--prefer "${incoming}")
+      # The topic files the mirror kept keep their own hook, whichever side won.
+      local kept=""
+      if (( ${#MIRROR_KEPT_RELS} > 0 )) && kept="$(mktemp)"; then
+        print -rl -- "${MIRROR_KEPT_RELS[@]}" > "${kept}"
+        prefer+=(--kept "${kept}")
+      fi
+      merge_memory_index "${prefer[@]}" "${inputs[@]}" "${index}"
+      [[ -n "${kept}" ]] && rm -f "${kept}"
       if [[ "${mode}" == backup ]] && (( FAILURES == failures_before )); then
         fold_conflict_copies "memory index" "${conflicts[@]}"
       fi

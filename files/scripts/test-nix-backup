@@ -881,6 +881,97 @@ check "the local index holds all three sets, local lines first" \
 is_file "and the copy is still in the state root" "${copy}"
 absent  "but was not restored as a file"          "${MEM_HOME}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
 
+print -r -- "a restored memory index replaces this box's stale hook instead of keeping both"
+memory_fixture state-memory-index-rekey-restore
+print -r -- "- [shared](shared.md) — rewritten on the other box" > "${MEM_STATE}/MEMORY.md"
+{
+  print -r -- "- [ours](ours.md) — only this box"
+  print -r -- "- [shared](shared.md) — the hook before the rewrite"
+} > "${MEM_HOME}/MEMORY.md"
+
+run_restore
+check "the restore exits clean" "${RC}" "0"
+check "one line per memory file, the incoming hook in the local line's slot" \
+  "$(< "${MEM_HOME}/MEMORY.md")" \
+"- [ours](ours.md) — only this box
+- [shared](shared.md) — rewritten on the other box"
+
+print -r -- "a memory backup replaces the state root's stale hook with this box's"
+memory_fixture state-memory-index-rekey-backup
+{
+  print -r -- "- [theirs](theirs.md) — only the other box"
+  print -r -- "- [shared](shared.md) — the hook before the rewrite"
+} > "${MEM_STATE}/MEMORY.md"
+print -r -- "- [shared](shared.md) — rewritten on this box" > "${MEM_HOME}/MEMORY.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+check "the shared index keeps its order and takes this box's hook" \
+  "$(< "${MEM_STATE}/MEMORY.md")" \
+"- [theirs](theirs.md) — only the other box
+- [shared](shared.md) — rewritten on this box"
+
+print -r -- "a folded index conflict copy never outranks this box's hook"
+memory_fixture state-memory-index-conflict-rank
+copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
+print -r -- "- [shared](shared.md) — the hook a raced copy still carries" > "${copy}"
+print -r -- "- [shared](shared.md) — rewritten on this box"               > "${MEM_HOME}/MEMORY.md"
+
+run_backup --force
+check  "the run exits clean" "${RC}" "0"
+check  "this box's hook wins the shared index" \
+  "$(< "${MEM_STATE}/MEMORY.md")" "- [shared](shared.md) — rewritten on this box"
+absent "and the folded copy is gone" "${copy}"
+
+print -r -- "a restore keeps a memory file this box changed after its last push"
+memory_fixture state-memory-restore-keeps-newer
+print -r -- "the state root's older copy" > "${MEM_STATE}/notes.md"
+touch -d '2026-01-01 00:00:00' "${MEM_STATE}/notes.md"
+print -r -- "rewritten here since"        > "${MEM_HOME}/notes.md"
+
+run_restore
+check    "the restore exits clean"           "${RC}" "0"
+check    "the newer local file is kept"      "$(< "${MEM_HOME}/notes.md")" "rewritten here since"
+excludes "and is not reported as a mismatch" "${OUT}" "Verify mismatch"
+contains "and the kept file is counted"      "${OUT}" "Kept 1 newer file(s)"
+
+print -r -- "a memory backup keeps the other box's newer copy"
+memory_fixture state-memory-backup-keeps-newer
+print -r -- "stale here"    > "${MEM_HOME}/notes.md"
+touch -d '2026-01-01 00:00:00' "${MEM_HOME}/notes.md"
+print -r -- "fresher there" > "${MEM_STATE}/notes.md"
+
+run_backup --force
+check    "the run exits clean"                   "${RC}" "0"
+check    "the state root keeps its newer copy"   "$(< "${MEM_STATE}/notes.md")" "fresher there"
+excludes "and nothing is reported as a mismatch" "${OUT}" "Verify mismatch"
+
+print -r -- "a restore keeps this box's hook for a memory file it kept"
+memory_fixture state-memory-restore-kept-hook
+print -r -- "the state root's older copy" > "${MEM_STATE}/notes.md"
+touch -d '2026-01-01 00:00:00' "${MEM_STATE}/notes.md"
+print -r -- "- [notes](notes.md) — the hook of the older copy" > "${MEM_STATE}/MEMORY.md"
+print -r -- "rewritten here since"        > "${MEM_HOME}/notes.md"
+print -r -- "- [notes](notes.md) — the hook rewritten with the file" > "${MEM_HOME}/MEMORY.md"
+
+run_restore
+check "the restore exits clean" "${RC}" "0"
+check "the index line follows the kept file" \
+  "$(< "${MEM_HOME}/MEMORY.md")" "- [notes](notes.md) — the hook rewritten with the file"
+
+print -r -- "a memory backup keeps the other box's hook for a memory file it kept"
+memory_fixture state-memory-backup-kept-hook
+print -r -- "stale here"    > "${MEM_HOME}/notes.md"
+touch -d '2026-01-01 00:00:00' "${MEM_HOME}/notes.md"
+print -r -- "- [notes](notes.md) — the hook of the stale copy" > "${MEM_HOME}/MEMORY.md"
+print -r -- "fresher there" > "${MEM_STATE}/notes.md"
+print -r -- "- [notes](notes.md) — the hook rewritten with the file" > "${MEM_STATE}/MEMORY.md"
+
+run_backup --force
+check "the run exits clean" "${RC}" "0"
+check "the shared index line follows the kept file" \
+  "$(< "${MEM_STATE}/MEMORY.md")" "- [notes](notes.md) — the hook rewritten with the file"
+
 print -r -- "transcripts stay home unless asked for"
 state_fixture state-transcripts-off
 mkdir -p "${FIX_HOME}/.claude/projects/some-slug"

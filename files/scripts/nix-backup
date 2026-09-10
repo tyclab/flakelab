@@ -401,11 +401,18 @@ verify_copy() {
   cmp -s "${src}" "${dst}"
 }
 
+# $3 = keep_newer; true = the files the last mirror kept (MIRROR_KEPT_RELS) are
+# the destination's own and are not compared.
 verify_tree() {
   local src="$1"
   local dst="$2"
+  local keep_newer="${3:-false}"
   local mismatches=0
   local rel
+  local -A kept=()
+  if ${keep_newer}; then
+    for rel in "${MIRROR_KEPT_RELS[@]}"; do kept[${rel}]=1; done
+  fi
 
   # Files AND symlinks: a `-type f` walk never sees a link that did not survive
   # the copy. A missing entry is its own finding. The link itself is not compared:
@@ -417,6 +424,7 @@ verify_tree() {
       continue
     fi
     [[ -L "${src}/${rel}" ]] && continue
+    (( ${+kept[${rel}]} )) && continue
     if ! cmp -s "${src}/${rel}" "${dst}/${rel}"; then
       mismatches=$(( mismatches + 1 ))
       log_warn "Verify mismatch: ${dst}/${rel}"
@@ -655,28 +663,64 @@ is_nix_managed() {
   [[ "${resolved}" == /nix/store/* ]]
 }
 
+# What the last mirror left alone under keep_newer, for the caller's log and
+# for verify_tree, which must not read a kept file as a mismatch.
+typeset -gi MIRROR_KEPT=0
+typeset -ga MIRROR_KEPT_RELS=()
+
 # tar, not `cp -r`: cp cannot replace an entry whose TYPE changed and aborts the
 # run. Only vanish-class tar diagnostics are tolerated (a running k9s rewrites
 # its trees mid-read); anything else fails the mirror. $3 = purge: a restore
 # must never delete a live home's files because the backup lacks them.
+# $4 = keep_newer; true = a destination file newer than (or as old as) its source
+# is left alone instead of overwritten. tar's own --keep-newer-files refuses
+# --overwrite and fails on the `.` member over an existing directory, so the
+# member list is built here: every file and link whose copy is missing or older.
 mirror_tree() {
   local src="$1"
   local dst="$2"
   local purge="${3:-true}"
+  local keep_newer="${4:-false}"
 
   local -a xopts=(--overwrite)
   ${purge} && xopts+=(--recursive-unlink)
   local -a excl=() g
   for g in "${SYNC_ARTIFACT_GLOBS[@]}"; do excl+=(--exclude="${g}"); done
 
+  MIRROR_KEPT=0
+  MIRROR_KEPT_RELS=()
+  local -a copts=(-cf - .)
+  local members=""
+  if ${keep_newer}; then
+    members="$(mktemp)" || return 1
+    local rel
+    while IFS= read -r rel; do
+      # Same second counts as kept: after a mirror both sides carry the source's
+      # mtime, and a second pass must rewrite nothing.
+      if [[ -e "${dst}/${rel}" && ! "${src}/${rel}" -nt "${dst}/${rel}" ]]; then
+        MIRROR_KEPT_RELS+=("${rel}")
+        continue
+      fi
+      print -r -- "${rel}" >> "${members}"
+    done < <(cd "${src}" && sync_artifact_find_args && \
+      find . \( "${reply[@]}" \) -prune -o \( -type f -o -type l \) -printf '%P\n' 2> /dev/null)
+    MIRROR_KEPT=${#MIRROR_KEPT_RELS}
+    if [[ ! -s "${members}" ]]; then
+      rm -f "${members}"
+      return 0
+    fi
+    copts=(--verbatim-files-from --no-recursion -T "${members}" -cf -)
+  fi
+
   local err
   err="$(mktemp)"
   # LC_ALL=C: the classification below matches tar's diagnostics as text.
-  LC_ALL=C tar -C "${src}" "${excl[@]}" -cf - . 2>"${err}" \
+  LC_ALL=C tar -C "${src}" "${excl[@]}" "${copts[@]}" 2>"${err}" \
     | tar -C "${dst}" -xf - "${xopts[@]}"
   # Declared and assigned in one statement: `local` is itself a command and
   # resets pipestatus before it could be read.
   local -a st=("${pipestatus[@]}")
+  [[ -n "${members}" ]] && rm -f "${members}"
 
   local vanish='Cannot stat: No such file or directory|File removed before we read it|file changed as we read it|Directory renamed before its status could be extracted'
   local raced other
@@ -699,6 +743,7 @@ backup_dir() {
   local src="$1"
   local dst="$2"
   local purge="${3:-true}"
+  local keep_newer="${4:-false}"
 
   if [[ ! -d "${src}" ]]; then
     log_warn "Source directory not found, skipping: ${src}"
@@ -712,10 +757,11 @@ backup_dir() {
 
   ensure_dir "${dst}"
   local mirror_ok=true
-  if ! mirror_tree "${src}" "${dst}" "${purge}"; then
+  if ! mirror_tree "${src}" "${dst}" "${purge}" "${keep_newer}"; then
     record_failure "Partial copy, continuing: ${src} -> ${dst}"
     mirror_ok=false
   fi
+  (( MIRROR_KEPT > 0 )) && log_info "Kept ${MIRROR_KEPT} newer file(s) untouched: ${dst}"
   find "${dst}" -type d -exec chmod 755 {} + 2> /dev/null \
     || log_warn "Some directory modes could not be set under ${dst}"
   local rel
@@ -728,7 +774,7 @@ backup_dir() {
     fi
   done
   # A tar that exited 0 can still have written short files onto the 9p mount.
-  if ! verify_tree "${src}" "${dst}"; then
+  if ! verify_tree "${src}" "${dst}" "${keep_newer}"; then
     record_failure "Verification failed, backup tree differs from source: ${dst}"
     return 0
   fi
@@ -822,6 +868,7 @@ restore_file() {
 restore_dir() {
   local src="$1"
   local dst="$2"
+  local keep_newer="${3:-false}"
 
   if [[ ! -d "${src}" ]]; then
     return 0
@@ -840,11 +887,12 @@ restore_dir() {
   mkdir -p "${dst}"
   # No -p/--same-owner: extracted files belong to the current user.
   local mirror_ok=true
-  if ! mirror_tree "${src}" "${dst}" false; then
+  if ! mirror_tree "${src}" "${dst}" false "${keep_newer}"; then
     record_failure "Partial restore, continuing: ${src} -> ${dst}"
     mirror_ok=false
   fi
-  if ! verify_tree "${src}" "${dst}"; then
+  (( MIRROR_KEPT > 0 )) && log_info "Kept ${MIRROR_KEPT} newer file(s) untouched: ${dst}"
+  if ! verify_tree "${src}" "${dst}" "${keep_newer}"; then
     record_failure "Verification failed, restored tree differs from backup: ${dst}"
     return 0
   fi
