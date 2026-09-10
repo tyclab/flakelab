@@ -282,8 +282,15 @@ the state root has to converge on its own:
   between a run's push and its pull survives the pull. `MEMORY.md` merges one
   line per memory file — the side whose topic file was just placed wins that
   file's line, a kept file keeps its own, a line naming no file dedupes by its
-  text — so a hook edited in place replaces the old line. Deletions do not propagate: a topic file
-  removed on one side comes back from the other.
+  text — so a hook edited in place replaces the old line, and a line whose
+  file is on neither side goes. Deletions propagate: a box records the topic
+  files it holds after each pull (`~/.local/state/flakelab/state-sync/memory/<slug>.seen`);
+  a file it then lacks while the state root still has it was deleted there, so
+  it leaves the state root and a tombstone in `<slug>/memory-tombstones/`, dated
+  the last time the box saw it. Every box drops a copy no newer than the
+  tombstone; a copy edited after the deletion lifts it. A directory with
+  nothing left in it, index included, is treated as a reset: nothing propagates
+  and the pull refills it.
 - **Transcripts** are opt-in (`stateTranscripts`) and grow-only in both
   directions: a copy with fewer lines never overwrites one with more, `--force`
   included. Lines, not bytes — a redacted copy can outweigh its source.

@@ -91,17 +91,3 @@ evaluated in place: `nix flake check` and `nix fmt` fail with
 rejects the extension. `nix flake check path:.` works around it; converting the
 clone with `git fetch --refetch --no-filter <remote>` and dropping the promisor
 config fixes it properly. Worth a line in CONTRIBUTING.md.
-
-## Memory deletions do not propagate
-
-`state-sync` · open
-
-The memory mirror is additive in both directions: a topic file deleted on one
-box comes back from the state root on the next tick, and its index line with
-it, because the merge keeps a line as long as some side still carries it.
-Deleting a memory today means deleting it under
-`~/.claude/projects/<slug>/memory/` and under
-`<stateRoot>/claude/projects/<slug>/memory/` inside one timer interval.
-Propagating a deletion needs a tombstone — a per-box record of what it held at
-its last sync — so "absent here, present there" can be told from "never had
-it".

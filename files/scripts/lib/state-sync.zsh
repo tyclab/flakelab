@@ -290,6 +290,120 @@ restore_zsh_history() {
 # Claude memory
 # ---------------------------------------------------------------------------
 
+# Deletions. A box records, after each pull, the topic files it holds. A file it
+# then lacks while the state root still has it was deleted here: it goes from
+# the state root too and leaves a tombstone dated the last time this box saw
+# it. Every box removes a copy no newer than the tombstone — a copy edited after
+# the deletion lifts it instead — so no backup writes a deleted memory back.
+# Tombstones live beside the memory dir, not in it: the mirror never carries
+# them into a home.
+memory_seen_file() { print -r -- "${HOME_DIR}/.local/state/flakelab/state-sync/memory/$1.seen" }
+memory_tombstone_dir() { print -r -- "${1:h}/memory-tombstones" }
+
+# reply = the topic files under $1, relative: no MEMORY.md, no sync artifacts.
+memory_topic_files() {
+  local dir="$1" rel
+  local -a found=()
+  if [[ -d "${dir}" ]]; then
+    while IFS= read -r rel; do
+      [[ "${rel}" == MEMORY.md ]] && continue
+      found+=("${rel}")
+    done < <(cd "${dir}" && sync_artifact_find_args && \
+      find . \( "${reply[@]}" \) -prune -o \( -type f -o -type l \) -printf '%P\n' 2> /dev/null)
+  fi
+  reply=("${found[@]}")
+}
+
+# $1 = this box's memory dir, $2 = the state root's. Every copy of a tombstoned
+# file that is not newer than its tombstone goes; a newer copy on either side
+# lifts the tombstone and stays.
+apply_memory_tombstones() {
+  local home_dir="$1" state_dir="$2" tombs rel tomb d newer
+  tombs="$(memory_tombstone_dir "${state_dir}")"
+  [[ -d "${tombs}" ]] || return 0
+  memory_topic_files "${tombs}"
+  for rel in "${reply[@]}"; do
+    tomb="${tombs}/${rel}"
+    newer=false
+    for d in "${home_dir}" "${state_dir}"; do
+      [[ -e "${d}/${rel}" && "${d}/${rel}" -nt "${tomb}" ]] && newer=true
+    done
+    if ${newer}; then
+      if rm -f "${tomb}"; then
+        log_ok "Tombstone lifted by a newer copy: ${rel}"
+      else
+        record_failure "Could not lift the tombstone: ${tomb}"
+      fi
+      continue
+    fi
+    for d in "${home_dir}" "${state_dir}"; do
+      [[ -e "${d}/${rel}" ]] || continue
+      if rm -f "${d}/${rel}"; then
+        log_ok "Removed ${d}/${rel} (deleted on another box)"
+      else
+        record_failure "Could not remove the tombstoned copy: ${d}/${rel}"
+      fi
+    done
+  done
+  return 0
+}
+
+# $1 = this box's memory dir, $2 = the state root's, $3 = slug. A file this box
+# held at its last pull, absent here now and still in the state root, was
+# deleted here. A directory with nothing left in it, index included, is a
+# reset, not a decision: nothing propagates and the pull refills it.
+propagate_memory_deletions() {
+  local home_dir="$1" state_dir="$2" slug="$3" seen rel tombs
+  seen="$(memory_seen_file "${slug}")"
+  [[ -f "${seen}" ]] || return 0
+  local -a gone=()
+  while IFS= read -r rel; do
+    [[ -n "${rel}" ]] || continue
+    [[ ! -e "${home_dir}/${rel}" && -e "${state_dir}/${rel}" ]] && gone+=("${rel}")
+  done < "${seen}"
+  (( ${#gone} > 0 )) || return 0
+  local -a left=("${home_dir}"/*(ND))
+  if (( ${#left} == 0 )); then
+    log_warn "Memory directory is empty, not propagating ${#gone} deletion(s): ${home_dir}"
+    return 0
+  fi
+  tombs="$(memory_tombstone_dir "${state_dir}")"
+  for rel in "${gone[@]}"; do
+    if [[ "${rel}" == */* ]]; then ensure_dir "${tombs}/${rel:h}"; else ensure_dir "${tombs}"; fi
+    if ! rm -f "${state_dir}/${rel}"; then
+      record_failure "Could not delete from the state root: ${state_dir}/${rel}"
+      continue
+    fi
+    if print -r -- "deleted on ${DISTRO_NAME}, last seen $(date -r "${seen}" -Iseconds 2> /dev/null)" > "${tombs}/${rel}" \
+      && touch -r "${seen}" "${tombs}/${rel}"; then
+      log_ok "Deleted from the state root (removed on this box): ${rel}"
+    else
+      record_failure "Could not write the tombstone: ${tombs}/${rel}"
+    fi
+  done
+  return 0
+}
+
+# What this box holds after its pull, for the next tick's deletion check.
+record_memory_seen() {
+  local home_dir="$1" slug="$2" seen build
+  seen="$(memory_seen_file "${slug}")"
+  memory_topic_files "${home_dir}"
+  if ! build="$(mktemp)"; then
+    record_failure "Could not create a work file for the memory seen list"
+    return 0
+  fi
+  (( ${#reply} > 0 )) && print -rl -- "${reply[@]}" > "${build}"
+  ensure_dir "${seen:h}"
+  if ! place_atomically "${build}" "${seen}"; then
+    rm -f "${build}"
+    record_failure "Could not write the memory seen list: ${seen}"
+    return 0
+  fi
+  rm -f "${build}"
+  return 0
+}
+
 # One line per memory file. A line's identity is the file its link names
 # (`- [title](file.md) — hook`); a line naming no file is its own identity. The
 # first input's order holds and a file keeps the slot it first appeared in, but
@@ -297,17 +411,20 @@ restore_zsh_history() {
 # whose topic files the mirror just placed — else from the first input to carry
 # it. --kept names a file listing the topic files the mirror left alone: their
 # line stays the first input's, so a hook follows its file whichever side won.
-# So a hook edited in place replaces the old line instead of living beside it,
-# and once every side holds the same lines the output stops changing. Always
-# returns 0; failure is signalled through FAILURES, which callers read before
-# removing a folded copy.
+# --present names a file listing the topic files the destination holds: a line
+# whose file is on neither side is dropped, so a deleted memory leaves the index
+# with the file. So a hook edited in place replaces the old line instead of
+# living beside it, and once every side holds the same lines the output stops
+# changing. Always returns 0; failure is signalled through FAILURES, which
+# callers read before removing a folded copy.
 merge_memory_index() {
-  local prefer="" kept=""
+  local prefer="" kept="" present=""
   while (( $# > 0 )); do
     case "$1" in
-      --prefer) prefer="$2"; shift 2 ;;
-      --kept)   kept="$2";   shift 2 ;;
-      *)        break ;;
+      --prefer)  prefer="$2";  shift 2 ;;
+      --kept)    kept="$2";    shift 2 ;;
+      --present) present="$2"; shift 2 ;;
+      *)         break ;;
     esac
   done
   # With one argument awk would read stdin and hang on a terminal nobody is at.
@@ -323,19 +440,24 @@ merge_memory_index() {
     record_failure "Could not merge memory index: ${dst}"
     return 0
   fi
-  if LC_ALL=C awk -v prefer="${prefer}" -v keptfile="${kept}" '
+  if LC_ALL=C awk -v prefer="${prefer}" -v keptfile="${kept}" -v presentfile="${present}" '
       BEGIN {
         if (keptfile != "") {
           while ((getline rel < keptfile) > 0) kept["file:" rel] = 1
           close(keptfile)
         }
+        if (presentfile != "") {
+          while ((getline rel < presentfile) > 0) present["file:" rel] = 1
+          close(presentfile)
+        }
       }
+      # A target with a scheme is a link, not a memory file: the line is its own identity.
       function key(line,    m) {
         if (match(line, /^- \[[^]]*\]\([^)]+\)/)) {
           m = substr(line, RSTART, RLENGTH)
           sub(/^- \[[^]]*\]\(/, "", m)
           sub(/\)$/, "", m)
-          return "file:" m
+          if (index(m, ":") == 0) return "file:" m
         }
         return "line:" line
       }
@@ -350,7 +472,13 @@ merge_memory_index() {
           fixed[k] = 1
         }
       }
-      END { for (i = 1; i <= n; i++) print text[order[i]] }
+      END {
+        for (i = 1; i <= n; i++) {
+          k = order[i]
+          if (presentfile != "" && substr(k, 1, 5) == "file:" && !(k in present)) continue
+          print text[k]
+        }
+      }
     ' "${inputs[@]}" > "${build}" && place_atomically "${build}" "${dst}"; then
     rm -f "${build}"
     chmod 644 "${dst}" 2> /dev/null || record_failure "Cannot set mode 644 on ${dst}"
@@ -385,6 +513,12 @@ sync_memory_dir() {
       return 0
     fi
   fi
+
+  local home_dir="${dst}" state_dir="${src}"
+  [[ "${mode}" == backup ]] && home_dir="${src}" state_dir="${dst}"
+  local slug="${state_dir:h:t}"
+  apply_memory_tombstones "${home_dir}" "${state_dir}"
+  [[ "${mode}" == backup ]] && propagate_memory_deletions "${home_dir}" "${state_dir}" "${slug}"
 
   local index="${dst}/MEMORY.md" incoming="${src}/MEMORY.md" verb="restored"
   local -a conflicts=()
@@ -440,14 +574,23 @@ sync_memory_dir() {
         print -rl -- "${MIRROR_KEPT_RELS[@]}" > "${kept}"
         prefer+=(--kept "${kept}")
       fi
+      # A line whose file the destination lacks after the mirror has no file anywhere.
+      local present=""
+      if present="$(mktemp)"; then
+        memory_topic_files "${dst}"
+        (( ${#reply} > 0 )) && print -rl -- "${reply[@]}" > "${present}"
+        prefer+=(--present "${present}")
+      fi
       merge_memory_index "${prefer[@]}" "${inputs[@]}" "${index}"
       [[ -n "${kept}" ]] && rm -f "${kept}"
+      [[ -n "${present}" ]] && rm -f "${present}"
       if [[ "${mode}" == backup ]] && (( FAILURES == failures_before )); then
         fold_conflict_copies "memory index" "${conflicts[@]}"
       fi
     fi
   fi
   [[ -n "${before}" ]] && rm -f "${before}"
+  [[ "${mode}" == restore ]] && record_memory_seen "${home_dir}" "${slug}"
   return 0
 }
 

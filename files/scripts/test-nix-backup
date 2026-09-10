@@ -752,6 +752,8 @@ absent   "and the payload's stale memory copy is not read"  "${MEM_HOME}/stale.m
 
 print -r -- "the memory index restores as a union, local order first"
 memory_fixture state-memory-index
+print -r -- "ours"   > "${MEM_HOME}/ours.md"
+print -r -- "shared" > "${MEM_HOME}/shared.md"
 {
   print -r -- "- [shared](shared.md) — both have this"
   print -r -- "- [theirs](theirs.md) — only the other box"
@@ -816,6 +818,8 @@ absent   "and wrote nothing under the home's projects directory" "${FIX_HOME}/.c
 
 print -r -- "a backup unions the state root's memory index instead of replacing it"
 memory_fixture state-memory-backup-union
+print -r -- "theirs" > "${MEM_STATE}/theirs.md"
+print -r -- "ours"   > "${MEM_HOME}/ours.md"
 print -r -- "- [theirs](theirs.md) — only the other box" > "${MEM_STATE}/MEMORY.md"
 print -r -- "- [ours](ours.md) — only this box"          > "${MEM_HOME}/MEMORY.md"
 
@@ -837,6 +841,9 @@ no_scratch "and no scratch file anywhere in the state root" "${FIX_STATE}"
 
 print -r -- "a backup folds a memory index conflict copy in and then removes it"
 memory_fixture state-memory-index-conflict
+print -r -- "theirs" > "${MEM_STATE}/theirs.md"
+print -r -- "raced"  > "${MEM_STATE}/raced.md"
+print -r -- "ours"   > "${MEM_HOME}/ours.md"
 copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
 print -r -- "- [theirs](theirs.md) — only the other box" > "${MEM_STATE}/MEMORY.md"
 print -r -- "- [raced](raced.md) — only the conflict copy" > "${copy}"
@@ -866,6 +873,9 @@ absent "and the copy is gone" "${copy}"
 
 print -r -- "a restore reads a memory index conflict copy without removing it"
 memory_fixture state-memory-index-conflict-restore
+print -r -- "theirs" > "${MEM_STATE}/theirs.md"
+print -r -- "raced"  > "${MEM_STATE}/raced.md"
+print -r -- "ours"   > "${MEM_HOME}/ours.md"
 copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
 print -r -- "- [theirs](theirs.md) — only the other box" > "${MEM_STATE}/MEMORY.md"
 print -r -- "- [raced](raced.md) — only the conflict copy" > "${copy}"
@@ -883,6 +893,8 @@ absent  "but was not restored as a file"          "${MEM_HOME}/MEMORY.md_OTHERBO
 
 print -r -- "a restored memory index replaces this box's stale hook instead of keeping both"
 memory_fixture state-memory-index-rekey-restore
+print -r -- "shared" > "${MEM_STATE}/shared.md"
+print -r -- "ours"   > "${MEM_HOME}/ours.md"
 print -r -- "- [shared](shared.md) — rewritten on the other box" > "${MEM_STATE}/MEMORY.md"
 {
   print -r -- "- [ours](ours.md) — only this box"
@@ -898,6 +910,8 @@ check "one line per memory file, the incoming hook in the local line's slot" \
 
 print -r -- "a memory backup replaces the state root's stale hook with this box's"
 memory_fixture state-memory-index-rekey-backup
+print -r -- "theirs" > "${MEM_STATE}/theirs.md"
+print -r -- "shared" > "${MEM_HOME}/shared.md"
 {
   print -r -- "- [theirs](theirs.md) — only the other box"
   print -r -- "- [shared](shared.md) — the hook before the rewrite"
@@ -913,6 +927,7 @@ check "the shared index keeps its order and takes this box's hook" \
 
 print -r -- "a folded index conflict copy never outranks this box's hook"
 memory_fixture state-memory-index-conflict-rank
+print -r -- "shared" > "${MEM_HOME}/shared.md"
 copy="${MEM_STATE}/MEMORY.md_OTHERBOX_Jan-09-003137-2026_Conflict"
 print -r -- "- [shared](shared.md) — the hook a raced copy still carries" > "${copy}"
 print -r -- "- [shared](shared.md) — rewritten on this box"               > "${MEM_HOME}/MEMORY.md"
@@ -971,6 +986,93 @@ run_backup --force
 check "the run exits clean" "${RC}" "0"
 check "the shared index line follows the kept file" \
   "$(< "${MEM_STATE}/MEMORY.md")" "- [notes](notes.md) — the hook rewritten with the file"
+
+print -r -- "--state-only propagates a memory deleted on this box"
+memory_fixture state-only-memory-deletion
+print -r -- "shared"                       > "${MEM_STATE}/notes.md"
+print -r -- "- [notes](notes.md) — a hook" > "${MEM_STATE}/MEMORY.md"
+cp "${MEM_STATE}/notes.md" "${MEM_HOME}/notes.md"
+cp "${MEM_STATE}/MEMORY.md" "${MEM_HOME}/MEMORY.md"
+seen="${FIX_HOME}/.local/state/flakelab/state-sync/memory/some-slug.seen"
+tomb="${FIX_STATE}/claude/projects/some-slug/memory-tombstones/notes.md"
+
+run_backup --state-only --force
+check "the first tick exits clean"          "${RC}" "0"
+check "and records what this box holds"     "$(< "${seen}")" "notes.md"
+
+rm "${MEM_HOME}/notes.md"
+run_backup --state-only --force
+check    "the second tick exits clean"                    "${RC}" "0"
+absent   "the deleted memory is gone from the state root" "${MEM_STATE}/notes.md"
+absent   "and did not come back"                          "${MEM_HOME}/notes.md"
+is_file  "a tombstone marks it"                           "${tomb}"
+check    "the shared index drops its line"                "$(< "${MEM_STATE}/MEMORY.md")" ""
+check    "and so does the local one"                      "$(< "${MEM_HOME}/MEMORY.md")" ""
+contains "the deletion is logged"                         "${OUT}" "Deleted from the state root"
+
+run_backup --state-only --force
+check  "a third tick exits clean"   "${RC}" "0"
+absent "and the memory stays gone"  "${MEM_STATE}/notes.md"
+
+print -r -- "a tombstoned memory is removed from a box that still holds an older copy"
+memory_fixture state-only-memory-tombstone-applies
+mkdir -p "${FIX_STATE}/claude/projects/some-slug/memory-tombstones"
+print -r -- "deleted elsewhere"            > "${FIX_STATE}/claude/projects/some-slug/memory-tombstones/notes.md"
+print -r -- "stale copy"                   > "${MEM_HOME}/notes.md"
+touch -d '2026-01-01 00:00:00' "${MEM_HOME}/notes.md"
+print -r -- "- [notes](notes.md) — a hook" > "${MEM_HOME}/MEMORY.md"
+
+run_backup --state-only --force
+check    "the run exits clean"                   "${RC}" "0"
+absent   "the stale copy is removed here"        "${MEM_HOME}/notes.md"
+absent   "and was not pushed to the state root"  "${MEM_STATE}/notes.md"
+check    "the local index drops its line"        "$(< "${MEM_HOME}/MEMORY.md")" ""
+contains "the removal is logged"                 "${OUT}" "deleted on another box"
+
+print -r -- "a memory edited after its deletion lifts the tombstone"
+memory_fixture state-only-memory-tombstone-lifted
+mkdir -p "${FIX_STATE}/claude/projects/some-slug/memory-tombstones"
+print -r -- "deleted elsewhere"            > "${FIX_STATE}/claude/projects/some-slug/memory-tombstones/notes.md"
+touch -d '2026-01-01 00:00:00' "${FIX_STATE}/claude/projects/some-slug/memory-tombstones/notes.md"
+print -r -- "rewritten since"              > "${MEM_HOME}/notes.md"
+print -r -- "- [notes](notes.md) — a hook" > "${MEM_HOME}/MEMORY.md"
+
+run_backup --state-only --force
+check    "the run exits clean"          "${RC}" "0"
+is_file  "the newer copy stays"         "${MEM_HOME}/notes.md"
+is_file  "and reaches the state root"   "${MEM_STATE}/notes.md"
+absent   "the tombstone is lifted"      "${FIX_STATE}/claude/projects/some-slug/memory-tombstones/notes.md"
+contains "and says so"                  "${OUT}" "lifted"
+
+print -r -- "an emptied memory directory propagates no deletions"
+memory_fixture state-only-memory-wipe-guard
+print -r -- "one" > "${MEM_HOME}/one.md"
+print -r -- "two" > "${MEM_HOME}/two.md"
+run_backup --state-only --force
+rm "${MEM_HOME}/one.md" "${MEM_HOME}/two.md"
+
+run_backup --state-only --force
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the state root keeps the first memory"  "${MEM_STATE}/one.md"
+is_file  "and the second"                         "${MEM_STATE}/two.md"
+is_file  "the emptied box gets them back"         "${MEM_HOME}/one.md"
+contains "and the guard is reported"              "${OUT}" "not propagating"
+
+print -r -- "the index drops a line whose memory file exists on neither side"
+memory_fixture state-only-memory-orphan-line
+{
+  print -r -- "- [kept](kept.md) — has a file"
+  print -r -- "- [gone](gone.md) — file deleted by hand on both sides"
+} > "${MEM_STATE}/MEMORY.md"
+cp "${MEM_STATE}/MEMORY.md" "${MEM_HOME}/MEMORY.md"
+print -r -- "kept" > "${MEM_HOME}/kept.md"
+
+run_backup --state-only --force
+check "the run exits clean"                        "${RC}" "0"
+check "the local index keeps only the line with a file" \
+  "$(< "${MEM_HOME}/MEMORY.md")" "- [kept](kept.md) — has a file"
+check "and so does the shared one" \
+  "$(< "${MEM_STATE}/MEMORY.md")" "- [kept](kept.md) — has a file"
 
 print -r -- "transcripts stay home unless asked for"
 state_fixture state-transcripts-off
