@@ -615,7 +615,7 @@ $RetiredSecretKeyNames = @('WHATSAPP_API_KEY')
 # is what GATES its MCP server in nix/home/mcp.nix, so a missing endpoint
 # silently means a missing server.
 $NonSecretKeyNames = @('HASS_URL', 'PROXMOX_API_URL', 'PROXMOX_VERIFY_SSL',
-    'SYNOLOGY_HOST', 'SYNOLOGY_PORT', 'SYNOLOGY_HTTPS', 'SYNOLOGY_USERNAME',
+    'SYNOLOGY_URL', 'SYNOLOGY_VERIFY_SSL', 'SYNOLOGY_USERNAME',
     'GRAFANA_URL', 'WHATSAPP_BRIDGE_HOST')
 
 # -SshPassphrase given (even as '') means "never prompt" - an unattended run must
