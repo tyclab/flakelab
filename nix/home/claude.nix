@@ -427,17 +427,16 @@ in
         ''
       );
 
-  # Merges the marketplace's own recommended-permissions.json and, when it ships
-  # one, recommended-ask.json — allow and ask respectively, both unioned so a
-  # hand-added rule is kept. Such a list is only safe behind the auto-mode
+  # Merges the marketplace's own recommended-permissions.json into allow, unioned
+  # so a hand-added rule is kept. Such a list is only safe behind the auto-mode
   # classifier, which is written on every box that has Claude at all.
-  # Ask outranks allow (precedence 2 against 1), so a rule in both prompts; that
-  # is how the marketplace moves an operation out of the allowlist without
-  # needing the allowlist to drop it in the same release.
+  # recommended-ask.json is asserted, not unioned: an ask rule prompts even when
+  # the operator's own message names the action, so it is the marketplace's list
+  # or nothing — a union could only grow, and the 2026-09-04 list would have sat
+  # in permissions.ask on every box after the marketplace withdrew it.
   # Each file is located with `find`, not assumed: a hardcoded path the
   # marketplace does not have would defer forever instead of failing. The ask
-  # file is optional — a marketplace predating it merges allow alone and warns
-  # about nothing.
+  # file is optional — a marketplace without one leaves permissions.ask alone.
   home.activation.claudePermissions =
     lib.hm.dag.entryAfter
       [
@@ -479,11 +478,11 @@ in
           fi
           if [ -n "$_recommendedask" ] && [ -f "$_settings" ]; then
             _tmp="$(mktemp)"
-            if jq -s '.[0] * {permissions: {ask: ((.[0].permissions.ask // []) + .[1] | unique)}}' \
+            if jq -s '.[0] * {permissions: {ask: .[1]}}' \
                  "$_settings" "$_recommendedask" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
               mv "$_tmp" "$_settings"
             else
-              ${flakelabWarn} "could not merge the recommended ask tier into $_settings."
+              ${flakelabWarn} "could not assert the recommended ask tier in $_settings."
             fi
             rm -f "$_tmp"
           fi

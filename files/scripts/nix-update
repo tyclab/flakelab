@@ -323,15 +323,16 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     fi
     rm -f "${_tmp}"
   fi
-  # Optional: a marketplace predating the ask tier merges allow alone.
+  # Asserted, not unioned (see claudePermissions in nix/home/claude.nix); a
+  # marketplace without the file leaves permissions.ask alone.
   _recommendedask="$(find "${_claude_marketplaces}" -type f -name recommended-ask.json 2> /dev/null | head -1)"
   if [ -n "${_recommendedask}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     _tmp="$(mktemp)"
-    if jq -s '.[0] * {permissions: {ask: ((.[0].permissions.ask // []) + .[1] | unique)}}' \
+    if jq -s '.[0] * {permissions: {ask: .[1]}}' \
          "${_settings}" "${_recommendedask}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
     else
-      print -P "%F{yellow}⚠ Claude recommended ask tier not merged into settings.json%f"
+      print -P "%F{yellow}⚠ Claude recommended ask tier not asserted in settings.json%f"
     fi
     rm -f "${_tmp}"
   fi

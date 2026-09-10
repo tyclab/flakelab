@@ -6,17 +6,23 @@
 `permissions` the binary's precedence constant is `{deny: 3, ask: 2, allow: 1}`;
 a `deny` match short-circuits everything after it.
 
-| #   | Layer                                  | Written by                                                        | Operator can clear it           |
-| --- | -------------------------------------- | ----------------------------------------------------------------- | ------------------------------- |
-| 1   | `permissions.deny`                     | flakelab `claudeDeny` (union, minus `claudeDenyStale`)            | **No. No prompt is raised.**    |
-| 2   | `permissions.ask`                      | claude-plugins `permissions/recommended-ask.json`                 | Yes                             |
-| 3   | `permissions.allow`                    | claude-plugins `permissions/recommended-permissions.json` (union) | pre-approved                    |
-| 4   | `autoMode.{allow,soft_deny,hard_deny}` | flakelab `claudeAutoMode` (asserted whole)                        | `soft_deny` yes, `hard_deny` no |
+| #   | Layer                                  | Written by                                                          | Operator can clear it           |
+| --- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------- |
+| 1   | `permissions.deny`                     | flakelab `claudeDeny` (union, minus `claudeDenyStale`)              | **No. No prompt is raised.**    |
+| 2   | `permissions.ask`                      | claude-plugins `permissions/recommended-ask.json` (asserted, empty) | **No. It prompts anyway.**      |
+| 3   | `permissions.allow`                    | claude-plugins `permissions/recommended-permissions.json` (union)   | pre-approved                    |
+| 4   | `autoMode.{allow,soft_deny,hard_deny}` | flakelab `claudeAutoMode` (asserted whole)                          | `soft_deny` yes, `hard_deny` no |
 
 `autoMode.classifyAllShell = true` puts every shell command through layer 4,
 which is what suspends layer 3 in auto mode — the basis of the 2026-09-01
-ruling that allowlists `git push`, `glab mr merge`, `glab ci run` and
-`gitcleaner`. That suspension does not reach layer 1.
+ruling that allowlists `git push`, `glab ci run` and `gitcleaner`. That
+suspension does not reach layers 1 and 2.
+
+Layer 2 is not an operator checkpoint. An ask rule prompts even when the
+operator's own message names the action, which is the one thing `soft_deny`
+exists to honour. So `glab mr merge` and every mutating Home Assistant and
+Synology tool are layer-4 calls, cleared by naming the target and the change,
+and the marketplace ships the ask file empty (2026-09-10).
 
 ## Why the floor is almost empty
 
@@ -56,13 +62,13 @@ jq '.autoMode | {classifyAllShell, allow, soft_deny, hard_deny}' ~/.claude/setti
 claude auto-mode config   # from a plain shell, not inside a session
 ```
 
-Layers 1, 2 and 3 are unioned on every `flakelab update`, so a hand edit that
-adds survives and one that removes is undone. Layer 4 is asserted whole.
+Layers 1 and 3 are unioned on every `flakelab update`, so a hand edit that
+adds survives and one that removes is undone. Layers 2 and 4 are asserted whole.
 Retiring a floor rule means listing it in `claudeDenyStale`, not deleting it —
 the union alone would leave it on every box that already merged it. Fix rules in
 the flake, never in the file.
 
 Layers 2 and 3 come from the marketplace clone, found by name:
-`recommended-ask.json` and `recommended-permissions.json`. A rule in both
-prompts, since ask outranks allow — that is how an operation leaves the
-allowlist without the allowlist dropping it in the same release.
+`recommended-ask.json` and `recommended-permissions.json`. Layer 2 is asserted
+because a union of it could only grow: the 72 rules the marketplace withdrew
+on 2026-09-10 would otherwise have stayed in `permissions.ask` on every box.
