@@ -26,7 +26,9 @@ let
   # renovate: datasource=npm depName=@itunified.io/mcp-proxmox
   proxmoxMcpVersion = "2026.4.10-1";
   # Upstream cuts GitHub releases but publishes nothing to PyPI, so the pin is the
-  # 1.6.0 release commit. A tag can be moved by a compromised account, a SHA cannot.
+  # 1.6.0 release commit. A tag can be moved by a compromised account, a SHA cannot
+  # — for this repository; uvx reads no uv.lock and resolves the server's
+  # dependencies fresh at every start.
   # renovate-digest: datasource=git-refs depName=https://github.com/atom2ueki/mcp-server-synology
   synologyMcpRev = "95c62c74e8526dd299bfe527063d8e3360ae9ebf";
   # renovate: datasource=pypi depName=mcp-grafana
@@ -74,7 +76,9 @@ let
   # DSM hands out its long-lived device token only through the server's settings
   # file -- no env var reads it, and SYNOLOGY_OTP_CODE is spent on the first login.
   # The wrapper materialises that file on tmpfs at start so the password stays in
-  # the runtime environment, the same reason homeassistantServer is wrapped.
+  # the runtime environment, the same reason homeassistantServer is wrapped. No
+  # XDG_RUNTIME_DIR means no tmpfs, and then it refuses rather than write the
+  # password somewhere that survives a reboot.
   #
   # The three assignments on the exec line are not defaults being restated: the
   # server reads a generic VERIFY_SSL and defaults it to false for self-signed DSM
@@ -88,7 +92,8 @@ let
         set -eu
         if [ -n "''${SYNOLOGY_DEVICE_ID:-}" ]; then
           umask 077
-          d="''${XDG_RUNTIME_DIR:-$HOME/.cache}/synology-mcp"
+          [ -n "''${XDG_RUNTIME_DIR:-}" ] || { echo "synology-mcp: SYNOLOGY_DEVICE_ID is set but XDG_RUNTIME_DIR is not; refusing to write the password to persistent disk" >&2; exit 1; }
+          d="$XDG_RUNTIME_DIR/synology-mcp"
           mkdir -p "$d/synology-mcp"
           jq -n --arg u "$SYNOLOGY_URL" --arg n "$SYNOLOGY_USERNAME" \
             --arg p "$SYNOLOGY_PASSWORD" --arg i "$SYNOLOGY_DEVICE_ID" \

@@ -228,8 +228,7 @@ in
         ];
         soft_deny = [
           "$defaults"
-          "Bash(git push --force:*)"
-          "Bash(git push -f:*)"
+          "Force-push form [named+specifics — must name: the branch]: a rewrite of a remote branch is `git push --force-with-lease --force-if-includes origin <branch>`, on the agent's own branch, after the operator named the correction. Bare `--force`/`-f`/`+<ref>`, a lease without `--force-if-includes`, or any force to the default branch stays blocked even when named; prefer a new commit."
           "Bash(git push * --delete*)"
           "Bash(git branch -D:*)"
           "Bash(git reset --hard:*)"
