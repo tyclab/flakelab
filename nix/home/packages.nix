@@ -131,7 +131,12 @@ in
   # copies over that path, which fails on a read-only store symlink and silently
   # drops every server it ships. kiro.nix merges onto it instead.
   home.file = {
-    ".kiro/settings/cli.json".source = kiroCliJson;
+    # force: kiro-cli saves this file by rename, replacing the link; see the
+    # kiro-cli-json check in flake.nix.
+    ".kiro/settings/cli.json" = {
+      source = kiroCliJson;
+      force = true;
+    };
     ".kiro/settings/kiro_cli_theme.json".source = ../../files/config/kiro/kiro_cli_theme.json;
     # NPM_CONFIG_PREFIX only covers processes inheriting the session env; ~/.npmrc
     # covers every npm invocation, and must name the same directory.

@@ -400,6 +400,19 @@
           assert hm.systemd.user.timers.flakelab-state-sync.Timer.OnUnitActiveSec == "30min";
           pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
 
+        # kiro-cli rewrites ~/.kiro/settings/cli.json itself (`kiro-cli settings` saves
+        # by rename), which turns the store link into a regular file. Unforced, Home
+        # Manager moves that aside to cli.json.hm-bak once, then fails the next
+        # activation that finds the backup name taken. Forced, the checked-in baseline
+        # simply wins again on every switch.
+        kiro-cli-json =
+          let
+            sys = self.nixosConfigurations.default.config;
+            hm = sys.home-manager.users.${sys.flakelab.username};
+          in
+          assert hm.home.file.".kiro/settings/cli.json".force;
+          pkgs.runCommandLocal "flakelab-check-kiro-cli-json" { } "touch $out";
+
         # The sops seam: forced on it must render exactly the contract zsh.nix sources,
         # and at its null default it must contribute nothing.
         sops-optional =
