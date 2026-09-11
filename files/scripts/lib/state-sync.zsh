@@ -601,6 +601,60 @@ sync_memory_dir() {
 # Whether the last sync_transcript placed bytes; the gate's redaction warn reads it.
 SYNC_TRANSCRIPT_WROTE=false
 
+# The uuid of the last complete entry that carries one — the message a copy ends
+# on. From the tail only: a transcript is append-only, and a half-written last
+# line (a live session mid-append) is skipped, not an error.
+transcript_last_uuid() {
+  tail -n 64 "$1" 2> /dev/null | jq -R -r 'fromjson? | .uuid? // empty' 2> /dev/null | tail -n 1
+}
+
+# Whether <src> continues <dst>: the entry <dst> ends on is somewhere in <src>.
+# A copy ending on no id at all (metadata only) is continued by anything. Ids
+# are never redacted, so a redacted copy answers the same as its source.
+transcript_continues() {
+  local src="$1" dst="$2" last
+  last="$(transcript_last_uuid "${dst}")"
+  [[ -n "${last}" ]] || return 0
+  grep -q -F -- "\"${last}\"" "${src}" 2> /dev/null
+}
+
+# Copy <file> — a branch about to lose its path — beside the root it lives in,
+# named after <named>, the transcript whose path it had: the state root's
+# claude/diverged/ for a state-root copy (it replicates, and its bytes already
+# passed a gate), ~/.local/state/flakelab/state-sync/diverged/ for a local one
+# (raw, so it stays on this box). Outside claude/projects/ on purpose: neither
+# leg syncs it again and Claude Code does not list it; `claude --resume <file>
+# --fork-session` reopens it as a session of its own. Returns 1 when it could
+# not be parked, and the caller must then leave the original where it is.
+park_diverged_transcript() {
+  local file="$1" named="${2:-$1}" rel dir parked stamp
+  if [[ -n "${STATE_ROOT}" && "${named}" == "${STATE_ROOT}/claude/projects/"* ]]; then
+    rel="${named#${STATE_ROOT}/claude/projects/}"
+    dir="${STATE_ROOT}/claude/diverged"
+  else
+    rel="${named#${HOME_DIR}/.claude/projects/}"
+    dir="${HOME_DIR}/.local/state/flakelab/state-sync/diverged"
+  fi
+  if ! stamp="$(date +%Y%m%dT%H%M%S)"; then
+    record_failure "Could not read the clock; the diverged branch of ${rel} was not parked"
+    return 1
+  fi
+  parked="${dir}/${rel%.jsonl}.${stamp}-${DISTRO_NAME}.jsonl"
+  if ${DRY_RUN}; then
+    log_dry "Diverged: would park ${file} at ${parked}"
+    return 0
+  fi
+  ensure_dir "${parked:h}"
+  if [[ ! -d "${parked:h}" ]] || ! cp "${file}" "${parked}" || ! verify_copy "${file}" "${parked}"; then
+    rm -f "${parked}"
+    record_failure "Could not park the diverged branch of ${rel}; ${file} was left in place"
+    return 1
+  fi
+  chmod 600 "${parked}" 2> /dev/null || true
+  log_warn "Diverged transcript ${rel}: the session was carried on in two places. The branch that lost its path is parked at ${parked} — reopen it with: claude --resume ${parked} --fork-session"
+  return 0
+}
+
 # Grow-only copy of one append-only transcript, either direction, --force
 # included: the daily timer runs on both boxes. LINES, not bytes: redaction
 # usually lengthens a line, so by size a restore would put the older redacted
@@ -622,14 +676,25 @@ sync_transcript() {
     fi
     (( src_lines <= dst_lines )) && return 0
   fi
+  # A longer copy that does not continue the one it would replace is a fork —
+  # the same session carried on in two places — not a newer state of it. The
+  # loser is parked first, so the grow-only rule never destroys a branch.
+  local diverged=false
+  if [[ -f "${dst}" ]] && ! transcript_continues "${src}" "${dst}"; then
+    diverged=true
+  fi
   src_size="$(wc -c < "${src}")" || src_size="?"
 
   if ${DRY_RUN}; then
+    ${diverged} && park_diverged_transcript "${dst}"
     log_dry "${src} -> ${dst} (${src_size}B)"
     return 0
   fi
 
   ensure_dir "${dst:h}"
+  if ${diverged} && ! park_diverged_transcript "${dst}"; then
+    return 0
+  fi
   # A live session is being appended to: snapshot it, then copy and verify THAT.
   local snap
   if ! snap="$(mktemp)"; then
@@ -665,8 +730,10 @@ sync_transcript() {
 # needed. The same grow-only line rule decides: a copy with more lines than
 # the base replaces it, otherwise the base stands; either way the copy is
 # removed so it stops shadowing the file. A copy whose base is gone entirely
-# is left in place — there is nothing safe to fold it into. Runs before both
-# legs so push and pull see the folded file.
+# is left in place — there is nothing safe to fold it into — and a copy that
+# FORKS the base (it ends on an entry the base does not hold) is parked before
+# it is removed, whichever of the two keeps the path. Runs before both legs so
+# push and pull see the folded file.
 fold_transcript_conflicts() {
   local base copy rel
   for base in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
@@ -676,6 +743,11 @@ fold_transcript_conflicts() {
     for copy in "${reply[@]}"; do
       local failures_before=${FAILURES}
       sync_transcript "${copy}" "${base}"
+      # Not placed, and not contained in the base: a branch of its own, not a
+      # stale write. Left in place when it cannot be parked.
+      if ! ${DRY_RUN} && ! ${SYNC_TRANSCRIPT_WROTE} && ! transcript_continues "${base}" "${copy}"; then
+        park_diverged_transcript "${copy}" "${base}" || continue
+      fi
       if ! ${DRY_RUN} && (( FAILURES == failures_before )); then
         fold_conflict_copies transcript "${copy}"
       fi
@@ -830,6 +902,176 @@ backup_transcripts() {
       log_info "Transcripts: ${#srcs} staged and scanned, ${unchanged} unchanged, $(( phase_ended - phase_started ))s"
     fi
   fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Session side files
+# ---------------------------------------------------------------------------
+
+# What a transcript points at beside itself: the large tool outputs Claude Code
+# spills to <slug>/<session>/tool-results/, a subagent's .meta.json next to its
+# transcript. A session resumed without them still resumes, but every reference
+# into them dangles. Write-once, so presence is the whole comparison: each is
+# copied only to a side that lacks it, in either direction, and never again.
+SIDE_UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+# Side files the gate could not clear, one relative path per line. Local and
+# never synced: the files it names stay on this box, and are not re-scanned (or
+# re-warned about) on every run.
+side_held_file() { print -r -- "${HOME_DIR}/.local/state/flakelab/state-sync/side-files.held" }
+
+# <slug>/<session uuid>/…/<file>: not a transcript, no sync artifact anywhere in
+# it. The memory directory is not a session, so it never matches.
+side_file_rel() {
+  local rel="$1"
+  local -a segs=("${(@s:/:)rel}")
+  (( ${#segs} >= 3 )) || return 1
+  [[ "${segs[2]}" =~ ${SIDE_UUID_RE} ]] || return 1
+  [[ "${rel}" != *.jsonl ]] || return 1
+  rel_path_is_sync_artifact "${rel}" && return 1
+  return 0
+}
+
+# Push leg, through the same gate as the transcripts but as plain text: every
+# reported secret is replaced literally with [REDACTED:<rule>], longest first so
+# a shorter variant cannot leave the tail of a longer one behind. A file with a
+# secret that cannot be found literally (the scanner reported it across a line
+# break) is held back and recorded in side_held_file. The local file is never
+# modified.
+backup_side_files() {
+  local f rel line held_file
+  local -a srcs=() rels=()
+  local -A held=()
+  held_file="$(side_held_file)"
+  if [[ -f "${held_file}" ]]; then
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && held[${line}]=1
+    done < "${held_file}"
+  fi
+  for f in "${HOME_DIR}"/.claude/projects/*/*/**/*(N.); do
+    rel="${f#${HOME_DIR}/.claude/projects/}"
+    side_file_rel "${rel}" || continue
+    [[ -e "${STATE_ROOT}/claude/projects/${rel}" ]] && continue
+    [[ -n "${held[${rel}]:-}" ]] && continue
+    srcs+=("${f}")
+    rels+=("${rel}")
+  done
+  (( ${#srcs} > 0 )) || return 0
+  if ${DRY_RUN}; then
+    log_dry "Would push ${#srcs} session side file(s) through the secret gate"
+    return 0
+  fi
+  gate_guard || return 0
+
+  local stage findings
+  if ! stage="$(mktemp -d)" || ! findings="$(mktemp)"; then
+    rm -rf "${stage}" "${findings}"
+    record_failure "Secret gate: could not create work files for the side-file scan"
+    return 0
+  fi
+  local -i i j pushed=0 redacted=0 kept=0
+  for (( i = 1; i <= ${#srcs}; i++ )); do
+    if ! mkdir -p "${stage}/in/${i}" || ! cp "${srcs[i]}" "${stage}/in/${i}/${srcs[i]:t}"; then
+      rm -rf "${stage}" "${findings}"
+      record_failure "Secret gate: could not stage side file ${rels[i]} for scanning"
+      return 0
+    fi
+  done
+  if ! gate_scan "${stage}/in" "${findings}"; then
+    rm -rf "${stage}" "${findings}"
+    record_failure "Secret gate scan failed (gitleaks); session side files NOT written to ${STATE_ROOT} this run"
+    return 0
+  fi
+
+  local staged candidate content dst start end rule desc match secret k clear
+  local -a secrets=() rules=() by_len=()
+  for (( i = 1; i <= ${#srcs}; i++ )); do
+    staged="${stage}/in/${i}/${srcs[i]:t}"
+    candidate="${staged}"
+    secrets=()
+    rules=()
+    while IFS=$'\x01' read -r start end rule desc match secret; do
+      [[ -n "${start}" ]] || continue
+      [[ -n "${secret}" ]] || secret="${match}"
+      secrets+=("${secret}")
+      rules+=("${rule}")
+    done < <(gate_findings_for_file "${findings}" "${staged}")
+    if (( ${#secrets} > 0 )); then
+      # $(cat; print x): a command substitution strips trailing newlines, the x keeps them.
+      content="$(cat "${staged}"; print -n x)"
+      content="${content%x}"
+      clear=true
+      for secret in "${secrets[@]}"; do
+        [[ -n "${secret}" && "${content}" == *"${secret}"* ]] || clear=false
+      done
+      if ${clear}; then
+        by_len=()
+        for (( j = 1; j <= ${#secrets}; j++ )); do
+          by_len+=("${#secrets[j]}:${j}")
+        done
+        for k in "${(@On)by_len}"; do
+          j="${k#*:}"
+          content="${content//"${secrets[j]}"/[REDACTED:${rules[j]}]}"
+        done
+        for secret in "${secrets[@]}"; do
+          [[ "${content}" == *"${secret}"* ]] && clear=false
+        done
+      fi
+      if ! ${clear}; then
+        if ensure_dir "${held_file:h}" && print -r -- "${rels[i]}" >> "${held_file}"; then
+          log_warn "Secret gate: session side file ${rels[i]} held back — its secret cannot be matched literally, so it stays on this box"
+        else
+          record_failure "Could not record the held side file ${rels[i]}"
+        fi
+        kept=$(( kept + 1 ))
+        continue
+      fi
+      candidate="${stage}/out.${i}"
+      if ! print -rn -- "${content}" > "${candidate}"; then
+        record_failure "Secret gate: could not write the redacted copy of ${rels[i]}"
+        continue
+      fi
+      redacted=$(( redacted + 1 ))
+    fi
+    dst="${STATE_ROOT}/claude/projects/${rels[i]}"
+    ensure_dir "${dst:h}"
+    if ! place_atomically "${candidate}" "${dst}"; then
+      record_failure "Could not push the session side file ${rels[i]}"
+      continue
+    fi
+    chmod 600 "${dst}" 2> /dev/null || record_failure "Cannot set mode 600 on ${dst}"
+    pushed=$(( pushed + 1 ))
+  done
+  rm -rf "${stage}" "${findings}"
+  (( pushed > 0 )) && STATE_WROTE=true
+  log_info "Session side files: ${pushed} pushed (${redacted} redacted), ${kept} held on this box"
+  return 0
+}
+
+# Pull leg: every side file the state root has and this box lacks. Its bytes
+# already passed the pushing box's gate.
+pull_side_files() {
+  local f rel dst
+  local -i pulled=0
+  for f in "${STATE_ROOT}"/claude/projects/*/*/**/*(N.); do
+    rel="${f#${STATE_ROOT}/claude/projects/}"
+    side_file_rel "${rel}" || continue
+    dst="${HOME_DIR}/.claude/projects/${rel}"
+    [[ -e "${dst}" ]] && continue
+    if ${DRY_RUN}; then
+      log_dry "${f} -> ${dst}"
+      continue
+    fi
+    ensure_dir "${dst:h}"
+    if ! place_atomically "${f}" "${dst}"; then
+      record_failure "Could not pull the session side file ${rel}"
+      continue
+    fi
+    chmod 600 "${dst}" 2> /dev/null || record_failure "Cannot set mode 600 on ${dst}"
+    pulled=$(( pulled + 1 ))
+  done
+  (( pulled > 0 )) && log_ok "Pulled ${pulled} session side file(s)"
   return 0
 }
 
