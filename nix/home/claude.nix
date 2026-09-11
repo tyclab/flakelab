@@ -429,6 +429,58 @@ in
         ''
       );
 
+  # Claude, its marketplaces and their plugins update themselves; nothing in this
+  # flake pins them, so the two switches that can stop that are asserted. Claude's
+  # native installer writes autoUpdates=false into ~/.claude.json to fence off the
+  # legacy npm updater; from then on only its autoUpdatesProtectedForNative flag
+  # keeps updates running, and true does not depend on that flag. Every marketplace
+  # but Anthropic's own defaults to no auto-update, so ours would otherwise move
+  # only on `flakelab update`. An absent file is Claude's own default and stays so.
+  home.activation.claudeAutoUpdates =
+    lib.hm.dag.entryAfter
+      [
+        "writeBoundary"
+        "flakelabWarnReset"
+        "installClaudeCode"
+        "installClaudePlugins"
+        "claudeMcpMerge"
+      ]
+      (
+        lib.optionalString installClaude ''
+          export PATH="${
+            lib.makeBinPath [
+              pkgs.jq
+              pkgs.coreutils
+            ]
+          }:$PATH"
+          _tmp="$(mktemp)"
+          _claudeJson="$HOME/.claude.json"
+          if [ -s "$_claudeJson" ]; then
+            if jq '.autoUpdates = true' "$_claudeJson" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+              # 600: the same file carries Claude's account and OAuth state.
+              $DRY_RUN_CMD install -m600 "$_tmp" "$_claudeJson"
+            else
+              ${flakelabWarn} "could not enable Claude's auto-updater in $_claudeJson; leaving it intact."
+            fi
+          fi
+          ${lib.optionalString (claudeMarketplaces != [ ]) ''
+            _known="$HOME/.claude/plugins/known_marketplaces.json"
+            if [ -s "$_known" ]; then
+              if jq --argjson names ${
+                lib.escapeShellArg (builtins.toJSON (map (m: m.name) claudeMarketplaces))
+              } \
+                   'reduce $names[] as $n (.; if has($n) then .[$n].autoUpdate = true else . end)' \
+                   "$_known" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+                $DRY_RUN_CMD install -m644 "$_tmp" "$_known"
+              else
+                ${flakelabWarn} "could not enable auto-update for the Claude marketplaces in $_known; they refresh only on flakelab update."
+              fi
+            fi
+          ''}
+          rm -f "$_tmp"
+        ''
+      );
+
   # Merges the marketplace's own recommended-permissions.json into allow, unioned
   # so a hand-added rule is kept. Such a list is only safe behind the auto-mode
   # classifier, which is written on every box that has Claude at all.
