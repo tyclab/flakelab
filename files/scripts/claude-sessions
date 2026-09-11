@@ -29,11 +29,26 @@ set -uo pipefail
 #                                    save), or from the live sessions if none
 #   claude-sessions --open [file]    the same sessions, each in its own new
 #                                    Windows Terminal tab (WSL only)
+#   claude-sessions --autosave       the crash-recovery snapshot (below)
+#   claude-sessions --recent [hours] sessions NOT running whose transcript
+#                                    changed in the last <hours> (default 24),
+#                                    newest first: the window closed by mistake
 #   claude-sessions --json           the live sessions as a JSON array
 #
 # The --resume lines are one per terminal: pasted into one shell they run in
 # sequence, the second only after the first session exits. --open is the
-# WSL answer to that.
+# WSL answer to that. A directory this box does not have (a session saved on
+# another machine) gets no `cd`: `claude --resume <id>` finds a session from
+# any directory, and a failing `cd` would stop the line before it ran.
+#
+# Crash recovery: --autosave (the flakelab-sessions-autosave timer) keeps ONE
+# file per boot, <host>-autosave-<boot>.txt beside the saves, rewritten only
+# when the running set changed and never with an empty one — the first ticks
+# after a crash run with nothing open. So the file a crash or a hard reset
+# leaves behind is exactly what was open, untouched by the reboot. With no file
+# named, --resume and --open take the newest save that is neither this boot's
+# own autosave (that is the live set, not a record of the last one) nor
+# another host's.
 #
 # Save location: $FLAKELAB_STATE_ROOT/claude/sessions/<host>-<date>.txt when a
 # state root is configured (nix/options.nix stateRoot) — the list then
@@ -43,13 +58,20 @@ set -uo pipefail
 #
 
 PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
+# The kernel's id for this boot: a crash, a reboot or a `wsl --shutdown` starts
+# a new one. FLAKELAB_BOOT_ID_FILE is a test seam.
+BOOT_ID_FILE="${FLAKELAB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 REGISTRY="${HOME}/.claude/sessions"
 MODE=list
 FILE=""
+RECENT_HOURS=24
+# This host's autosaves kept; the newest is the current boot's.
+AUTOSAVE_KEEP=5
 
 usage() {
   cat <<'USAGE'
-Usage: claude-sessions [--save [file]] [--resume [file]] [--open [file]] [--json]
+Usage: claude-sessions [--save [file]] [--resume [file]] [--open [file]]
+                       [--autosave] [--recent [hours]] [--json]
 
   (no flag)        list the running Claude Code sessions
   --save [file]    list, and write "<dir>  <session-id>" lines to file
@@ -57,6 +79,10 @@ Usage: claude-sessions [--save [file]] [--resume [file]] [--open [file]] [--json
                    (default: newest save, else the live sessions)
   --open [file]    open each of those sessions in its own Windows Terminal
                    tab (WSL only)
+  --autosave       snapshot the running sessions for crash recovery: one
+                   file per boot, only when the set changed, never empty
+  --recent [hours] sessions not running whose transcript changed in the
+                   last <hours> (default 24), with the command to resume each
   --json           the live sessions as a JSON array
 USAGE
 }
@@ -66,6 +92,8 @@ while (( $# > 0 )); do
     --save)   MODE=save;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --resume) MODE=resume; [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --open)   MODE=open;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
+    --autosave) MODE=autosave ;;
+    --recent) MODE=recent; [[ "${2:-}" == <1-> ]] && { RECENT_HOURS="$2"; shift } ;;
     --json)   MODE=json ;;
     --help|-h) usage; exit 0 ;;
     *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 1 ;;
@@ -80,6 +108,19 @@ save_dir() {
     print -r -- "${HOME}/.local/state/flakelab/sessions"
   fi
 }
+
+# The first twelve hex digits of the boot id: unique enough per host, short
+# enough for a file name.
+boot_id() {
+  local b
+  [[ -r "${BOOT_ID_FILE}" ]] || return 1
+  b="$(<"${BOOT_ID_FILE}")"
+  b="${b//-/}"
+  [[ -n "$b" ]] || return 1
+  print -r -- "${b[1,12]}"
+}
+
+autosave_name() { print -r -- "${HOST}-autosave-$1.txt" }
 
 # One record per running session, unit-separator delimited (a tab is IFS
 # whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
@@ -165,15 +206,61 @@ write_save() {
   print -ru2 -- "saved ${n} session(s) to ${FILE}"
 }
 
+# The timer's snapshot, in the save shape. Sorted, so a changed pgrep order is
+# not a changed set; quiet when nothing changed; placed by rename, because the
+# save directory may be a synced folder. The temp name is one the state sync
+# already treats as scratch.
+write_autosave() {
+  local boot dir file tmp row p age sid cwd
+  local -a lines=() old=()
+  boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
+  gather 2>/dev/null
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r p age sid cwd <<<"$row"
+    [[ -n "$sid" ]] && lines+=("${cwd}  ${sid}")
+  done
+  # Nothing running keeps the last snapshot: after a crash that is the record.
+  (( ${#lines[@]} > 0 )) || return 0
+  lines=("${(@o)lines}")
+  dir="$(save_dir)"
+  mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
+  file="${dir}/$(autosave_name "$boot")"
+  if [[ -f "$file" && "$(grep -v '^#' "$file")" == "${(F)lines}" ]]; then
+    return 0
+  fi
+  tmp="$(mktemp "${dir}/.${file:t}.flakelab-tmp.XXXXXX")" || { print -ru2 -- "Error: cannot write in ${dir}"; return 1 }
+  if ! {
+    print -r -- "# claude-sessions autosave ${HOST}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} boot=${boot} $(date -Is)"
+    print -rl -- "${lines[@]}"
+  } > "$tmp" || ! mv -f "$tmp" "$file"; then
+    rm -f "$tmp"
+    print -ru2 -- "Error: cannot write ${file}"
+    return 1
+  fi
+  print -ru2 -- "autosaved ${#lines[@]} session(s) to ${file}"
+  old=("${dir}/${HOST}"-autosave-*.txt(Nom))
+  (( ${#old[@]} > AUTOSAVE_KEEP )) && rm -f -- "${old[@]:$AUTOSAVE_KEEP}"
+  return 0
+}
+
 # PAIRS: "<cwd> US <sid>" per session to bring back — from FILE, else the
 # newest save, else the live sessions. Prints the source as a comment.
 typeset -a PAIRS=()
 collect_pairs() {
-  local src="$FILE" line cwd sid row p age
+  local src="$FILE" line cwd sid row p age f cur=""
   if [[ -z "$src" ]]; then
-    # newest save first; (N) keeps an empty directory from being a glob error
-    local -a saves=("$(save_dir)"/*.txt(Nom))
-    src="${saves[1]:-}"
+    # Newest save first; (N) keeps an empty directory from being a glob error.
+    # This boot's own autosave is the live set, and another host's autosave
+    # names that host's sessions: neither is what a restart here left behind.
+    cur="$(boot_id)" || cur=""
+    for f in "$(save_dir)"/*.txt(Nom); do
+      if [[ "${f:t}" == *-autosave-*.txt ]]; then
+        [[ "${f:t}" == "${HOST}-autosave-"* ]] || continue
+        [[ -n "$cur" && "${f:t}" == "$(autosave_name "$cur")" ]] && continue
+      fi
+      src="$f"
+      break
+    done
   fi
   if [[ -n "$src" ]]; then
     [[ -r "$src" ]] || { print -ru2 -- "Error: cannot read ${src}"; return 1 }
@@ -196,37 +283,79 @@ collect_pairs() {
   (( ${#PAIRS[@]} > 0 )) || { print -ru2 -- "nothing to resume"; return 1 }
 }
 
+# One resume line: the cd only where this box has the directory.
+resume_line() {
+  local cwd="$1" sid="$2" note="${3:-}"
+  if [[ -n "$cwd" && -d "$cwd" ]]; then
+    print -r -- "cd ${(q)cwd} && claude --resume ${sid}${note:+  # ${note}}"
+  elif [[ -n "$cwd" ]]; then
+    print -r -- "claude --resume ${sid}  # ${note:+${note}, }${cwd} is not on this box"
+  else
+    print -r -- "claude --resume ${sid}${note:+  # ${note}}"
+  fi
+}
+
 print_resume() {
   local pair cwd sid
   collect_pairs || return 1
   print -r -- "# one line per terminal — in one shell they run in sequence"
   for pair in "${PAIRS[@]}"; do
     IFS="$US" read -r cwd sid <<<"$pair"
-    print -r -- "cd ${(q)cwd} && claude --resume ${sid}"
+    resume_line "$cwd" "$sid"
   done
 }
 
 # One Windows Terminal tab per session, attached to the calling distro.
 # `-w 0` targets the terminal window this shell lives in (a new one when it
 # has none). wt.exe reaches WSL through the interop PATH; when interop is off
-# there is no Windows to open tabs in, and --resume is the answer.
+# there is no Windows to open tabs in, and --resume is the answer. A directory
+# this box does not have opens the tab in the home directory instead.
 open_tabs() {
-  local pair cwd sid n=0
+  local pair cwd sid tab_cwd n=0
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
   collect_pairs || return 1
   for pair in "${PAIRS[@]}"; do
     IFS="$US" read -r cwd sid <<<"$pair"
-    wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${cwd}" -- claude --resume "${sid}" </dev/null >/dev/null 2>&1 &&
+    tab_cwd="$cwd"
+    [[ -d "$tab_cwd" ]] || tab_cwd="~"
+    wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- claude --resume "${sid}" </dev/null >/dev/null 2>&1 &&
       (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
   done
   print -ru2 -- "opened ${n} tab(s)"
 }
 
+# Session files only (<slug>/<id>.jsonl): subagent transcripts sit a level
+# deeper. The cwd is the last one the session recorded — where it was working
+# when it stopped — read from the tail, never the whole transcript.
+print_recent() {
+  local -A live=()
+  local row p age sid cwd f when
+  local -i n=0
+  gather 2>/dev/null
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r p age sid cwd <<<"$row"
+    [[ -n "$sid" ]] && live[$sid]=1
+  done
+  print -r -- "# not running, changed in the last ${RECENT_HOURS}h — newest first"
+  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+    sid="${f:t:r}"
+    [[ -n "${live[$sid]:-}" ]] && continue
+    cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
+    when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+    resume_line "$cwd" "$sid" "$when"
+    (( ++n ))
+  done
+  (( n > 0 )) || print -ru2 -- "no stopped session changed in the last ${RECENT_HOURS}h"
+  return 0
+}
+
 case "$MODE" in
-  list)   gather; print_table ;;
-  json)   gather; print_json ;;
-  save)   gather; print_table; write_save ;;
-  resume) print_resume ;;
-  open)   open_tabs ;;
+  list)     gather; print_table ;;
+  json)     gather; print_json ;;
+  save)     gather; print_table; write_save ;;
+  resume)   print_resume ;;
+  open)     open_tabs ;;
+  autosave) write_autosave ;;
+  recent)   print_recent ;;
 esac

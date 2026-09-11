@@ -224,16 +224,16 @@ place to **generate** from, not to run this system: the flake's outputs are
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
 all fifteen.
 
-| Command                   | Action                                                                  |
-| ------------------------- | ----------------------------------------------------------------------- |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`         |
-| `flakelab update-all`     | rebuild + clone                                                         |
-| `flakelab clone`          | clone / fetch GitLab group repos                                        |
-| `flakelab doctor`         | diagnose a provisioned distro                                           |
-| `flakelab backup`         | payload + optional shared state root                                    |
-| `flakelab sessions`       | running Claude Code sessions; `--save` before a restart, `--open` after |
-| `flakelab overlay-gen`    | write the private overlay from a config                                 |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                            |
+| Command                   | Action                                                             |
+| ------------------------- | ------------------------------------------------------------------ |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`    |
+| `flakelab update-all`     | rebuild + clone                                                    |
+| `flakelab clone`          | clone / fetch GitLab group repos                                   |
+| `flakelab doctor`         | diagnose a provisioned distro                                      |
+| `flakelab backup`         | payload + optional shared state root                               |
+| `flakelab sessions`       | running Claude Code sessions; `--open` after a restart, `--recent` |
+| `flakelab overlay-gen`    | write the private overlay from a config                            |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                       |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean
@@ -416,6 +416,17 @@ conflict-copy handling, the fingerprint caveat and the two built-in refusals are
 in [`ARCHITECTURE.md`](ARCHITECTURE.md#shared-state-and-the-secret-gate).
 **Read that section before turning it on:** the merged history is everything
 ever typed at a prompt.
+
+`stateSyncInterval = "5min";` adds a two-way `flakelab backup --state-only`
+timer. It needs `stateRoot` but not `backupAutostart`, so a box that should not
+run the daily payload pass still converges its state, and while it is scheduled
+a closing Claude Code session is pushed at once.
+
+Crash recovery needs no state root at all: `flakelab-sessions-autosave`
+snapshots the running Claude Code sessions every `sessionsAutosaveInterval`
+(default 5 min), one file per boot. After a crash, `flakelab sessions --resume`
+prints — and on WSL `--open` reopens — every session that was open;
+`flakelab sessions --recent` lists the ones closed in the last day.
 
 ## Proxmox VM
 

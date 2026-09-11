@@ -253,7 +253,12 @@ a NAS client or nothing at all is outside this repo's knowledge.
 Restore on the second machine with `flakelab backup --restore`. The daily timer
 only PUSHES into the state root; automatic two-way convergence needs
 `flakelab.stateSyncInterval` set (schedules `--state-only`, which pushes AND
-pulls) — without it, pulls happen only through a manual `--restore`. Memory is keyed by the checkout's **absolute path**,
+pulls) — without it, pulls happen only through a manual `--restore`. The two
+timers are independent: `stateSyncInterval` needs `stateRoot`, not
+`backupAutostart`, so a box that must not run the unattended daily payload pass
+still converges its state root; while it is scheduled, a Claude Code
+`SessionEnd` hook starts the same sync when a session closes, so a finished
+session does not wait out the period. Memory is keyed by the checkout's **absolute path**,
 so keep checkouts at the same path on both boxes — and never let a checkout live
 inside the synced folder.
 
