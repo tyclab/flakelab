@@ -2453,6 +2453,150 @@ absent "and so is the smaller one" \
 check "the folded file is what the pull hands this box" "$(wc -l < "${SLUG_HOME}/abc.jsonl")" "2"
 absent "no conflict copy leaks into the home"           "${SLUG_HOME}/abc_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
 
+print -r -- "a longer copy that forks a quiet local transcript parks the local branch first"
+transcript_fixture diverged-pull
+mkdir -p "${SLUG_STATE}"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2-here","parentUuid":"u1"}' } > "${SLUG_HOME}/fork.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/fork.jsonl"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2-there","parentUuid":"u1"}'
+  print -r -- '{"uuid":"u3-there","parentUuid":"u2-there"}' } > "${SLUG_STATE}/fork.jsonl"
+PARK_HOME="${FIX_HOME}/.local/state/flakelab/state-sync/diverged/some-slug"
+
+run_backup --state-only --force
+check     "the run exits clean"                      "${RC}" "0"
+check     "the longer branch takes the path"         "$(wc -l < "${SLUG_HOME}/fork.jsonl")" "3"
+has_match "the local branch is parked on this box"   "${PARK_HOME}" "fork.*-TestDistro.jsonl"
+contains  "the parked copy is the local branch"      "$(cat "${PARK_HOME}"/fork.*.jsonl)" "u2-here"
+contains  "and the run says how to reopen it"        "${OUT}" "--fork-session"
+absent    "a raw local branch never enters the state root" "${FIX_STATE}/claude/diverged"
+
+print -r -- "a longer local fork parks the state root's branch before the push replaces it"
+transcript_fixture diverged-push
+mkdir -p "${SLUG_STATE}"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2-here","parentUuid":"u1"}'
+  print -r -- '{"uuid":"u3-here","parentUuid":"u2-here"}' } > "${SLUG_HOME}/fork.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/fork.jsonl"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2-there","parentUuid":"u1"}' } > "${SLUG_STATE}/fork.jsonl"
+PARK_STATE="${FIX_STATE}/claude/diverged/some-slug"
+
+run_backup --state-only --force
+check     "the run exits clean"                      "${RC}" "0"
+check     "the longer local branch takes the path"   "$(wc -l < "${SLUG_STATE}/fork.jsonl")" "3"
+has_match "the other box's branch is parked in the state root" "${PARK_STATE}" "fork.*-TestDistro.jsonl"
+contains  "the parked copy is that branch"           "$(cat "${PARK_STATE}"/fork.*.jsonl)" "u2-there"
+no_match  "a parked branch is never pulled as a transcript" "${SLUG_HOME}" "fork.*-TestDistro.jsonl"
+
+print -r -- "a copy that continues the one it replaces parks nothing"
+transcript_fixture continued-pull
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"uuid":"u1"}' > "${SLUG_HOME}/cont.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/cont.jsonl"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2","parentUuid":"u1"}' } > "${SLUG_STATE}/cont.jsonl"
+
+run_backup --state-only --force
+check    "the run exits clean"                       "${RC}" "0"
+check    "the grown copy is pulled"                  "$(wc -l < "${SLUG_HOME}/cont.jsonl")" "2"
+absent   "nothing is parked"                         "${FIX_HOME}/.local/state/flakelab/state-sync/diverged"
+excludes "and nothing reports a fork"                "${OUT}" "Diverged"
+
+print -r -- "a conflict copy that forks its base is parked, not folded away"
+transcript_fixture diverged-conflict
+mkdir -p "${SLUG_STATE}"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2"}'; print -r -- '{"uuid":"u3"}' } > "${SLUG_STATE}/ghi.jsonl"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2-lost"}' } \
+  > "${SLUG_STATE}/ghi.sync-conflict-20260911-120000-ABCDEFG.jsonl"
+{ print -r -- '{"uuid":"u1"}'; print -r -- '{"uuid":"u2"}' } > "${SLUG_STATE}/jkl.jsonl"
+print -r -- '{"uuid":"u1"}' > "${SLUG_STATE}/jkl.sync-conflict-20260911-120000-ABCDEFG.jsonl"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+PARK_STATE="${FIX_STATE}/claude/diverged/some-slug"
+
+run_backup --state-only --force
+check     "the run exits clean"                      "${RC}" "0"
+check     "the base keeps its path"                  "$(wc -l < "${SLUG_STATE}/ghi.jsonl")" "3"
+absent    "the forking copy is folded away"          "${SLUG_STATE}/ghi.sync-conflict-20260911-120000-ABCDEFG.jsonl"
+has_match "after it was parked"                      "${PARK_STATE}" "ghi.*-TestDistro.jsonl"
+contains  "with its branch intact"                   "$(cat "${PARK_STATE}"/ghi.*.jsonl)" "u2-lost"
+absent    "a stale copy is folded away as before"    "${SLUG_STATE}/jkl.sync-conflict-20260911-120000-ABCDEFG.jsonl"
+no_match  "and is not parked"                        "${PARK_STATE}" "jkl.*"
+
+print -r -- "Syncthing's temps and folder metadata never reach the home"
+transcript_fixture syncthing-artifacts
+MEM_S="${FIX_STATE}/claude/projects/some-slug/memory"
+mkdir -p "${MEM_S}/.stversions"
+print -r -- "- [n](note.md)" > "${MEM_S}/MEMORY.md"
+print -r -- "note"           > "${MEM_S}/note.md"
+print -r -- "partial"        > "${MEM_S}/.syncthing.note2.md.tmp"
+print -r -- "old"            > "${MEM_S}/.stversions/note~20260101-000000.md"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check   "the run exits clean"                        "${RC}" "0"
+is_file "the memory itself arrives"                  "${FIX_HOME}/.claude/projects/some-slug/memory/note.md"
+absent  "an in-flight Syncthing temp does not"       "${FIX_HOME}/.claude/projects/some-slug/memory/.syncthing.note2.md.tmp"
+absent  "nor does the version store"                 "${FIX_HOME}/.claude/projects/some-slug/memory/.stversions"
+
+print -r -- "session side files sync both ways, write-once, the pushed copy gated"
+transcript_fixture side-files
+SID=11111111-2222-3333-4444-555555555555
+OTHER=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+mkdir -p "${SLUG_HOME}/${SID}/tool-results" "${SLUG_HOME}/${SID}/subagents" \
+         "${SLUG_STATE}/${OTHER}/tool-results"
+print -r -- '{"uuid":"u1"}'        > "${SLUG_HOME}/${SID}.jsonl"
+print -r -- "plain output"         > "${SLUG_HOME}/${SID}/tool-results/toolu_1.txt"
+{ print -r -- "line one"; print -r -- "token hunter2-side here"; print -r -- "" } \
+  > "${SLUG_HOME}/${SID}/tool-results/toolu_2.txt"
+print -r -- '{"agentType":"x"}'    > "${SLUG_HOME}/${SID}/subagents/agent-a.meta.json"
+print -r -- "from the other box"   > "${SLUG_STATE}/${OTHER}/tool-results/toolu_9.txt"
+FAKE_SECRET="hunter2-side"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check    "the run exits clean"                         "${RC}" "0"
+same     "a clean side file arrives as it is" \
+  "${SLUG_HOME}/${SID}/tool-results/toolu_1.txt" "${SLUG_STATE}/${SID}/tool-results/toolu_1.txt"
+is_file  "a subagent's meta file arrives"              "${SLUG_STATE}/${SID}/subagents/agent-a.meta.json"
+contains "a side-file secret is redacted in the pushed copy" \
+  "$(< "${SLUG_STATE}/${SID}/tool-results/toolu_2.txt")" "token [REDACTED:fake-rule] here"
+excludes "and never reaches the state root" \
+  "$(< "${SLUG_STATE}/${SID}/tool-results/toolu_2.txt")" "hunter2-side"
+check    "the redacted copy keeps the file's trailing blank line" \
+  "$(wc -l < "${SLUG_STATE}/${SID}/tool-results/toolu_2.txt")" "3"
+contains "the local side file is left as it is" \
+  "$(< "${SLUG_HOME}/${SID}/tool-results/toolu_2.txt")" "hunter2-side"
+is_file  "the other box's side file is pulled"         "${SLUG_HOME}/${OTHER}/tool-results/toolu_9.txt"
+check    "owner-only on arrival" \
+  "$(stat -c '%a' "${SLUG_HOME}/${OTHER}/tool-results/toolu_9.txt")" "600"
+contains "the run counts what it pushed"               "${OUT}" "Session side files: 3 pushed (1 redacted), 0 held"
+absent   "a transcript is not a side file" \
+  "${FIX_STATE}/claude/projects/some-slug/${SID}/${SID}.jsonl"
+
+print -r -- "tampered" > "${SLUG_STATE}/${SID}/tool-results/toolu_1.txt"
+run_backup --state-only --force
+check    "the second run exits clean"                  "${RC}" "0"
+check    "a side file on both sides is never pushed again" \
+  "$(< "${SLUG_STATE}/${SID}/tool-results/toolu_1.txt")" "tampered"
+check    "nor pulled back over the local one" \
+  "$(< "${SLUG_HOME}/${SID}/tool-results/toolu_1.txt")" "plain output"
+excludes "and nothing is staged for it"                "${OUT}" "Session side files:"
+
+print -r -- "a side-file secret that cannot be matched literally keeps the file on this box"
+transcript_fixture side-files-held
+SID=11111111-2222-3333-4444-555555555555
+mkdir -p "${SLUG_HOME}/${SID}/tool-results"
+{ print -r -- "begin span-a"; print -r -- "span-b end" } > "${SLUG_HOME}/${SID}/tool-results/toolu_3.txt"
+FAKE_SPAN="span-a span-b"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check    "the run exits clean"                         "${RC}" "0"
+absent   "the file is held back" \
+  "${FIX_STATE}/claude/projects/some-slug/${SID}/tool-results/toolu_3.txt"
+contains "and the run says so"                         "${OUT}" "toolu_3.txt held back"
+contains "the hold is remembered" \
+  "$(< "${FIX_HOME}/.local/state/flakelab/state-sync/side-files.held")" "some-slug/${SID}/tool-results/toolu_3.txt"
+run_backup --state-only --force
+excludes "a held file is not scanned or warned about again" "${OUT}" "toolu_3.txt held back"
+
 print -r -- "a keep ruling can be revisited and flipped to delete"
 state_fixture gate-revisit-keep
 secret_history
