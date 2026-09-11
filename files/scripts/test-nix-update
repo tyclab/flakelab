@@ -203,6 +203,17 @@ FLAKELAB_STALE_OK=1 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 check    "and origin/gone is pruned"        "$(git -C "${d}" branch -r --list origin/gone | tr -d ' ')" ""
 
+# The checkout is usually the overlay, not flakelab: the warning names the one it
+# actually could not fetch.
+print -r -- "a failed fetch names the checkout it could not fetch"
+d="$(mk_remote unreachable)"
+git -C "${d}" remote set-url origin "${BASE}/nowhere.git"
+run_update "${d}"
+check    "it refuses"                       "${RC}" "1"
+check    "with no switch"                   "$(switches)" "0"
+contains "naming the checkout"              "${OUT}" "Could not fetch ${d}"
+excludes "without blaming flakelab"         "${OUT}" "flakelab updates"
+
 # ---------------------------------------------------------------------------
 # 4. The switch's own status and the --all tail survive
 # ---------------------------------------------------------------------------

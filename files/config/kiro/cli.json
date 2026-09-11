@@ -1,4 +1,5 @@
 {
+  "app.disableAutoupdates": false,
   "chat.allowIcons": true,
   "chat.defaultInterruptBehavior": "steer",
   "chat.defaultModel": "claude-opus-5",

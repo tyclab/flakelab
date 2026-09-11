@@ -1,0 +1,221 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for the clone sweep: the real script against throwaway bare
+# repos served over file://, with a throwaway unencrypted key so its ssh
+# preflight passes without an agent. Nothing here reaches the network.
+#
+# Under test: the clone, the fetch + rebase of the checked-out branch, every
+# pre-flight skip, and the default-branch fast-forward — the one move that must
+# still happen when the checkout itself cannot rebase, because that is how the
+# default branch drifted behind unnoticed on a box parked on a feature branch.
+#
+# Usage: files/scripts/test-clone-repos
+#
+
+SCRIPT_DIR="${0:A:h}"
+SWEEP="${SCRIPT_DIR}/clone-repos"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+export HOME="${BASE}/home"
+mkdir -p "${HOME}" "${BASE}/up" "${BASE}/src" "${BASE}/repos"
+export GIT_CONFIG_GLOBAL="${BASE}/gitconfig"
+export GIT_CONFIG_SYSTEM=/dev/null
+git config --global user.name "test-clone-repos"
+git config --global user.email "t@example.invalid"
+git config --global init.defaultBranch main
+# The sweep clones with --filter=blob:none, which the serving side must allow;
+# over file:// that side is a local upload-pack reading this same config.
+git config --global uploadpack.allowFilter true
+
+# An unencrypted key: the sweep refuses up front when the key is encrypted and
+# no agent holds it, and file:// never uses the key at all.
+KEY="${BASE}/id_test"
+ssh-keygen -q -t ed25519 -N "" -C test -f "${KEY}" < /dev/null
+
+# mk_up <name> — a bare upstream with one commit on main, plus a work clone to
+# push further commits from.
+mk_up() {
+  local n="$1"
+  git init -q --bare "${BASE}/up/${n}.git"
+  git clone -q "file://${BASE}/up/${n}.git" "${BASE}/src/${n}" 2> /dev/null
+  print -r -- seed > "${BASE}/src/${n}/f"
+  git -C "${BASE}/src/${n}" add -A
+  git -C "${BASE}/src/${n}" commit -qm seed
+  git -C "${BASE}/src/${n}" push -q -u origin main
+}
+
+# push_to <name> <branch> <text> — one more upstream commit on that branch.
+push_to() {
+  local n="$1" b="$2" t="$3"
+  git -C "${BASE}/src/${n}" switch -q "${b}" 2> /dev/null \
+    || git -C "${BASE}/src/${n}" switch -q -c "${b}"
+  print -r -- "${t}" >> "${BASE}/src/${n}/f"
+  git -C "${BASE}/src/${n}" commit -qam "${t}"
+  git -C "${BASE}/src/${n}" push -q origin "${b}"
+}
+
+# clone_into <name> — the working copy the sweep will find, cloned the way the
+# sweep clones so later runs take the fetch path.
+clone_into() {
+  local n="$1"
+  git clone -q "file://${BASE}/up/${n}.git" "${BASE}/repos/${n}"
+}
+
+sha()  { git -C "${BASE}/repos/$1" rev-parse --short "$2" 2> /dev/null }
+spec() { print -r -- "file://${BASE}/up/$1.git ${BASE}/repos/$1" }
+
+typeset -i RC=0
+OUT=""
+# run_sweep <spec>... — one sweep over exactly these repos; sets OUT and RC.
+run_sweep() {
+  local -a lines=("$@")
+  OUT="$(print -l -- "${lines[@]}" | "${SWEEP}" --key-file "${KEY}" \
+    --repos-dir "${BASE}/repos" --max-jobs 2 2>&1)"
+  RC=$?
+}
+
+print -r -- "test-clone-repos"
+
+# ---------------------------------------------------------------------------
+# 1. A missing checkout is cloned
+# ---------------------------------------------------------------------------
+print -r -- "a missing checkout is cloned"
+mk_up fresh
+run_sweep "$(spec fresh)"
+check    "it exits clean"                   "${RC}" "0"
+contains "and reports the clone"            "${OUT}" "1 cloned"
+check    "the checkout is there"            "$([[ -d "${BASE}/repos/fresh/.git" ]] && print yes || print no)" "yes"
+
+# ---------------------------------------------------------------------------
+# 2. A checkout already at its upstream is only fetched
+# ---------------------------------------------------------------------------
+print -r -- "a checkout at its upstream is only fetched"
+run_sweep "$(spec fresh)"
+check    "it exits clean"                   "${RC}" "0"
+contains "nothing was rebased"              "${OUT}" "0 rebased"
+contains "and it was fetched"               "${OUT}" "1 fetched"
+
+# ---------------------------------------------------------------------------
+# 3. A clean checkout behind its upstream is rebased
+# ---------------------------------------------------------------------------
+print -r -- "a clean checkout behind its upstream is rebased"
+mk_up behind
+clone_into behind
+push_to behind main second
+run_sweep "$(spec behind)"
+check    "it exits clean"                   "${RC}" "0"
+contains "and rebases"                      "${OUT}" "1 rebased"
+check    "HEAD is the upstream's"           "$(sha behind HEAD)" "$(sha behind origin/main)"
+
+# ---------------------------------------------------------------------------
+# 4. The default branch moves while the checkout sits on a feature branch
+# ---------------------------------------------------------------------------
+# The reported drift: nothing here rebases, because the checked-out branch is
+# already current, and main is not checked out, so it stayed behind forever.
+print -r -- "a behind default branch is fast-forwarded beside a feature branch"
+mk_up parked
+clone_into parked
+git -C "${BASE}/repos/parked" switch -q -c feature
+git -C "${BASE}/repos/parked" push -q -u origin feature
+push_to parked main upstream-work
+run_sweep "$(spec parked)"
+check    "it exits clean"                   "${RC}" "0"
+check    "main is the upstream's"           "$(sha parked main)" "$(sha parked origin/main)"
+check    "HEAD is untouched"                "$(git -C "${BASE}/repos/parked" symbolic-ref --short HEAD)" "feature"
+contains "and the move is reported"         "${OUT}" "Default branch fast-forwarded"
+
+# ---------------------------------------------------------------------------
+# 5. A stranded branch no longer strands the default branch
+# ---------------------------------------------------------------------------
+print -r -- "an upstream-gone branch no longer holds the default branch back"
+mk_up gone
+clone_into gone
+git -C "${BASE}/repos/gone" switch -q -c merged-work
+git -C "${BASE}/repos/gone" push -q -u origin merged-work
+push_to gone main after-merge
+git -C "${BASE}/src/gone" push -q origin --delete merged-work
+run_sweep "$(spec gone)"
+check    "it exits clean"                   "${RC}" "0"
+contains "the branch is reported stranded"  "${OUT}" "upstream gone"
+check    "but main is current"              "$(sha gone main)" "$(sha gone origin/main)"
+
+# ---------------------------------------------------------------------------
+# 6. A dirty tree blocks the rebase, not the default branch
+# ---------------------------------------------------------------------------
+print -r -- "a dirty tree blocks the rebase but not the default branch"
+mk_up dirty
+clone_into dirty
+git -C "${BASE}/repos/dirty" switch -q -c wip
+print -r -- edit >> "${BASE}/repos/dirty/f"
+push_to dirty main more-work
+run_sweep "$(spec dirty)"
+check    "it exits clean"                   "${RC}" "0"
+contains "the tree is reported dirty"       "${OUT}" "dirty working tree"
+check    "main is current"                  "$(sha dirty main)" "$(sha dirty origin/main)"
+check    "and the edit survives"            "$(git -C "${BASE}/repos/dirty" status --porcelain)" " M f"
+
+# ---------------------------------------------------------------------------
+# 7. A default branch checked out in a linked worktree is left alone
+# ---------------------------------------------------------------------------
+# git refuses to move a branch another worktree has checked out. That refusal
+# is the guard; the run stays clean and says which repo kept its old default.
+print -r -- "a default branch held by another worktree is reported, not moved"
+mk_up held
+clone_into held
+git -C "${BASE}/repos/held" switch -q -c side
+git -C "${BASE}/repos/held" push -q -u origin side
+git -C "${BASE}/repos/held" worktree add -q "${BASE}/wt-held" main
+before_held="$(sha held main)"
+push_to held main upstream-only
+run_sweep "$(spec held)"
+check    "it exits clean"                   "${RC}" "0"
+check    "main is untouched"                "$(sha held main)" "${before_held}"
+contains "and says it was not updated"      "${OUT}" "Default branch NOT fast-forwarded"
+
+# ---------------------------------------------------------------------------
+# 8. A diverged default branch is reported and never touched
+# ---------------------------------------------------------------------------
+print -r -- "a diverged default branch is reported, never rewritten"
+mk_up diverged
+clone_into diverged
+git -C "${BASE}/repos/diverged" switch -q main
+print -r -- local-only >> "${BASE}/repos/diverged/f"
+git -C "${BASE}/repos/diverged" commit -qam local-only
+git -C "${BASE}/repos/diverged" switch -q -c other
+git -C "${BASE}/repos/diverged" push -q -u origin other
+push_to diverged main upstream-only
+before_div="$(sha diverged main)"
+run_sweep "$(spec diverged)"
+check    "it exits clean"                   "${RC}" "0"
+contains "the divergence is reported"       "${OUT}" "diverged"
+check    "and main is untouched"            "$(sha diverged main)" "${before_div}"
+
+# ---------------------------------------------------------------------------
+# 9. A detached HEAD skips the rebase and still updates the default branch
+# ---------------------------------------------------------------------------
+print -r -- "a detached HEAD skips the rebase but not the default branch"
+mk_up detached
+clone_into detached
+git -C "${BASE}/repos/detached" switch -q --detach HEAD
+push_to detached main while-detached
+run_sweep "$(spec detached)"
+check    "it exits clean"                   "${RC}" "0"
+contains "the detached HEAD is reported"    "${OUT}" "detached HEAD"
+check    "and main is current"              "$(sha detached main)" "$(sha detached origin/main)"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))
