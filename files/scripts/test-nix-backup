@@ -518,6 +518,60 @@ run_restore --force
 check "--force still overrides activation ownership" \
   "$(< "${FIX_HOME}/.claude/plugins/installed_plugins.json")" '{"from":"the other box"}'
 
+print -r -- "the marketplace registry is left to the activation, not restored"
+fixture marketplace-registry
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/plugins" "${FIX_HOME}/.claude/plugins"
+print -r -- '{"other-box":{"source":{"source":"git"}}}' \
+  > "${FIX_ROOT}/instances/TestDistro/claude/plugins/known_marketplaces.json"
+print -r -- '{"this-box":{"source":{"source":"git"}}}' \
+  > "${FIX_HOME}/.claude/plugins/known_marketplaces.json"
+
+run_restore --force
+check "even --force keeps this box's registry" \
+  "$(< "${FIX_HOME}/.claude/plugins/known_marketplaces.json")" '{"this-box":{"source":{"source":"git"}}}'
+
+# The payload carries no plugin cache, so a registry from another box names
+# install locations that are not here — and the activation then takes the update
+# path for a clone it never made.
+print -r -- "and a box without a registry does not inherit another box's"
+fixture marketplace-registry-fresh
+mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/plugins"
+print -r -- '{"other-box":{"source":{"source":"git"}}}' \
+  > "${FIX_ROOT}/instances/TestDistro/claude/plugins/known_marketplaces.json"
+
+run_restore
+check  "the restore exits clean"      "${RC}" "0"
+absent "no registry is written here"  "${FIX_HOME}/.claude/plugins/known_marketplaces.json"
+
+print -r -- "a source written during the backup is re-read, not called a mismatch"
+fixture verify-source-grows
+mkdir -p "${FIX_HOME}/.config/k9s"
+print -r -- "seed" > "${FIX_HOME}/.config/k9s/config.yaml"
+# backup_dir copies with tar (mtimes preserved), chmods the copy, then verifies
+# it. The shim appends to the source inside that window — what a live shell
+# history or transcript does on a real box — so the copy is complete but stale.
+REAL_CHMOD="$(whence -p chmod)"
+cat > "${BASE}/bin/chmod" <<STUB
+#!/usr/bin/env zsh
+if [[ -n "\${GROW_DST:-}" && ! -e "\${GROW_MARK}" && "\$*" == *"\${GROW_DST}"* ]]; then
+  print -r -- "written while the backup ran" >> "\${GROW_SRC}"
+  : > "\${GROW_MARK}"
+fi
+exec ${REAL_CHMOD} "\$@"
+STUB
+chmod +x "${BASE}/bin/chmod"
+export GROW_SRC="${FIX_HOME}/.config/k9s/config.yaml"
+# The per-file chmod, not the directory one: ensure_dir chmods the destination
+# directory before the copy, and an append there would simply be copied along.
+export GROW_DST="/k9s/config/config.yaml"
+export GROW_MARK="${BASE}/grown"
+run_backup --force
+unset GROW_SRC GROW_DST GROW_MARK
+rm -f "${BASE}/bin/chmod" "${BASE}/grown"
+check    "the run exits clean"                "${RC}"  "0"
+excludes "the growing file is no mismatch"    "${OUT}" "Verify mismatch"
+contains "and the re-read is logged"          "${OUT}" "written during the backup"
+
 # ===========================================================================
 # Shared state root (FLAKELAB_STATE_ROOT)
 # ===========================================================================
