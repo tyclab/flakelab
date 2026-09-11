@@ -204,8 +204,10 @@ rec {
     exec ${zsh} ${s}/test-provision-nix "$@"
   '';
 
-  # Provisioning runs powershell.exe by absolute path, detached: it ends in
-  # `wsl --shutdown`, which kills the shell that started it.
+  # Provisioning runs powershell.exe by absolute path, and never detached: a Windows
+  # process started over interop dies with the distro that launched it, so the
+  # commands that restart this distro print the Windows command instead (see the
+  # header of files/scripts/nix-provision).
   nix-provision = pkgs.writeShellScriptBin "nix-provision" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export PATH=${
@@ -213,8 +215,6 @@ rec {
         pkgs.zsh
         pkgs.coreutils
         pkgs.gnugrep
-        # setsid, so the run outlives the shell the shutdown takes down.
-        pkgs.util-linux
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-provision "$@"

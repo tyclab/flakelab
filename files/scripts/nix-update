@@ -92,7 +92,7 @@ _nix_fetch() {
   local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
   local -a GITNET_TIMEOUT_CMD=(timeout 20)
   gitnet_retry git -C "$_dir" fetch -q --all --prune && return 0
-  print -P "%F{yellow}⚠ Could not check for flakelab updates — fetch failed after retry (${GITNET_WHY})%f"
+  print -P "%F{yellow}⚠ Could not fetch ${_dir} — fetch failed after retry (${GITNET_WHY})%f"
   [[ -n "$GITNET_OUT" ]] && print -r -- "$GITNET_OUT"
   return 1
 }

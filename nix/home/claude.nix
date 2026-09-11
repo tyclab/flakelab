@@ -83,7 +83,9 @@ let
   # so it covers the create case too. defaultMode and skipAutoPermissionPrompt must
   # travel together: Claude clears the consent flag whenever the mode is not auto.
   # The four vars are deleted, not set to "0": they gate the feature-flag evaluation
-  # Remote Control needs, and two of them are raw truthiness.
+  # Remote Control needs, and two of them are raw truthiness. Of the four, only
+  # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also stops the self-updater this flake
+  # relies on (Claude Code 2.1.267 and 2.1.268).
   claudeAgentDefaultsJq = lib.optionalString cfg.claudeAgentDefaults ''
     | .permissions.defaultMode = "auto"
     | .skipAutoPermissionPrompt = true
