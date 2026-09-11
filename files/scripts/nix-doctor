@@ -278,15 +278,23 @@ XDG_GITCONFIG="${HOME}/.config/git/config"
 # file there wins over the flake's ~/.config/git/config for every key both set —
 # silently, which is how a distro can run for weeks with programs.git.settings
 # doing nothing and safe.directory naming a checkout that no longer matters.
+# `--global`, because the question is about the USER's configuration: without it
+# the origin is whatever the caller's directory resolves to, so the doctor run
+# from inside a clone that sets its own user.email — an ordinary thing for a
+# repository to do — read that repository as the shadow, and the remedy below
+# would have moved its remote, branch tracking and credential helper aside.
 if [[ ! -f "${XDG_GITCONFIG}" && ! -L "${XDG_GITCONFIG}" ]]; then
   log_fail "no ${XDG_GITCONFIG} — programs.git rendered nothing"
   log_hint "flakelab update   (programs.git.enable must be true in nix/home/git-ssh.nix)"
 else
   local emailOrigin
-  emailOrigin="$(git config --show-origin --get user.email 2>/dev/null | cut -f1)"
+  # --includes as well: reading one named file turns include resolution OFF by
+  # default, and the flake's ~/.gitconfig is nothing but an include of the XDG
+  # file — without it the probe finds no user.email at all and fails everywhere.
+  emailOrigin="$(git config --global --includes --show-origin --get user.email 2>/dev/null | cut -f1)"
   emailOrigin="${emailOrigin#file:}"
   if [[ -z "${emailOrigin}" ]]; then
-    log_fail "git has no user.email from any config file"
+    log_fail "no user.email in any user-level git config"
     log_hint "set gitEmail in the overlay (or flakelab.gitEmail from a module) and run flakelab update"
   elif [[ "${emailOrigin}" == "${XDG_GITCONFIG}" ]]; then
     log_ok "git reads the flake's config (${XDG_GITCONFIG})"
