@@ -134,15 +134,27 @@ in
         mkdir -p "$HOME/.kiro/settings"
 
         # Server definitions from the Claude marketplace clone, keyed by server name.
-        # -r so an absent clone leaves the empty object rather than invoking jq on
-        # nothing, which would emit null and fail the merge below.
-        _market="$(
-          find "$HOME/.claude/plugins/marketplaces" -mindepth 3 -maxdepth 4 \
-               -name .mcp.json -type f -print0 2>/dev/null \
-            | xargs -0 -r jq -s 'reduce .[] as $f ({}; . * ($f.mcpServers // {}))
-                                 | with_entries(.value |= del(.env))' 2>/dev/null
-        )"
-        [ -n "$_market" ] || _market='{}'
+        # The clone is runtime data read under the activation script's `set -eu -o
+        # pipefail`, and it is absent on every first switch: installClaudePlugins
+        # defers until provisioning has seeded a key. Unguarded, find's non-zero exit
+        # on that absent root aborts the whole switch before the fallback applies.
+        # An empty root leaves xargs nothing to run (-r), hence the '{}' default. A
+        # manifest jq cannot read warns and keeps the definitions below instead of
+        # aborting mid-entry; flakelabHealthCheck then names it.
+        _marketRoot="$HOME/.claude/plugins/marketplaces"
+        _market='{}'
+        if [ -d "$_marketRoot" ]; then
+          if ! _market="$(
+            find "$_marketRoot" -mindepth 3 -maxdepth 4 \
+                 -name .mcp.json -type f -print0 2>/dev/null \
+              | xargs -0 -r jq -s 'reduce .[] as $f ({}; . * ($f.mcpServers // {}))
+                                   | with_entries(.value |= del(.env))' 2>/dev/null
+          )"; then
+            ${flakelabWarn} "could not read the Claude marketplace MCP definitions under $_marketRoot; Kiro keeps flakelab's own definitions for those servers."
+            _market='{}'
+          fi
+          [ -n "$_market" ] || _market='{}'
+        fi
 
         # A first run has no file to merge onto; an empty object is that same merge
         # with nothing on the left, so the marketplace layer applies either way.

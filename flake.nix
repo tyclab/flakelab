@@ -95,6 +95,9 @@
               git
               jq
               util-linux
+              # test-clone-repos generates a throwaway key: the sweep refuses to
+              # start unless it can prove the key needs no agent.
+              openssh
             ];
           }
           ''
@@ -309,6 +312,7 @@
       # The offline suites, the nix linters, and the eval-time assertions. `targets`
       # instantiates both systems and builds neither.
       checks.${system} = {
+        clone-repos = suiteCheck "clone-repos";
         gitchecker = suiteCheck "gitchecker";
         gitcleaner = suiteCheck "gitcleaner";
         gitpublisher = suiteCheck "gitpublisher";
@@ -374,6 +378,69 @@
           assert builtins.isString vm.system.build.toplevel.drvPath;
           pkgs.runCommandLocal "flakelab-check-targets" { } "touch $out";
 
+        # Claude, its marketplaces and Kiro update themselves; nothing here pins them,
+        # so the switches that could stop them are asserted. The rendered
+        # claudeAutoUpdates entry runs against absent, populated and malformed state,
+        # and Kiro's baseline must not opt out of its own updater.
+        claude-auto-updates =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.claudePluginMarketplaces = [
+                    {
+                      name = "fixture-market";
+                      url = "git@example.invalid:group/fixture-market.git";
+                    }
+                  ];
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            entry = pkgs.writeText "claude-auto-updates-activation" hm.home.activation.claudeAutoUpdates.data;
+            kiroCli = builtins.fromJSON (builtins.readFile ./files/config/kiro/cli.json);
+          in
+          assert (kiroCli."app.disableAutoupdates" or null) == false;
+          pkgs.runCommandLocal "flakelab-check-claude-auto-updates"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home" DRY_RUN_CMD=
+              mkdir -p "$HOME/.claude/plugins"
+              claudeJson="$HOME/.claude.json"
+              known="$HOME/.claude/plugins/known_marketplaces.json"
+              warnLog="$HOME/.local/state/flakelab/activation-failures"
+              activate() { bash -euo pipefail ${entry}; }
+
+              echo "absent state files stay absent"
+              activate
+              test ! -e "$claudeJson"
+              test ! -e "$known"
+              test ! -e "$warnLog"
+
+              echo "the native installer's autoUpdates=false is switched on, the rest kept"
+              echo '{"installMethod":"native","autoUpdates":false,"autoUpdatesProtectedForNative":true,"keep":1}' > "$claudeJson"
+              echo '{"fixture-market":{"source":{"source":"git","url":"git@example.invalid:group/fixture-market.git"},"lastUpdated":"x"},"other":{"source":{"source":"github","repo":"o/r"}}}' > "$known"
+              activate
+              jq -e '.autoUpdates == true and .keep == 1 and .installMethod == "native"' "$claudeJson" > /dev/null
+              test "$(stat -c %a "$claudeJson")" = 600
+              jq -e '.["fixture-market"] | .autoUpdate == true and .lastUpdated == "x"' "$known" > /dev/null
+              jq -e '.other | has("autoUpdate") | not' "$known" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a malformed marketplace registry warns and is left alone"
+              echo 'not-json' > "$known"
+              activate
+              grep -qx 'not-json' "$known"
+              grep -q 'could not enable auto-update for the Claude marketplaces' "$warnLog"
+
+              touch $out
+            '';
+
         # Both backup units must keep the escape hatch in both sections. Forced on,
         # or the units would not render and the check would pass vacuously.
         state-sync-decouple =
@@ -399,6 +466,19 @@
           assert units.flakelab-state-sync.Service.Type == "oneshot";
           assert hm.systemd.user.timers.flakelab-state-sync.Timer.OnUnitActiveSec == "30min";
           pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
+
+        # kiro-cli rewrites ~/.kiro/settings/cli.json itself (`kiro-cli settings` saves
+        # by rename), which turns the store link into a regular file. Unforced, Home
+        # Manager moves that aside to cli.json.hm-bak once, then fails the next
+        # activation that finds the backup name taken. Forced, the checked-in baseline
+        # simply wins again on every switch.
+        kiro-cli-json =
+          let
+            sys = self.nixosConfigurations.default.config;
+            hm = sys.home-manager.users.${sys.flakelab.username};
+          in
+          assert hm.home.file.".kiro/settings/cli.json".force;
+          pkgs.runCommandLocal "flakelab-check-kiro-cli-json" { } "touch $out";
 
         # The sops seam: forced on it must render exactly the contract zsh.nix sources,
         # and at its null default it must contribute nothing.
@@ -433,6 +513,67 @@
           assert hasInfix ".config/tyc/secrets.env" zshOff;
           assert !hasInfix "/run/secrets/tyc-env" zshOff;
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
+
+        # kiroMcpMerge reads the Claude marketplace clone, which is runtime data, under
+        # Home Manager's `set -eu -o pipefail`. So the rendered entry itself runs here
+        # against each state that clone can be in: absent (every first switch, where
+        # installClaudePlugins defers until provisioning seeds a key), empty, valid and
+        # malformed. A flakelab-warn entry fails the rebuild through flakelabHealthCheck,
+        # so the three benign states also assert that none was written.
+        kiro-mcp-merge =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                # synology: the one server kiroMcpMerge single-sources from the clone.
+                { flakelab.sessionVariables.SYNOLOGY_URL = "https://nas.example.invalid"; }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            entry = pkgs.writeText "kiro-mcp-merge-activation" hm.home.activation.kiroMcpMerge.data;
+          in
+          pkgs.runCommandLocal "flakelab-check-kiro-mcp-merge"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home" DRY_RUN_CMD=
+              mkdir -p "$HOME"
+              mcp="$HOME/.kiro/settings/mcp.json"
+              root="$HOME/.claude/plugins/marketplaces"
+              warnLog="$HOME/.local/state/flakelab/activation-failures"
+              activate() { bash -euo pipefail ${entry}; }
+
+              echo "absent marketplace root"
+              activate
+              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "empty marketplace root"
+              rm "$mcp"
+              mkdir -p "$root"
+              activate
+              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a valid plugin definition wins, minus its env block"
+              manifest="$root/fixture/plugins/mcp-synology/.mcp.json"
+              mkdir -p "$(dirname "$manifest")"
+              echo '{"mcpServers":{"synology":{"command":"market","args":["a"],"env":{"X":"''${X}"}}}}' > "$manifest"
+              activate
+              jq -e '.mcpServers.synology | .command == "market" and (has("env") | not)' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a malformed manifest warns and keeps the flakelab definition"
+              echo 'not-json' > "$manifest"
+              activate
+              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
+              grep -q 'could not read the Claude marketplace MCP definitions' "$warnLog"
+
+              touch $out
+            '';
       };
 
       # The tooling this repo's gates need, at the versions flake.lock pins.

@@ -65,6 +65,7 @@ in
         "claudeMcpMerge"
         "claudePermissions"
         "claudeMd"
+        "claudeAutoUpdates"
         "pinNpm"
         "bwConfigServer"
       ]
