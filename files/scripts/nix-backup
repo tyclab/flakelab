@@ -426,6 +426,19 @@ verify_tree() {
     [[ -L "${src}/${rel}" ]] && continue
     (( ${+kept[${rel}]} )) && continue
     if ! cmp -s "${src}/${rel}" "${dst}/${rel}"; then
+      # A source still being written — a shell history, a live transcript — grows
+      # between the copy and this read, and then differs from a copy that was
+      # complete when it was taken. That is not the short write this check exists
+      # for, and the mirror preserves mtimes, so a source NEWER than its copy is
+      # copied once more and compared again; a copy that still differs is the
+      # finding. A short write leaves both sides at the same mtime and is reported
+      # as before.
+      if [[ "${src}/${rel}" -nt "${dst}/${rel}" ]] \
+        && cp -p "${src}/${rel}" "${dst}/${rel}" 2> /dev/null \
+        && cmp -s "${src}/${rel}" "${dst}/${rel}"; then
+        log_info "Verify re-copied a source written during the backup: ${rel}"
+        continue
+      fi
       mismatches=$(( mismatches + 1 ))
       log_warn "Verify mismatch: ${dst}/${rel}"
     fi
@@ -1096,7 +1109,11 @@ do_restore() {
       done
     fi
     ensure_dir "${HOME_DIR}/.claude/plugins"
-    restore_file "${BACKUP_CLAUDE}/plugins/known_marketplaces.json" "${HOME_DIR}/.claude/plugins/known_marketplaces.json"
+    # No known_marketplaces.json: the activation writes it (`claude plugin
+    # marketplace add`), and the payload carries no plugin cache to go with it.
+    # A copy from another box therefore registers marketplaces whose clones are
+    # not here, and the next activation takes the update path for a clone it
+    # never made — the same reason ~/.kiro/settings/mcp.json is not restored.
     # Rewritten from claudePlugins on every activation: local wins.
     restore_file "${BACKUP_CLAUDE}/plugins/installed_plugins.json"  "${HOME_DIR}/.claude/plugins/installed_plugins.json" true
     restore_file "${BACKUP_CLAUDE}/plugins/blocklist.json"          "${HOME_DIR}/.claude/plugins/blocklist.json"
