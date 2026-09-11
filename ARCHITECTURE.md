@@ -298,7 +298,22 @@ the state root has to converge on its own:
   and the pull refills it.
 - **Transcripts** are opt-in (`stateTranscripts`) and grow-only in both
   directions: a copy with fewer lines never overwrites one with more, `--force`
-  included. Lines, not bytes — a redacted copy can outweigh its source.
+  included. Lines, not bytes — a redacted copy can outweigh its source. A
+  longer copy that does not _continue_ the one it would replace (the entry the
+  shorter copy ends on, its last `uuid`, is nowhere in the longer one) is a
+  fork — the same session carried on in two places. The longer copy still takes
+  the path, but the other branch is parked first: a state-root copy under
+  `<stateRoot>/claude/diverged/` (it replicates), a local one under
+  `~/.local/state/flakelab/state-sync/diverged/` (raw, so it stays on its box).
+  A conflict copy that forks its base is parked the same way before it is
+  folded away. `claude --resume <parked file> --fork-session` reopens a branch
+  as a session of its own; nothing prunes them, so delete them once read.
+- **Session side files** — the tool outputs Claude Code spills to
+  `<slug>/<session>/tool-results/`, a subagent's `.meta.json` — travel with the
+  transcripts. Write-once, so each is copied only to a side that lacks it,
+  through the same gate as plain text: a reported secret is replaced literally,
+  and a file whose secret cannot be matched literally stays on its box, listed
+  in `~/.local/state/flakelab/state-sync/side-files.held`.
 
 **The gate.** The merged history and the transcripts are everything ever typed
 at a prompt or printed in a session, including anything pasted before you had a

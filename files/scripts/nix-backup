@@ -66,6 +66,13 @@ SYNC_ARTIFACT_GLOBS=(
   '*.sync-conflict-*'
   '*conflicted copy*'
   '.*.flakelab-tmp.*'
+  # Syncthing: its in-flight temps (Unix and Windows spelling) and its folder
+  # metadata — marker, version store, ignore file — none of which is state.
+  '.syncthing.*.tmp'
+  '~syncthing~*.tmp'
+  '.stfolder'
+  '.stversions'
+  '.stignore'
   '@eaDir'
   '.DS_Store'
   'Thumbs.db'
@@ -1107,6 +1114,7 @@ do_restore() {
         rel_path_is_sync_artifact "${rel}" && continue
         sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${rel}"
       done
+      pull_side_files
     fi
     ensure_dir "${HOME_DIR}/.claude/plugins"
     # No known_marketplaces.json: the activation writes it (`claude plugin
@@ -1239,6 +1247,7 @@ do_backup() {
   if state_enabled && ${STATE_TRANSCRIPTS}; then
     fold_transcript_conflicts
     backup_transcripts
+    backup_side_files
   fi
   # This box's claim on its slugs; --state-gc judges the root by the union.
   write_state_manifest
@@ -1321,6 +1330,8 @@ do_state_only() {
       fold_transcript_conflicts
       backup_transcripts
       pull_transcripts
+      backup_side_files
+      pull_side_files
     fi
 
     # This box's claim on its slugs; --state-gc judges the root by the union.
