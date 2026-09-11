@@ -274,6 +274,19 @@ _nix_relock_flakelab() {
 }
 _nix_relock_flakelab
 
+# `nixos-rebuild switch` restarts home-manager-<user>.service only when the
+# generation changed, so a switch that builds the same closure never re-runs the
+# activation — and every step it deferred for want of an ssh key stays deferred
+# behind a green run. That is the fresh-provision shape exactly: the key arrives
+# between the two switches, and the second one builds what the first did. The
+# unit's own start timestamp is what tells a restart from a no-op apart.
+_hm_unit="home-manager-${USER:-$(id -un)}.service"
+_hm_stamp() {
+  command -v systemctl > /dev/null 2>&1 || return 0
+  systemctl show -p ActiveEnterTimestampMonotonic --value "${_hm_unit}" 2> /dev/null
+}
+_hm_before="$(_hm_stamp)"
+
 # `path:`, not a bare path: a bare path resolves as `git+file:`, which sees only
 # tracked files, so it finds no lock, rewrites one as root, and the operator's next
 # unprivileged `nix` command in that checkout dies on a permission error.
@@ -281,6 +294,24 @@ _nix_relock_flakelab
 # running system's nixos-rebuild. Only the path is encoded: the `#` after it is the
 # flake URL's fragment. `exit $?`, so nixos-rebuild's own codes reach the caller.
 sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || exit $?
+
+# Same closure as the running generation: the switch left the activation alone,
+# so run it here instead. Failures warn only — the switch itself succeeded.
+if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
+  print -P "%F{cyan}ℹ generation unchanged, so the switch left ${_hm_unit} alone — restarting it to retry the deferred steps%f"
+  sudo systemctl restart "${_hm_unit}" \
+    || print -P "%F{yellow}⚠ ${_hm_unit} did not restart cleanly — inspect: systemctl status ${_hm_unit}%f"
+fi
+
+# What activation could not do is never fatal and never printed by the switch, so
+# without this it surfaces only in `flakelab doctor`. Read with zsh's own split:
+# this runs before any PATH beyond the wrapper's is assumed.
+_deferred="$HOME/.local/state/flakelab/activation-deferred"
+if [[ -s "${_deferred}" ]]; then
+  _deferred_lines=("${(@f)$(< "${_deferred}")}")
+  print -P "%F{yellow}⚠ activation deferred ${#_deferred_lines} step(s), also listed by flakelab doctor:%f"
+  print -l -- "${_deferred_lines[@]/#/    }"
+fi
 
 # The activation that does this only re-runs when the built config changed, while
 # the marketplace clone is runtime data, so replay it after every switch. Failures
