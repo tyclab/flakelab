@@ -28,8 +28,12 @@ the private overlay `flakelab-config`, which imports this flake via
     `~/.claude/sessions/<pid>.json` (open transcript in `/proc` as fallback).
     `--save` before a `wsl --shutdown` or reboot, `--resume` prints the
     `claude --resume` commands after, `--open` puts each in its own Windows
-    Terminal tab. Never `pgrep -f`: that matches helpers. Saves go to
-    `~/.local/state/flakelab/sessions/`, never into `~/.claude/sessions`.
+    Terminal tab. `--autosave` (the `flakelab-sessions-autosave` timer,
+    `sessionsAutosaveInterval`) keeps one snapshot per boot, so a crash needs no
+    `--save` beforehand; `--recent` lists stopped sessions changed in the last
+    day. Never `pgrep -f`: that matches helpers. Saves go to the state root's
+    `claude/sessions/` when one is set, else `~/.local/state/flakelab/sessions/`,
+    never into `~/.claude/sessions`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,

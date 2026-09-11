@@ -58,6 +58,8 @@ mkdir -p "${STUBS}"
 cat > "${STUBS}/pgrep" <<'STUB'
 #!/usr/bin/env zsh
 [[ "$1" == "-x" && "$2" == "claude" ]] || exit 1
+# FAKE_PGREP_NONE: nothing running, the first minutes after a crash.
+[[ -n "${FAKE_PGREP_NONE:-}" ]] && exit 1
 print -l 100 200 300
 STUB
 cat > "${STUBS}/ps" <<'STUB'
@@ -147,6 +149,92 @@ run --resume
 check "live fallback exits 0" "${RC}" "0"
 contains "live fallback says so" "${OUT}" "# from the live sessions (no saved file)"
 contains "live fallback prints a resume line" "${OUT}" "claude --resume ${SID_B}"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "a directory this box does not have gets no cd"
+GONE="${BASE}/gone dir"
+print -rl -- "# written on another machine" "${GONE}  ${SID_A}" > "${BASE}/elsewhere.txt"
+run --resume "${BASE}/elsewhere.txt"
+check "--resume with a missing directory exits 0" "${RC}" "0"
+contains "--resume resumes by id and names the missing path" "${OUT}" "claude --resume ${SID_A}  # ${GONE} is not on this box"
+excludes "--resume never cds into it" "${OUT}" "cd ${(q)GONE}"
+export WSL_DISTRO_NAME=flakelab
+: > "${WT_LOG}"
+run --open "${BASE}/elsewhere.txt"
+contains "--open starts that tab in the home directory" "$(head -1 "${WT_LOG}")" "--cd ~ -- claude --resume ${SID_A}"
+unset WSL_DISTRO_NAME
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "--autosave: one file per boot, sorted, quiet when unchanged, never empty"
+SAVES="${HOME}/.local/state/flakelab/sessions"
+rm -rf "${SAVES}"
+export FLAKELAB_BOOT_ID_FILE="${BASE}/boot_id"
+print -r -- "aaaaaaaa-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
+AUTO_A="${SAVES}/${HOST}-autosave-aaaaaaaa1111.txt"
+run --autosave
+check "--autosave exits 0" "${RC}" "0"
+[[ -f "${AUTO_A}" ]] && ok "--autosave writes <host>-autosave-<boot>.txt" || bad "--autosave wrote no ${AUTO_A:t}"
+contains "--autosave reports the write" "${ERR}" "autosaved 2 session(s) to ${AUTO_A}"
+check "--autosave lines are the save shape, sorted" "$(grep -v '^#' "${AUTO_A}")" "${WORK}  ${SID_A}"$'\n'"${WORK}  ${SID_B}"
+check "--autosave leaves no scratch file" "$(ls -A "${SAVES}" | grep -c flakelab-tmp)" "0"
+run --autosave
+check "an unchanged set is not rewritten" "${ERR}" ""
+export FAKE_PGREP_NONE=1
+run --autosave
+unset FAKE_PGREP_NONE
+check "nothing running exits 0" "${RC}" "0"
+check "nothing running keeps the snapshot" "$(grep -vc '^#' "${AUTO_A}")" "2"
+
+# A new boot: what --resume brings back is the file the last boot left, never
+# this boot's own snapshot and never another host's.
+print -r -- "bbbbbbbb-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
+AUTO_B="${SAVES}/${HOST}-autosave-bbbbbbbb1111.txt"
+touch -d '1 minute ago' "${AUTO_A}"
+run --autosave
+[[ -f "${AUTO_B}" ]] && ok "a new boot gets a file of its own" || bad "no autosave for the new boot"
+[[ -f "${AUTO_A}" ]] && ok "the previous boot's file survives" || bad "the previous boot's autosave is gone"
+run --resume
+contains "--resume takes the previous boot's snapshot, not this boot's" "${OUT}" "# from ${AUTO_A}"
+print -rl -- "# another host" "${WORK}  ${SID_A}" > "${SAVES}/otherhost-autosave-cccccccc1111.txt"
+run --resume
+contains "--resume never takes another host's autosave" "${OUT}" "# from ${AUTO_A}"
+
+for i in 1 2 3 4 5 6; do
+  print -r -- "# old" > "${SAVES}/${HOST}-autosave-old00000000${i}.txt"
+  touch -d "${i} hours ago" "${SAVES}/${HOST}-autosave-old00000000${i}.txt"
+done
+print -r -- "cccccccc-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
+run --autosave
+check "--autosave keeps this host's five newest" "$(print -l "${SAVES}/${HOST}"-autosave-*.txt(N) | wc -l | tr -d ' ')" "5"
+[[ -f "${SAVES}/${HOST}-autosave-cccccccc1111.txt" ]] && ok "the pruning keeps the file it just wrote" || bad "the pruning removed the new autosave"
+[[ -f "${SAVES}/otherhost-autosave-cccccccc1111.txt" ]] && ok "the pruning never touches another host's files" || bad "another host's autosave was pruned"
+unset FLAKELAB_BOOT_ID_FILE
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "--recent: stopped sessions, newest first, the running ones left out"
+PROJ="${HOME}/.claude/projects/-work"
+SID_C=cccccccc-dddd-eeee-ffff-000000000000
+SID_D=dddddddd-eeee-ffff-0000-111111111111
+mkdir -p "${PROJ}/${SID_C}/subagents"
+# The last complete line's cwd wins; a half-written tail line is skipped.
+print -r -- "{\"type\":\"user\",\"cwd\":\"/somewhere/else\",\"sessionId\":\"${SID_C}\"}" > "${PROJ}/${SID_C}.jsonl"
+print -r -- "{\"type\":\"assistant\",\"cwd\":\"${WORK}\",\"sessionId\":\"${SID_C}\"}" >> "${PROJ}/${SID_C}.jsonl"
+print -rn -- "{\"type\":\"user\",\"cwd\":\"/half" >> "${PROJ}/${SID_C}.jsonl"
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\",\"sessionId\":\"${SID_D}\"}" > "${PROJ}/${SID_D}.jsonl"
+touch -d '3 days ago' "${PROJ}/${SID_D}.jsonl"
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\",\"sessionId\":\"${SID_B}\"}" > "${PROJ}/${SID_B}.jsonl"
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${PROJ}/${SID_C}/subagents/agent-1.jsonl"
+run --recent
+check "--recent exits 0" "${RC}" "0"
+contains "--recent resumes a stopped session from the last directory it recorded" "${OUT}" "cd ${(q)WORK} && claude --resume ${SID_C}  # "
+excludes "--recent leaves a running session out" "${OUT}" "${SID_B}"
+excludes "--recent leaves a session older than the window out" "${OUT}" "${SID_D}"
+excludes "--recent lists session files, never subagent transcripts" "${OUT}" "agent-1"
+run --recent 96
+contains "--recent <hours> widens the window" "${OUT}" "claude --resume ${SID_D}"
 
 run --help
 check "--help exits 0" "${RC}" "0"

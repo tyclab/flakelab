@@ -375,7 +375,10 @@
           pkgs.runCommandLocal "flakelab-check-targets" { } "touch $out";
 
         # Both backup units must keep the escape hatch in both sections. Forced on,
-        # or the units would not render and the check would pass vacuously.
+        # or the units would not render and the check would pass vacuously. The state
+        # sync also stands without the daily pass, its SessionEnd push follows it
+        # (written while it is scheduled, absent while it is not), and the session
+        # autosave is on by default with neither.
         state-sync-decouple =
           let
             forced = self.nixosConfigurations.default.extendModules {
@@ -391,6 +394,28 @@
             };
             hm = forced.config.home-manager.users.${forced.config.flakelab.username};
             units = hm.systemd.user.services;
+            syncOnly = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    backupAutostart = nixpkgs.lib.mkForce false;
+                    stateRoot = nixpkgs.lib.mkForce "/tmp/flakelab-check-state";
+                    stateSyncInterval = nixpkgs.lib.mkForce "5min";
+                  };
+                }
+              ];
+            };
+            hmSync = syncOnly.config.home-manager.users.${syncOnly.config.flakelab.username};
+            plain = self.nixosConfigurations.default.config;
+            hmPlain = plain.home-manager.users.${plain.flakelab.username};
+            # Both halves: the command handed to jq, and the fragment that writes it.
+            pushes =
+              h:
+              let
+                inherit (h.home.activation.claudeDisableAttribution) data;
+              in
+              nixpkgs.lib.hasInfix "--no-block flakelab-state-sync.service" data
+              && nixpkgs.lib.hasInfix "command: $push" data;
           in
           assert units.flakelab-backup.Unit."X-RestartIfChanged" == false;
           assert units.flakelab-backup.Service."X-RestartIfChanged" == false;
@@ -398,6 +423,15 @@
           assert units.flakelab-state-sync.Service."X-RestartIfChanged" == false;
           assert units.flakelab-state-sync.Service.Type == "oneshot";
           assert hm.systemd.user.timers.flakelab-state-sync.Timer.OnUnitActiveSec == "30min";
+          assert hmSync.systemd.user.services ? flakelab-state-sync;
+          assert !(hmSync.systemd.user.services ? flakelab-backup);
+          assert !(hmSync.systemd.user.timers ? flakelab-backup);
+          assert hmSync.systemd.user.timers.flakelab-state-sync.Timer.OnUnitActiveSec == "5min";
+          assert pushes hmSync;
+          assert !(pushes hmPlain);
+          assert
+            hmPlain.systemd.user.services.flakelab-sessions-autosave.Service."X-RestartIfChanged" == false;
+          assert hmPlain.systemd.user.timers.flakelab-sessions-autosave.Timer.OnUnitActiveSec == "5min";
           pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
 
         # The sops seam: forced on it must render exactly the contract zsh.nix sources,

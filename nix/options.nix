@@ -386,7 +386,13 @@ in
     stateSyncInterval = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot and backupAutostart: without a root there is nothing to sync, and a box that opted out of scheduled backups opted out of this too. The full payload pass stays on its own 24h timer either way.";
+      description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot (without a root there is nothing to sync) but NOT backupAutostart: the two timers are independent, so a box that must not run the unattended daily payload pass — a guest whose backup root is a soft network mount, say — still converges its state root. While it is scheduled, a Claude Code SessionEnd hook also starts the sync when a session closes, so a finished session does not wait out the period.";
+    };
+
+    sessionsAutosaveInterval = mkOption {
+      type = types.nullOr types.str;
+      default = "5min";
+      description = "systemd time span (OnUnitActiveSec syntax) between snapshots of the running Claude Code sessions (`flakelab sessions --autosave`) — the list `flakelab sessions --resume` / `--open` brings back after a crash or a hard reset. One file per boot beside the saves (in stateRoot when set), rewritten only when the running set changed and never with an empty list, so the file a crash leaves behind is exactly what was open and survives the reboot. null schedules none.";
     };
   };
 }

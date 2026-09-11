@@ -96,6 +96,26 @@ let
       )
   '';
 
+  # A session that closes cleanly is pushed at once instead of waiting out the
+  # state-sync timer: SessionEnd starts the timer's own oneshot — `--no-block`, and a
+  # start while a run is active joins that run rather than queueing another. Owned by
+  # its unit name, so a box whose sync is switched off drops the hook again and a
+  # hand-added SessionEnd hook is never touched. A crash fires no hook; the timer and
+  # the session autosave cover that.
+  stateSyncScheduled = cfg.stateRoot != null && cfg.stateSyncInterval != null;
+  claudeStatePushCmd = "systemctl --user start --no-block flakelab-state-sync.service >/dev/null 2>&1 || true";
+  claudeStatePushArg = lib.optionalString stateSyncScheduled "--arg push ${lib.escapeShellArg claudeStatePushCmd}";
+  claudeStatePushJq = ''
+    | .hooks = ((.hooks // {})
+        | .SessionEnd = (((.SessionEnd // [])
+            | map(select((.hooks // []) | any((.command // "") | contains("flakelab-state-sync.service")) | not)))
+            + ${
+              if stateSyncScheduled then ''[{hooks: [{type: "command", command: $push}]}]'' else "[]"
+            })
+        | if .SessionEnd == [] then del(.SessionEnd) else . end)
+    | if .hooks == {} then del(.hooks) else . end
+  '';
+
   # Newline-terminated whatever the overlay wrote, or the END marker lands on the
   # last line of the appended text and the block stops parsing as one.
   claudeMdExtraFile = pkgs.writeText "claude-md-extra.md" (
@@ -300,7 +320,7 @@ in
           # Seeding with `{}` lets one merge cover the create case; `-s`, not `-f`, so
           # a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --argjson ds "$_denystale" --slurpfile am ${claudeAutoModeFile} '
+          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --argjson ds "$_denystale" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -310,6 +330,7 @@ in
             | .permissions.deny = (((.permissions.deny // []) - $ds) + $d | unique)
             ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
+            ${claudeStatePushJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings" || {
             rm -f "$_settings.tmp"
             ${flakelabWarn} "could not update Claude attribution in $_settings."
