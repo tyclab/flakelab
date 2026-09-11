@@ -49,6 +49,9 @@ fi
 # lookup, so this works both from the nix store copy the wrapper executes and
 # the repo.
 source "${0:A:h}/lib/git-net.zsh" || exit 1
+# The one implementation of a fast-forward the sweep tools share, so this and
+# gitchecker cannot disagree on which branch state may move.
+source "${0:A:h}/lib/gitscan.zsh" || exit 1
 
 SSH_MUX_DIR="$(mktemp -d)"
 RESULT_FILE="$(mktemp)"
@@ -135,6 +138,33 @@ process_repo() {
         if [[ -n "${ahead_count}" && -n "${behind_count}" && "${ahead_count}" != "0" && "${behind_count}" != "0" ]]; then
           echo "FORCE_PUSHED|${dest}|${default_branch} diverged: ${ahead_count} local-only, ${behind_count} upstream-only" >> "${RESULT_FILE}"
           return
+        fi
+      fi
+    fi
+
+    # The default branch is the one branch a sweep can move without touching a
+    # working tree: `git fetch . <upstream>:<branch>` writes the ref alone, and
+    # git refuses it unless the move is a fast-forward and no worktree has the
+    # branch checked out. It runs before the rebase guards below on purpose —
+    # dirty tree, detached HEAD and a pruned remote branch are exactly the states
+    # that left the default branch behind on every run. A rewritten or diverged
+    # default returned above, so only a strictly-behind ref reaches this.
+    if [[ -n "${default_branch}" ]] \
+       && git -C "${dest}" rev-parse -q --verify "refs/heads/${default_branch}" > /dev/null 2>&1 \
+       && [[ "$(git -C "${dest}" symbolic-ref --short -q HEAD 2> /dev/null)" != "${default_branch}" ]]; then
+      local ff_ahead ff_behind ff_before
+      ff_ahead="$(git -C "${dest}" rev-list --count \
+        "refs/remotes/origin/${default_branch}..refs/heads/${default_branch}" 2> /dev/null)"
+      ff_behind="$(git -C "${dest}" rev-list --count \
+        "refs/heads/${default_branch}..refs/remotes/origin/${default_branch}" 2> /dev/null)"
+      if [[ "${ff_ahead}" == "0" && -n "${ff_behind}" && "${ff_behind}" != "0" ]]; then
+        ff_before="$(git -C "${dest}" rev-parse --short "refs/heads/${default_branch}" 2> /dev/null)"
+        # Empty head_branch: the branch is not HEAD here, which is what selects
+        # the ref-only path in the helper.
+        if gitscan_ff_branch "${dest}" "${default_branch}" "origin/${default_branch}" "" 0 false; then
+          echo "DEFAULT_FF|${dest}|${default_branch} ${ff_before}..$(git -C "${dest}" rev-parse --short "refs/heads/${default_branch}") (+${ff_behind})" >> "${RESULT_FILE}"
+        else
+          echo "DEFAULT_FF_SKIPPED|${dest}|${default_branch}: ${GITSCAN_FF_OUT##*$'\n'}" >> "${RESULT_FILE}"
         fi
       fi
     fi
@@ -315,13 +345,22 @@ fi
 
 # Summary
 typeset -i cloned=0 fetched=0 rebased=0 rebase_skipped=0 rebase_conflict=0 force_pushed=0 failed=0
+typeset -i default_ff=0
 typeset -a fail_details=() conflict_details=() force_details=()
+typeset -a default_ff_details=() default_ff_skipped=()
 typeset -a skip_empty=() skip_gone=() skip_unpushed=() skip_dirty=() skip_detached=() skip_other=()
 
 while IFS='|' read -r result_status dest err; do
   case "${result_status}" in
     CLONED)          (( cloned++ )) ;;
     FETCHED)         (( fetched++ )) ;;
+    DEFAULT_FF)
+      (( default_ff++ ))
+      default_ff_details+=("  ${dest} — ${err}")
+      ;;
+    DEFAULT_FF_SKIPPED)
+      default_ff_skipped+=("  ${dest} — ${err}")
+      ;;
     REBASED)         (( rebased++ )) ;;
     FORCE_PUSHED)
       (( force_pushed++ ))
@@ -358,6 +397,18 @@ if (( cloned > 0 )); then
   done
 fi
 
+if (( default_ff > 0 )); then
+  echo ""
+  echo "Default branch fast-forwarded (${default_ff}):"
+  printf '%s\n' "${default_ff_details[@]}"
+fi
+
+if (( ${#default_ff_skipped[@]} > 0 )); then
+  echo ""
+  echo "Default branch NOT fast-forwarded (${#default_ff_skipped[@]}) — another worktree has it checked out, or the move is not a fast-forward:"
+  printf '%s\n' "${default_ff_skipped[@]}"
+fi
+
 if (( ${#force_details[@]} > 0 )); then
   echo ""
   echo "WARNING — default branch history rewritten (${#force_details[@]}); not rebased, resolve manually:"
@@ -376,7 +427,7 @@ if (( rebase_skipped > 0 )); then
   }
 
   # Ordered worst-first: stranded branches hide drift, the rest are inert.
-  print_skip_group "upstream gone — local branch stranded, default branch NOT updated:" "${skip_gone[@]}"
+  print_skip_group "upstream gone — local branch stranded:" "${skip_gone[@]}"
   print_skip_group "dirty working tree — uncommitted changes block rebase:" "${skip_dirty[@]}"
   print_skip_group "detached HEAD:" "${skip_detached[@]}"
   print_skip_group "never pushed — branch exists only locally:" "${skip_unpushed[@]}"
