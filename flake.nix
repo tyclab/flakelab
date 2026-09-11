@@ -374,6 +374,69 @@
           assert builtins.isString vm.system.build.toplevel.drvPath;
           pkgs.runCommandLocal "flakelab-check-targets" { } "touch $out";
 
+        # Claude, its marketplaces and Kiro update themselves; nothing here pins them,
+        # so the switches that could stop them are asserted. The rendered
+        # claudeAutoUpdates entry runs against absent, populated and malformed state,
+        # and Kiro's baseline must not opt out of its own updater.
+        claude-auto-updates =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.claudePluginMarketplaces = [
+                    {
+                      name = "fixture-market";
+                      url = "git@example.invalid:group/fixture-market.git";
+                    }
+                  ];
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            entry = pkgs.writeText "claude-auto-updates-activation" hm.home.activation.claudeAutoUpdates.data;
+            kiroCli = builtins.fromJSON (builtins.readFile ./files/config/kiro/cli.json);
+          in
+          assert (kiroCli."app.disableAutoupdates" or null) == false;
+          pkgs.runCommandLocal "flakelab-check-claude-auto-updates"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home" DRY_RUN_CMD=
+              mkdir -p "$HOME/.claude/plugins"
+              claudeJson="$HOME/.claude.json"
+              known="$HOME/.claude/plugins/known_marketplaces.json"
+              warnLog="$HOME/.local/state/flakelab/activation-failures"
+              activate() { bash -euo pipefail ${entry}; }
+
+              echo "absent state files stay absent"
+              activate
+              test ! -e "$claudeJson"
+              test ! -e "$known"
+              test ! -e "$warnLog"
+
+              echo "the native installer's autoUpdates=false is switched on, the rest kept"
+              echo '{"installMethod":"native","autoUpdates":false,"autoUpdatesProtectedForNative":true,"keep":1}' > "$claudeJson"
+              echo '{"fixture-market":{"source":{"source":"git","url":"git@example.invalid:group/fixture-market.git"},"lastUpdated":"x"},"other":{"source":{"source":"github","repo":"o/r"}}}' > "$known"
+              activate
+              jq -e '.autoUpdates == true and .keep == 1 and .installMethod == "native"' "$claudeJson" > /dev/null
+              test "$(stat -c %a "$claudeJson")" = 600
+              jq -e '.["fixture-market"] | .autoUpdate == true and .lastUpdated == "x"' "$known" > /dev/null
+              jq -e '.other | has("autoUpdate") | not' "$known" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a malformed marketplace registry warns and is left alone"
+              echo 'not-json' > "$known"
+              activate
+              grep -qx 'not-json' "$known"
+              grep -q 'could not enable auto-update for the Claude marketplaces' "$warnLog"
+
+              touch $out
+            '';
+
         # Both backup units must keep the escape hatch in both sections. Forced on,
         # or the units would not render and the check would pass vacuously.
         state-sync-decouple =
