@@ -239,6 +239,56 @@ check    "it exits 1"                       "${RC}" "1"
 check    "after switching"                  "$(switches)" "1"
 contains "and says what did not run"        "${OUT}" "nix-clone-repos is not on PATH"
 
+# ---------------------------------------------------------------------------
+# 5. The activation behind an unchanged generation
+# ---------------------------------------------------------------------------
+# `nixos-rebuild switch` restarts home-manager-<user>.service only when the
+# generation changed, so a rebuild that builds the same closure leaves every
+# deferred activation step deferred — the fresh-provision case, where the ssh
+# key arrives between the two switches. Both cases need a systemctl on PATH, so
+# the boot-settle wait runs too and the shim answers that as well. The restart
+# goes through sudo, which the shim above already records.
+cat > "${SHIM}/systemctl" <<'STUB'
+#!/usr/bin/env zsh
+case "$1" in
+  is-system-running) print -r -- running ;;
+  is-active)         print -r -- active ;;
+  show)
+    # show -p ActiveEnterTimestampMonotonic --value <unit>. The stamp only moves
+    # when the case under test says the switch restarted the unit.
+    print -r -- "$(< "${STAMP_FILE}")"
+    [[ -n "${STAMP_BUMP:-}" ]] && print -r -- "$(( $(< "${STAMP_FILE}") + 1 ))" > "${STAMP_FILE}"
+    ;;
+esac
+exit 0
+STUB
+chmod +x "${SHIM}/systemctl"
+export STAMP_FILE="${BASE}/stamp"
+print -r -- 100 > "${STAMP_FILE}"
+
+print -r -- "an unchanged generation gets the activation re-run"
+d="$(mk_local rerun)"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it names the unchanged generation" "${OUT}" "generation unchanged"
+contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
+
+print -r -- "a generation that changed is left alone"
+export STAMP_BUMP=1
+run_update "${d}"
+unset STAMP_BUMP
+check    "it switches"                      "${RC}" "0"
+excludes "with no unchanged-generation line" "${OUT}" "generation unchanged"
+excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl restart"
+
+print -r -- "deferred activation steps are listed after the switch"
+mkdir -p "${HOME}/.local/state/flakelab"
+print -r -- "kiro-plugin not cloned: no key yet" > "${HOME}/.local/state/flakelab/activation-deferred"
+run_update "${d}"
+contains "the count is named"               "${OUT}" "activation deferred"
+contains "and the step is listed"           "${OUT}" "kiro-plugin not cloned"
+rm -f "${HOME}/.local/state/flakelab/activation-deferred" "${SHIM}/systemctl"
+
 print -r -- "usage"
 run_update "${d}" --help
 check    "--help exits 0"                   "${RC}" "0"
