@@ -95,6 +95,9 @@
               git
               jq
               util-linux
+              # test-clone-repos generates a throwaway key: the sweep refuses to
+              # start unless it can prove the key needs no agent.
+              openssh
             ];
           }
           ''
@@ -309,6 +312,7 @@
       # The offline suites, the nix linters, and the eval-time assertions. `targets`
       # instantiates both systems and builds neither.
       checks.${system} = {
+        clone-repos = suiteCheck "clone-repos";
         gitchecker = suiteCheck "gitchecker";
         gitcleaner = suiteCheck "gitcleaner";
         gitpublisher = suiteCheck "gitpublisher";
