@@ -100,6 +100,9 @@ needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) || [[ -n "${KIR
 SECRETS="${HOME}/.config/tyc/secrets.env"
 SOPS_RENDER="/run/secrets/tyc-env"
 WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
+# What activation structurally could not do (no agent key, offline) rather than
+# got wrong: never fatal, and invisible everywhere else once the switch scrolls by.
+DEFER_LOG="${HOME}/.local/state/flakelab/activation-deferred"
 
 # Exported by the nix-doctor wrapper (nix/scripts.nix) from flakelab.target. Run
 # outside the wrapper (a checkout, or a distro predating the target facade)
@@ -128,6 +131,16 @@ if [[ -s "${WARN_LOG}" ]]; then
   log_hint "Re-run: flakelab update"
 else
   log_ok "no activation failures recorded"
+fi
+
+if [[ -s "${DEFER_LOG}" ]]; then
+  log_warn "activation step(s) deferred, not done (${DEFER_LOG}):"
+  while IFS= read -r line; do
+    log_hint "${line}"
+  done < "${DEFER_LOG}"
+  log_hint "Complete them: flakelab update — with a passphrase-unlocked key in the ssh-agent for the git@ steps"
+else
+  log_ok "no activation steps deferred"
 fi
 
 # ---------------------------------------------------------------------------

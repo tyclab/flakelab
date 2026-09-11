@@ -345,7 +345,10 @@ rec {
       # --include-subgroups also returns projects shared INTO the group, and the "/"
       # boundary keeps sibling namespaces out. The jq keeps `.archived != true` and is
       # the only filter for the deletion-scheduled markers the API flag misses.
-      jqSelect = "select(.archived != true and .marked_for_deletion_on == null and .marked_for_deletion_at == null and ((.namespace.full_path // \"\") | . == $group or startswith($group + \"/\")))";
+      # `.empty_repo` drops a project with no commits: cloning one leaves a checkout
+      # the sweep reports as skipped on every later run, and it arrives as a normal
+      # clone anyway once someone pushes a first commit.
+      jqSelect = "select(.archived != true and .marked_for_deletion_on == null and .marked_for_deletion_at == null and .empty_repo != true and ((.namespace.full_path // \"\") | . == $group or startswith($group + \"/\")))";
       listGroup =
         g:
         "${zsh} ${s}/glab-group-projects --group ${lib.escapeShellArg g} --no-archived"

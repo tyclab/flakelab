@@ -1781,6 +1781,24 @@ function Invoke-Bootstrap {
     }
     elseif ($DryRun -or $agentLoaded) {
         Invoke-NixosRebuild 'switch 2/2: complete the deferred SSH steps (kiro-plugin, Claude marketplaces + plugins, statusline)'
+        if (-not $DryRun) {
+            # That switch restarts home-manager-<user>.service only when the
+            # generation changed, and switch 1/2 already built this one - so on its
+            # own it completes nothing that switch 1/2 deferred. This is the one
+            # moment the agent verifiably holds the key, so the activation is re-run
+            # here, and whatever it still could not do is named rather than left in
+            # a log nobody reads.
+            Do-Step "systemctl restart home-manager-$User.service (re-run the activation with the loaded key)" {
+                Invoke-Wsl $DistroName 'root' @('systemctl', 'restart', "home-manager-$User.service")
+            }
+            $deferred = @(Invoke-Wsl $DistroName $User @('sh', '-c', 'cat ~/.local/state/flakelab/activation-deferred 2>/dev/null; true') | Where-Object { $_ -and "$_".Trim() })
+            if ($deferred.Count -gt 0) {
+                Warn "activation still defers $($deferred.Count) step(s):"
+                $deferred | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+                Warn "Complete them in the distro, with a loaded agent key: flakelab update   (flakelab doctor lists them until then)"
+            }
+            else { Say 'activation completed every step - nothing deferred' 'Green' }
+        }
     }
     else {
         Warn "ssh-agent holds no key - skipping the second switch (it would only defer again)."
