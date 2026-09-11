@@ -446,6 +446,67 @@
           assert hasInfix ".config/tyc/secrets.env" zshOff;
           assert !hasInfix "/run/secrets/tyc-env" zshOff;
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
+
+        # kiroMcpMerge reads the Claude marketplace clone, which is runtime data, under
+        # Home Manager's `set -eu -o pipefail`. So the rendered entry itself runs here
+        # against each state that clone can be in: absent (every first switch, where
+        # installClaudePlugins defers until provisioning seeds a key), empty, valid and
+        # malformed. A flakelab-warn entry fails the rebuild through flakelabHealthCheck,
+        # so the three benign states also assert that none was written.
+        kiro-mcp-merge =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                # synology: the one server kiroMcpMerge single-sources from the clone.
+                { flakelab.sessionVariables.SYNOLOGY_URL = "https://nas.example.invalid"; }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            entry = pkgs.writeText "kiro-mcp-merge-activation" hm.home.activation.kiroMcpMerge.data;
+          in
+          pkgs.runCommandLocal "flakelab-check-kiro-mcp-merge"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export HOME="$TMPDIR/home" DRY_RUN_CMD=
+              mkdir -p "$HOME"
+              mcp="$HOME/.kiro/settings/mcp.json"
+              root="$HOME/.claude/plugins/marketplaces"
+              warnLog="$HOME/.local/state/flakelab/activation-failures"
+              activate() { bash -euo pipefail ${entry}; }
+
+              echo "absent marketplace root"
+              activate
+              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "empty marketplace root"
+              rm "$mcp"
+              mkdir -p "$root"
+              activate
+              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a valid plugin definition wins, minus its env block"
+              manifest="$root/fixture/plugins/mcp-synology/.mcp.json"
+              mkdir -p "$(dirname "$manifest")"
+              echo '{"mcpServers":{"synology":{"command":"market","args":["a"],"env":{"X":"''${X}"}}}}' > "$manifest"
+              activate
+              jq -e '.mcpServers.synology | .command == "market" and (has("env") | not)' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a malformed manifest warns and keeps the flakelab definition"
+              echo 'not-json' > "$manifest"
+              activate
+              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
+              grep -q 'could not read the Claude marketplace MCP definitions' "$warnLog"
+
+              touch $out
+            '';
       };
 
       # The tooling this repo's gates need, at the versions flake.lock pins.
