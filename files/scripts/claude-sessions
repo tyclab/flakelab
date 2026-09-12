@@ -159,22 +159,30 @@ gather() {
 # reattach after a dropped connection — registers both pids under the same
 # id, and everything that saves or resumes works in sessions: the save file
 # carried the pair twice, --resume printed the same command twice and --open
-# opened two tabs onto one session. The first row wins, and pgrep lists the
-# oldest pid first, so that is the process the session started in. The table
-# and --json stay per process: they report a pid, which is the thing that
-# differs.
+# opened two tabs onto one session. The OLDEST process wins, so the saved
+# directory is the one the session started in; ties keep the first row. It is
+# picked by age rather than by pgrep's order, which is ascending pid and only
+# usually ascending start time — after a pid wraparound the reattach can hold
+# the lower pid. The table and --json stay per process: they report a pid,
+# which is the thing that differs.
 typeset -a SESSION_ROWS=()
 dedupe_sessions() {
   local row p age sid cwd
-  local -A seen=()
-  SESSION_ROWS=()
+  local -A best=() best_age=()
+  local -a order=()
   for row in "${ROWS[@]}"; do
     IFS="$US" read -r p age sid cwd <<<"$row"
     [[ -n "$sid" ]] || continue
-    (( ${+seen[$sid]} )) && continue
-    seen[$sid]=1
-    SESSION_ROWS+=("$row")
+    if (( ${+best[$sid]} )); then
+      (( age > best_age[$sid] )) || continue
+    else
+      order+=("$sid")
+    fi
+    best[$sid]="$row"
+    best_age[$sid]=$age
   done
+  SESSION_ROWS=()
+  for sid in "${order[@]}"; do SESSION_ROWS+=("${best[$sid]}"); done
 }
 
 fmt_age() {
