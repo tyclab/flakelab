@@ -52,6 +52,10 @@ mkdir -p "${HOME}/.claude/sessions"
 NOW_MS=$(( $(date +%s) * 1000 ))
 print -r -- "{\"pid\":100,\"sessionId\":\"${SID_A}\",\"cwd\":\"${WORK}\",\"startedAt\":$(( NOW_MS - 7261000 ))}" > "${HOME}/.claude/sessions/100.json"
 print -r -- "{\"pid\":999,\"sessionId\":\"${SID_OLD}\",\"cwd\":\"${WORK}\",\"startedAt\":${NOW_MS}}" > "${HOME}/.claude/sessions/999.json"
+# A second process on SID_A, in another directory: the same session, resumed
+# or reattached. Only --json and the table have a pid to tell them apart.
+mk_proc 400 "${BASE}/other" /dev/null
+print -r -- "{\"pid\":400,\"sessionId\":\"${SID_A}\",\"cwd\":\"${BASE}/other\",\"startedAt\":${NOW_MS}}" > "${HOME}/.claude/sessions/400.json"
 
 STUBS="${BASE}/bin"
 mkdir -p "${STUBS}"
@@ -60,6 +64,8 @@ cat > "${STUBS}/pgrep" <<'STUB'
 [[ "$1" == "-x" && "$2" == "claude" ]] || exit 1
 # FAKE_PGREP_NONE: nothing running, the first minutes after a crash.
 [[ -n "${FAKE_PGREP_NONE:-}" ]] && exit 1
+# FAKE_PGREP_DUP: pid 400 is a second process on pid 100's session.
+[[ -n "${FAKE_PGREP_DUP:-}" ]] && { print -l 100 200 300 400; exit 0 }
 print -l 100 200 300
 STUB
 cat > "${STUBS}/ps" <<'STUB'
@@ -235,6 +241,37 @@ excludes "--recent leaves a session older than the window out" "${OUT}" "${SID_D
 excludes "--recent lists session files, never subagent transcripts" "${OUT}" "agent-1"
 run --recent 96
 contains "--recent <hours> widens the window" "${OUT}" "claude --resume ${SID_D}"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "one session open in two processes counts once"
+export FAKE_PGREP_DUP=1
+DUP_SAVE="${BASE}/dup-save.txt"
+run --save "${DUP_SAVE}"
+check "--save with a doubled session exits 0" "${RC}" "0"
+contains "--save counts sessions, not processes" "${ERR}" "saved 2 session(s) to"
+check "the doubled session is written once, from its first process" \
+  "$(grep -v '^#' "${DUP_SAVE}")" "${WORK}  ${SID_A}"$'\n'"${WORK}  ${SID_B}"
+
+run --json
+check "--json still reports every process" "$(print -r -- "$OUT" | jq 'length')" "4"
+check "--json keeps both pids of the doubled session" \
+  "$(print -r -- "$OUT" | jq -r --arg s "${SID_A}" '[.[] | select(.session == $s) | .pid] | sort | join(",")')" "100,400"
+
+run --resume "${DUP_SAVE}"
+check "--resume prints one line per session" "$(print -r -- "$OUT" | grep -c 'claude --resume')" "2"
+
+export FLAKELAB_BOOT_ID_FILE="${BASE}/boot_id_dup"
+print -r -- "dddddddd-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
+run --autosave
+contains "--autosave counts sessions, not processes" "${ERR}" "autosaved 2 session(s) to"
+unset FLAKELAB_BOOT_ID_FILE FAKE_PGREP_DUP
+
+# A file written before the dedupe, or merged from two boxes, carries the
+# duplicate itself.
+print -rl -- "# doubled by an older save" "${WORK}  ${SID_A}" "${WORK}  ${SID_A}" > "${BASE}/doubled.txt"
+run --resume "${BASE}/doubled.txt"
+check "a doubled saved file resumes once" "$(print -r -- "$OUT" | grep -c 'claude --resume')" "1"
 
 run --help
 check "--help exits 0" "${RC}" "0"

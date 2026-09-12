@@ -154,6 +154,29 @@ gather() {
   done
 }
 
+# One row per SESSION, not per process. A session that is open in two
+# processes — `claude --resume <id>` on a session already running, a
+# reattach after a dropped connection — registers both pids under the same
+# id, and everything that saves or resumes works in sessions: the save file
+# carried the pair twice, --resume printed the same command twice and --open
+# opened two tabs onto one session. The first row wins, and pgrep lists the
+# oldest pid first, so that is the process the session started in. The table
+# and --json stay per process: they report a pid, which is the thing that
+# differs.
+typeset -a SESSION_ROWS=()
+dedupe_sessions() {
+  local row p age sid cwd
+  local -A seen=()
+  SESSION_ROWS=()
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r p age sid cwd <<<"$row"
+    [[ -n "$sid" ]] || continue
+    (( ${+seen[$sid]} )) && continue
+    seen[$sid]=1
+    SESSION_ROWS+=("$row")
+  done
+}
+
 fmt_age() {
   local -i s=${1:-0}
   if (( s >= 86400 )); then printf '%dd%02dh' $(( s / 86400 )) $(( s % 86400 / 3600 ))
@@ -194,11 +217,11 @@ write_save() {
     mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
     FILE="${dir}/${HOST}-$(date +%Y-%m-%dT%H%M).txt"
   fi
+  dedupe_sessions
   {
     print -r -- "# claude-sessions ${HOST}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)"
-    for row in "${ROWS[@]}"; do
+    for row in "${SESSION_ROWS[@]}"; do
       IFS="$US" read -r p age sid cwd <<<"$row"
-      [[ -n "$sid" ]] || continue
       print -r -- "${cwd}  ${sid}"
       (( n++ ))
     done
@@ -215,9 +238,10 @@ write_autosave() {
   local -a lines=() old=()
   boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
   gather 2>/dev/null
-  for row in "${ROWS[@]}"; do
+  dedupe_sessions
+  for row in "${SESSION_ROWS[@]}"; do
     IFS="$US" read -r p age sid cwd <<<"$row"
-    [[ -n "$sid" ]] && lines+=("${cwd}  ${sid}")
+    lines+=("${cwd}  ${sid}")
   done
   # Nothing running keeps the last snapshot: after a crash that is the record.
   (( ${#lines[@]} > 0 )) || return 0
@@ -280,6 +304,18 @@ collect_pairs() {
       PAIRS+=("${cwd}${US}${sid}")
     done
   fi
+  # A saved file can carry the same session twice as well — one written
+  # before this fix, or one merged from two boxes — so the dedupe covers
+  # every source, not just the live one.
+  local -A seen=()
+  local -a uniq=()
+  for row in "${PAIRS[@]}"; do
+    IFS="$US" read -r cwd sid <<<"$row"
+    (( ${+seen[$sid]} )) && continue
+    seen[$sid]=1
+    uniq+=("$row")
+  done
+  PAIRS=("${uniq[@]}")
   (( ${#PAIRS[@]} > 0 )) || { print -ru2 -- "nothing to resume"; return 1 }
 }
 
