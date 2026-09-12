@@ -57,9 +57,20 @@ let
   # protection does not cover. Globs match raw command text across `&&` and `|`,
   # quoted bodies included, so `--mirror` is the whole reason a rule can be this
   # blunt and still be safe — no legitimate workflow here types it.
+  #
+  # The Read rules close the file tools over the rendered secrets. A transcript
+  # records every tool result verbatim and is retained, so a Read of the env is a
+  # secret published to disk. The shell has the same values in its environment,
+  # which is where a session is meant to take them from. Bash is not globbed
+  # here: sourcing the file (`set -a; . /run/secrets/tyc-env`) is the workflow's
+  # most common command, and a path glob cannot tell it from `cat`; the hooks
+  # plugin's secrets_read_guard makes that distinction per statement.
   claudeDeny = [
     "Bash(git push --mirror*)"
     "Bash(git -C * push --mirror*)"
+    "Read(//run/secrets/**)"
+    "Read(~/.config/tyc/secrets.env)"
+    "Read(~/.config/tyc/bw-session)"
   ];
 
   # Rules this floor used to assert. Subtracted before the union so a box that
@@ -340,6 +351,31 @@ in
           # env carries MCP credentials, and the merge above replaces the inode, so the
           # mode is reasserted every activation.
           chmod 600 "$_settings"
+        ''
+      );
+
+  # ~/.claude/projects holds the session transcripts: every prompt, file excerpt,
+  # command output and any secret value that passed through one of them. Claude
+  # Code creates the transcript FILES 600 but the DIRECTORY at the process umask
+  # (022, which nothing here overrides), so it stood 755 on a provisioned box
+  # (observed 2026-09-06, still 755 on 2026-09-12). Not an exposure while
+  # ~/.claude above it happens to be 700 — and that is the problem: nothing
+  # asserted that 700, so every transcript's confidentiality rested on a mode any
+  # tool, restore or adopter umask could widen without an error anywhere. Asserting
+  # both makes it true by construction. Reasserted every activation because Claude
+  # recreates the directory itself, at the umask, whenever it is missing; mkdir -p
+  # first so the mode is right before the first transcript lands. Its own entry so
+  # health.nix can attribute a failure to it by name.
+  home.activation.claudeTranscriptPrivacy =
+    lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" ]
+      (
+        lib.optionalString installClaude ''
+          export PATH="${lib.makeBinPath [ pkgs.coreutils ]}:$PATH"
+          mkdir -p "$HOME/.claude/projects"
+          chmod 700 "$HOME/.claude" || \
+            ${flakelabWarn} "could not set mode 700 on $HOME/.claude; whether other local accounts can traverse it is left to the umask."
+          chmod 700 "$HOME/.claude/projects" || \
+            ${flakelabWarn} "could not set mode 700 on $HOME/.claude/projects; session transcripts are protected only by whatever mode $HOME/.claude happens to carry."
         ''
       );
 

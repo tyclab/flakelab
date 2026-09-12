@@ -205,11 +205,17 @@ symlinks, because Claude rewrites these files itself:
   `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
   the output style when `claudeOutputStyle` names one,
   the bridge environment, the statusline, and a `permissions.deny` **floor**
-  against rewriting the protected default branch. The floor is unioned in, so
+  against rewriting the protected default branch and against the file tools
+  reading the rendered secrets (`/run/secrets/**`, `~/.config/tyc/secrets.env`,
+  `~/.config/tyc/bw-session`). The floor is unioned in, so
   rules added by hand survive; nothing else in the file is asserted whole except
   `autoMode`. `AUTO-MODE.md` covers how the floor, the ask tier, the allowlist
   and the classifier are ordered, and why the floor is scoped to `main`. The
   permission mode is not among them unless `claudeAgentDefaults` says so.
+- **`~/.claude/projects`** — mode 700, and `~/.claude` with it, asserted on
+  every activation (`claudeTranscriptPrivacy`): Claude Code creates the
+  transcript directory at the umask, and a transcript holds every tool result a
+  session ever saw.
 - **`~/.claude.json`** — user-scope MCP servers from `claudeMcpServers`,
   installed mode 600, since the same file holds Claude's account and OAuth
   state.
