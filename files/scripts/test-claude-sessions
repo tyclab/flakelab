@@ -64,8 +64,9 @@ cat > "${STUBS}/pgrep" <<'STUB'
 [[ "$1" == "-x" && "$2" == "claude" ]] || exit 1
 # FAKE_PGREP_NONE: nothing running, the first minutes after a crash.
 [[ -n "${FAKE_PGREP_NONE:-}" ]] && exit 1
-# FAKE_PGREP_DUP: pid 400 is a second process on pid 100's session.
-[[ -n "${FAKE_PGREP_DUP:-}" ]] && { print -l 100 200 300 400; exit 0 }
+# FAKE_PGREP_DUP: pid 400 is a second, YOUNGER process on pid 100's session,
+# listed first — pgrep order and start order disagree, as after a wraparound.
+[[ -n "${FAKE_PGREP_DUP:-}" ]] && { print -l 400 100 200 300; exit 0 }
 print -l 100 200 300
 STUB
 cat > "${STUBS}/ps" <<'STUB'
@@ -250,7 +251,7 @@ DUP_SAVE="${BASE}/dup-save.txt"
 run --save "${DUP_SAVE}"
 check "--save with a doubled session exits 0" "${RC}" "0"
 contains "--save counts sessions, not processes" "${ERR}" "saved 2 session(s) to"
-check "the doubled session is written once, from its first process" \
+check "the doubled session is written once, from its OLDEST process" \
   "$(grep -v '^#' "${DUP_SAVE}")" "${WORK}  ${SID_A}"$'\n'"${WORK}  ${SID_B}"
 
 run --json
