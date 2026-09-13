@@ -21,12 +21,12 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Track commit-SHA pins in the Nix let bindings annotated with `# renovate-digest: ...`. A separate marker keyword from the `# renovate:` one below, because a digest pin has no version to compare and would otherwise be read as a currentValue.",
+      "description": "Track commit-SHA pins in the Nix let bindings annotated with `# renovate-digest: ... tag=<release>`: the digest follows the named release tag, so a newer tag moves both the tag in the comment and the SHA. A separate marker keyword from the `# renovate:` one below, because the SHA is a digest, not a currentValue.",
       "managerFilePatterns": ["/^nix/.*\\.nix$/"],
       "matchStrings": [
-        "#\\s*renovate-digest:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s*\\n[^\\n]*?\"(?<currentDigest>[0-9a-f]{40})\""
+        "#\\s*renovate-digest:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+tag=(?<currentValue>\\S+)\\s*\\n[^\\n]*?\"(?<currentDigest>[0-9a-f]{40})\""
       ],
-      "currentValueTemplate": "main"
+      "versioningTemplate": "semver"
     },
     {
       "customType": "regex",
@@ -39,7 +39,7 @@
   ],
   "packageRules": [
     {
-      "description": "A third-party git-SHA pin is never automerged: nothing else vouches for an unreviewed upstream commit. The 14-day hold keeps main-branch churn between releases out of the PR queue.",
+      "description": "A third-party git-SHA pin is never automerged: nothing else vouches for an unreviewed upstream release. The 14-day hold gives a fresh tag time to be pulled or re-cut.",
       "matchDatasources": ["git-refs"],
       "automerge": false,
       "minimumReleaseAge": "14 days"
