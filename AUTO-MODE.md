@@ -8,7 +8,7 @@ a `deny` match short-circuits everything after it.
 
 | #   | Layer                                  | Written by                                                          | Operator can clear it           |
 | --- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------- |
-| 1   | `permissions.deny`                     | flakelab `claudeDeny` (union, minus `claudeDenyStale`)              | **No. No prompt is raised.**    |
+| 1   | `permissions.deny`                     | flakelab `claudeDeny` (asserted whole)                              | **No. No prompt is raised.**    |
 | 2   | `permissions.ask`                      | claude-plugins `permissions/recommended-ask.json` (asserted, empty) | **No. It prompts anyway.**      |
 | 3   | `permissions.allow`                    | claude-plugins `permissions/recommended-permissions.json` (union)   | pre-approved                    |
 | 4   | `autoMode.{allow,soft_deny,hard_deny}` | flakelab `claudeAutoMode` (asserted whole)                          | `soft_deny` yes, `hard_deny` no |
@@ -62,11 +62,9 @@ jq '.autoMode | {classifyAllShell, allow, soft_deny, hard_deny}' ~/.claude/setti
 claude auto-mode config   # from a plain shell, not inside a session
 ```
 
-Layers 1 and 3 are unioned on every `flakelab update`, so a hand edit that
-adds survives and one that removes is undone. Layers 2 and 4 are asserted whole.
-Retiring a floor rule means listing it in `claudeDenyStale`, not deleting it —
-the union alone would leave it on every box that already merged it. Fix rules in
-the flake, never in the file.
+Layer 3 is unioned on every `flakelab update`, so a hand edit that adds
+survives and one that removes is undone. Layers 1, 2 and 4 are asserted whole.
+Fix rules in the flake, never in the file.
 
 Layers 2 and 3 come from the marketplace clone, found by name:
 `recommended-ask.json` and `recommended-permissions.json`. Layer 2 is asserted
