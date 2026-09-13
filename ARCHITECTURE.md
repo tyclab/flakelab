@@ -205,8 +205,7 @@ symlinks, because Claude rewrites these files itself:
   `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
   the output style when `claudeOutputStyle` names one,
   the bridge environment, the statusline, and a `permissions.deny` **floor**
-  against rewriting the protected default branch. The floor is unioned in, so
-  rules added by hand survive; nothing else in the file is asserted whole except
+  against rewriting the protected default branch, asserted whole like
   `autoMode`. `AUTO-MODE.md` covers how the floor, the ask tier, the allowlist
   and the classifier are ordered, and why the floor is scoped to `main`. The
   permission mode is not among them unless `claudeAgentDefaults` says so.

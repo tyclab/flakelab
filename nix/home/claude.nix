@@ -62,26 +62,6 @@ let
     "Bash(git -C * push --mirror*)"
   ];
 
-  # Rules this floor used to assert. Subtracted before the union so a box that
-  # already merged them converges instead of carrying them forever.
-  claudeDenyStale = [
-    "Bash(git push --force*)"
-    "Bash(git push -f*)"
-    "Bash(git push * --force*)"
-    "Bash(git push * -f*)"
-    "Bash(git push * +*)"
-    "Bash(git -C * push --force*)"
-    "Bash(git -C * push -f*)"
-    "Bash(git -C * push * --force*)"
-    "Bash(git -C * push * -f*)"
-    "Bash(git -C * push * +*)"
-    "Bash(git push * :*)"
-    "Bash(git push --delete*)"
-    "Read(//run/secrets/**)"
-    "Read(~/.config/tyc/secrets.env)"
-    "Read(~/.config/tyc/bw-session)"
-  ];
-
   # The opt-in agent-box bundle, as a jq fragment appended to the seeded merge below
   # so it covers the create case too. defaultMode and skipAutoPermissionPrompt must
   # travel together: Claude clears the consent flag whenever the mode is not auto.
@@ -302,8 +282,8 @@ in
 
   # The settings.json policy: empty attribution strings drop the commit trailer and
   # PR footer, feedback and error reporting go off, and installMethod records the
-  # installer used above. autoMode is asserted whole - it is policy, and a drifted
-  # box blocks unpredictably - while the deny list is only a floor.
+  # installer used above. autoMode and the deny floor are asserted whole: they are
+  # policy, and a drifted box blocks unpredictably.
   # Everything here is written for every adopter; the opt-in bundle rides along in
   # claudeAgentDefaultsJq.
   home.activation.claudeDisableAttribution =
@@ -320,19 +300,18 @@ in
           _attrs='{"commit":"","pr":"","sessionUrl":false}'
           _env='{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1","DISABLE_FEEDBACK_COMMAND":"1","DISABLE_ERROR_REPORTING":"1"}'
           _deny=${lib.escapeShellArg (builtins.toJSON claudeDeny)}
-          _denystale=${lib.escapeShellArg (builtins.toJSON claudeDenyStale)}
           mkdir -p "$HOME/.claude"
           # Seeding with `{}` lets one merge cover the create case; `-s`, not `-f`, so
           # a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --argjson ds "$_denystale" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} '
+          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
             | .installMethod = "native"
             | .autoUpdatesChannel = "${claudeAutoUpdatesChannel}"
             | .autoMode = $am[0]
-            | .permissions.deny = (((.permissions.deny // []) - $ds) + $d | unique)
+            | .permissions.deny = $d
             ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
             ${claudeStatePushJq}
