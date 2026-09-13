@@ -26,10 +26,9 @@ let
   # renovate: datasource=npm depName=@itunified.io/mcp-proxmox
   proxmoxMcpVersion = "2026.4.10-1";
   # Upstream cuts GitHub releases but publishes nothing to PyPI, so the pin is the
-  # 1.6.0 release commit. A tag can be moved by a compromised account, a SHA cannot
-  # — for this repository; uvx reads no uv.lock and resolves the server's
-  # dependencies fresh at every start.
-  # renovate-digest: datasource=git-refs depName=https://github.com/atom2ueki/mcp-server-synology
+  # release tag's commit: a tag can be moved by a compromised account, a SHA cannot.
+  # uvx reads no uv.lock and resolves the server's dependencies fresh at every start.
+  # renovate-digest: datasource=git-refs depName=https://github.com/atom2ueki/mcp-server-synology tag=1.6.0
   synologyMcpRev = "95c62c74e8526dd299bfe527063d8e3360ae9ebf";
   # renovate: datasource=pypi depName=mcp-grafana
   grafanaMcpVersion = "1.1.0";
