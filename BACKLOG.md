@@ -22,16 +22,15 @@ opting in. Five of six items are now gated behind options that default off:
 | `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`, `remoteControlAtStartup` | `flakelab.claudeAgentDefaults` |
 | the Playwright MCP server                                                                | `flakelab.mcpPlaywright`       |
 
-`claudeDisableAttribution` is gated on `installClaude` like every sibling
-activation, and `@jarahkon/hass-mcp-server` is version-pinned like the other
-MCP servers.
+`claudeSettings` is gated on `installClaude` like every sibling activation,
+and `@jarahkon/hass-mcp-server` is version-pinned like the other MCP servers.
 
-**Still open:** the marketplace `recommended-permissions.json` merge
-(`nix/home/claude.nix`) is neither validated nor pinned. The activation
-searches the marketplace clone for a file of that name and merges whatever it
-finds into Claude's pre-approved permission set. A malformed or hostile file
-there widens the allowlist with no check. Validate the shape before merging,
-and decide whether the source should be pinned rather than discovered.
+**Still open:** the marketplace `recommended-permissions.json` assertion
+(`files/scripts/nix-update`) is neither validated nor pinned. It searches the
+marketplace clone for a file of that name and writes whatever it finds as
+Claude's pre-approved permission set. A malformed or hostile file there widens
+the allowlist with no check. Validate the shape before writing, and decide
+whether the source should be pinned rather than discovered.
 
 ## Retire the wslkube migration path
 

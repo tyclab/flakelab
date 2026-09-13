@@ -479,7 +479,7 @@
             pushes =
               h:
               let
-                inherit (h.home.activation.claudeDisableAttribution) data;
+                inherit (h.home.activation.claudeSettings) data;
               in
               nixpkgs.lib.hasInfix "--no-block flakelab-state-sync.service" data
               && nixpkgs.lib.hasInfix "command: $push" data;

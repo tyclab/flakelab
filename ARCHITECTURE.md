@@ -53,9 +53,9 @@ that defaults to off, because every activation here runs on every adopter's box:
   of the four env vars (`DISABLE_TELEMETRY`, `DO_NOT_TRACK`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`) that would
   defeat it. Off, those keys and those vars are left exactly as the user has
-  them. Everything else `claudeDisableAttribution` asserts — attribution, the
-  classifier rules, `installMethod`, `autoUpdatesChannel`, the force-push deny
-  floor — is unconditional, and the whole activation is gated on `installClaude`.
+  them. Everything else `claudeSettings` asserts — attribution, the classifier
+  rules, `installMethod`, `autoUpdatesChannel`, the deny floor — is
+  unconditional, and the whole activation is gated on `installClaude`.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow
@@ -212,11 +212,12 @@ symlinks, because Claude rewrites these files itself:
 - **`~/.claude.json`** — user-scope MCP servers from `claudeMcpServers`,
   installed mode 600, since the same file holds Claude's account and OAuth
   state.
-- **`permissions.allow`** — merged from the marketplace clone's
-  `recommended-permissions.json`, located by searching the clone rather than by
-  a fixed path (it has moved once already, and a wrong path defers forever
-  instead of failing). A missing clone defers; a clone without the file warns,
-  because no retry fixes that.
+- **`permissions.allow`** and **`permissions.ask`** — asserted by
+  `flakelab update` after every switch from the marketplace clone's
+  `recommended-permissions.json` and `recommended-ask.json`, located by
+  searching the clone rather than by a fixed path (it has moved once already).
+  Not an activation: the clone is runtime data, and activation reruns only
+  when the built config changed.
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
   shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.
 

@@ -298,12 +298,6 @@ in
       description = "Claude Code plugin marketplaces as `{ name; url; }`. `name` must match the marketplace's own .claude-plugin/marketplace.json — a wrong name fails every install silently.";
     };
 
-    claudePluginMarketplace = mkOption {
-      type = types.nullOr types.attrs;
-      default = null;
-      description = "Legacy singular form of claudePluginMarketplaces, still honoured so an overlay predating the list keeps working. Used only when the plural list is empty.";
-    };
-
     claudePlugins = mkOption {
       type = types.listOf types.str;
       default = [ ];
