@@ -59,7 +59,6 @@ in
         "installClaudePlugins"
         "pruneClaudeMcpPlugins"
         "claudeDisableAttribution"
-        "claudeTranscriptPrivacy"
         "claudeStatusline"
         "claudePlaywrightEnv"
         "claudeWhatsappEnv"
