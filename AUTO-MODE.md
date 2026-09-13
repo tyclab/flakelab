@@ -6,12 +6,12 @@
 `permissions` the binary's precedence constant is `{deny: 3, ask: 2, allow: 1}`;
 a `deny` match short-circuits everything after it.
 
-| #   | Layer                                  | Written by                                                          | Operator can clear it           |
-| --- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------- |
-| 1   | `permissions.deny`                     | flakelab `claudeDeny` (asserted whole)                              | **No. No prompt is raised.**    |
-| 2   | `permissions.ask`                      | claude-plugins `permissions/recommended-ask.json` (asserted, empty) | **No. It prompts anyway.**      |
-| 3   | `permissions.allow`                    | claude-plugins `permissions/recommended-permissions.json` (union)   | pre-approved                    |
-| 4   | `autoMode.{allow,soft_deny,hard_deny}` | flakelab `claudeAutoMode` (asserted whole)                          | `soft_deny` yes, `hard_deny` no |
+| #   | Layer                                  | Written by                                                           | Operator can clear it           |
+| --- | -------------------------------------- | -------------------------------------------------------------------- | ------------------------------- |
+| 1   | `permissions.deny`                     | flakelab `claudeDeny` (asserted whole)                               | **No. No prompt is raised.**    |
+| 2   | `permissions.ask`                      | claude-plugins `permissions/recommended-ask.json` (asserted, empty)  | **No. It prompts anyway.**      |
+| 3   | `permissions.allow`                    | claude-plugins `permissions/recommended-permissions.json` (asserted) | pre-approved                    |
+| 4   | `autoMode.{allow,soft_deny,hard_deny}` | flakelab `claudeAutoMode` (asserted whole)                           | `soft_deny` yes, `hard_deny` no |
 
 `autoMode.classifyAllShell = true` puts every shell command through layer 4,
 which is what suspends layer 3 in auto mode — the basis of the 2026-09-01
@@ -62,11 +62,12 @@ jq '.autoMode | {classifyAllShell, allow, soft_deny, hard_deny}' ~/.claude/setti
 claude auto-mode config   # from a plain shell, not inside a session
 ```
 
-Layer 3 is unioned on every `flakelab update`, so a hand edit that adds
-survives and one that removes is undone. Layers 1, 2 and 4 are asserted whole.
-Fix rules in the flake, never in the file.
+All four layers are asserted whole on every `flakelab update`, so a hand edit
+to the file is undone. Fix rules in the flake or the marketplace, never in the
+file.
 
 Layers 2 and 3 come from the marketplace clone, found by name:
-`recommended-ask.json` and `recommended-permissions.json`. Layer 2 is asserted
-because a union of it could only grow: the 72 rules the marketplace withdrew
-on 2026-09-10 would otherwise have stayed in `permissions.ask` on every box.
+`recommended-ask.json` and `recommended-permissions.json`, written by
+`flakelab update` after every switch. A union could only grow: the 72 rules the
+marketplace withdrew on 2026-09-10 would have stayed in `permissions.ask`, and
+251 withdrawn allow rules sat in one box's `permissions.allow` on 2026-09-13.

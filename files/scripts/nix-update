@@ -345,17 +345,16 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   _recommended="$(find "${_claude_marketplaces}" -type f -name recommended-permissions.json 2> /dev/null | head -1)"
   if [ -n "${_recommended}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     _tmp="$(mktemp)"
-    # Additive on permissions.allow, so nothing added by hand is removed here.
-    if jq -s '.[0] * {permissions: {allow: ((.[0].permissions.allow // []) + .[1] | unique)}}' \
+    # Asserted, not unioned: a union only grows, and a withdrawn rule would stay.
+    if jq -s '.[0] * {permissions: {allow: .[1]}}' \
          "${_settings}" "${_recommended}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
     else
-      print -P "%F{yellow}⚠ Claude pre-approved permissions not merged into settings.json%f"
+      print -P "%F{yellow}⚠ Claude pre-approved permissions not asserted in settings.json%f"
     fi
     rm -f "${_tmp}"
   fi
-  # Asserted, not unioned (see claudePermissions in nix/home/claude.nix); a
-  # marketplace without the file leaves permissions.ask alone.
+  # A marketplace without the file leaves permissions.ask alone.
   _recommendedask="$(find "${_claude_marketplaces}" -type f -name recommended-ask.json 2> /dev/null | head -1)"
   if [ -n "${_recommendedask}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     _tmp="$(mktemp)"

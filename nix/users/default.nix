@@ -40,7 +40,6 @@
   kiroPluginRepo = null;
 
   claudePluginMarketplaces = [ ];
-  claudePluginMarketplace = null;
   claudePlugins = [ ];
 
   claudeAgentDefaults = false;
