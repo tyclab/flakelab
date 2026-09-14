@@ -268,11 +268,43 @@ _nix_relock_flakelab() {
       print -P "%F{cyan}ℹ flakelab input updated%f"
     fi
   else
+    # A path: input the caller cannot re-lock for want of a writable lock would
+    # switch into the stale snapshot, so that one refuses; any other failure warns.
+    if [[ "${_ty}" == path && ! -w "${_lock}" ]]; then
+      print -P "%F{red}✗ could not re-lock the path: flakelab input — ${_lock} is not writable by ${USER:-$(id -un)}; refusing to switch into the previously locked snapshot%f"
+      print -r -- "${_out}"
+      print -r -- "  fix: sudo chown $(id -u):$(id -g) ${(qq)_lock}"
+      return 1
+    fi
     print -P "%F{yellow}⚠ could not re-lock the path: flakelab input — the switch may evaluate the previously locked snapshot%f"
     print -r -- "${_out}"
   fi
 }
-_nix_relock_flakelab
+
+# nix rewrites the overlay's lock whenever an input moves, so one the caller cannot
+# write fails the re-lock above and the switch evaluates the stale snapshot:
+# silently while that is still in the store, as "NAR hash mismatch" once it is
+# collected. Root leaves one behind whenever its switch had to lock - an overlay
+# with no lock yet, which is every overlay right after setup-wsl-nix.ps1, or a
+# re-lock that failed. The directory is the caller's, so a copy renamed over the
+# lock takes it back without sudo and keeps every pin. `cat`, not `cp`, which
+# would carry the read-only mode across; braced so a failed redirection is quiet.
+# A symlinked lock is the operator's arrangement, and the rename would replace the
+# link, so it is left alone. Warns only: the re-lock decides whether it matters.
+_nix_reclaim_lock() {
+  local _lock="${_repo}/flake.lock" _tmp="${_repo}/.flake.lock.reclaim.$$"
+  [[ -e "${_lock}" && ! -L "${_lock}" && ! -w "${_lock}" ]] || return 0
+  if { cat -- "${_lock}" > "${_tmp}" && mv -f -- "${_tmp}" "${_lock}" } 2> /dev/null; then
+    print -P "%F{cyan}ℹ ${_lock} was not writable by ${USER:-$(id -un)} — took it back, pins unchanged%f"
+    return 0
+  fi
+  rm -f -- "${_tmp}" 2> /dev/null
+  print -P "%F{yellow}⚠ ${_lock} is not writable by ${USER:-$(id -un)} and could not be taken back%f"
+  print -r -- "  fix: sudo chown $(id -u):$(id -g) ${(qq)_lock}"
+  return 1
+}
+_nix_reclaim_lock
+_nix_relock_flakelab || exit 1
 
 # `nixos-rebuild switch` restarts home-manager-<user>.service only when the
 # generation changed, so a switch that builds the same closure never re-runs the
@@ -292,8 +324,15 @@ _hm_before="$(_hm_stamp)"
 # unprivileged `nix` command in that checkout dies on a permission error.
 # sudo and nixos-rebuild resolve from the caller's PATH, so the rebuild uses the
 # running system's nixos-rebuild. Only the path is encoded: the `#` after it is the
-# flake URL's fragment. `exit $?`, so nixos-rebuild's own codes reach the caller.
-sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || exit $?
+# flake URL's fragment. Its exit status is kept, so nixos-rebuild's own codes reach
+# the caller.
+# The lock is taken back after it too, failed or not: nix locks before it evaluates,
+# so even a failed switch can leave a root-written lock, which breaks the operator's
+# own `nix` commands in the overlay until the next run.
+_switch_rc=0
+sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || _switch_rc=$?
+_nix_reclaim_lock
+(( _switch_rc == 0 )) || exit "${_switch_rc}"
 
 # Same closure as the running generation: the switch left the activation alone,
 # so run it here instead. Failures warn only — the switch itself succeeded.
