@@ -56,7 +56,7 @@ interop wipe:**
   own location any more (`${0:A:h:h:h}` stays as the fallback for a plain
   checkout, where `files/scripts/<name>` still works). Automation/agents must
   **not** run these from a session that needs interop, and must **not** run
-  `wsl --shutdown` themselves — hand back to the user.
+  `wsl --shutdown` themselves.
 - `build-dev-wsl-nix` still avoids `wsl --terminate` (so it does not add a
   _second_ wipe), and derives the expected user/locale from
   `nix/users/default.nix` for its checks.
@@ -67,7 +67,7 @@ interop wipe:**
   by hand puts unmanaged state into a VM-global registry that WSL rewrites on its
   own schedule; `wsl --shutdown` re-creates the real entry, at the price of
   killing every WSL session in the VM, which is why it is the recovery step and
-  not a routine one. Leave it to the operator.
+  not a routine one, and never an agent step.
 
 ### The wipe is not bounded to a rebuild — trigger unidentified
 

@@ -183,7 +183,7 @@ else
     log_hint "There is no in-distro repair for this — do not attempt one."
     log_hint "The only fix is 'wsl --shutdown' from a WINDOWS terminal, then re-enter:"
     log_hint "WSL re-registers the handler itself on VM boot."
-    log_hint "It kills every session in the VM, so it is the operator's call, never an agent's."
+    log_hint "It kills every session in the VM, so it never runs from an agent session."
     log_hint "Upstream: https://github.com/microsoft/WSL/issues/8203 (binfmt_misc namespacing, open)"
   fi
 fi
@@ -455,7 +455,7 @@ elif glab auth status > /dev/null 2>&1; then
   log_ok "glab authenticated"
 else
   # An offline shell fails here with a perfectly good token, so the hint must not
-  # send the operator off to rotate credentials first.
+  # lead with rotating credentials.
   log_fail "glab auth status failed — credentials OR reachability"
   log_hint "glab auth status   # shows the reason (network, config mode, or token)"
 fi

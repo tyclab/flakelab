@@ -121,7 +121,7 @@ process_repo() {
 
     # A rewritten default branch drops commits that local refs may still hold,
     # so rebasing onto it would resurrect or conflict on them — the repo is
-    # reported and left untouched; the operator resolves the rewrite first.
+    # reported and left untouched until the rewrite is resolved.
     # Two windows: the rewrite landing during this fetch, and the aftermath
     # persisting from an earlier run (local default both ahead of and behind
     # upstream).

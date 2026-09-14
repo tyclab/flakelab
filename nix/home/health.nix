@@ -45,7 +45,7 @@ in
   # no repos. This turns that silence back into a failed activation: it fails on
   # anything flakelab-warn recorded, plus the post-conditions that must hold
   # unattended.
-  # Operator-only state (an agent holding a key, a browser login) is deliberately
+  # Interactive state (an agent holding a key, a browser login) is deliberately
   # NOT asserted — it needs a TTY, so it lives in `flakelab doctor` instead.
   home.activation.flakelabHealthCheck =
     lib.hm.dag.entryAfter

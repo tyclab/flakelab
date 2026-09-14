@@ -123,7 +123,7 @@ case "${_script_win}" in
   *) die "${_repo} resolves to '${_script_win}', which is not a drive path - keep the checkout under C:\\Users\\<name>\\git\\" ;;
 esac
 
-# --- run here, or hand the operator a command for Windows --------------------
+# --- run here, or print a command for Windows -------------------------------
 # Only the commands that restart the distro have to leave, and -DryRun never gets
 # there.
 _restarts=false
