@@ -554,7 +554,7 @@ fi
 # ---------------------------------------------------------------------------
 # Non-blocking: needs the network, or is merely untidy
 # ---------------------------------------------------------------------------
-log_head "Operator state (non-blocking)"
+log_head "Interactive state (non-blocking)"
 if [[ -x "${HOME}/.local/bin/claude" ]]; then
   # `plugin list | grep -qv "No plugins installed"` succeeds on the "Installed
   # plugins:" header alone, so it reports plugins on an empty install. Count the
