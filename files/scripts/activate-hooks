@@ -16,7 +16,7 @@ while (( $# > 0 )); do
     --help|-h)
       echo "Usage: activate-hooks --repos-dir <path>"
       exit 0 ;;
-    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+    *) print -r -- "Unknown arg: $1" >&2; exit 1 ;;
   esac
   shift
 done
@@ -27,7 +27,7 @@ if [[ -z "$REPOS_DIR" ]]; then
 fi
 
 if [[ ! -d "$REPOS_DIR" ]]; then
-  echo "SUMMARY repos-dir $REPOS_DIR does not exist yet, nothing to do"
+  print -r -- "SUMMARY repos-dir $REPOS_DIR does not exist yet, nothing to do"
   exit 0
 fi
 
@@ -73,7 +73,7 @@ while IFS= read -r hooks_dir; do
     fi
     git -C "$repo" config --local core.hooksPath hooks
     hooksdir_set=$((hooksdir_set + 1))
-    echo "HOOKSPATH_SET $repo"
+    print -r -- "HOOKSPATH_SET $repo"
   fi
 done < <(find "$REPOS_DIR" -type d -name hooks -not -path '*/.git/*' 2>/dev/null)
 
@@ -116,22 +116,22 @@ while IFS= read -r config; do
     fi
     if [[ -z "$PRECOMMIT" ]]; then
       pc_missing_count=$((pc_missing_count + 1))
-      echo "PRECOMMIT_NOT_FOUND cannot repoint dead shim in $repo"
+      print -r -- "PRECOMMIT_NOT_FOUND cannot repoint dead shim in $repo"
       continue
     fi
     if ( cd "$repo" && "$PRECOMMIT" install --overwrite -t pre-commit -t pre-push >/dev/null ); then
       shim_installed=$((shim_installed + 1))
-      echo "SHIM_REPOINTED $repo"
+      print -r -- "SHIM_REPOINTED $repo"
     else
       shim_failed=$((shim_failed + 1))
-      echo "SHIM_FAILED $repo (repoint)"
+      print -r -- "SHIM_FAILED $repo (repoint)"
     fi
     continue
   fi
 
   if [[ -z "$PRECOMMIT" ]]; then
     pc_missing_count=$((pc_missing_count + 1))
-    echo "PRECOMMIT_NOT_FOUND skipping $repo"
+    print -r -- "PRECOMMIT_NOT_FOUND skipping $repo"
     continue
   fi
 
@@ -157,24 +157,24 @@ while IFS= read -r config; do
 
   if (( install_rc == 0 )); then
     shim_installed=$((shim_installed + 1))
-    echo "SHIM_INSTALLED $repo"
+    print -r -- "SHIM_INSTALLED $repo"
   else
     shim_failed=$((shim_failed + 1))
-    echo "SHIM_FAILED $repo (rc=$install_rc)"
+    print -r -- "SHIM_FAILED $repo (rc=$install_rc)"
   fi
 done < <(find "$REPOS_DIR" -type f -name '.pre-commit-config.yaml' -not -path '*/.git/*' 2>/dev/null)
 
-echo "SUMMARY hooks/=$hooksdir_count set=$hooksdir_set precommit-config=$shim_count installed=$shim_installed skipped(hooksPath)=$shim_skipped skipped(already_ok)=$((shim_count - shim_installed - shim_failed - pc_missing_count - shim_skipped)) failed=$shim_failed pc_missing=$pc_missing_count"
+print -r -- "SUMMARY hooks/=$hooksdir_count set=$hooksdir_set precommit-config=$shim_count installed=$shim_installed skipped(hooksPath)=$shim_skipped skipped(already_ok)=$((shim_count - shim_installed - shim_failed - pc_missing_count - shim_skipped)) failed=$shim_failed pc_missing=$pc_missing_count"
 
 # A repo left unhooked by a missing binary is the same false green as a failed
 # install. Key on the count, not on $PRECOMMIT: a fully-shimmed box must still pass.
 if (( pc_missing_count > 0 )); then
-  echo "ERROR: pre-commit binary not found; $pc_missing_count repo(s) left without hooks" >&2
+  print -r -- "ERROR: pre-commit binary not found; $pc_missing_count repo(s) left without hooks" >&2
   exit 1
 fi
 
 if (( shim_failed > 0 )); then
-  echo "ERROR: pre-commit hook install failed for $shim_failed repo(s)" >&2
+  print -r -- "ERROR: pre-commit hook install failed for $shim_failed repo(s)" >&2
   exit 1
 fi
 

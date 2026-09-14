@@ -44,11 +44,17 @@ done
 
 # `sudo` records its argv and exits with SUDO_RC, so the switch is observable
 # without a root and a failing rebuild's status can be checked for surviving.
+# SUDO_WRITES_LOCK makes the switch leave a lock the caller cannot write - root's,
+# which a read-only mode stands in for, since the suite has no root to chown to.
 SHIM="${BASE}/bin"
 mkdir -p "${SHIM}"
 cat > "${SHIM}/sudo" <<'STUB'
 #!/usr/bin/env zsh
 print -r -- "$@" >> "${SUDO_LOG}"
+if [[ -n "${SUDO_WRITES_LOCK:-}" && "$1" == nixos-rebuild ]]; then
+  print -r -- '{ "written": "by root" }' > "${FLAKELAB_REPO_ROOT}/flake.lock"
+  chmod 444 "${FLAKELAB_REPO_ROOT}/flake.lock"
+fi
 exit "${SUDO_RC:-0}"
 STUB
 chmod +x "${SHIM}/sudo"
@@ -117,6 +123,14 @@ contains "and says the check was skipped"   "${OUT}" "not a git checkout"
 excludes "with no fetch attempted"          "${OUT}" "fetch failed"
 excludes "and no origin/HEAD advice"        "${OUT}" "origin/HEAD"
 excludes "and no stale refusal"             "${OUT}" "stale"
+
+# A `%` is a prompt escape to print -P and a backslash an escape to print, so a
+# path carrying either used to come out rewritten: `%B` turned bold, `\t` a tab.
+print -r -- "a path with % and a backslash is printed as it is"
+d="$(mk_plain 'odd%Bdir\tname')"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "naming the path verbatim"         "${OUT}" "${d} is not a git checkout"
 
 # ---------------------------------------------------------------------------
 # 2. A repository with no remote: local history, nothing to be behind
@@ -215,7 +229,96 @@ contains "naming the checkout"              "${OUT}" "Could not fetch ${d}"
 excludes "without blaming flakelab"         "${OUT}" "flakelab updates"
 
 # ---------------------------------------------------------------------------
-# 4. The switch's own status and the --all tail survive
+# 4. A lock the caller cannot write is taken back, pins intact
+# ---------------------------------------------------------------------------
+# Root leaves one behind whenever its switch had to lock; the caller's re-lock then
+# fails and the switch builds the stale snapshot. The lock content is not a real
+# lock, so the re-lock step reads no flakelab input and stays out of the way -
+# except where `nix` is shimmed to report a path: input whose re-lock fails.
+# Root writes through a read-only mode, so as root none of this is observable.
+lock_state() { [[ -w "$1/flake.lock" ]] && print -r -- writable || print -r -- read-only }
+shim_nix() {
+  cat > "${SHIM}/nix" <<'STUB'
+#!/usr/bin/env zsh
+case "$1" in
+  eval)  print -rn -- "path /flakelab" ;;
+  flake) print -r -u2 -- "error: opening file \"${FLAKELAB_REPO_ROOT}/flake.lock\": Permission denied"; exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "${SHIM}/nix"
+}
+
+if (( EUID == 0 )); then
+  print -r -- "lock cases skipped: root can write a read-only lock"
+else
+  print -r -- "a read-only lock is taken back before the switch"
+  d="$(mk_plain lockro)"
+  print -r -- '{ "pins": "kept" }' > "${d}/flake.lock"
+  chmod 444 "${d}/flake.lock"
+  run_update "${d}"
+  check    "it switches"                    "${RC}" "0"
+  check    "exactly once"                   "$(switches)" "1"
+  check    "the lock is writable again"     "$(lock_state "${d}")" "writable"
+  check    "with its content unchanged"     "$(< "${d}/flake.lock")" '{ "pins": "kept" }'
+  contains "saying so"                      "${OUT}" "took it back"
+  check    "and no temporary copy is left"  "$(print -r -- "${d}"/.flake.lock.reclaim.*(N))" ""
+
+  print -r -- "a lock the switch writes as root is taken back after it"
+  d="$(mk_plain lockafter)"
+  SUDO_WRITES_LOCK=1 run_update "${d}"
+  check    "it switches"                    "${RC}" "0"
+  check    "the lock is writable"           "$(lock_state "${d}")" "writable"
+  check    "and is the one the switch wrote" "$(< "${d}/flake.lock")" '{ "written": "by root" }'
+
+  print -r -- "and after a switch that failed"
+  d="$(mk_plain lockfailed)"
+  SUDO_WRITES_LOCK=1 SUDO_RC=100 run_update "${d}"
+  check    "the switch's status comes through" "${RC}" "100"
+  check    "and the lock is writable"       "$(lock_state "${d}")" "writable"
+
+  print -r -- "a symlinked lock is left a symlink"
+  d="$(mk_plain locklink)"
+  print -r -- '{ }' > "${BASE}/locklink-target"
+  chmod 444 "${BASE}/locklink-target"
+  ln -s "${BASE}/locklink-target" "${d}/flake.lock"
+  run_update "${d}"
+  check    "it switches"                    "${RC}" "0"
+  check    "and the link survives"          "$([[ -L "${d}/flake.lock" ]] && print yes || print no)" "yes"
+
+  # A directory the caller cannot write stands in for a lock that cannot be taken back.
+  print -r -- "a lock that cannot be taken back only warns when no path: re-lock needs it"
+  d="$(mk_plain lockstuck)"
+  print -r -- '{ }' > "${d}/flake.lock"
+  chmod 444 "${d}/flake.lock"
+  chmod 555 "${d}"
+  run_update "${d}"
+  check    "it switches"                    "${RC}" "0"
+  check    "exactly once"                   "$(switches)" "1"
+  contains "naming the chown"               "${OUT}" "sudo chown $(id -u):$(id -g) '${d}/flake.lock'"
+
+  print -r -- "and refuses the switch when a path: re-lock fails on it"
+  shim_nix
+  run_update "${d}"
+  chmod 755 "${d}"
+  check    "it refuses"                     "${RC}" "1"
+  check    "with no switch"                 "$(switches)" "0"
+  contains "saying why"                     "${OUT}" "refusing to switch into the previously locked snapshot"
+  contains "naming the chown"               "${OUT}" "sudo chown $(id -u):$(id -g) '${d}/flake.lock'"
+
+  print -r -- "a path: re-lock that fails on a writable lock still only warns"
+  d="$(mk_plain lockwritable)"
+  print -r -- '{ }' > "${d}/flake.lock"
+  run_update "${d}"
+  rm -f "${SHIM}/nix"
+  check    "it switches"                    "${RC}" "0"
+  check    "exactly once"                   "$(switches)" "1"
+  contains "with the warning it always had" "${OUT}" "could not re-lock"
+  excludes "and no refusal"                 "${OUT}" "refusing"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. The switch's own status and the --all tail survive
 # ---------------------------------------------------------------------------
 print -r -- "a failed switch keeps nixos-rebuild's exit status"
 d="$(mk_local rcpass)"
@@ -240,7 +343,7 @@ check    "after switching"                  "$(switches)" "1"
 contains "and says what did not run"        "${OUT}" "nix-clone-repos is not on PATH"
 
 # ---------------------------------------------------------------------------
-# 5. The activation behind an unchanged generation
+# 6. The activation behind an unchanged generation
 # ---------------------------------------------------------------------------
 # `nixos-rebuild switch` restarts home-manager-<user>.service only when the
 # generation changed, so a rebuild that builds the same closure leaves every

@@ -14,7 +14,7 @@ function executeWSLExecutable() {
   local _OUTPUT
   _OUTPUT=$(${_WSL_BIN} "${@}" | tr -d '\0' | tr -d '\r' | sed '/^[[:space:]]*$/d') || {
     print -u2 "ERROR: wsl.exe command failed"
-    print -u2 "${_OUTPUT}"
+    print -ru2 -- "${_OUTPUT}"
     exit 1
   }
   print -r -- "${_OUTPUT}"

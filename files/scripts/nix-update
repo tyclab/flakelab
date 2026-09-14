@@ -7,13 +7,18 @@ set -uo pipefail
 
 _self="${0:t}"
 
+# print -P prompt-expands the whole string, so a `%` in a path, a branch or a
+# URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r
+# turns `\t` in a Windows path into a tab. Only the colour is markup here.
+_say() { print -rP -- "%F{$1}${2//\%/%%}%f" }
+
 # Set by the nix wrapper; the fallback lets this run straight from a checkout.
 if [[ -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
   _repo="${FLAKELAB_REPO_ROOT}"
 elif [[ -f "${0:A:h:h:h}/flake.nix" ]]; then
   _repo="${0:A:h:h:h}"
 else
-  print -u2 "${_self}: FLAKELAB_REPO_ROOT unset and no flake checkout found."
+  print -ru2 -- "${_self}: FLAKELAB_REPO_ROOT unset and no flake checkout found."
   exit 1
 fi
 
@@ -51,7 +56,7 @@ while (( $# )); do
       exit 0
       ;;
     *)
-      print -u2 "${_self}: unknown argument: $1 (try --help)"
+      print -ru2 -- "${_self}: unknown argument: $1 (try --help)"
       exit 2
       ;;
   esac
@@ -66,19 +71,19 @@ done
 _nix_pull() {
   local _dir="${_repo}" _out
   if [[ "${FLAKELAB_STALE_OK:-}" == 1 ]]; then
-    print -P "%F{yellow}  FLAKELAB_STALE_OK=1 — rebuilding the stale tree as it is%f"
+    _say yellow "  FLAKELAB_STALE_OK=1 — rebuilding the stale tree as it is"
     return 0
   fi
   if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
-    print -P "%F{red}✗ uncommitted changes in ${_dir} — commit or stash first, or set FLAKELAB_STALE_OK=1 to rebuild the stale tree%f"
+    _say red "✗ uncommitted changes in ${_dir} — commit or stash first, or set FLAKELAB_STALE_OK=1 to rebuild the stale tree"
     return 1
   fi
   if _out="$(git -C "$_dir" pull --rebase 2>&1)"; then
-    print -P "%F{green}✓ pulled --rebase: now at $(git -C "$_dir" rev-parse --short HEAD)%f"
+    _say green "✓ pulled --rebase: now at $(git -C "$_dir" rev-parse --short HEAD)"
     return 0
   fi
   git -C "$_dir" rebase --abort 2>/dev/null || true
-  print -P "%F{red}✗ pull --rebase failed — tree restored; resolve it by hand, or set FLAKELAB_STALE_OK=1 to rebuild the stale tree%f"
+  _say red "✗ pull --rebase failed — tree restored; resolve it by hand, or set FLAKELAB_STALE_OK=1 to rebuild the stale tree"
   print -r -- "$_out"
   return 1
 }
@@ -92,7 +97,7 @@ _nix_fetch() {
   local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
   local -a GITNET_TIMEOUT_CMD=(timeout 20)
   gitnet_retry git -C "$_dir" fetch -q --all --prune && return 0
-  print -P "%F{yellow}⚠ Could not fetch ${_dir} — fetch failed after retry (${GITNET_WHY})%f"
+  _say yellow "⚠ Could not fetch ${_dir} — fetch failed after retry (${GITNET_WHY})"
   [[ -n "$GITNET_OUT" ]] && print -r -- "$GITNET_OUT"
   return 1
 }
@@ -102,7 +107,7 @@ _nix_fetch() {
 _nix_check_remote() {
   local _dir="${_repo}"
   if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
-    print -P "%F{yellow}⚠ ${_repo} has uncommitted changes%f"
+    _say yellow "⚠ ${_repo} has uncommitted changes"
   fi
   if ! _nix_fetch "$_dir"; then
     # An unverified tree is not a current one: fail closed.
@@ -121,13 +126,13 @@ _nix_check_remote() {
   local _behind=$(git -C "$_dir" rev-list --count HEAD..@{u} 2>/dev/null)
   local _ahead=$(git -C "$_dir" rev-list --count @{u}..HEAD 2>/dev/null)
   if [[ "$_behind" -gt 0 && "$_ahead" -gt 0 ]]; then
-    print -P "%F{yellow}⚠ repo has diverged (${_ahead} ahead, ${_behind} behind)%f"
+    _say yellow "⚠ repo has diverged (${_ahead} ahead, ${_behind} behind)"
     _nix_pull || return 1
   elif [[ "$_behind" -gt 0 ]]; then
-    print -P "%F{yellow}⚠ repo is ${_behind} commit(s) behind remote%f"
+    _say yellow "⚠ repo is ${_behind} commit(s) behind remote"
     _nix_pull || return 1
   elif [[ "$_ahead" -gt 0 ]]; then
-    print -P "%F{cyan}ℹ repo is ${_ahead} commit(s) ahead of remote (unpushed)%f"
+    _say cyan "ℹ repo is ${_ahead} commit(s) ahead of remote (unpushed)"
   fi
 }
 
@@ -140,29 +145,29 @@ _nix_check_base() {
   _default="$(git -C "$_dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
   _default="${_default#origin/}"
   if [[ -z "$_default" ]]; then
-    print -P "%F{yellow}⚠ flakelab has no origin/HEAD — run 'git remote set-head origin -a'; skipping the default-branch check%f"
+    _say yellow "⚠ flakelab has no origin/HEAD — run 'git remote set-head origin -a'; skipping the default-branch check"
     return 0
   fi
   _head="$(git -C "$_dir" symbolic-ref --short -q HEAD 2>/dev/null)" || {
-    print -P "%F{yellow}⚠ flakelab is on a detached HEAD — not compared against origin/${_default}%f"
+    _say yellow "⚠ flakelab is on a detached HEAD — not compared against origin/${_default}"
     return 0
   }
   [[ "$_head" == "$_default" ]] && return 0
   # A stale origin/HEAD fails here rather than calling a behind branch current.
   if ! _behind="$(git -C "$_dir" rev-list --count "HEAD..origin/${_default}" 2>/dev/null)"; then
-    print -P "%F{yellow}⚠ flakelab cannot be compared against origin/${_default} — run 'git remote set-head origin -a'%f"
+    _say yellow "⚠ flakelab cannot be compared against origin/${_default} — run 'git remote set-head origin -a'"
     return 0
   fi
   (( _behind > 0 )) || return 0
 
-  print -P "%F{yellow}⚠ flakelab is on ${_head}, ${_behind} commit(s) behind origin/${_default}%f"
+  _say yellow "⚠ flakelab is on ${_head}, ${_behind} commit(s) behind origin/${_default}"
 
   if [[ -n "$(git -C "$_dir" status --porcelain 2>/dev/null)" ]]; then
-    print -P "%F{yellow}  uncommitted changes — not offering a rebase; commit or stash first%f"
+    _say yellow "  uncommitted changes — not offering a rebase; commit or stash first"
     return 0
   fi
   if [[ ! -t 0 ]]; then
-    print -P "%F{yellow}  no terminal to ask — rebuilding from it anyway; rebase with: git -C ${_dir} rebase origin/${_default}%f"
+    _say yellow "  no terminal to ask — rebuilding from it anyway; rebase with: git -C ${_dir} rebase origin/${_default}"
     return 0
   fi
 
@@ -170,12 +175,12 @@ _nix_check_base() {
   echo
   [[ "$_reply" == [yY] ]] || return 0
   if _out="$(git -C "$_dir" rebase "origin/${_default}" 2>&1)"; then
-    print -P "%F{green}✓ rebased ${_head} onto origin/${_default}%f"
+    _say green "✓ rebased ${_head} onto origin/${_default}"
     return 0
   fi
   # Leave nothing half-applied for the next run to trip over.
   git -C "$_dir" rebase --abort 2>/dev/null || true
-  print -P "%F{red}✗ rebase onto origin/${_default} conflicted — tree restored, refusing to rebuild from a branch behind ${_default}%f"
+  _say red "✗ rebase onto origin/${_default} conflicted — tree restored, refusing to rebuild from a branch behind ${_default}"
   print -r -- "$_out"
   return 1
 }
@@ -193,16 +198,16 @@ _nix_wait_boot() {
     _state="$(systemctl is-system-running 2> /dev/null)"
     _hm="$(systemctl is-active "${_unit}" 2> /dev/null)"
     if [[ "${_state}" != (initializing|starting) && "${_hm}" != (activating|reloading) ]]; then
-      (( _said )) && print -P "%F{green}✓ boot activation finished%f"
+      (( _said )) && _say green "✓ boot activation finished"
       return 0
     fi
     if (( SECONDS >= _deadline )); then
-      print -P "%F{red}✗ still booting after ${_limit}s (system: ${_state:-?}, ${_unit}: ${_hm:-?}) — refusing to switch into a running boot activation%f"
-      print -P "%F{red}  inspect: systemctl status ${_unit}; retry once it settles, or set FLAKELAB_BOOT_OK=1 to switch anyway%f"
+      _say red "✗ still booting after ${_limit}s (system: ${_state:-?}, ${_unit}: ${_hm:-?}) — refusing to switch into a running boot activation"
+      _say red "  inspect: systemctl status ${_unit}; retry once it settles, or set FLAKELAB_BOOT_OK=1 to switch anyway"
       return 1
     fi
     if (( ! _said )); then
-      print -P "%F{yellow}⚠ the distro is still booting (system: ${_state:-?}, ${_unit}: ${_hm:-?}) — waiting up to ${_limit}s; a switch now would stop that activation and tear down this login session%f"
+      _say yellow "⚠ the distro is still booting (system: ${_state:-?}, ${_unit}: ${_hm:-?}) — waiting up to ${_limit}s; a switch now would stop that activation and tear down this login session"
       _said=1
     fi
     sleep 2
@@ -222,14 +227,14 @@ _nix_wait_boot || exit 1
 # repository: that is drift against its own history.
 _nix_repo_shape() {
   if ! git -C "${_repo}" rev-parse --git-dir > /dev/null 2>&1; then
-    print -P "%F{cyan}ℹ ${_repo} is not a git checkout — no drift check (git init it to get one)%f"
+    _say cyan "ℹ ${_repo} is not a git checkout — no drift check (git init it to get one)"
     return 1
   fi
   [[ -n "$(git -C "${_repo}" remote 2>/dev/null)" ]] && return 0
   if [[ -n "$(git -C "${_repo}" status --porcelain 2>/dev/null)" ]]; then
-    print -P "%F{yellow}⚠ ${_repo} has uncommitted changes%f"
+    _say yellow "⚠ ${_repo} has uncommitted changes"
   fi
-  print -P "%F{cyan}ℹ ${_repo} has no git remote — no drift check (add one to get it)%f"
+  _say cyan "ℹ ${_repo} has no git remote — no drift check (add one to get it)"
   return 1
 }
 
@@ -255,7 +260,7 @@ _nix_relock_flakelab() {
   local _where="${_ty#* }"; _ty="${_ty%% *}"
   # git+file: serves committed content only, so the edit under test may be absent.
   if [[ "${_ty}" == git+file ]]; then
-    print -P "%F{yellow}⚠ LOCAL flakelab (git+file: ${_where}) — only committed content is in this build%f"
+    _say yellow "⚠ LOCAL flakelab (git+file: ${_where}) — only committed content is in this build"
     return 0
   fi
   [[ -n "${_ty}" ]] || return 0
@@ -263,16 +268,48 @@ _nix_relock_flakelab() {
   # `nix` command with "opening file flake.lock: Permission denied".
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
     if [[ "${_ty}" == path ]]; then
-      print -P "%F{yellow}⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)%f"
+      _say yellow "⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
     else
-      print -P "%F{cyan}ℹ flakelab input updated%f"
+      _say cyan "ℹ flakelab input updated"
     fi
   else
-    print -P "%F{yellow}⚠ could not re-lock the path: flakelab input — the switch may evaluate the previously locked snapshot%f"
+    # A path: input the caller cannot re-lock for want of a writable lock would
+    # switch into the stale snapshot, so that one refuses; any other failure warns.
+    if [[ "${_ty}" == path && ! -w "${_lock}" ]]; then
+      _say red "✗ could not re-lock the path: flakelab input — ${_lock} is not writable by ${USER:-$(id -un)}; refusing to switch into the previously locked snapshot"
+      print -r -- "${_out}"
+      print -r -- "  fix: sudo chown $(id -u):$(id -g) ${(qq)_lock}"
+      return 1
+    fi
+    _say yellow "⚠ could not re-lock the path: flakelab input — the switch may evaluate the previously locked snapshot"
     print -r -- "${_out}"
   fi
 }
-_nix_relock_flakelab
+
+# nix rewrites the overlay's lock whenever an input moves, so one the caller cannot
+# write fails the re-lock above and the switch evaluates the stale snapshot:
+# silently while that is still in the store, as "NAR hash mismatch" once it is
+# collected. Root leaves one behind whenever its switch had to lock - an overlay
+# with no lock yet, which is every overlay right after setup-wsl-nix.ps1, or a
+# re-lock that failed. The directory is the caller's, so a copy renamed over the
+# lock takes it back without sudo and keeps every pin. `cat`, not `cp`, which
+# would carry the read-only mode across; braced so a failed redirection is quiet.
+# A symlinked lock is the operator's arrangement, and the rename would replace the
+# link, so it is left alone. Warns only: the re-lock decides whether it matters.
+_nix_reclaim_lock() {
+  local _lock="${_repo}/flake.lock" _tmp="${_repo}/.flake.lock.reclaim.$$"
+  [[ -e "${_lock}" && ! -L "${_lock}" && ! -w "${_lock}" ]] || return 0
+  if { cat -- "${_lock}" > "${_tmp}" && mv -f -- "${_tmp}" "${_lock}" } 2> /dev/null; then
+    _say cyan "ℹ ${_lock} was not writable by ${USER:-$(id -un)} — took it back, pins unchanged"
+    return 0
+  fi
+  rm -f -- "${_tmp}" 2> /dev/null
+  _say yellow "⚠ ${_lock} is not writable by ${USER:-$(id -un)} and could not be taken back"
+  print -r -- "  fix: sudo chown $(id -u):$(id -g) ${(qq)_lock}"
+  return 1
+}
+_nix_reclaim_lock
+_nix_relock_flakelab || exit 1
 
 # `nixos-rebuild switch` restarts home-manager-<user>.service only when the
 # generation changed, so a switch that builds the same closure never re-runs the
@@ -292,15 +329,22 @@ _hm_before="$(_hm_stamp)"
 # unprivileged `nix` command in that checkout dies on a permission error.
 # sudo and nixos-rebuild resolve from the caller's PATH, so the rebuild uses the
 # running system's nixos-rebuild. Only the path is encoded: the `#` after it is the
-# flake URL's fragment. `exit $?`, so nixos-rebuild's own codes reach the caller.
-sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || exit $?
+# flake URL's fragment. Its exit status is kept, so nixos-rebuild's own codes reach
+# the caller.
+# The lock is taken back after it too, failed or not: nix locks before it evaluates,
+# so even a failed switch can leave a root-written lock, which breaks the operator's
+# own `nix` commands in the overlay until the next run.
+_switch_rc=0
+sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || _switch_rc=$?
+_nix_reclaim_lock
+(( _switch_rc == 0 )) || exit "${_switch_rc}"
 
 # Same closure as the running generation: the switch left the activation alone,
 # so run it here instead. Failures warn only — the switch itself succeeded.
 if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
-  print -P "%F{cyan}ℹ generation unchanged, so the switch left ${_hm_unit} alone — restarting it to retry the deferred steps%f"
+  _say cyan "ℹ generation unchanged, so the switch left ${_hm_unit} alone — restarting it to retry the deferred steps"
   sudo systemctl restart "${_hm_unit}" \
-    || print -P "%F{yellow}⚠ ${_hm_unit} did not restart cleanly — inspect: systemctl status ${_hm_unit}%f"
+    || _say yellow "⚠ ${_hm_unit} did not restart cleanly — inspect: systemctl status ${_hm_unit}"
 fi
 
 # What activation could not do is never fatal and never printed by the switch, so
@@ -309,7 +353,7 @@ fi
 _deferred="$HOME/.local/state/flakelab/activation-deferred"
 if [[ -s "${_deferred}" ]]; then
   _deferred_lines=("${(@f)$(< "${_deferred}")}")
-  print -P "%F{yellow}⚠ activation deferred ${#_deferred_lines} step(s), also listed by flakelab doctor:%f"
+  _say yellow "⚠ activation deferred ${#_deferred_lines} step(s), also listed by flakelab doctor:"
   print -l -- "${_deferred_lines[@]/#/    }"
 fi
 
@@ -320,7 +364,7 @@ _claude_marketplaces="$HOME/.claude/plugins/marketplaces"
 if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   for _m in "${_claude_marketplaces}"/*(N/); do
     claude plugin marketplace update "${_m:t}" > /dev/null 2>&1 \
-      || print -P "%F{yellow}⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch%f"
+      || _say yellow "⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch"
   done
   # `plugin install` is a no-op on an installed plugin, so a merged bump would stay
   # on its installed version; only plugins whose fetched version differs are updated,
@@ -337,7 +381,7 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
         _want="$(jq -r '.version // empty' "${_m}/${_src}/.claude-plugin/plugin.json" 2> /dev/null)"
         { [ -n "${_have}" ] && [ -n "${_want}" ] && [ "${_have}" != "${_want}" ]; } || continue
         claude plugin update "${_key}" < /dev/null > /dev/null 2>&1 \
-          || print -P "%F{yellow}⚠ claude plugin ${_key} not updated; it stays on ${_have} (marketplace has ${_want})%f"
+          || _say yellow "⚠ claude plugin ${_key} not updated; it stays on ${_have} (marketplace has ${_want})"
       done
     done
   fi
@@ -350,7 +394,7 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
          "${_settings}" "${_recommended}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
     else
-      print -P "%F{yellow}⚠ Claude pre-approved permissions not asserted in settings.json%f"
+      _say yellow "⚠ Claude pre-approved permissions not asserted in settings.json"
     fi
     rm -f "${_tmp}"
   fi
@@ -362,7 +406,7 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
          "${_settings}" "${_recommendedask}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
     else
-      print -P "%F{yellow}⚠ Claude recommended ask tier not asserted in settings.json%f"
+      _say yellow "⚠ Claude recommended ask tier not asserted in settings.json"
     fi
     rm -f "${_tmp}"
   fi
@@ -371,7 +415,7 @@ fi
 (( _run_clone )) || exit 0
 
 if ! command -v nix-clone-repos > /dev/null 2>&1; then
-  print -P "%F{red}✗ --all: nix-clone-repos is not on PATH — the switch succeeded, the clone sweep did not run%f"
+  _say red "✗ --all: nix-clone-repos is not on PATH — the switch succeeded, the clone sweep did not run"
   exit 1
 fi
 nix-clone-repos

@@ -249,7 +249,10 @@ one line. An overlay generated from a checkout points at it with `path:`, which
 is mutable while its `flake.lock` entry is not — so without the re-lock every
 `git pull` in the flakelab checkout leaves the rebuild evaluating the previously
 locked snapshot, successfully and silently. A `github:` or `git+` input is left
-alone: that pin is deliberate.
+alone: that pin is deliberate. A lock the caller cannot write — root's, left by a
+switch that had to lock — is taken back first and again after the switch, pins
+unchanged; if it cannot be, a `path:` re-lock that fails on it refuses the switch
+and names the `chown`.
 
 Activation ends in a health check, and `flakelab doctor` covers what it cannot
 assert from a non-interactive context; which failures are fatal and which are

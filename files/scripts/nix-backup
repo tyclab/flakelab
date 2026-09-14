@@ -123,9 +123,9 @@ INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude helm)
 resolve_backup_path() {
   local category="$1"
   if (( ${SHARED_CATEGORIES[(Ie)${category}]} )); then
-    print "${SHARED_ROOT}/${category}"
+    print -r -- "${SHARED_ROOT}/${category}"
   else
-    print "${INSTANCE_ROOT}/${category}"
+    print -r -- "${INSTANCE_ROOT}/${category}"
   fi
 }
 
@@ -205,7 +205,7 @@ while (( $# > 0 )); do
       echo "                       deleted projects); with --force, remove them. Every box must have"
       echo "                       synced recently — a missing or stale manifest aborts the collection"
       echo "  --skip-conflicts     on restore without a TTY, keep a differing file instead of failing"
-      echo "  --keep <n>           rollback snapshots to retain (default ${KEEP}); the newest is never pruned"
+      print -r -- "  --keep <n>           rollback snapshots to retain (default ${KEEP}); the newest is never pruned"
       echo "  --from <repo>        restore FROM another repo's backup (a repo root or its files/config dir)"
       echo "  --instance <name>    per-instance files come from this SOURCE instance, not the current"
       echo "                       distro; the shared categories restore either way"
@@ -229,7 +229,7 @@ while (( $# > 0 )); do
       exit 0
       ;;
     *)
-      echo "Unknown option: $1" >&2
+      print -r -- "Unknown option: $1" >&2
       exit 1
       ;;
   esac
@@ -247,7 +247,7 @@ if [[ -n "${SRC_FROM}" || -n "${SRC_INSTANCE}" ]]; then
     elif [[ -d "${SRC_FROM}/shared" || -d "${SRC_FROM}/instances" ]]; then
       BACKUP_ROOT="${SRC_FROM%/}"
     else
-      echo "Error: no backup data under '${SRC_FROM}' (expected files/config/ or shared/+instances/)" >&2
+      print -r -- "Error: no backup data under '${SRC_FROM}' (expected files/config/ or shared/+instances/)" >&2
       exit 1
     fi
   fi
@@ -270,9 +270,9 @@ LEGACY_MERGED="${SHARED_ROOT}/shell/.zsh_history_merged"
 
 merged_history_path() {
   if state_enabled; then
-    print "${STATE_ROOT}/shell/.zsh_history_merged"
+    print -r -- "${STATE_ROOT}/shell/.zsh_history_merged"
   else
-    print "${LEGACY_MERGED}"
+    print -r -- "${LEGACY_MERGED}"
   fi
 }
 
@@ -280,9 +280,9 @@ merged_history_path() {
 # root existed must not restore over the shared one.
 memory_root() {
   if state_enabled; then
-    print "${STATE_ROOT}/claude/projects"
+    print -r -- "${STATE_ROOT}/claude/projects"
   else
-    print "${BACKUP_CLAUDE}/projects"
+    print -r -- "${BACKUP_CLAUDE}/projects"
   fi
 }
 
@@ -339,11 +339,11 @@ RED="%F{red}"
 CYAN="%F{cyan}"
 RESET="%f"
 
-log_info()  { print -P "${CYAN}[INFO]${RESET}  $1" }
-log_ok()    { print -P "${GREEN}[OK]${RESET}    $1" }
-log_warn()  { print -P "${YELLOW}[WARN]${RESET}  $1" }
-log_error() { print -P "${RED}[ERROR]${RESET} $1" }
-log_dry()   { print -P "${YELLOW}[DRY]${RESET}   $1" }
+log_info()  { print -rP -- "${CYAN}[INFO]${RESET}  ${1//\%/%%}" }
+log_ok()    { print -rP -- "${GREEN}[OK]${RESET}    ${1//\%/%%}" }
+log_warn()  { print -rP -- "${YELLOW}[WARN]${RESET}  ${1//\%/%%}" }
+log_error() { print -rP -- "${RED}[ERROR]${RESET} ${1//\%/%%}" }
+log_dry()   { print -rP -- "${YELLOW}[DRY]${RESET}   ${1//\%/%%}" }
 
 log_state_root() {
   ${STATE_CONFIGURED} || return 0
@@ -633,7 +633,7 @@ backup_file() {
           record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite): ${dst}"
           return 0
         fi
-        print -Pn "${YELLOW}Overwrite ${dst}? [y/N] ${RESET}"
+        print -rPn -- "${YELLOW}Overwrite ${dst//\%/%%}? [y/N] ${RESET}"
         local answer=""
         read -r answer || answer=""
         if [[ "${answer}" != [yY] ]]; then
@@ -861,7 +861,7 @@ restore_file() {
         record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite, or --skip-conflicts to keep): ${dst}"
         return 0
       fi
-      print -Pn "${YELLOW}Overwrite ${dst}? [y/N] ${RESET}"
+      print -rPn -- "${YELLOW}Overwrite ${dst//\%/%%}? [y/N] ${RESET}"
       local answer=""
       read -r answer || answer=""
       if [[ "${answer}" != [yY] ]]; then
