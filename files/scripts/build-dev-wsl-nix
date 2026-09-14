@@ -19,6 +19,11 @@ set -euo pipefail
 #   --reinstall   unregister + reimport from base before applying the flake
 #   --no-verify   skip the post-build verification checks
 
+# print -P prompt-expands the whole string, so a `%` in a path, a branch or a
+# URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r
+# turns `\t` in a Windows path into a tab. Only the colour is markup here.
+_say() { print -rP -- "%F{$1}${2//\%/%%}%f" }
+
 DISTRO_NAME="NixDev"
 FLAKE_REF=""
 BASE_URL="https://github.com/nix-community/NixOS-WSL/releases/latest/download/nixos.wsl"
@@ -34,7 +39,7 @@ while (( $# > 0 )); do
     --reinstall) REINSTALL=true ;;
     --no-verify) VERIFY=false ;;
     -h|--help)   sed -n '3,25p' "$0"; exit 0 ;;
-    *) print -P "%F{red}Unknown option: $1%f" >&2; exit 1 ;;
+    *) _say red "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
@@ -51,11 +56,11 @@ _flake_dir="${_flake_ref%%#*}"
 _username="$(grep -hoP 'username\s*=\s*"\K[^"]+' "${_flake_dir}/flake.nix" "${_flake_dir}/nix/users/default.nix" 2>/dev/null | head -1 || echo youruser)"
 _locale="$(grep -hoP 'locale\s*=\s*"\K[^"]+' "${_flake_dir}/flake.nix" "${_flake_dir}/nix/users/default.nix" 2>/dev/null | head -1 || echo en_US.UTF-8)"
 _WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
-[[ -x ${_WSL_BIN} ]] || { print -P "%F{red}wsl.exe not found%f" >&2; exit 1 }
+[[ -x ${_WSL_BIN} ]] || { _say red "wsl.exe not found" >&2; exit 1 }
 # Interop must be healthy before any lifecycle op (known-issues.md). systemd-binfmt
 # names the entry WSLInterop-late (microsoft/WSL#13449), so both spellings count.
 [[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]] || {
-  print -P "%F{red}WSL interop broken — run 'wsl --shutdown' then retry%f" >&2; exit 1 }
+  _say red "WSL interop broken — run 'wsl --shutdown' then retry" >&2; exit 1 }
 
 wsl_clean() { ${_WSL_BIN} "$@" | tr -d '\0\r'; }
 _win() { local p="$1"; [[ "$p" == /mnt/[a-z]/* ]] && p="${(U)p[6]}:${p#/mnt/?}"; print -r -- "${p//\//\\}"; }
@@ -65,26 +70,26 @@ _install_win="$(_win "${_repo_root}/files/.wsl-${DISTRO_NAME}-instance")"
 
 # --- (Re)import the distro (base image downloaded fresh only when importing) ---
 if _exists && ${REINSTALL}; then
-  print -P "%F{yellow}Unregistering existing ${DISTRO_NAME}...%f"
+  _say yellow "Unregistering existing ${DISTRO_NAME}..."
   ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
 fi
 if ! _exists; then
   _base_tmp=""
   if [[ -z "${BASE_TARBALL}" ]]; then
-    command -v curl >/dev/null || { print -P "%F{red}curl not found — pass --base%f" >&2; exit 1 }
+    command -v curl >/dev/null || { _say red "curl not found — pass --base" >&2; exit 1 }
     # Download onto the Windows mount (not /tmp): wsl.exe --import needs a Windows
     # path, and _win can't convert a distro-local /tmp path. Gitignored (files/.wsl-*).
     _base_tmp="$(mktemp "${_repo_root}/files/.wsl-nixos-base.XXXXXX")"; BASE_TARBALL="${_base_tmp}"
-    print -P "%F{cyan}Downloading NixOS-WSL base image...%f"
+    _say cyan "Downloading NixOS-WSL base image..."
     curl -fL --retry 5 --retry-all-errors --progress-bar -o "${BASE_TARBALL}" "${BASE_URL}"
   fi
-  print -P "%F{cyan}Importing ${DISTRO_NAME}...%f"
+  _say cyan "Importing ${DISTRO_NAME}..."
   _tmp=$(mktemp)
   ${_WSL_BIN} --import "${DISTRO_NAME}" "${_install_win}" "$(_win "${BASE_TARBALL}")" --version 2 >"$_tmp" 2>&1
   tr -d '\0\r' <"$_tmp"; rm -f "$_tmp"
   [[ -n "${_base_tmp}" ]] && rm -f "${_base_tmp}"
 else
-  print -P "%F{green}${DISTRO_NAME} exists — applying flake (--reinstall to rebuild from base)%f"
+  _say green "${DISTRO_NAME} exists — applying flake (--reinstall to rebuild from base)"
 fi
 
 # Root reads the /mnt/c repo as another uid; mark it safe so the flake git
@@ -97,15 +102,15 @@ ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
 
 # Pin the lock for the flake being built (an overlay ships without one).
 if [[ ! -f "${_flake_dir}/flake.lock" ]]; then
-  print -P "%F{cyan}Generating flake.lock...%f"
+  _say cyan "Generating flake.lock..."
   ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
     env NIX_CONFIG="experimental-features = nix-command flakes" \
     nix flake lock "${_flake_dir}" < /dev/null
 fi
 
 # --- Apply the flake from inside the distro (base image provides nix) ---
-print -P "%F{cyan}[$(date +%H:%M:%S)] nixos-rebuild switch --flake ${_flake_ref}%f"
-print -P "%F{yellow}(first run downloads the store from cache.nixos.org — minutes)%f"
+_say cyan "[$(date +%H:%M:%S)] nixos-rebuild switch --flake ${_flake_ref}"
+_say yellow "(first run downloads the store from cache.nixos.org — minutes)"
 _log="${_repo_root}/build-dev-wsl-nix.log"
 : > "${_log}"
 tail -f "${_log}" < /dev/null &
@@ -119,13 +124,13 @@ else
 fi
 kill $_tail_pid 2>/dev/null; wait $_tail_pid 2>/dev/null || true
 if (( _rc != 0 )); then
-  print -P "%F{red}nixos-rebuild failed (exit ${_rc}). Log: ${_log}%f"
+  _say red "nixos-rebuild failed (exit ${_rc}). Log: ${_log}"
   tail -25 "${_log}"; exit 1
 fi
 # NOTE: deliberately NO `wsl --terminate` here — terminating a systemd distro
 # unmounts the shared binfmt_misc and breaks interop for sibling distros
 # (known-issues.md). Default-user is verified by reading /etc/wsl.conf.
-print -P "%F{green}Flake applied.%f"
+_say green "Flake applied."
 
 # --- Verification (ported from test-provision-nix) ---
 if ${VERIFY}; then
@@ -133,21 +138,21 @@ if ${VERIFY}; then
   check() {
     local d="$1"; shift; local o
     if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -u "${_username}" -- "$@" 2>&1); then
-      print -P "  %F{green}[PASS]%f ${d}"; (( ++_pass ))
+      print -rP -- "  %F{green}[PASS]%f ${d//\%/%%}"; (( ++_pass ))
     else
-      print -P "  %F{red}[FAIL]%f ${d}"; [[ -n "$o" ]] && print "         ${o}" | head -3; (( ++_fail ))
+      print -rP -- "  %F{red}[FAIL]%f ${d//\%/%%}"; [[ -n "$o" ]] && print -r -- "         ${o}" | head -3; (( ++_fail ))
     fi
   }
   check_contains() {
     local d="$1" e="$2"; shift 2; local o
     if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -u "${_username}" -- "$@" 2>&1) && [[ "$o" == *"$e"* ]]; then
-      print -P "  %F{green}[PASS]%f ${d}"; (( ++_pass ))
+      print -rP -- "  %F{green}[PASS]%f ${d//\%/%%}"; (( ++_pass ))
     else
-      print -P "  %F{red}[FAIL]%f ${d} (want '${e}', got '${o}')"; (( ++_fail ))
+      print -rP -- "  %F{red}[FAIL]%f ${d//\%/%%} (want '${e//\%/%%}', got '${o//\%/%%}')"; (( ++_fail ))
     fi
   }
 
-  print -P "%F{cyan}=== Verification ===%f"
+  _say cyan "=== Verification ==="
   check_contains "PID 1 is systemd"               "systemd"     zsh -lc "ps -p 1 -o comm="
   check "WSLInterop handler present under systemd" zsh -lc "[[ -e /proc/sys/fs/binfmt_misc/WSLInterop || -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]"
   check "powershell.exe interop works"             zsh -lc "powershell.exe -NoProfile -Command exit"
@@ -166,10 +171,10 @@ if ${VERIFY}; then
 
   _total=$(( _pass + _fail ))
   print ""
-  (( _fail == 0 )) && print -P "%F{green}All ${_total} checks passed.%f" \
-                   || { print -P "%F{red}${_fail}/${_total} checks failed.%f"; exit 1 }
+  (( _fail == 0 )) && _say green "All ${_total} checks passed." \
+                   || { _say red "${_fail}/${_total} checks failed."; exit 1 }
 fi
 
 print ""
-print -P "%F{green}Dev distro '${DISTRO_NAME}' ready. Enter it: wsl -d ${DISTRO_NAME}%f"
-print -P "%F{yellow}Re-apply after edits: wsl -d ${DISTRO_NAME} -u root -- nixos-rebuild switch --flake ${_flake_ref}%f"
+_say green "Dev distro '${DISTRO_NAME}' ready. Enter it: wsl -d ${DISTRO_NAME}"
+_say yellow "Re-apply after edits: wsl -d ${DISTRO_NAME} -u root -- nixos-rebuild switch --flake ${_flake_ref}"

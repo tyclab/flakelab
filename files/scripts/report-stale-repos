@@ -30,7 +30,7 @@ while (( $# > 0 )); do
       echo "Usage: report-stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]"
       exit 0 ;;
     *)
-      echo "Unknown option: $1" >&2; exit 1 ;;
+      print -r -- "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
@@ -46,7 +46,7 @@ fi
 # Sibling lookup, so this works from the Nix store regardless of install prefix.
 LIST="${0:h}/glab-group-projects"
 if [[ ! -x "${LIST}" ]]; then
-  echo "Error: ${LIST} not found or not executable" >&2
+  print -r -- "Error: ${LIST} not found or not executable" >&2
   exit 1
 fi
 
@@ -68,7 +68,7 @@ for group in "${GROUPS[@]}"; do
             | select(.archived == true or .marked_for_deletion_on != null or .marked_for_deletion_at != null)
             | (if .archived == true then "archived" else "deletion-scheduled" end)
               + "|" + .path_with_namespace' >> "${ENTRIES}"; then
-    echo "Error: could not list projects for ${group}" >&2
+    print -r -- "Error: could not list projects for ${group}" >&2
     exit 1
   fi
 done
@@ -95,13 +95,13 @@ while IFS='|' read -r reason repo_path; do
 
   if [[ -z "${work}" ]]; then
     (( removable++ ))
-    echo "  SAFE TO REMOVE  ${reason}  ${repo}"
+    print -r -- "  SAFE TO REMOVE  ${reason}  ${repo}"
   else
-    echo "  KEEP —${work}  ${reason}  ${repo}"
+    print -r -- "  KEEP —${work}  ${reason}  ${repo}"
   fi
 done < <(sort -u "${ENTRIES}")
 
-echo "SUMMARY archived/deletion-scheduled: ${checked_out} checked out locally (${removable} with no local work), ${remote_only} remote-only"
+print -r -- "SUMMARY archived/deletion-scheduled: ${checked_out} checked out locally (${removable} with no local work), ${remote_only} remote-only"
 if (( checked_out > 0 )); then
   echo "Excluded from clone/fetch — these never update again."
   echo "Move aside when confirmed stale: mkdir -p ~/.stale-repos && mv <path> ~/.stale-repos/"

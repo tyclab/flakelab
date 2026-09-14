@@ -27,7 +27,7 @@ while (( $# > 0 )); do
       echo "  --no-archived  let GitLab drop archived projects (archived=false)"
       exit 0 ;;
     *)
-      echo "Unknown option: $1" >&2; exit 1 ;;
+      print -r -- "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
@@ -61,7 +61,7 @@ OUT_FILE="$(mktemp)"
 trap 'rm -f "${ERR_FILE}" "${OUT_FILE}"' EXIT INT TERM
 
 if ! glab api --paginate --output ndjson "${QUERY}" > "${OUT_FILE}" 2>"${ERR_FILE}"; then
-  echo "Error: glab api groups/${GROUP}/projects failed: $(tr '\n' ' ' < "${ERR_FILE}")" >&2
+  print -r -- "Error: glab api groups/${GROUP}/projects failed: $(tr '\n' ' ' < "${ERR_FILE}")" >&2
   exit 1
 fi
 
@@ -73,5 +73,5 @@ cat "${OUT_FILE}"
 # which the caller cannot tell from an empty group. Still exit 0: one unreachable
 # group must not abort the whole clone.
 if (( emitted == 0 )); then
-  echo "WARNING: ${GROUP} returned 0 projects — check the group path, your membership, and that the group is not empty." >&2
+  print -r -- "WARNING: ${GROUP} returned 0 projects — check the group path, your membership, and that the group is not empty." >&2
 fi

@@ -124,6 +124,14 @@ excludes "with no fetch attempted"          "${OUT}" "fetch failed"
 excludes "and no origin/HEAD advice"        "${OUT}" "origin/HEAD"
 excludes "and no stale refusal"             "${OUT}" "stale"
 
+# A `%` is a prompt escape to print -P and a backslash an escape to print, so a
+# path carrying either used to come out rewritten: `%B` turned bold, `\t` a tab.
+print -r -- "a path with % and a backslash is printed as it is"
+d="$(mk_plain 'odd%Bdir\tname')"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "naming the path verbatim"         "${OUT}" "${d} is not a git checkout"
+
 # ---------------------------------------------------------------------------
 # 2. A repository with no remote: local history, nothing to be behind
 # ---------------------------------------------------------------------------

@@ -216,6 +216,24 @@ contains "the detached HEAD is reported"    "${OUT}" "detached HEAD"
 check    "and main is current"              "$(sha detached main)" "$(sha detached origin/main)"
 
 # ---------------------------------------------------------------------------
+# 10. A rebase conflict is reported with git's text as it is
+# ---------------------------------------------------------------------------
+# zsh's echo reads backslash escapes, and `\c` ends its output without a newline:
+# a commit subject carrying one cut the ledger record short, and the unterminated
+# record was never read back, so the conflict went uncounted.
+print -r -- "a rebase conflict is reported with git's text as it is"
+mk_up conflict
+push_to conflict side 'side base'
+clone_into conflict
+git -C "${BASE}/repos/conflict" switch -q side
+print -r -- 'local edit' >> "${BASE}/repos/conflict/f"
+git -C "${BASE}/repos/conflict" commit -qam 'local \c tail-marker'
+push_to conflict side 'upstream edit'
+run_sweep "$(spec conflict)"
+contains "the conflict is counted"          "${OUT}" "1 rebase-conflict"
+contains "and git's text survives the \\c"  "${OUT}" 'local \c tail-marker'
+
+# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

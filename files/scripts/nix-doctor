@@ -57,7 +57,7 @@ while (( $# > 0 )); do
       exit 0
       ;;
     *)
-      echo "Unknown option: $1" >&2
+      print -r -- "Unknown option: $1" >&2
       exit 1
       ;;
   esac
@@ -67,11 +67,11 @@ done
 FAIL=0
 WARN=0
 
-log_head() { ${QUIET} || print -P "${CYAN}==>${RESET} $1" }
-log_ok()   { ${QUIET} || print -P "  ${GREEN}[ OK ]${RESET} $1" }
-log_fail() { print -P "  ${RED}[FAIL]${RESET} $1" >&2; FAIL=$(( FAIL + 1 )) }
-log_warn() { print -P "  ${YELLOW}[WARN]${RESET} $1" >&2; WARN=$(( WARN + 1 )) }
-log_hint() { print -P "         $1" >&2 }
+log_head() { ${QUIET} || print -rP -- "${CYAN}==>${RESET} ${1//\%/%%}" }
+log_ok()   { ${QUIET} || print -rP -- "  ${GREEN}[ OK ]${RESET} ${1//\%/%%}" }
+log_fail() { print -rP -- "  ${RED}[FAIL]${RESET} ${1//\%/%%}" >&2; FAIL=$(( FAIL + 1 )) }
+log_warn() { print -rP -- "  ${YELLOW}[WARN]${RESET} ${1//\%/%%}" >&2; WARN=$(( WARN + 1 )) }
+log_hint() { print -rP -- "         ${1//\%/%%}" >&2 }
 
 # Where the kiro-plugin checkout is expected, and the substring its `origin`
 # remote must contain. The wrapper in nix/scripts.nix exports BOTH, derived from
