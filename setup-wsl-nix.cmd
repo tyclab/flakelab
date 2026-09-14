@@ -25,12 +25,16 @@ if not exist "%PS1%" (
 )
 
 REM --- Pass-through mode: arguments supplied on the command line ---
-if not "%~1"=="" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
-    exit /b %ERRORLEVEL%
-)
+REM  Not inside an if ( ... ) block: cmd expands %ERRORLEVEL% when it reads the
+REM  block, before powershell.exe has run, so the script's exit code (4 = units
+REM  still failed, 1 = a step threw) would come back as 0. Delayed expansion is
+REM  no way out either: it eats the "!" in a passed -SshPassphrase.
+if "%~1"=="" goto :menu
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
+exit /b %ERRORLEVEL%
 
 REM --- Interactive mode: no arguments (e.g. double-click) ---
+:menu
 echo setup-wsl-nix : provision the NixOS-WSL distro
 echo.
 echo   [S] Status      - read-only: overlay / key / secrets / distro / interop

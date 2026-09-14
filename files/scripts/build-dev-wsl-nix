@@ -123,14 +123,22 @@ else
   _rc=$?
 fi
 kill $_tail_pid 2>/dev/null; wait $_tail_pid 2>/dev/null || true
-if (( _rc != 0 )); then
+# switch-to-configuration exits 4 when a unit failed, with the generation applied.
+# A fresh import's first switch starts the lingering user's user@1000 at once, and
+# that start can fail ("Failed to spawn executor: Device or resource busy"), so 4
+# carries on into verification and the units still failed are read at the end.
+if (( _rc != 0 && _rc != 4 )); then
   _say red "nixos-rebuild failed (exit ${_rc}). Log: ${_log}"
   tail -25 "${_log}"; exit 1
 fi
 # NOTE: deliberately NO `wsl --terminate` here — terminating a systemd distro
 # unmounts the shared binfmt_misc and breaks interop for sibling distros
 # (known-issues.md). Default-user is verified by reading /etc/wsl.conf.
-_say green "Flake applied."
+if (( _rc == 4 )); then
+  _say yellow "Flake applied, but a unit failed (exit 4) — named in ${_log}; the units still failed are listed at the end."
+else
+  _say green "Flake applied."
+fi
 
 # --- Verification (ported from test-provision-nix) ---
 if ${VERIFY}; then
@@ -176,5 +184,29 @@ if ${VERIFY}; then
 fi
 
 print ""
+if (( _rc == 4 )); then
+  # Once the boot has settled (bounded), so a unit still starting is not read too
+  # early; the verification logins above may have started a failed user manager
+  # again. Unit-shaped lines only, NULs stripped: wsl.exe adds its own. The payload
+  # carries no `$` and no double quote, neither of which survives wsl.exe.
+  _units_rc=0
+  _units="$(${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
+    sh -c 'timeout 180 systemctl is-system-running --wait >/dev/null 2>&1; systemctl --failed --no-legend --plain' \
+    < /dev/null 2>/dev/null | tr -d '\0\r')" || _units_rc=$?
+  # Unanswered is not "none failed".
+  if (( _units_rc != 0 )); then
+    _say yellow "Dev distro '${DISTRO_NAME}' built, but its failed units could not be listed (exit ${_units_rc})."
+    _say yellow "Inspect: wsl -d ${DISTRO_NAME} -u root -- systemctl --failed"
+    exit 4
+  fi
+  _failed="$(print -r -- "${_units}" \
+    | grep -E '^[[:space:]]*[^[:space:]]+\.(service|socket|target|device|mount|automount|swap|path|timer|slice|scope)([[:space:]]|$)')" || true
+  if [[ -n "${_failed}" ]]; then
+    _say yellow "Dev distro '${DISTRO_NAME}' built, with failed units:"
+    print -r -- "${_failed}"
+    _say yellow "Inspect: wsl -d ${DISTRO_NAME} -u root -- systemctl status <unit>"
+    exit 4
+  fi
+fi
 _say green "Dev distro '${DISTRO_NAME}' ready. Enter it: wsl -d ${DISTRO_NAME}"
 _say yellow "Re-apply after edits: wsl -d ${DISTRO_NAME} -u root -- nixos-rebuild switch --flake ${_flake_ref}"
