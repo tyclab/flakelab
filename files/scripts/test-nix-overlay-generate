@@ -726,7 +726,7 @@ contains "and the known set"           "${OUT}" "wsl, proxmox-vm"
 # The overlay is the profile from the first write on, and every hand-edit and
 # --force regeneration after that is worth a diff. So the generator leaves a
 # repository behind, not a folder: initialised, one commit, no remote - where
-# it is published is the operator's call, and nix-update's pre-flight reads
+# it is published is outside the generator, and nix-update's pre-flight reads
 # all three shapes (no repository, no remote, remote). The commit goes through
 # the overlay's own .gitignore, which is what keeps the secrets stub out of it.
 print -r -- "a generated overlay is a local git repository"
@@ -745,7 +745,7 @@ check    "core.autocrlf is off"          "$(git -C "${o}" config --get core.auto
 contains "and it says so"                "${OUT}" "git: initialised"
 
 # A repository that is already there - a remote, an unborn branch, history -
-# is the operator's, and the generator commits nothing into it.
+# is left as is, and the generator commits nothing into it.
 print -r -- "an existing repository is left alone"
 o="$(out gitkeep)"
 mkdir -p "${o}"
@@ -775,7 +775,7 @@ check    "it exits clean"                "${RC}" "0"
 contains "and says what it would do"     "${OUT}" "git: would initialise"
 
 # No git is not an error: the overlay is complete without it, and the summary
-# names the step the operator can take later.
+# names the step that remains.
 print -r -- "without git the overlay is still written"
 NOGIT="${BASE}/nogit"
 mkdir -p "${NOGIT}"
@@ -798,7 +798,7 @@ contains "and it names the step"         "${OUT}" "git: not found"
 # assumes the folder is named after the repository - and says nothing about
 # where that repository is. With overlay_url the flake carries the URL, the
 # exclusion is the repository the URL names, and the fresh repository gets it
-# as origin. Nothing is pushed: the first push is the operator's, which is why
+# as origin. Nothing is pushed: the first push needs a credential, which is why
 # the branch tracks nothing yet.
 print -r -- "overlay_url is emitted, excluded by repo name and added as origin"
 cat > "${BASE}/ovl.yaml" <<'YAML'

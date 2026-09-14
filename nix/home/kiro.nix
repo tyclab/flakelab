@@ -59,7 +59,7 @@ in
   );
 
   # Clone kiro-plugin and install it into ~/.kiro via `make install-global`.
-  # Cloned full: the operator commits from this checkout, so history-dependent tools
+  # Cloned full: commits are made from this checkout, so history-dependent tools
   # work without a follow-up `fetch --unshallow`.
   home.activation.kiroInstallGlobal =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installKiroCli" ]
