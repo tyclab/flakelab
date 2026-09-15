@@ -226,6 +226,8 @@ verdict; its header is the contract:
 `degraded` names every unit not running when it reads — the system's and the
 running user managers' — not only the switch's own: a user unit that failed before
 the switch, which switch-to-configuration does not reset, still makes the run exit 4.
+A service crash-looping in auto-restart after a non-zero exit counts as failed too,
+as switch-to-configuration counts it, though `systemctl --failed` never lists it.
 
 Every caller applies the same rule: `applied` and `degraded` carry on, `degraded`
 ending the run with exit 4 and the units named; every other verdict stops with its

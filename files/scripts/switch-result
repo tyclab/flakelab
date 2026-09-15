@@ -43,7 +43,8 @@ set -uo pipefail
 #   4    degraded           activated, but units are not running (named in failed=,
 #                           or the switch exited 4 and named none still failed) -
 #                           every failed unit of the system and the running user
-#                           managers at the time of reading, not only the switch's
+#                           managers at the time of reading, not only the switch's,
+#                           and every service crash-looping after a non-zero exit
 #   2    activation-failed  the activation script failed
 #   3    unverified         the result cannot be read: no record for this system and
 #                           boot, or systemd did not answer
@@ -186,11 +187,21 @@ fi
 
 # <systemctl args...>: the names of the failed units, first field of each line.
 failed_names() {
-  local out line
+  local out line unit st
   out="$(systemctl "$@" list-units --failed --plain --no-legend --full 2> /dev/null)" || return 1
   for line in "${(@f)out}"; do
     line="${line##[[:space:]]#}"
     [[ -n "${line}" ]] && print -r -- "${line%%[[:space:]]*}"
+  done
+  # switch-to-configuration also counts a service crash-looping in auto-restart after
+  # a non-zero exit as failed; `--failed` never lists one, since it is activating.
+  out="$(systemctl "$@" list-units --type=service --state=auto-restart --plain --no-legend --full 2> /dev/null)" || return 1
+  for line in "${(@f)out}"; do
+    line="${line##[[:space:]]#}"
+    unit="${line%%[[:space:]]*}"
+    [[ -n "${unit}" ]] || continue
+    st="$(systemctl "$@" show -p ExecMainStatus --value -- "${unit}" 2> /dev/null)" || return 1
+    [[ "${st}" == 0 ]] || print -r -- "${unit}"
   done
   return 0
 }

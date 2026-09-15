@@ -1808,8 +1808,17 @@ function Invoke-Bootstrap {
     # the truth - a unit switch 1/2 named that is correctly idle now is not down.
     Say "reading the restarted boot's activation and units (waits up to 180s for the boot)"
     $script:CarriedUnits = @()
-    Get-SwitchResult @()
-    Confirm-SwitchResult 'the restarted boot'
+    try {
+        Get-SwitchResult @()
+        Confirm-SwitchResult 'the restarted boot'
+    }
+    catch {
+        # A verdict that stops the run still leaves switch 1/2's interop wipe behind,
+        # so the heal is offered before the error ends it.
+        try { Invoke-InteropHeal '' 'before stopping on the boot verdict' | Out-Null }
+        catch { Warn "the interop heal could not be offered: $($_.Exception.Message)" }
+        throw
+    }
     # Declining stops the run: nothing has been seeded yet, and a second run
     # replays this cheaply (import skipped, warm store). An unattended run
     # continues - the wipe costs this script nothing, only the operator's other
@@ -1860,7 +1869,11 @@ function Invoke-Bootstrap {
         Complete-SwitchResult
         Invoke-InteropHeal '' 'at end of run' | Out-Null
     }
-    if ($InProvision -or $ExitCode -eq 0) { Say "Applied '$DistroName'." 'Green' }
+    if ($InProvision) {
+        if ($SwitchVerdict.verdict -eq 'degraded') { Say "Applied '$DistroName', with units not running (named above) - read again before the run closes." 'Yellow' }
+        else { Say "Applied '$DistroName'." 'Green' }
+    }
+    elseif ($ExitCode -eq 0) { Say "Applied '$DistroName'." 'Green' }
     else { Say "Applied '$DistroName', but its closing verdict is not clean (exit $ExitCode, above)." 'Yellow' }
 }
 

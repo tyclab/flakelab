@@ -37,6 +37,8 @@ done
 # The shims read their answers from ${FAKE}:
 #   failed              `list-units --failed` output (system)
 #   user-<name>-failed  the same for <name>'s user manager
+#   looping             `list-units --state=auto-restart` output (system)
+#   exec-status-<unit>  what `show -p ExecMainStatus` answers for <unit> (default 0)
 #   active              units `is-active` answers `active` for, one per line
 #   user-<name>-active  the same for <name>'s user manager
 #   list-broken         present: `list-units` exits 1
@@ -57,8 +59,14 @@ fi
 case "$1" in
   list-units)
     [[ -e "${FAKE}/list-broken" ]] && exit 1
-    f="${FAKE}/failed"; [[ "${scope}" != system ]] && f="${FAKE}/${scope}-failed"
+    kind=failed; [[ " $* " == *" --state=auto-restart "* ]] && kind=looping
+    f="${FAKE}/${kind}"; [[ "${scope}" != system ]] && f="${FAKE}/${scope}-${kind}"
     [[ -f "$f" ]] && cat "$f"
+    exit 0 ;;
+  show)
+    # show -p ExecMainStatus --value -- <unit>: exec-status-<unit>, default 0.
+    f="${FAKE}/exec-status-${@[-1]}"
+    [[ -f "$f" ]] && cat "$f" || print 0
     exit 0 ;;
   is-active)
     f="${FAKE}/active"; [[ "${scope}" != system ]] && f="${FAKE}/${scope}-active"
@@ -219,6 +227,17 @@ reset; record 0; print -r -- "ssh-agent.service loaded failed failed agent" > "$
 USER=carol run --rc 0
 check "exit 4" "${RC}" "4"
 check "own unit named" "$(key failed)" "user:carol:ssh-agent.service"
+
+print -r -- "a service crash-looping after a non-zero exit is failed, as the switch counts it"
+reset; record 0
+print -r -- "docker.service loaded activating auto-restart Docker" > "${FAKE}/looping"
+print -r -- 1 > "${FAKE}/exec-status-docker.service"
+run --no-wait
+check "exit 4" "${RC}" "4"
+check "it is named" "$(key failed)" "docker.service"
+print -r -- 0 > "${FAKE}/exec-status-docker.service"
+run --no-wait
+check "restarting after a clean exit is not a failure" "${RC}" "0"
 
 print -r -- "exit 4 with nothing failed now is still degraded"
 reset; record 0; run --rc 4
