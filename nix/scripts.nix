@@ -220,6 +220,22 @@ rec {
     exec ${zsh} ${s}/nix-provision "$@"
   '';
 
+  # System-wide (nix/configuration.nix), not a `flakelab` subcommand: root runs it
+  # at /run/current-system/sw/bin, from provisioning that has no user profile yet.
+  # systemctl and loginctl come from $PATH first, so they talk to the running systemd;
+  # the pinned copy after it only covers a caller whose PATH has none.
+  switch-result = pkgs.writeShellScriptBin "flakelab-switch-result" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gnused
+      ]
+    }:$PATH:${bin [ pkgs.systemd ]}
+    exec ${zsh} ${s}/switch-result "$@"
+  '';
+
   # Update THIS distro. The repo to rebuild is repoPath, which a store path cannot
   # derive from $0, and FLAKELAB_FLAKE_ATTR names which box in it to switch into.
   # `nix-clone-repos` is pinned, because the script calls it by bare name for --all
@@ -235,6 +251,7 @@ rec {
         pkgs.git
         pkgs.coreutils
         nix-clone-repos
+        switch-result
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-update "$@"
@@ -250,6 +267,7 @@ rec {
         pkgs.git
         pkgs.coreutils
         nix-clone-repos
+        switch-result
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-update --all "$@"

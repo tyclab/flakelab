@@ -11,11 +11,11 @@ set -uo pipefail
 # Nothing here is a terminal, so every case takes the non-interactive branch:
 # the one automation and agents hit.
 #
-# The PATH is rebuilt from symlinks with four names left out. `sudo` and
-# `nix-clone-repos` are shimmed below; `claude` and `systemctl` are simply
-# absent, so the marketplace refresh and the boot-settle wait skip themselves
-# instead of talking to the real ones. HOME is a fresh directory for the same
-# reason: no ~/.claude, no ~/.gitconfig.
+# The PATH is rebuilt from symlinks with five names left out. `sudo`,
+# `nix-clone-repos` and `flakelab-switch-result` are shimmed below; `claude` and
+# `systemctl` are simply absent, so the marketplace refresh and the boot-settle
+# wait skip themselves instead of talking to the real ones. HOME is a fresh
+# directory for the same reason: no ~/.claude, no ~/.gitconfig.
 #
 # Usage: files/scripts/test-nix-update
 #
@@ -37,7 +37,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    sudo|nix-clone-repos|claude|systemctl) continue ;;
+    sudo|nix-clone-repos|claude|systemctl|flakelab-switch-result) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -58,6 +58,20 @@ fi
 exit "${SUDO_RC:-0}"
 STUB
 chmod +x "${SHIM}/sudo"
+
+# The classifier's own verdicts are test-switch-result's; here it answers as told.
+# By default it maps the status the way a clean record would (0 applied, 4
+# degraded, anything else its own code); RESULT_RC and RESULT_FAILED override that.
+cat > "${SHIM}/flakelab-switch-result" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${RESULT_LOG}"
+rc="${RESULT_RC:-$2}"
+print -r -- "verdict=scripted"
+print -r -- "failed=${RESULT_FAILED:-}"
+exit "${rc}"
+STUB
+chmod +x "${SHIM}/flakelab-switch-result"
+export RESULT_LOG="${BASE}/result.log"
 
 export HOME="${BASE}/home"
 mkdir -p "${HOME}"
@@ -322,8 +336,45 @@ fi
 # ---------------------------------------------------------------------------
 print -r -- "a failed switch keeps nixos-rebuild's exit status"
 d="$(mk_local rcpass)"
+: > "${RESULT_LOG}"
 SUDO_RC=100 run_update "${d}"
 check    "exit 100 comes through"           "${RC}" "100"
+contains "the classifier was given it"      "$(< "${RESULT_LOG}")" "--rc 100"
+
+cat > "${SHIM}/nix-clone-repos" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "ran:nix-clone-repos"
+STUB
+chmod +x "${SHIM}/nix-clone-repos"
+
+print -r -- "an activated switch with units down carries on, then exits 4"
+SUDO_RC=4 RESULT_FAILED="user@1000.service docker.service" run_update "${d}" --all
+check    "the switch ran"                   "$(switches)" "1"
+contains "it names the units"               "${OUT}" "units are not running: user@1000.service docker.service"
+contains "the sweep after it still ran"     "${OUT}" "ran:nix-clone-repos"
+check    "and 4 is the exit status"         "${RC}" "4"
+
+print -r -- "a 4 standing over a failed activation stops at the switch"
+SUDO_RC=4 RESULT_RC=2 run_update "${d}" --all
+check    "it exits 2"                       "${RC}" "2"
+excludes "the sweep did not run"            "${OUT}" "ran:nix-clone-repos"
+
+print -r -- "an unverifiable switch stops at the switch"
+SUDO_RC=0 RESULT_RC=3 run_update "${d}" --all
+check    "it exits 3"                       "${RC}" "3"
+excludes "the sweep did not run"            "${OUT}" "ran:nix-clone-repos"
+
+print -r -- "without the classifier on PATH only a clean switch carries on"
+mv "${SHIM}/flakelab-switch-result" "${BASE}/switch-result.off"
+SUDO_RC=4 run_update "${d}" --all
+check    "it exits 4 at the switch"         "${RC}" "4"
+excludes "the sweep did not run"            "${OUT}" "ran:nix-clone-repos"
+contains "saying why"                       "${OUT}" "cannot be told apart from a failed activation"
+run_update "${d}" --all
+check    "a clean switch still exits 0"     "${RC}" "0"
+contains "and sweeps"                       "${OUT}" "ran:nix-clone-repos"
+mv "${BASE}/switch-result.off" "${SHIM}/flakelab-switch-result"
+rm -f "${SHIM}/nix-clone-repos"
 
 print -r -- "--all runs the clone sweep after the switch"
 cat > "${SHIM}/nix-clone-repos" <<'STUB'

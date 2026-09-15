@@ -50,10 +50,12 @@
     yet) and prints how to resume; -Shutdown answers yes up front; a
     non-interactive run only warns and never shuts down by itself.
 
-    EXIT CODES: 0 - the run completed or stopped at a declined heal. 1 - a step
-    threw. 4 - as 0, but switch 1/2 exited 4 and units it left failed were still
-    failed at the end (named there; inspect with systemctl status <unit>).
-    setup-wsl-nix.cmd passes the code on.
+    EXIT CODES: 1 - a step threw, a switch's verdict or the restarted boot's
+    included. Otherwise the verdict flakelab-switch-result gives the distro as the
+    run closes: 0 - applied. 4 - activated, with units not running (named there;
+    inspect with systemctl status <unit>). 2, 3, 100 - activation failed,
+    unverified, reboot required. A run stopped at a declined heal closes on the
+    restarted boot's verdict. setup-wsl-nix.cmd passes the code on.
 
 .PARAMETER FlakeRef
     The overlay flake to apply, and the source of the SSH key + secrets.env.
@@ -1129,11 +1131,11 @@ $InProvision = $false
 # read as "carry on".
 $BootstrapStopped = $false
 $PayloadRestored = $false
-# Set when switch 1/2 came back 4 and the run carried on (see Invoke-Bootstrap).
-$SwitchUnitFailure = $false
-# The units that exit 4 left failed: read after the restart (Test-FailedUnits) and
-# again at the close (Update-FailedUnits). Non-empty closes the run yellow, exit 4.
-$FailedUnits = @()
+# The last verdict Get-SwitchResult read, the units a degraded one named (carried
+# into the next read), and the code the run closes with (Complete-SwitchResult).
+$SwitchVerdict = $null
+$CarriedUnits = @()
+$ExitCode = 0
 
 # ---------- interop ----------
 # `binfmt_misc` is ONE kernel-global registry shared by every distro in the WSL2
@@ -1535,7 +1537,7 @@ function Copy-OverlayFilesIntoDistro {
 # ONE `nixos-rebuild switch` against the overlay flake. Factored out because
 # provisioning runs it TWICE (see Invoke-Bootstrap) and duplicating the
 # safe.directory / flake.lock preamble would be a maintenance trap.
-function Invoke-NixosRebuild([string]$why, [switch]$TolerateUnitFailure) {
+function Invoke-NixosRebuild([string]$why) {
     Say "nixos-rebuild switch - $why (reloads systemd and WILL wipe WSL interop VM-wide)"
     # A committed lock pins the NAR hash of the flakelab checkout the overlay points
     # at, so a fresh store - exactly what provisioning has - aborts with "NAR hash
@@ -1582,21 +1584,19 @@ function Invoke-NixosRebuild([string]$why, [switch]$TolerateUnitFailure) {
     # append a duplicate [safe] block. Written with printf because the base image
     # has no git binary to run `git config`.
     Invoke-Wsl $DistroName 'root' @('sh', '-c', "mkdir -p /root && { grep -qsF 'directory = *' /root/.gitconfig || printf '[safe]\ndirectory = *\n' >> /root/.gitconfig; }")
-    # switch-to-configuration exits 4 when a unit failed to start, restart or
-    # reload - and also when the activation script failed AND a unit failed after
-    # it (the 4 overwrites the 2), so a tolerated 4 proves nothing about the
-    # activation: the caller that tolerates it has to re-check afterwards.
+    # A switch that got as far as activating exits 0, 2 or 4, and which of those
+    # it was says nothing reliable (files/scripts/switch-result has why), so those
+    # three go to the verdict. Anything else never activated and throws here.
     try {
         # `nix shell nixpkgs#git`: the base image has no git CLI, which nix needs to
         # lock a git+file: or git+ssh: overlay input - and that is what the overlay
         # uses to reference this checkout.
         Invoke-Wsl $DistroName 'root' @('env', 'NIX_CONFIG=experimental-features = nix-command flakes',
             'nix', 'shell', 'nixpkgs#git', '-c',
-            'nixos-rebuild', 'switch', '--flake', "$OverlayWsl#default") -AllowExit @(if ($TolerateUnitFailure) { 4 })
-        if (-not $DryRun -and $LASTEXITCODE -eq 4) {
-            $script:SwitchUnitFailure = $true
-            Warn "the switch exited 4: a unit failed (named above), or the activation script did and a unit after it. Continuing to the restart that follows; the units still failed after it are listed then."
-        }
+            'nixos-rebuild', 'switch', '--flake', "$OverlayWsl#default") -AllowExit @(2, 4)
+        $switchRc = if ($DryRun) { 0 } else { $LASTEXITCODE }
+        Get-SwitchResult @('--rc', "$switchRc")
+        Confirm-SwitchResult ($why -split ':')[0] $switchRc
     }
     finally {
         # The switch ran as root, so any lock it just wrote is root-owned on the 9p
@@ -1786,31 +1786,46 @@ function Invoke-Bootstrap {
     # Order: switch #1 (user + system) -> terminate -> key/secrets -> load agent ->
     # switch #2, which re-runs activation and completes them. Both switches are
     # idempotent, so #2 is safe to repeat and -SkipSecondSwitch opts out.
-    # Exit 4 is tolerated HERE only. A fresh import's first switch hands uid 1000
-    # from the base image's `nixos` user to $User, and because the user lingers the
-    # switch starts user@1000 at once - which has been seen failing with "Failed to
-    # spawn executor: Device or resource busy" (Result: resources). Aborting there
-    # left a distro with the system generation and no user state. The terminate
-    # below restarts it, and Test-FailedUnits reads back what is still failed.
-    Invoke-NixosRebuild 'switch 1/2: create the user and the system generation' -TolerateUnitFailure
+    # A degraded switch carries on, which matters here most: a fresh import's first
+    # switch hands uid 1000 from the base image's `nixos` user to $User, and because
+    # the user lingers the switch starts user@1000 at once - which has been seen
+    # failing with "Failed to spawn executor: Device or resource busy" (Result:
+    # resources). The terminate below restarts it, and the boot verdict after it
+    # reads whether it came up.
+    Invoke-NixosRebuild 'switch 1/2: create the user and the system generation'
     # The first switch on a fresh import creates the user, but the running instance
     # will not resolve it until restarted; the next wsl call cold-boots the new
     # config. Kept BEFORE the heal: terminating a systemd distro can wipe binfmt
     # again, so the shutdown below has to be the LAST lifecycle op or it heals
     # nothing.
     Do-Step "wsl --terminate $DistroName (apply new user)" { & wsl.exe --terminate $DistroName | Out-Null }
-    # Read what the tolerated exit 4 left failed NOW, on the first boot after the
-    # restart: switch 2/2 resets every failed unit before it lists its own, so a
-    # read after it would take a unit still broken for a healthy one. Before the
-    # heal so a declined heal still leaves with the verdict; the boot this starts
-    # re-registers the interop handler rather than wiping it.
-    Test-FailedUnits
+    # The boot the terminate starts runs the activation again, and nothing keeps that
+    # activation's status but the record the verdict reads. Read NOW, on the first
+    # boot after the restart: switch 2/2 resets every failed unit before it lists its
+    # own. Before the heal, so a declined heal still leaves with the verdict; the boot
+    # this starts re-registers the interop handler rather than wiping it.
+    # Nothing is carried across it: a boot starts clean, and its own failed units are
+    # the truth - a unit switch 1/2 named that is correctly idle now is not down.
+    Say "reading the restarted boot's activation and units (waits up to 180s for the boot)"
+    $script:CarriedUnits = @()
+    try {
+        Get-SwitchResult @()
+        Confirm-SwitchResult 'the restarted boot'
+    }
+    catch {
+        # A verdict that stops the run still leaves switch 1/2's interop wipe behind,
+        # so the heal is offered before the error ends it.
+        try { Invoke-InteropHeal '' 'before stopping on the boot verdict' | Out-Null }
+        catch { Warn "the interop heal could not be offered: $($_.Exception.Message)" }
+        throw
+    }
     # Declining stops the run: nothing has been seeded yet, and a second run
     # replays this cheaply (import skipped, warm store). An unattended run
     # continues - the wipe costs this script nothing, only the operator's other
     # sessions.
     if ((Invoke-InteropHeal ".\setup-wsl-nix.ps1 provision   # import is skipped, the run resumes from here") -eq 'declined') {
-        $unitNote = if ($FailedUnits.Count -gt 0) { ', and units are still failed (listed above)' } else { '' }
+        if ($SwitchVerdict.verdict -eq 'degraded') { $script:ExitCode = 4 }
+        $unitNote = if ($ExitCode -eq 4) { ', and units are not running (named above)' } else { '' }
         Say "Stopped after switch 1/2 - the distro exists, nothing is seeded yet$unitNote." 'Yellow'
         $script:BootstrapStopped = $true
         return
@@ -1847,80 +1862,107 @@ function Invoke-Bootstrap {
         Warn "ssh-agent holds no key - skipping the second switch (it would only defer again)."
         Warn "Log in interactively once ('wsl -d $DistroName') and run: flakelab update"
     }
-    # No unit shows a failed activation script, and switch 1/2's tolerated 4 can
-    # stand over one; switch 2/2 re-runs the activation strictly, a run without it
-    # does not.
-    if ($SwitchUnitFailure -and ($SkipSecondSwitch -or -not $agentLoaded)) {
-        Warn "no second switch re-ran switch 1/2's activation, and its exit 4 can hide a failed activation script. Re-apply it strictly in the distro:  flakelab update"
-    }
     # Switch 2 wiped interop again, so the run closes on the same gate. Under
-    # `provision` it is deferred to the end of the whole run, and so is the second
-    # read of the failed units, which needs the distro up and so runs before the heal.
+    # `provision` it is deferred to the end of the whole run, and so is the closing
+    # verdict, which needs the distro up and so runs before the heal.
     if (-not $InProvision) {
-        Update-FailedUnits
+        Complete-SwitchResult
         Invoke-InteropHeal '' 'at end of run' | Out-Null
     }
-    if ($FailedUnits.Count -eq 0) { Say "Applied '$DistroName'." 'Green' }
-    elseif ($InProvision) { Say "Applied '$DistroName', with units still failed after the restart (listed above) - read again before the run closes." 'Yellow' }
-    else { Say ("Applied '{0}', with failed units: {1}" -f $DistroName, ($FailedUnits -join ', ')) 'Yellow' }
+    if ($InProvision) {
+        if ($SwitchVerdict.verdict -eq 'degraded') { Say "Applied '$DistroName', with units not running (named above) - read again before the run closes." 'Yellow' }
+        else { Say "Applied '$DistroName'." 'Green' }
+    }
+    elseif ($ExitCode -eq 0) { Say "Applied '$DistroName'." 'Green' }
+    else { Say "Applied '$DistroName', but its closing verdict is not clean (exit $ExitCode, above)." 'Yellow' }
 }
 
-# Names of the distro's units in the given states (systemctl --state=), read once
-# its boot has settled: right after a restart a unit still starting is not failed
-# yet. Bounded, so a hung boot cannot hang the run. A read, not a gate: it never
-# throws, and $null means it could not answer, which no caller may take for "none".
-# Only a unit-shaped first field counts, so nothing wsl.exe writes of its own does,
-# and NULs are stripped in-band as for all captured wsl.exe output (known-issues.md).
-function Get-DistroUnitNames([string]$states) {
-    $probe = "timeout 180 systemctl is-system-running --wait >/dev/null 2>&1; systemctl is-system-running; systemctl list-units --all --no-legend --plain --state=$states"
-    try { $lines = @(Invoke-Wsl $DistroName 'root' @('sh', '-c', $probe) | ForEach-Object { ("$_" -replace "`0", '').Trim() }) }
+# The one reading of a switch's result - files/scripts/switch-result has the contract
+# and the reasons: flakelab-switch-result, run in the distro as root, into
+# $SwitchVerdict (a flag, see above) as its exit code, verdict, activation and
+# failed units. $argv is --rc N after a switch, or nothing for the boot the distro
+# is running. The units an earlier verdict named are carried, so one a switch reset
+# to inactive without starting it is not read as recovered. `missing` is only what a
+# separate probe proves - a running system that predates the classifier; a
+# classifier that ran and answered nothing parseable is `unanswered`, never clean.
+function Get-SwitchResult([string[]]$argv) {
+    $tool = '/run/current-system/sw/bin/flakelab-switch-result'
+    $cmd = @($tool) + $argv
+    foreach ($u in $CarriedUnits) { $cmd += @('--carry', $u) }
+    $v = @{ code = 0; verdict = 'applied'; activation = ''; failed = @() }
+    if ($DryRun) {
+        Invoke-Wsl $DistroName 'root' $cmd
+        $script:SwitchVerdict = $v
+        return
+    }
+    Invoke-Wsl $DistroName 'root' @('test', '-x', $tool) -AllowExit @(1)
+    if ($LASTEXITCODE -ne 0) {
+        $v.verdict = 'missing'
+        $script:SwitchVerdict = $v
+        return
+    }
+    # Every exit code is an answer here; NULs stripped as for all captured wsl.exe
+    # output (known-issues.md).
+    $lines = @(Invoke-Wsl $DistroName 'root' $cmd -AllowExit (1..255) | ForEach-Object { ("$_" -replace "`0", '').Trim() })
+    $v.code = $LASTEXITCODE
+    $v.verdict = 'unanswered'
+    foreach ($l in $lines) {
+        if ($l -match '^(verdict|activation)=(.*)$') { $v[$Matches[1]] = $Matches[2] }
+        elseif ($l -match '^failed=(.*)$') { $v.failed = @($Matches[1] -split '\s+' | Where-Object { $_ }) }
+    }
+    if ($v.verdict -eq 'unanswered' -and $v.code -eq 0) { $v.code = 3 }
+    $script:SwitchVerdict = $v
+}
+
+# Acts on $SwitchVerdict for $what: applied and degraded carry on - degraded naming
+# its units and carrying them into the next read - and every other verdict throws.
+# $switchRc is the switch's own status, when there is one: with no classifier in the
+# running system only a clean status carries on.
+function Confirm-SwitchResult([string]$what, [int]$switchRc = 0) {
+    $v = $SwitchVerdict
+    switch ($v.verdict) {
+        'applied' { $script:CarriedUnits = @() }
+        'degraded' {
+            $names = if ($v.failed.Count -gt 0) { $v.failed -join ', ' } else { 'none named still failed (the switch output above says what it could not do)' }
+            Warn "${what}: activated, but units are not running: $names. Carrying on; the run reads them again before it closes."
+            $script:CarriedUnits = @($v.failed)
+        }
+        'missing' {
+            if ($switchRc -ne 0) { throw "${what} exited $switchRc, and the running system has no flakelab-switch-result to tell a unit failure from a failed activation" }
+            Warn "${what}: the running system has no flakelab-switch-result, so its activation is not verified"
+        }
+        default { throw "${what}: $($v.verdict) (exit $($v.code)) - the reason is printed above" }
+    }
+}
+
+# The close: the running distro's verdict once more, carrying what earlier verdicts
+# named, into $ExitCode. It never throws, because the heal after it still has to be
+# offered: a verdict that would have stopped the run closes it with its code instead.
+function Complete-SwitchResult {
+    Say "reading the distro's activation and units before closing"
+    try { Get-SwitchResult @() }
     catch {
-        Warn "could not list the units of '$DistroName': $($_.Exception.Message)"
-        return $null
-    }
-    if ($lines -ccontains 'starting' -or $lines -ccontains 'initializing') {
-        Warn "'$DistroName' was still booting after 180s - a unit still starting can fail after this read"
-    }
-    $names = @($lines | ForEach-Object { ($_ -split '\s+')[0] } |
-        Where-Object { $_ -match '^\S+\.(service|socket|target|device|mount|automount|swap|path|timer|slice|scope)$' })
-    # The comma keeps an empty list a list: unrolled, it would arrive as $null.
-    return , $names
-}
-
-# After the restart that follows switch 1/2: the units its tolerated exit 4 left
-# failed, into $FailedUnits (a flag, see above). Called before anything else
-# touches the restarted distro - see Invoke-Bootstrap for why that point.
-function Test-FailedUnits {
-    if (-not $SwitchUnitFailure) {
-        if ($DryRun) { Write-Host '  [dry-run] if switch 1/2 exits 4: list the units still failed once the restart has booted' -ForegroundColor DarkGray }
+        Warn "the closing verdict could not be read: $($_.Exception.Message)"
+        $script:ExitCode = 3
         return
     }
-    Say "listing the units still failed once the restart has booted (waits up to 180s for the boot)"
-    $names = Get-DistroUnitNames 'failed'
-    # Unanswered is not "none failed", and must not close the run green.
-    if ($null -eq $names) { $names = @('(unknown - the failed-unit query did not answer)') }
-    $script:FailedUnits = $names
-    if ($names.Count -eq 0) {
-        Say "no failed units after the restart - switch 1/2's exit 4 did not outlast it" 'Green'
-        return
+    $v = $SwitchVerdict
+    switch ($v.verdict) {
+        'applied' { $script:ExitCode = 0 }
+        'missing' {
+            Warn 'the running system has no flakelab-switch-result, so the close is not verified'
+            $script:ExitCode = 0
+        }
+        'degraded' {
+            $names = if ($v.failed.Count -gt 0) { $v.failed -join ', ' } else { 'none named' }
+            Warn "units not running at the close: $names. Inspect in the distro:  systemctl status <unit>"
+            $script:ExitCode = 4
+        }
+        default {
+            Warn "closing verdict: $($v.verdict) (exit $($v.code)) - the reason is printed above"
+            $script:ExitCode = $v.code
+        }
     }
-    Warn "still failed after the restart ($($names.Count)):"
-    $names | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
-    Warn "Inspect in the distro:  systemctl status <unit>"
-}
-
-# At the close: drops from $FailedUnits what has come up since the restart -
-# switch 2/2 starts their targets again, a login starts the user manager. Active is
-# the test, not "not failed": a switch resets failed units to inactive without
-# starting them all.
-function Update-FailedUnits {
-    if ($FailedUnits.Count -eq 0) { return }
-    $active = Get-DistroUnitNames 'active,reloading'
-    if ($null -eq $active) { Warn 'keeping the units read as failed after the restart'; return }
-    $up = @($FailedUnits | Where-Object { $active -ccontains $_ })
-    if ($up.Count -eq 0) { return }
-    Say ("up again since the restart: {0}" -f ($up -join ', ')) 'Green'
-    $script:FailedUnits = @($FailedUnits | Where-Object { $active -cnotcontains $_ })
 }
 
 # Restores whatever `flakelab backup` has staged in the overlay (gitconfig, ssh
@@ -2184,11 +2226,11 @@ function Invoke-Provision {
     }
     else { Restore-Backup }
     Invoke-CloneRepos
-    Update-FailedUnits
+    Complete-SwitchResult
     Invoke-InteropHeal '' 'at end of run' | Out-Null
     $elapsed = "{0:mm}m{0:ss}s" -f ([datetime]0 + ((Get-Date) - $started))
-    if ($FailedUnits.Count -gt 0) { Say ("Provision done in {0}, with failed units: {1}" -f $elapsed, ($FailedUnits -join ', ')) 'Yellow' }
-    else { Say "Provision done in $elapsed." 'Green' }
+    if ($ExitCode -eq 0) { Say "Provision done in $elapsed." 'Green' }
+    else { Say "Provision done in $elapsed, but its closing verdict is not clean (exit $ExitCode, above)." 'Yellow' }
     Say "Verify inside the distro:  wsl -d $DistroName -u $User -- zsh -lc 'flakelab doctor'" 'Yellow'
     Say "Start with: wsl -d $DistroName" 'Yellow'
 }
@@ -2236,5 +2278,5 @@ switch ($Command) {
     'migrate' { Invoke-Migrate }
     default { Invoke-Status }
 }
-# The one non-throwing non-zero close: 4, the code the switch itself produced.
-if ($FailedUnits.Count -gt 0) { exit 4 }
+# The one non-throwing non-zero close: the closing verdict's code (Complete-SwitchResult).
+if ($ExitCode -ne 0) { exit $ExitCode }

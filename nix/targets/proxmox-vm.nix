@@ -9,6 +9,9 @@
 }:
 let
   cfg = config.flakelab;
+  # The seed's own copy: the verdict must not depend on the switched-into system
+  # carrying one.
+  switchResult = (import ../scripts.nix { inherit pkgs cfg; }).switch-result;
 in
 {
   # Without both in the initrd the root device by label never appears and the guest
@@ -234,17 +237,30 @@ in
       # A root-written lock makes the user's next `nix` command there fail.
       as_user nix flake lock "path:$REPO_PATH"
 
-      # rc 4 is an installed and activated generation that warned along the way, so the
-      # marker is written; 2 and anything else are not, and the next boot retries.
+      # The switch's status is not its result - a 4 can stand over a failed activation -
+      # so flakelab-switch-result reads what the system recorded. Only an activated
+      # system gets the marker: applied exits 0, degraded exits 4 so this unit shows
+      # failed with the units named here, and a further run would switch into the same
+      # generation for nothing. Every other verdict leaves no marker, and the next boot
+      # retries the bootstrap.
       rc=0
       nixos-rebuild switch --flake "path:$REPO_PATH#$OVERLAY_ATTR" || rc=$?
-      if [ "$rc" -eq 4 ]; then
-        echo "switch activated with warnings (exit 4) — see journalctl -u nixos-rebuild-switch-to-configuration"
-      elif [ "$rc" -ne 0 ]; then
-        exit "$rc"
-      fi
+      verdict_rc=0
+      verdict="$(${switchResult}/bin/flakelab-switch-result --rc "$rc")" || verdict_rc=$?
+      printf '%s\n' "$verdict"
+      case "$verdict_rc" in
+        0 | 4) ;;
+        *)
+          echo "not bootstrapped (verdict exit $verdict_rc): the next boot retries"
+          exit "$verdict_rc"
+          ;;
+      esac
 
       touch /var/lib/flakelab/bootstrapped
+      if [ "$verdict_rc" -eq 4 ]; then
+        echo "switched into $OVERLAY_ATTR from $OVERLAY_URL ($OVERLAY_REF), with units not running (failed= above) — inspect: systemctl status <unit>"
+        exit 4
+      fi
       echo "switched into $OVERLAY_ATTR from $OVERLAY_URL ($OVERLAY_REF)"
     '';
   };

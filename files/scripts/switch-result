@@ -1,0 +1,260 @@
+#!/usr/bin/env zsh
+
+# NOT set -e: every probe below has a defined answer for failing, and errexit would
+# turn a query that cannot answer into a silent exit instead of `unverified`.
+set -uo pipefail
+
+#
+# What a `nixos-rebuild switch` - or this boot's own activation - actually did, read
+# from the system rather than from the switch's exit status. That status cannot say
+# it: switch-to-configuration exits 2 when the activation script failed and 4 when a
+# unit did, and a unit failing after a failed activation overwrites the 2 with the 4.
+# And the activation a boot runs has no status at all - stage 2 and the NixOS-WSL
+# init shim both ignore it.
+#
+# The activation writes its own result: the `flakelab-activation-result` snippet in
+# nix/configuration.nix, ordered after every other snippet, records the script's
+# `$_status` for the system it activated and the init it ran under, in
+# /run/flakelab/activation. The units come from systemd.
+#
+# Usage: flakelab-switch-result [--rc N] [--carry UNIT]... [--no-wait]
+#
+#   --rc N        the exit status of the switch just run in this boot. Without it the
+#                 verdict is for the activation this boot ran, once the boot settled.
+#   --carry UNIT  a unit an earlier verdict in this boot named, before a switch;
+#                 named again while not active. A switch resets failed units without
+#                 starting them all, so a unit that failed before one is not `failed`
+#                 after it, just not running - and one that has not run again since
+#                 cannot be told recovered. Not across a restart: a boot starts clean,
+#                 and its own failed units are the truth. A user unit is
+#                 user:<name>:<unit>.
+#   --no-wait     read at once, without waiting for the boot to settle.
+#
+# Output, on stdout, one key=value per line, for callers to parse:
+#   verdict=applied|degraded|activation-failed|unverified|reboot-required|not-applied
+#   rc=<N, or empty without --rc>
+#   activation=ok|failed|unrecorded|stale|missing
+#   system=<store path of the running system>
+#   failed=<space-separated units, user units as user:<name>:<unit>>
+# The reason, for a person, on stderr.
+#
+# Exit status = the verdict:
+#   0    applied            activated, no unit failed
+#   4    degraded           activated, but units are not running (named in failed=,
+#                           or the switch exited 4 and named none still failed) -
+#                           every failed unit of the system and the running user
+#                           managers at the time of reading, not only the switch's,
+#                           and every service crash-looping after a non-zero exit
+#   2    activation-failed  the activation script failed
+#   3    unverified         the result cannot be read: no record for this system and
+#                           boot, or systemd did not answer
+#   100  reboot-required    the new init cannot be switched to live
+#   N    not-applied        the switch failed before activating (its own status)
+# Callers carry on for 0 and 4, and stop for the rest.
+#
+
+MARKER="#### Activation script snippet flakelab-activation-result:"
+RECORD="${FLAKELAB_ACTIVATION_RECORD:-/run/flakelab/activation}"
+CURRENT="${FLAKELAB_CURRENT_SYSTEM:-/run/current-system}"
+INIT_STAT="${FLAKELAB_INIT_STAT:-/proc/1/stat}"
+SETTLE_LIMIT="${FLAKELAB_SETTLE_LIMIT:-180}"
+# Root reads every user manager; anyone else only their own.
+AS_ROOT="${FLAKELAB_SWITCH_RESULT_ROOT:-$(( EUID == 0 ))}"
+
+rc=""
+wait_boot=true
+typeset -a carry=()
+while (( $# > 0 )); do
+  case "$1" in
+    --rc)
+      [[ "${2:-}" == <-> && ${#2} -le 3 ]] && (( ${2} <= 255 )) || { print -ru2 -- "flakelab-switch-result: --rc needs an exit status, 0-255"; exit 64 }
+      rc="$2"; shift ;;
+    --carry)
+      [[ -n "${2:-}" ]] || { print -ru2 -- "flakelab-switch-result: --carry needs a unit"; exit 64 }
+      carry+=("$2"); shift ;;
+    --no-wait) wait_boot=false ;;
+    -h|--help) sed -n '7,52p' "$0"; exit 0 ;;
+    *) print -ru2 -- "flakelab-switch-result: unknown argument: $1"; exit 64 ;;
+  esac
+  shift
+done
+
+typeset -a failed=()
+activation=missing
+system=""
+verdict=""
+note=""
+
+emit() {
+  print -r -- "verdict=${verdict}"
+  print -r -- "rc=${rc}"
+  print -r -- "activation=${activation}"
+  print -r -- "system=${system}"
+  print -r -- "failed=${(j: :)failed}"
+  [[ -n "${note}" ]] && print -ru2 -- "flakelab-switch-result: ${note}"
+  case "${verdict}" in
+    applied) exit 0 ;;
+    degraded) exit 4 ;;
+    activation-failed) exit 2 ;;
+    unverified) exit 3 ;;
+    reboot-required) exit 100 ;;
+    not-applied) exit "${rc}" ;;
+  esac
+}
+
+# Field 22 of /proc/<pid>/stat, counted after the parenthesised command name, which
+# may itself hold spaces. PID 1 keeps it across the exec from stage 2 or the WSL
+# shim into systemd, and a restarted distro's init has a new one - so it tells this
+# boot's record from a previous boot's that survived in /run.
+init_start() {
+  local s
+  [[ -r "${INIT_STAT}" ]] || return 1
+  s="$(< "${INIT_STAT}")"
+  s="${s##*) }"
+  print -r -- "${${(s: :)s}[20]}"
+}
+
+# --- The switch's own status: some statuses end the question here -----------
+if [[ -n "${rc}" ]]; then
+  case "${rc}" in
+    0|2|4) ;;
+    100) verdict=reboot-required; note="the switch installed a system whose init cannot replace the running one: reboot into it"; emit ;;
+    *) verdict=not-applied; note="the switch exited ${rc} before activating anything"; emit ;;
+  esac
+fi
+
+# --- The activation ---------------------------------------------------------
+system="$(readlink -f -- "${CURRENT}" 2> /dev/null)" || system=""
+if [[ -z "${system}" ]]; then
+  verdict=unverified; note="${CURRENT} does not resolve, so there is no running system to check"; emit
+fi
+# switch-to-configuration sets 2 in one place only, a failed activation script, so a
+# 2 needs no record to confirm it - and a record that still reads clean (one this
+# activation could not overwrite) must not outvote it.
+if [[ "${rc}" == 2 ]]; then
+  verdict=activation-failed; activation=failed; note="the switch exited 2: its activation script failed"; emit
+fi
+
+typeset -A rec=()
+if [[ -r "${RECORD}" ]]; then
+  while IFS='=' read -r k v; do
+    [[ -n "${k}" ]] && rec[${k}]="${v}"
+  done < "${RECORD}"
+fi
+now_init="$(init_start)" || now_init=""
+if (( ${#rec} > 0 )) && [[ "${rec[system]:-}" == "${system}" && -n "${now_init}" && "${rec[init]:-}" == "${now_init}" ]]; then
+  [[ "${rec[status]:-}" == 0 ]] && activation=ok || activation=failed
+elif ! grep -qF -- "${MARKER}" "${system}/activate" 2> /dev/null; then
+  # A system built before the recorder existed: only the switch's status is left.
+  activation=unrecorded
+elif (( ${#rec} > 0 )); then
+  activation=stale
+fi
+
+case "${activation}" in
+  failed)
+    verdict=activation-failed
+    note="the activation script of ${system} failed (status ${rec[status]:-?}); its snippet errors are in the switch output, or in the journal for a boot"
+    emit ;;
+  stale|missing)
+    verdict=unverified
+    note="no activation result recorded for ${system} in this boot (${activation}): the activation did not reach its end"
+    emit ;;
+  unrecorded)
+    if [[ "${rc}" != 0 ]]; then
+      # Without --rc there is no status at all, and a 4 can stand over a failed activation.
+      verdict=unverified
+      if [[ -n "${rc}" ]]; then
+        note="${system} predates the activation record, so its exit ${rc} cannot be told from a failed activation"
+      else
+        note="${system} predates the activation record, so the activation this boot ran left no result to read"
+      fi
+      emit
+    fi ;;
+esac
+
+# --- The units --------------------------------------------------------------
+if ! command -v systemctl > /dev/null 2>&1; then
+  verdict=unverified; note="no systemctl on PATH, so no unit state could be read"; emit
+fi
+
+if [[ -z "${rc}" ]] && ${wait_boot}; then
+  timeout "${SETTLE_LIMIT}" systemctl is-system-running --wait > /dev/null 2>&1
+  case "$(systemctl is-system-running 2> /dev/null)" in
+    initializing|starting) print -ru2 -- "flakelab-switch-result: still booting after ${SETTLE_LIMIT}s - a unit still starting can fail after this read" ;;
+  esac
+fi
+
+# <systemctl args...>: the names of the failed units, first field of each line.
+failed_names() {
+  local out line unit st
+  out="$(systemctl "$@" list-units --failed --plain --no-legend --full 2> /dev/null)" || return 1
+  for line in "${(@f)out}"; do
+    line="${line##[[:space:]]#}"
+    [[ -n "${line}" ]] && print -r -- "${line%%[[:space:]]*}"
+  done
+  # switch-to-configuration also counts a service crash-looping in auto-restart after
+  # a non-zero exit as failed; `--failed` never lists one, since it is activating.
+  out="$(systemctl "$@" list-units --type=service --state=auto-restart --plain --no-legend --full 2> /dev/null)" || return 1
+  for line in "${(@f)out}"; do
+    line="${line##[[:space:]]#}"
+    unit="${line%%[[:space:]]*}"
+    [[ -n "${unit}" ]] || continue
+    st="$(systemctl "$@" show -p ExecMainStatus --value -- "${unit}" 2> /dev/null)" || return 1
+    [[ "${st}" == 0 ]] || print -r -- "${unit}"
+  done
+  return 0
+}
+
+typeset -a names=()
+if ! names=("${(@f)$(failed_names)}"); then
+  verdict=unverified; note="systemctl could not list the failed units"; emit
+fi
+failed+=(${names:#})
+
+# The user managers: switch-to-configuration also exits 4 for a user's failed
+# nixos-activation.service, which the system list does not show. A manager that is
+# not running is skipped - its user@<uid>.service is what the system list names.
+typeset -a users=()
+if (( AS_ROOT )); then
+  users=("${(@f)$(loginctl list-users --no-legend 2> /dev/null | while read -r uid name _; do
+    [[ "$(systemctl is-active "user@${uid}.service" 2> /dev/null)" == active ]] && print -r -- "${name}"
+  done)}")
+elif systemctl --user show-environment > /dev/null 2>&1; then
+  users=("${USER:-$(id -un)}")
+fi
+for u in ${users:#}; do
+  if (( AS_ROOT )); then
+    names=("${(@f)$(failed_names --user -M "${u}@")}") || { print -ru2 -- "flakelab-switch-result: ${u}'s user manager did not answer - its units are not in this verdict"; continue }
+  else
+    names=("${(@f)$(failed_names --user)}") || { print -ru2 -- "flakelab-switch-result: the user manager did not answer - its units are not in this verdict"; continue }
+  fi
+  for n in ${names:#}; do failed+=("user:${u}:${n}"); done
+done
+
+# Carried units that are still not running.
+for c in "${carry[@]}"; do
+  (( ${failed[(Ie)$c]} )) && continue
+  if [[ "${c}" == user:*:* ]]; then
+    u_name="${${c#user:}%%:*}"; u_unit="${c#user:*:}"
+    if (( AS_ROOT )); then
+      state="$(systemctl --user -M "${u_name}@" is-active "${u_unit}" 2> /dev/null)"
+    else
+      state="$(systemctl --user is-active "${u_unit}" 2> /dev/null)"
+    fi
+  else
+    state="$(systemctl is-active "${c}" 2> /dev/null)"
+  fi
+  [[ "${state}" == (active|reloading) ]] || failed+=("${c}")
+done
+
+if (( ${#failed} > 0 )); then
+  verdict=degraded
+  note="activated, with units not running: ${(j:, :)failed}"
+elif [[ "${rc}" == 4 ]]; then
+  verdict=degraded
+  note="the switch exited 4 but no unit is failed now: a reload or job it could not submit, named in its own output"
+else
+  verdict=applied
+fi
+emit

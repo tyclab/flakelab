@@ -474,10 +474,12 @@ is not always `/home/<user>`.
 The clone, the lock and the checkout run as `BOOTSTRAP_USER`; only
 `nixos-rebuild switch` runs as root. With no `OVERLAY_SSH_IDENTITY` that
 `BOOTSTRAP_USER` can read, the unit exits 75 and names the path it wants — seed
-the key, then `systemctl start flakelab-bootstrap`. A switch that activates the
-new generation but warns on the way — a unit that would not start, or the
-per-user activation for a user who is logged in while it runs — counts as done.
-It runs once,
+the key, then `systemctl start flakelab-bootstrap`. A switch whose activation
+succeeded counts as done even when units did not come up — a unit that would not
+start, or the per-user activation for a user logged in while it runs — but the
+unit then exits 4, shows failed, and names those units in its journal. A failed
+or unverifiable activation is not done, and the next boot retries it. It runs
+once,
 `/var/lib/flakelab/bootstrapped` is the marker, and
 `journalctl -u flakelab-bootstrap` is the log. After that the box rebuilds with
 `flakelab update` like any other.
