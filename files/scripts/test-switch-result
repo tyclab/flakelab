@@ -1,0 +1,255 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for flakelab-switch-result: the real script against a fake running
+# system, activation record and PID 1, with `systemctl` and `loginctl` shimmed so
+# every unit state is scripted. Under test is the verdict each combination of switch
+# status, activation record and unit state gets - above all that a 4 standing over a
+# failed activation is not read as a unit failure, and that no unanswered query is
+# ever read as a clean one.
+#
+# Usage: files/scripts/test-switch-result
+#
+
+SCRIPT_DIR="${0:A:h}"
+RESULT="${SCRIPT_DIR}/switch-result"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+TOOLS="${BASE}/tools"
+mkdir -p "${TOOLS}"
+for f in ${^path}/*(N-*); do
+  case "${f:t}" in
+    systemctl|loginctl) continue ;;
+  esac
+  [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
+done
+
+# The shims read their answers from ${FAKE}:
+#   failed              `list-units --failed` output (system)
+#   user-<name>-failed  the same for <name>'s user manager
+#   active              units `is-active` answers `active` for, one per line
+#   user-<name>-active  the same for <name>'s user manager
+#   list-broken         present: `list-units` exits 1
+#   users               `loginctl list-users --no-legend` output
+#   calls               every systemctl argv, appended
+FAKE="${BASE}/fake"
+SHIM="${BASE}/bin"
+mkdir -p "${SHIM}"
+cat > "${SHIM}/systemctl" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${FAKE}/calls"
+scope=system
+if [[ "$1" == --user ]]; then
+  shift
+  scope=user-self
+  if [[ "${1:-}" == -M ]]; then scope="user-${2%@}"; shift 2; fi
+fi
+case "$1" in
+  list-units)
+    [[ -e "${FAKE}/list-broken" ]] && exit 1
+    f="${FAKE}/failed"; [[ "${scope}" != system ]] && f="${FAKE}/${scope}-failed"
+    [[ -f "$f" ]] && cat "$f"
+    exit 0 ;;
+  is-active)
+    f="${FAKE}/active"; [[ "${scope}" != system ]] && f="${FAKE}/${scope}-active"
+    if [[ -f "$f" ]] && grep -qxF -- "$2" "$f"; then print active; exit 0; fi
+    print inactive; exit 3 ;;
+  is-system-running) print running; exit 0 ;;
+  show-environment) [[ -e "${FAKE}/user-self-failed" ]] && exit 0; exit 1 ;;
+esac
+exit 1
+STUB
+cat > "${SHIM}/loginctl" <<'STUB'
+#!/usr/bin/env zsh
+[[ -f "${FAKE}/users" ]] && cat "${FAKE}/users"
+exit 0
+STUB
+chmod +x "${SHIM}/systemctl" "${SHIM}/loginctl"
+
+MARKER="#### Activation script snippet flakelab-activation-result:"
+# A running system that carries the recorder, one that predates it, and PID 1.
+mkdir -p "${BASE}/sys-new" "${BASE}/sys-old" "${BASE}/sys-other"
+print -r -- "${MARKER}" > "${BASE}/sys-new/activate"
+print -r -- "#### Activation script snippet users:" > "${BASE}/sys-old/activate"
+print -r -- "${MARKER}" > "${BASE}/sys-other/activate"
+INIT_STAT="${BASE}/stat"
+# Field 22 is 4242; the command name has a space and a parenthesis, as one may.
+print -r -- "1 (sys temd) S 0 1 1 0 -1 4194560 1 2 3 4 5 6 7 8 20 0 1 0 4242 1000 10" > "${INIT_STAT}"
+
+typeset -i RC=0
+OUT="" ERR=""
+# reset: a clean fake - no failed units, nothing active, no users, running system new.
+reset() {
+  rm -rf "${FAKE}"; mkdir -p "${FAKE}"
+  ln -sfn "${BASE}/sys-new" "${BASE}/current"
+  rm -f "${BASE}/record"
+}
+# record <status> [<system> [<init>]]
+record() {
+  printf 'status=%s\nsystem=%s\ninit=%s\n' "$1" "${2:-${BASE}/sys-new}" "${3:-4242}" > "${BASE}/record"
+}
+# run <args...> [as root with ROOT=1] - sets OUT (stdout), ERR (stderr), RC.
+run() {
+  OUT="$(PATH="${SHIM}:${TOOLS}" FAKE="${FAKE}" \
+    FLAKELAB_ACTIVATION_RECORD="${BASE}/record" FLAKELAB_CURRENT_SYSTEM="${BASE}/current" \
+    FLAKELAB_INIT_STAT="${INIT_STAT}" FLAKELAB_SETTLE_LIMIT=5 FLAKELAB_SWITCH_RESULT_ROOT="${ROOT:-0}" \
+    zsh "${RESULT}" "$@" 2> "${BASE}/err")"
+  RC=$?
+  ERR="$(< "${BASE}/err")"
+}
+key() { print -r -- "${OUT}" | sed -n "s/^$1=//p" }
+
+print -r -- "a clean switch is applied"
+reset; record 0; run --rc 0
+check "exit 0" "${RC}" "0"
+check "verdict" "$(key verdict)" "applied"
+check "activation" "$(key activation)" "ok"
+check "system is the resolved store path" "$(key system)" "${BASE}/sys-new"
+check "no failed units" "$(key failed)" ""
+check "rc echoed" "$(key rc)" "0"
+
+print -r -- "exit 4 with a failed unit is degraded and names it"
+reset; record 0; print -r -- "user@1000.service loaded failed failed User Manager for UID 1000" > "${FAKE}/failed"
+run --rc 4
+check "exit 4" "${RC}" "4"
+check "verdict" "$(key verdict)" "degraded"
+check "the unit is named" "$(key failed)" "user@1000.service"
+
+print -r -- "exit 4 over a failed activation script is an activation failure, not a unit failure"
+reset; record 1; print -r -- "docker.service loaded failed failed Docker" > "${FAKE}/failed"
+run --rc 4
+check "exit 2" "${RC}" "2"
+check "verdict" "$(key verdict)" "activation-failed"
+check "activation" "$(key activation)" "failed"
+contains "says the activation script failed" "${ERR}" "activation script"
+
+print -r -- "exit 2 with the record agreeing is an activation failure"
+reset; record 1; run --rc 2
+check "exit 2" "${RC}" "2"
+
+print -r -- "exit 2 is an activation failure even over a record that still reads clean"
+reset; record 0; run --rc 2
+check "exit 2" "${RC}" "2"
+check "verdict" "$(key verdict)" "activation-failed"
+
+print -r -- "a record from an earlier boot is not this activation's"
+reset; record 0 "${BASE}/sys-new" 1111; run --rc 0
+check "exit 3" "${RC}" "3"
+check "activation" "$(key activation)" "stale"
+
+print -r -- "a record for another system is not this activation's"
+reset; record 0 "${BASE}/sys-other"; run --rc 0
+check "exit 3" "${RC}" "3"
+check "activation" "$(key activation)" "stale"
+
+print -r -- "no record from a system that carries the recorder: the activation did not finish"
+reset; run --rc 0
+check "exit 3" "${RC}" "3"
+check "activation" "$(key activation)" "missing"
+
+print -r -- "a switch that failed before activating keeps its own status"
+reset; run --rc 1
+check "exit 1" "${RC}" "1"
+check "verdict" "$(key verdict)" "not-applied"
+check "no unit was queried" "$([[ -e "${FAKE}/calls" ]] && print queried || print none)" "none"
+
+print -r -- "an init that cannot switch live asks for a reboot"
+reset; run --rc 100
+check "exit 100" "${RC}" "100"
+check "verdict" "$(key verdict)" "reboot-required"
+
+print -r -- "a system that predates the recorder: only an unambiguous status is taken"
+reset; ln -sfn "${BASE}/sys-old" "${BASE}/current"
+run --rc 0
+check "exit 0 is applied" "${RC}" "0"
+check "activation" "$(key activation)" "unrecorded"
+run --rc 2
+check "exit 2 is an activation failure" "${RC}" "2"
+run --rc 4
+check "exit 4 is unverified" "${RC}" "3"
+run
+check "a boot is unverified" "${RC}" "3"
+
+print -r -- "a boot verdict reads this boot's record"
+reset; record 0; run
+check "exit 0" "${RC}" "0"
+check "no rc" "$(key rc)" ""
+contains "waited for the boot to settle" "$(< "${FAKE}/calls")" "is-system-running --wait"
+reset; record 0; run --no-wait
+check "--no-wait does not wait" "$(grep -c -- '--wait' "${FAKE}/calls")" "0"
+
+print -r -- "a carried unit is named again only while it is not running"
+reset; record 0; print -r -- "docker.service" > "${FAKE}/active"
+run --carry docker.service --carry nginx.service
+check "exit 4" "${RC}" "4"
+check "only the one not running" "$(key failed)" "nginx.service"
+reset; record 0; print -r -- "docker.service" > "${FAKE}/active"
+run --carry docker.service
+check "all running again is applied" "${RC}" "0"
+reset; record 0; print -r -- "user@1000.service loaded failed failed x" > "${FAKE}/failed"
+run --carry user@1000.service
+check "a carried unit still failed is named once" "$(key failed)" "user@1000.service"
+
+print -r -- "root reads the user managers that are running"
+reset; record 0
+print -r -- " 1000 alice yes active" > "${FAKE}/users"
+print -r -- " 1001 bob   no  closing" >> "${FAKE}/users"
+print -r -- "user@1000.service" > "${FAKE}/active"
+print -r -- "nixos-activation.service loaded failed failed NixOS activation" > "${FAKE}/user-alice-failed"
+print -r -- "ignored.service loaded failed failed x" > "${FAKE}/user-bob-failed"
+ROOT=1 run --rc 4
+check "exit 4" "${RC}" "4"
+check "alice's unit named, bob's manager skipped" "$(key failed)" "user:alice:nixos-activation.service"
+reset; record 0; print -r -- "alice-unit.service" > "${FAKE}/user-alice-active"
+ROOT=1 run --carry user:alice:alice-unit.service --carry user:alice:gone.service
+check "carried user units checked in their manager" "$(key failed)" "user:alice:gone.service"
+
+print -r -- "a user reads their own manager"
+reset; record 0; print -r -- "ssh-agent.service loaded failed failed agent" > "${FAKE}/user-self-failed"
+USER=carol run --rc 0
+check "exit 4" "${RC}" "4"
+check "own unit named" "$(key failed)" "user:carol:ssh-agent.service"
+
+print -r -- "exit 4 with nothing failed now is still degraded"
+reset; record 0; run --rc 4
+check "exit 4" "${RC}" "4"
+contains "says why" "${ERR}" "no unit is failed now"
+
+print -r -- "systemd that does not answer is never a clean verdict"
+reset; record 0; touch "${FAKE}/list-broken"; run --rc 0
+check "exit 3" "${RC}" "3"
+check "verdict" "$(key verdict)" "unverified"
+reset; record 0
+OUT="$(PATH="${TOOLS}" FAKE="${FAKE}" FLAKELAB_ACTIVATION_RECORD="${BASE}/record" FLAKELAB_CURRENT_SYSTEM="${BASE}/current" \
+  FLAKELAB_INIT_STAT="${INIT_STAT}" FLAKELAB_SWITCH_RESULT_ROOT=0 zsh "${RESULT}" --rc 0 2> /dev/null)"
+RC=$?
+check "no systemctl at all: exit 3" "${RC}" "3"
+reset; record 0; rm -f "${INIT_STAT}.none"
+OUT="$(PATH="${SHIM}:${TOOLS}" FAKE="${FAKE}" FLAKELAB_ACTIVATION_RECORD="${BASE}/record" FLAKELAB_CURRENT_SYSTEM="${BASE}/current" \
+  FLAKELAB_INIT_STAT="${INIT_STAT}.none" FLAKELAB_SWITCH_RESULT_ROOT=0 zsh "${RESULT}" --rc 0 2> /dev/null)"
+RC=$?
+check "an unreadable PID 1 cannot vouch for the record: exit 3" "${RC}" "3"
+
+print -r -- "usage"
+reset; run --rc x
+check "a non-numeric --rc exits 64" "${RC}" "64"
+run --rc 256
+check "an --rc past 255 exits 64" "${RC}" "64"
+run --bogus
+check "an unknown flag exits 64" "${RC}" "64"
+run --help
+contains "--help prints the contract" "${OUT}" "Exit status = the verdict"
+
+print ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

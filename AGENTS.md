@@ -85,18 +85,19 @@ the private overlay `flakelab-config`, which imports this flake via
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
 - Changing any of these means running its offline suite. `make test` runs all
-  nine (`test-clone-repos`, `test-gitchecker`, `test-gitcleaner`,
+  ten (`test-clone-repos`, `test-gitchecker`, `test-gitcleaner`,
   `test-gitpublisher`, `test-nix-backup`, `test-nix-overlay-generate`,
-  `test-flakelab-cli`, `test-claude-sessions`, `test-nix-update`) and stays the
+  `test-flakelab-cli`, `test-claude-sessions`, `test-nix-update`,
+  `test-switch-result`) and stays the
   required local gate. These are TEST HARNESSES, not user commands,
   so the `flakelab` CLI did not rename them: `test-nix-backup` and
   `test-nix-overlay-generate` keep the old prefix on purpose, because renaming
   them would drag `Makefile` and `flake.nix`'s `checks.<system>.*` along for no
   change in behaviour. They run the scripts by path, not by command name. CI
-  runs the same eight as flake checks — `nix flake check` (the `test` job)
+  runs the same ten as flake checks — `nix flake check` (the `test` job)
   builds
   `checks.<system>.{clone-repos,gitchecker,gitcleaner,gitpublisher,nix-backup,`
-  `nix-overlay-generate,flakelab-cli,claude-sessions,nix-update,statix,deadnix}`,
+  `nix-overlay-generate,flakelab-cli,claude-sessions,nix-update,switch-result,statix,deadnix}`,
   so a red suite blocks the pull
   request rather than surviving to main. Those checks copy the WHOLE tree
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`

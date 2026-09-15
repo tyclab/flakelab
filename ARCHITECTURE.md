@@ -137,9 +137,13 @@ the home `BOOTSTRAP_USER` has in the passwd database, because systemd reads an
 `EnvironmentFile=` itself and a shell never sees it. It clones the overlay, locks
 it and checks it out **as `BOOTSTRAP_USER`** — a lock written by root makes that
 user's next `nix` command in the checkout fail on a permission denied — and runs
-only `nixos-rebuild switch --flake path:<repo>#<attr>` as root, taking
-switch-to-configuration's exit 4 — activated, with warnings — as a switch that
-happened, so a warning does not repeat the whole clone on the next boot. An
+only `nixos-rebuild switch --flake path:<repo>#<attr>` as root. Its marker
+follows the switch's verdict (see "A switch's result"): `applied` writes it and
+exits 0; `degraded` writes it and exits 4, so the unit shows failed with the units
+it could not bring up named in its journal, and a further run would only switch
+into the same generation again; every other verdict writes nothing, and the next
+boot retries. The verdict comes from the seed's own `flakelab-switch-result`, so
+an overlay pinning an older flakelab is still classified. An
 identity `BOOTSTRAP_USER` cannot read exits 75 and names the path it wants,
 because on a fresh guest the key arrives after the first boot and the unit is
 meant to be started again rather than to fail it. The unit ships from the target module and not the seed variant,
@@ -187,6 +191,58 @@ Both switches wipe VM-wide WSL interop, so each is followed by an interop probe
 and an offer to `wsl --shutdown` (`-Shutdown` answers yes up front; declining
 right after switch #1 stops the run before anything is seeded and prints how to
 resume). A non-interactive run never shuts anything down by itself.
+
+## A switch's result
+
+`nixos-rebuild switch` exits with switch-to-configuration's status, and that
+status cannot say what happened. It is 2 when the activation script failed and 4
+when a unit failed to start, restart or reload, or a user's activation did — and a
+unit failing after a failed activation script overwrites the 2 with the 4. The
+activation a boot runs has no status at all: stage 2 and the NixOS-WSL init shim
+both ignore it. Read as a verdict, the exit code made every caller guess, and each
+guessed differently.
+
+So the verdict is read from the system instead. The
+`flakelab-activation-result` activation snippet (nix/configuration.nix) is ordered
+after every other snippet and records the activation script's own `$_status`, the
+system it activated and the start time of the init it ran under, in
+`/run/flakelab/activation` — at every switch and every boot, since both run the
+same script. `checks.activation-result` asserts it runs last in both targets and
+runs the generated text under the activation script's ERR trap.
+`flakelab-switch-result` (files/scripts/switch-result, installed system-wide so
+root reaches it at `/run/current-system/sw/bin`) combines that record with
+systemd's failed units, the running user managers' included, and prints one
+verdict; its header is the contract:
+
+| exit | verdict             | meaning                                                  |
+| ---- | ------------------- | -------------------------------------------------------- |
+| 0    | `applied`           | activated, no unit failed                                |
+| 4    | `degraded`          | activated, units not running (named)                     |
+| 2    | `activation-failed` | the activation script failed: the record says so, or a 2 |
+| 3    | `unverified`        | no record for this system and boot, or systemd no answer |
+| 100  | `reboot-required`   | the new init cannot be switched to live                  |
+| N    | `not-applied`       | the switch failed before activating                      |
+
+`degraded` names every unit not running when it reads — the system's and the
+running user managers' — not only the switch's own: a user unit that failed before
+the switch, which switch-to-configuration does not reset, still makes the run exit 4.
+
+Every caller applies the same rule: `applied` and `degraded` carry on, `degraded`
+ending the run with exit 4 and the units named; every other verdict stops with its
+own code. `flakelab update` runs its post-switch steps on a degraded switch and
+exits 4. `setup-wsl-nix.ps1` reads a verdict after each switch, for the boot the
+restart after switch #1 starts, and at the close. Across a switch it carries the
+units a degraded verdict named: a switch resets failed units without starting them
+all, so "not active" rather than "failed" is what keeps such a unit named, and one
+that has not run again since counts as still down. Across the restart it carries
+nothing, since a boot starts clean. A classifier that runs and answers nothing is
+never a clean verdict; only a probe that finds none in the running system is read
+as "not verified", and then only an exit 0 carries on. `flakelab build-distro`
+reads around its one switch and its verification, with nothing to carry, and
+`flakelab-bootstrap` (below) writes its marker for `applied` and `degraded` only.
+`flakelab doctor` reports the running system's verdict. A running system built
+before the recorder existed is `unrecorded`: only an exit 0 or 2 is taken from
+the switch, since a 4 cannot be told from a failed activation.
 
 ## Activation and the health check
 

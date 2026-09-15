@@ -123,22 +123,58 @@ else
   _rc=$?
 fi
 kill $_tail_pid 2>/dev/null; wait $_tail_pid 2>/dev/null || true
-# switch-to-configuration exits 4 when a unit failed, with the generation applied.
-# A fresh import's first switch starts the lingering user's user@1000 at once, and
-# that start can fail ("Failed to spawn executor: Device or resource busy"), so 4
-# carries on into verification and the units still failed are read at the end.
-if (( _rc != 0 && _rc != 4 )); then
+# A switch that got as far as activating exits 0, 2 or 4, and which of those it was
+# says nothing reliable: flakelab-switch-result, in the distro, reads what the system
+# recorded (files/scripts/switch-result has the contract). Anything else never
+# activated.
+if (( _rc != 0 && _rc != 2 && _rc != 4 )); then
   _say red "nixos-rebuild failed (exit ${_rc}). Log: ${_log}"
   tail -25 "${_log}"; exit 1
 fi
+
+# _verdict [--rc N]: the classifier in the distro, as root. Sets _v_rc, _v_verdict and
+# _v_failed. `missing` is only what the probe proves - a built system with no
+# classifier; one that ran and answered nothing parseable is `unanswered` (exit 3 at
+# least). No units are carried: no switch runs between the two reads to reset them.
+_verdict() {
+  local _out _line _probe=0 _tool=/run/current-system/sw/bin/flakelab-switch-result
+  _v_rc=0 _v_verdict=missing _v_failed=""
+  # `test -x` answers 1 for an absent file; any other failure is wsl.exe's own.
+  ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- test -x "${_tool}" < /dev/null > /dev/null 2>&1 || _probe=$?
+  (( _probe == 1 )) && return 0
+  (( _probe == 0 )) || { _v_verdict=unanswered _v_rc=3; return 0 }
+  _out="$(${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- "${_tool}" "$@" < /dev/null | tr -d '\0\r')" || _v_rc=$?
+  _v_verdict=unanswered
+  for _line in "${(@f)_out}"; do
+    case "${_line}" in
+      verdict=*) _v_verdict="${_line#verdict=}" ;;
+      failed=*)  _v_failed="${_line#failed=}" ;;
+    esac
+  done
+  [[ "${_v_verdict}" == unanswered ]] && (( _v_rc == 0 )) && _v_rc=3
+  return 0
+}
 # NOTE: deliberately NO `wsl --terminate` here — terminating a systemd distro
 # unmounts the shared binfmt_misc and breaks interop for sibling distros
 # (known-issues.md). Default-user is verified by reading /etc/wsl.conf.
-if (( _rc == 4 )); then
-  _say yellow "Flake applied, but a unit failed (exit 4) — named in ${_log}; the units still failed are listed at the end."
-else
-  _say green "Flake applied."
-fi
+# Degraded carries on into verification: a fresh import's first switch starts the
+# lingering user's user@1000 at once, and that start can fail ("Failed to spawn
+# executor: Device or resource busy"). The units are read again at the end.
+_verdict --rc "${_rc}"
+case "${_v_verdict}" in
+  applied)  _say green "Flake applied." ;;
+  degraded)
+    _say yellow "Flake applied, but units are not running: ${_v_failed:-none named still failed, see ${_log}} — carrying on; they are read again at the end." ;;
+  missing)
+    if (( _rc != 0 )); then
+      _say red "nixos-rebuild exited ${_rc}, and the built system has no flakelab-switch-result to tell a unit failure from a failed activation. Log: ${_log}"
+      tail -25 "${_log}"; exit 1
+    fi
+    _say yellow "Flake applied; the built system has no flakelab-switch-result, so its activation is not verified." ;;
+  *)
+    _say red "The switch's verdict: ${_v_verdict} (exit ${_v_rc}). Log: ${_log}"
+    tail -25 "${_log}"; exit "${_v_rc}" ;;
+esac
 
 # --- Verification (ported from test-provision-nix) ---
 if ${VERIFY}; then
@@ -184,29 +220,18 @@ if ${VERIFY}; then
 fi
 
 print ""
-if (( _rc == 4 )); then
-  # Once the boot has settled (bounded), so a unit still starting is not read too
-  # early; the verification logins above may have started a failed user manager
-  # again. Unit-shaped lines only, NULs stripped: wsl.exe adds its own. The payload
-  # carries no `$` and no double quote, neither of which survives wsl.exe.
-  _units_rc=0
-  _units="$(${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
-    sh -c 'timeout 180 systemctl is-system-running --wait >/dev/null 2>&1; systemctl --failed --no-legend --plain' \
-    < /dev/null 2>/dev/null | tr -d '\0\r')" || _units_rc=$?
-  # Unanswered is not "none failed".
-  if (( _units_rc != 0 )); then
-    _say yellow "Dev distro '${DISTRO_NAME}' built, but its failed units could not be listed (exit ${_units_rc})."
-    _say yellow "Inspect: wsl -d ${DISTRO_NAME} -u root -- systemctl --failed"
-    exit 4
-  fi
-  _failed="$(print -r -- "${_units}" \
-    | grep -E '^[[:space:]]*[^[:space:]]+\.(service|socket|target|device|mount|automount|swap|path|timer|slice|scope)([[:space:]]|$)')" || true
-  if [[ -n "${_failed}" ]]; then
-    _say yellow "Dev distro '${DISTRO_NAME}' built, with failed units:"
-    print -r -- "${_failed}"
+# The distro's verdict once more, after the verification's logins may have started a
+# failed user manager again.
+_verdict
+case "${_v_verdict}" in
+  applied|missing) ;;
+  degraded)
+    _say yellow "Dev distro '${DISTRO_NAME}' built, with units not running: ${_v_failed:-none named}"
     _say yellow "Inspect: wsl -d ${DISTRO_NAME} -u root -- systemctl status <unit>"
-    exit 4
-  fi
-fi
+    exit 4 ;;
+  *)
+    _say yellow "Dev distro '${DISTRO_NAME}' built, but its verdict is ${_v_verdict} (exit ${_v_rc}) — the reason is printed above"
+    exit "${_v_rc}" ;;
+esac
 _say green "Dev distro '${DISTRO_NAME}' ready. Enter it: wsl -d ${DISTRO_NAME}"
 _say yellow "Re-apply after edits: wsl -d ${DISTRO_NAME} -u root -- nixos-rebuild switch --flake ${_flake_ref}"

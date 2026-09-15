@@ -29,6 +29,37 @@
     linger = true;
   };
 
+  # The activation's own result, because nothing else keeps it: switch-to-configuration
+  # reports a failed activation script as 2 but lets a unit failing after it
+  # overwrite that with 4, and stage 2 and the NixOS-WSL init shim ignore the status
+  # of the activation they run at boot. Ordered after every other snippet so
+  # `$_status` - which the activation's ERR trap sets and `exit`s with - is final;
+  # the init's start time tells this boot's record from one left in /run by an
+  # earlier boot of a distro. flakelab-switch-result reads it. Written inside an
+  # `if`, so a failure to record cannot itself fail the activation.
+  system.activationScripts.flakelab-activation-result =
+    lib.stringAfter
+      (builtins.attrNames (
+        removeAttrs config.system.activationScripts [
+          "script"
+          "flakelab-activation-result"
+        ]
+      ))
+      ''
+        _flakelab_status="$_status"
+        if ! {
+          _flakelab_init="$(< /proc/1/stat)" &&
+            read -r -a _flakelab_init <<< "''${_flakelab_init##*) }" &&
+            mkdir -p /run/flakelab &&
+            printf 'status=%s\nsystem=%s\ninit=%s\n' "$_flakelab_status" "$(readlink -f "$systemConfig")" "''${_flakelab_init[19]}" \
+              > /run/flakelab/activation.new &&
+            mv -f /run/flakelab/activation.new /run/flakelab/activation
+        }; then
+          echo "flakelab: could not record this activation's result in /run/flakelab/activation" >&2
+        fi
+        unset _flakelab_status _flakelab_init
+      '';
+
   # Makes zsh a valid login shell; the interactive config is in nix/home/zsh.nix.
   programs.zsh.enable = true;
 
@@ -63,7 +94,13 @@
       dnsutils
       gnumake
       gcc
-    ]);
+    ])
+    ++ [
+      (import ./scripts.nix {
+        inherit pkgs;
+        cfg = config.flakelab;
+      }).switch-result
+    ];
 
   nix.settings.experimental-features = [
     "nix-command"

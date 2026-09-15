@@ -143,6 +143,48 @@ else
   log_ok "no activation steps deferred"
 fi
 
+# The system's own activation - the last switch's, or this boot's, whose status stage
+# 2 and the WSL init shim both drop - and its units, as flakelab-switch-result reads
+# them (files/scripts/switch-result has the contract). --no-wait: a doctor reports
+# the state it finds, it does not wait out a boot.
+if command -v flakelab-switch-result > /dev/null 2>&1; then
+  local vout vline vrc=0 vactivation="" vfailed=""
+  vout="$(flakelab-switch-result --no-wait 2> /dev/null)" || vrc=$?
+  for vline in "${(@f)vout}"; do
+    case "${vline}" in
+      activation=*) vactivation="${vline#activation=}" ;;
+      failed=*)     vfailed="${vline#failed=}" ;;
+    esac
+  done
+  case "${vrc}" in
+    0) log_ok "system activation recorded clean, no unit failed" ;;
+    4)
+      log_fail "units not running: ${vfailed:-none named}"
+      log_hint "systemctl status <unit>   (a user:<name>:<unit> is: systemctl --user status <unit>)"
+      ;;
+    2)
+      log_fail "the system's activation script failed"
+      log_hint "journalctl -b | grep 'Activation script snippet'   # the snippet that failed; then: flakelab update"
+      ;;
+    3)
+      if [[ "${vactivation}" == unrecorded ]]; then
+        log_warn "the running system predates the activation record, so its activation is unverified"
+        log_hint "switch once to get it: flakelab update"
+      elif [[ "${vactivation}" == ok ]]; then
+        log_warn "the activation is recorded clean, but systemd did not answer for the units"
+        log_hint "systemctl list-units --failed"
+      else
+        log_fail "no activation result for the running system in this boot (${vactivation:-no verdict})"
+        log_hint "the activation did not reach its end: journalctl -b | grep 'Activation script'"
+      fi
+      ;;
+    *) log_warn "flakelab-switch-result exited ${vrc}" ;;
+  esac
+else
+  log_warn "no flakelab-switch-result on PATH, so the system activation is unverified"
+  log_hint "the running system predates it — switch once: flakelab update"
+fi
+
 # ---------------------------------------------------------------------------
 # flakelab input
 # ---------------------------------------------------------------------------

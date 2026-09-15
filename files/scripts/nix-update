@@ -50,7 +50,7 @@ while (( $# )); do
       print -r -- "  checkout or has no remote). A branch behind the default branch is"
       print -r -- "  warned about and, at a terminal, offered a rebase."
       print -r -- ""
-      print -r -- "  --all   also run nix-clone-repos after a successful switch"
+      print -r -- "  --all   also run nix-clone-repos after an applied switch"
       print -r -- ""
       print -r -- "  FLAKELAB_STALE_OK=1  rebuild the checkout as it is: behind, dirty, or unverified"
       exit 0
@@ -329,18 +329,43 @@ _hm_before="$(_hm_stamp)"
 # unprivileged `nix` command in that checkout dies on a permission error.
 # sudo and nixos-rebuild resolve from the caller's PATH, so the rebuild uses the
 # running system's nixos-rebuild. Only the path is encoded: the `#` after it is the
-# flake URL's fragment. Its exit status is kept, so nixos-rebuild's own codes reach
-# the caller.
+# flake URL's fragment.
 # The lock is taken back after it too, failed or not: nix locks before it evaluates,
 # so even a failed switch can leave a root-written lock, which breaks the operator's
 # own `nix` commands in the overlay until the next run.
 _switch_rc=0
 sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || _switch_rc=$?
 _nix_reclaim_lock
-(( _switch_rc == 0 )) || exit "${_switch_rc}"
+
+# The switch's status is not its result - a 4 can stand over a failed activation -
+# so flakelab-switch-result reads what the system recorded (its header has the
+# contract). Applied and degraded carry on, degraded to an exit 4 at the end; every
+# other verdict stops here with its own code. Without the classifier (a checkout run
+# outside the wrapper's PATH) only a clean status carries on.
+_result_rc=0
+if command -v flakelab-switch-result > /dev/null 2>&1; then
+  _result="$(flakelab-switch-result --rc "${_switch_rc}")" || _result_rc=$?
+else
+  _result=""
+  if (( _switch_rc != 0 )); then
+    _say red "✗ the switch exited ${_switch_rc}, and without flakelab-switch-result on PATH that cannot be told apart from a failed activation"
+    exit "${_switch_rc}"
+  fi
+fi
+case "${_result_rc}" in
+  0) ;;
+  4)
+    _failed=""
+    for _line in "${(@f)_result}"; do
+      [[ "${_line}" == failed=* ]] && _failed="${_line#failed=}"
+    done
+    _say yellow "⚠ the switch activated its generation, but units are not running: ${_failed:-none named still failed, see the switch output above} — carrying on, then exiting 4. Inspect: systemctl status <unit>"
+    ;;
+  *) exit "${_result_rc}" ;;
+esac
 
 # Same closure as the running generation: the switch left the activation alone,
-# so run it here instead. Failures warn only — the switch itself succeeded.
+# so run it here instead. Failures warn only — the switch itself is applied.
 if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
   _say cyan "ℹ generation unchanged, so the switch left ${_hm_unit} alone — restarting it to retry the deferred steps"
   sudo systemctl restart "${_hm_unit}" \
@@ -359,7 +384,7 @@ fi
 
 # The activation that does this only re-runs when the built config changed, while
 # the marketplace clone is runtime data, so replay it after every switch. Failures
-# warn only: the switch itself succeeded.
+# warn only: the switch itself is applied.
 _claude_marketplaces="$HOME/.claude/plugins/marketplaces"
 if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   for _m in "${_claude_marketplaces}"/*(N/); do
@@ -412,10 +437,11 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   fi
 fi
 
-(( _run_clone )) || exit 0
+(( _run_clone )) || exit "${_result_rc}"
 
 if ! command -v nix-clone-repos > /dev/null 2>&1; then
-  _say red "✗ --all: nix-clone-repos is not on PATH — the switch succeeded, the clone sweep did not run"
+  _say red "✗ --all: nix-clone-repos is not on PATH — the switch is applied, the clone sweep did not run"
   exit 1
 fi
-nix-clone-repos
+nix-clone-repos || exit $?
+exit "${_result_rc}"

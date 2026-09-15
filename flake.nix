@@ -321,6 +321,7 @@
         flakelab-cli = suiteCheck "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
         nix-update = suiteCheck "nix-update";
+        switch-result = suiteCheck "switch-result";
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 
@@ -377,6 +378,49 @@
           assert builtins.isString wsl.system.build.toplevel.drvPath;
           assert builtins.isString vm.system.build.toplevel.drvPath;
           pkgs.runCommandLocal "flakelab-check-targets" { } "touch $out";
+
+        # The activation record flakelab-switch-result reads: the snippet must run last
+        # in both systems, and the generated text - run under the activation script's
+        # own ERR trap - must record a failure before it, a clean run, and survive a
+        # directory it cannot write without failing the activation itself.
+        activation-result =
+          let
+            lastSnippet =
+              cfg:
+              let
+                lines = builtins.filter builtins.isString (builtins.split "\n" cfg.system.activationScripts.script);
+                heads = builtins.filter (l: builtins.match "#### Activation script snippet .*" l != null) lines;
+              in
+              builtins.elemAt heads (builtins.length heads - 1);
+            head = "#### Activation script snippet flakelab-activation-result:";
+            wsl = self.nixosConfigurations.default.config;
+            vm = self.nixosConfigurations.proxmox-vm.config;
+            snippet = pkgs.writeText "flakelab-activation-result" wsl.system.activationScripts.flakelab-activation-result.text;
+          in
+          assert lastSnippet wsl == head;
+          assert lastSnippet vm == head;
+          pkgs.runCommandLocal "flakelab-check-activation-result" { nativeBuildInputs = [ pkgs.bash ]; } ''
+            set -u
+            run() { # <run dir> <preceding snippet>
+              sed "s|/run/flakelab|$1|g" ${snippet} > snippet.sh
+              bash -c "_status=0; trap '_status=1 _localstatus=\$?' ERR; systemConfig=$PWD/sys; $2; source ./snippet.sh; exit \$_status"
+            }
+            mkdir sys
+            want_init="$(s="$(< /proc/1/stat)"; s="''${s##*) }"; set -- $s; echo "''${20}")"
+
+            mkdir ok; run "$PWD/ok" true || { echo "a clean activation exited non-zero" >&2; exit 1; }
+            grep -qx 'status=0' ok/activation || { echo "clean run not recorded as 0" >&2; exit 1; }
+            grep -qx "system=$PWD/sys" ok/activation || { echo "system not recorded" >&2; exit 1; }
+            grep -qx "init=$want_init" ok/activation || { echo "init start not recorded" >&2; cat ok/activation >&2; exit 1; }
+
+            mkdir bad; if run "$PWD/bad" false; then echo "a failed snippet before it did not fail the activation" >&2; exit 1; fi
+            grep -qx 'status=1' bad/activation || { echo "the earlier failure not recorded" >&2; exit 1; }
+
+            mkdir ro; chmod 500 ro
+            run "$PWD/ro/sub" true 2> ro.err || { echo "an unwritable record failed the activation" >&2; exit 1; }
+            grep -q 'could not record' ro.err || { echo "an unwritable record went unreported" >&2; exit 1; }
+            touch $out
+          '';
 
         # Claude, its marketplaces and Kiro update themselves; nothing here pins them,
         # so the switches that could stop them are asserted. The rendered
