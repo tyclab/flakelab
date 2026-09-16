@@ -24,7 +24,6 @@ if not exist "%PS1%" (
     exit /b 1
 )
 
-REM --- Pass-through mode: arguments supplied on the command line ---
 REM  Not inside an if ( ... ) block: cmd expands %ERRORLEVEL% when it reads the
 REM  block, before powershell.exe has run, so the script's exit code (4 = units
 REM  still failed, 1 = a step threw) would come back as 0. Delayed expansion is
@@ -33,7 +32,6 @@ if "%~1"=="" goto :menu
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
 exit /b %ERRORLEVEL%
 
-REM --- Interactive mode: no arguments (e.g. double-click) ---
 :menu
 echo setup-wsl-nix : provision the NixOS-WSL distro
 echo.
@@ -65,11 +63,11 @@ if errorlevel 2 goto :quit
 set "EXTRA="
 goto :overlay_check
 
-REM --- The overlay decision, mirrored from setup-wsl-nix.ps1 --------------
-REM  The menu passes no -Config. With no sibling overlay the .ps1 asks its
-REM  four questions itself (this console is interactive, so it can); a prepared
-REM  config can still be named here to skip them. wslnix-config is the
-REM  pre-2026-08-21 name of the same sibling, which the .ps1 still accepts.
+REM  Mirrors the .ps1's overlay decision. The menu passes no -Config: with no
+REM  sibling overlay the .ps1 asks its four questions itself (this console is
+REM  interactive, so it can); a prepared config can still be named here to skip
+REM  them. wslnix-config is a legacy name for the same sibling, which the .ps1
+REM  still accepts.
 :overlay_check
 set "CFGARG="
 if exist "%~dp0..\flakelab-config\flake.nix" goto :run

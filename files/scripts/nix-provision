@@ -1,25 +1,20 @@
 #!/usr/bin/env zsh
 # Drive the Windows provisioning script from inside a WSL distro.
 #
-# Everything about doing this by hand is a trap. The script lives on the Windows
-# side and only works there, so it has to go through `powershell.exe`; and it must
-# be given an absolute drive path, because a shell sitting on ext4 makes PowerShell
-# inherit a `\\wsl.localhost\...` cwd it cannot use.
+# The script only works on the Windows side, so it goes through `powershell.exe`,
+# and it must be given an absolute drive path, because a shell sitting on ext4
+# makes PowerShell inherit a `\\wsl.localhost\...` cwd it cannot use.
 #
-# What this cannot do is drive a run that restarts the distro it is running in.
-# `provision` restarts it twice - `wsl --terminate` halfway through to apply the new
-# user, then `wsl --shutdown` at the closing interop heal - and each one kills this
-# shell. Detaching does not save it: a Windows process started over interop belongs
-# to the `wsl` relay of the distro that launched it, so the restart takes the run
-# down too, wherever its Linux session is. Measured 2026-08-13: such a process
-# stopped one second after the terminate, mid-run, with no way to tell how far it
-# got.
+# This cannot drive a run that restarts the distro it is running in. `provision`
+# restarts it twice - `wsl --terminate` halfway through to apply the new user,
+# then `wsl --shutdown` at the closing interop heal - and each one kills this
+# shell. Detaching does not save it: a Windows process started over interop
+# belongs to the `wsl` relay of the distro that launched it, so the restart takes
+# the run down too, mid-run, with no way to tell how far it got.
 #
-# wslkube settled this for the whole family of these scripts - "running from
-# Windows PowerShell is unaffected" (wslkube docs/known-issues.md) - and the same
-# rule applies here. So: read-only commands run in the foreground, and the ones that
-# restart the distro print the command for a Windows terminal instead of pretending
-# to survive.
+# As in wslkube ("running from Windows PowerShell is unaffected", wslkube
+# docs/known-issues.md): read-only commands run in the foreground, and the ones
+# that restart the distro print the command for a Windows terminal instead.
 set -uo pipefail
 
 _self="${0:t}"
@@ -57,7 +52,6 @@ Examples:
 EOF
 }
 
-# --- arguments -------------------------------------------------------------
 _repo=""
 _foreground=false
 _cmd=""
@@ -76,7 +70,6 @@ while (( $# )); do
 done
 [[ -n "${_cmd}" ]] || _cmd='status'
 
-# --- environment gates -----------------------------------------------------
 grep -qi microsoft /proc/version 2>/dev/null || die "this only runs inside WSL"
 
 # powershell.exe is itself an interop call, so a wiped WSLInterop handler is the
@@ -91,10 +84,8 @@ fi
 _ps="$(command -v powershell.exe || print -- /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)"
 [[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
 
-# --- locate the checkout ---------------------------------------------------
 # FLAKELAB_REPO_ROOT is the overlay (nix/scripts.nix exports repoPath); the
-# provisioning script lives in the template checkout beside it, which is exactly
-# where the overlay's own nixdev.ps1 wrapper looks for it.
+# provisioning script lives in the template checkout beside it.
 if [[ -z "${_repo}" ]]; then
   _parent="${${FLAKELAB_REPO_ROOT:-}:h}"
   if [[ -n "${_parent}" && -d "${_parent}" ]]; then
@@ -105,7 +96,6 @@ if [[ -z "${_repo}" ]]; then
 fi
 [[ -n "${_repo}" ]] || die "no checkout with setup-wsl-nix.ps1 found - pass --repo <path>"
 
-# Accept either form: a Windows path is converted for the checks below.
 case "${_repo}" in
   [A-Za-z]:[\\/]*) _repo="$(wslpath -u "${_repo}")" || die "cannot convert '${_repo}'" ;;
 esac
@@ -114,8 +104,8 @@ _script="${_repo}/setup-wsl-nix.ps1"
 [[ -f "${_script}" ]] || die "no setup-wsl-nix.ps1 in ${_repo}"
 
 # The .ps1 derives every path it hands the distro from a drive letter, so the
-# checkout has to be reachable as one. wslpath fails on anything else, which is
-# the same refusal the script itself now makes.
+# checkout has to be reachable as one. wslpath fails on anything else, the same
+# refusal the script itself makes.
 _script_win="$(wslpath -w "${_script}" 2>/dev/null)" \
   || die "${_repo} is not on a Windows drive - keep the checkout under C:\\Users\\<name>\\git\\"
 case "${_script_win}" in
@@ -123,7 +113,6 @@ case "${_script_win}" in
   *) die "${_repo} resolves to '${_script_win}', which is not a drive path - keep the checkout under C:\\Users\\<name>\\git\\" ;;
 esac
 
-# --- run here, or print a command for Windows -------------------------------
 # Only the commands that restart the distro have to leave, and -DryRun never gets
 # there.
 _restarts=false
@@ -131,7 +120,7 @@ case "${_cmd}" in
   provision|bootstrap|migrate) _restarts=true ;;
 esac
 # ${_a:l} rather than a (#i) glob: that flag needs extendedglob, which is not on
-# here, and without it the pattern silently never matches - so -DryRun left.
+# here, and without it the pattern silently never matches and -DryRun leaves.
 for _a in "${_ps_args[@]}"; do
   [[ "${_a:l}" == "-dryrun" ]] && _restarts=false
 done

@@ -28,22 +28,16 @@ _DISTRO_COUNT=${#_DISTRO_LINES}
 
 if (( _DISTRO_COUNT == 1 ))
 then
-  # Only one running, so it's obvious
   print -rn -- "${_RUNNING_DISTROS}"
 else
-  # We have to find it manually
-  # 1. Create file /tmp to work as beacon
+  # The distro that sees this /tmp file is the one running this script.
   _BEACON_FILE=$(mktemp /tmp/beacon_XXXXXX)
   trap 'rm -f "${_BEACON_FILE}"' EXIT INT TERM
 
-  # 2. Search for the beacon by testing for it inside each running distro.
-  #
-  # The probe is `/bin/sh -c '[ -e … ]'`: `-e ls` failed on NixOS with
-  # `execvpe(ls) failed: No such file or directory`, because a NixOS-WSL distro
-  # has no coreutils on the default PATH. /bin/sh exists in both NixOS-WSL and
-  # Ubuntu and `[` is a shell builtin, so this probe depends on nothing but the
-  # shell. A missing beacon exits non-zero, which is a legitimate answer here and
-  # must not abort the script, so it does not go through executeWSLExecutable.
+  # A NixOS-WSL distro has no coreutils on wsl.exe's default PATH, so a probe
+  # like `-e ls` fails there; /bin/sh exists in NixOS-WSL and Ubuntu, and `[` is
+  # a builtin. A missing beacon exits non-zero, which is a legitimate answer
+  # here and must not abort the script, so it bypasses executeWSLExecutable.
   _MATCHED_DISTRO=""
   for _DISTRO in "${_DISTRO_LINES[@]}"
   do
@@ -57,7 +51,6 @@ else
     fi
   done
 
-  # 3. Output result (beacon cleanup handled by trap)
   if [[ -z "${_MATCHED_DISTRO}" ]]
   then
     print -u2 "ERROR: Distro could not be identified!"
