@@ -60,7 +60,6 @@ source "${0:A:h}/lib/gitscan.zsh" || exit 2
 typeset -a ROOTS=() REPO_ARGS=() ONLY=()
 MAX_DEPTH=6
 DRY_RUN=0
-# Fast-forward strictly-behind branches before judging what has landed.
 FF=1
 FF_DIRTY=0
 ASSUME_YES=0
@@ -257,9 +256,9 @@ clean_repo() {
   #
   # Read AFTER the fetch above, deliberately. Git adopts the remote's advertised
   # symref, so a fetch re-creates a locally-missing refs/remotes/origin/HEAD from
-  # the server (verified, git 2.54.0) — and a value the server just stated is not
-  # a guess, it is the answer. Checking before the fetch would refuse to sweep
-  # repos whose only problem is a stale local ref that the fetch already fixed.
+  # the server — and a value the server just stated is not a guess, it is the
+  # answer. Checking before the fetch would refuse to sweep repos whose only
+  # problem is a stale local ref that the fetch already fixed.
   # What survives the fetch is the case worth refusing: a remote offering no
   # usable HEAD, which no fetch can repair.
   [[ -z "${default_branch}" ]] && {

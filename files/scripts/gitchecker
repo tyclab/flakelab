@@ -57,7 +57,6 @@ typeset -a ROOTS=() REPO_ARGS=()
 MAX_JOBS=8
 MAX_DEPTH=6
 DIRTY_ONLY=0
-# Fast-forward strictly-behind branches by default; see the header.
 FF=1
 FF_DIRTY=0
 QUIET=0
@@ -251,7 +250,6 @@ check_repo() {
     return
   fi
 
-  # Working tree.
   while IFS= read -r line || [[ -n "${line}" ]]; do
     [[ -z "${line}" ]] && continue
     if [[ "${line}" == '??'* ]]; then
@@ -266,7 +264,6 @@ check_repo() {
     attention=1
   fi
 
-  # HEAD.
   if ! head_branch="$(git -C "${repo}" symbolic-ref --short -q HEAD 2>/dev/null)"; then
     head_branch="(detached)"
     marks+=("${C_RED}detached HEAD${C_RESET}")
@@ -476,7 +473,6 @@ done
 wait
 check_abort
 
-# ── Report ──────────────────────────────────────────────────────────
 typeset -i CURRENT=0 ATTENTION=0 FORGE_COUNT=0
 
 # field <record-file> <key> — first value for a single-valued key.

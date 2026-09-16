@@ -46,8 +46,6 @@ let
 in
 {
   options.flakelab = {
-    # ── Set by mkSystem, never by a module ────────────────────────────────────
-
     # readOnly because the answer is already spent: mkSystem selected the
     # platform module set from this value in the flake's `let` (flake.nix
     # targetModules), before a module system existed to hold a definition. A
@@ -61,7 +59,6 @@ in
       description = "Platform this system is built for: `wsl` is a NixOS-WSL distro, `proxmox-vm` a Proxmox guest. Pass it to mkSystem (`mkSystem { target = \"proxmox-vm\"; userData = { … }; }`) — it picks the modules in nix/targets/, so it is the one field that cannot travel inside userData.";
     };
 
-    # ── Required: no default, so an overlay that omits one aborts eval ────────
     # These were read bare (no `or`) before, and an overlay missing one has no
     # sensible neutral value: a wrong username or repoPath builds a system for
     # somebody else.
@@ -106,7 +103,6 @@ in
       description = "git core.editor override; null leaves git's own default in place. Read bare, so it must be set — to null if you want no override.";
     };
 
-    # ── Guaranteed present after profiles/merge.nix ───────────────────────────
     # mkSystem folds the selected profiles into these four before the module
     # system sees them, so a definition always arrives. The defaults match the
     # merge's own empty output, which is what an unprofiled overlay produces.
@@ -134,8 +130,6 @@ in
       default = { };
       description = "NON-SECRET session environment. Each entry also GATES its MCP server (nix/home/mcp.nix) — a missing endpoint means a missing server. Token halves belong in ~/.config/tyc/secrets.env, never here: this lands in the world-readable Nix store.";
     };
-
-    # ── Optional: the defaults are the fallbacks the read sites used ──────────
 
     # strMatching, not str: an invalid hostname is rejected AS
     # `flakelab.hostName` with the overlay's value in the message, instead of

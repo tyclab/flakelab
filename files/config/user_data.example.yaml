@@ -12,7 +12,6 @@ user: tycuser
 # Windows username - the C:\Users\<name> folder. wsl only.
 windows_username: WindowsUser
 
-# Shell/system locale.
 userlocale: de_DE.UTF-8
 
 # Git identity, both required.
@@ -62,7 +61,7 @@ dockerautostart: true
 # Run `flakelab backup --force` daily from a systemd user timer.
 backupautostart: false
 
-# Git editor. Omit to keep git's default.
+# Omit to keep git's default.
 giteditor: 'code'
 
 # This overlay's own git remote, SSH URL like `repos`: added as `origin` (never

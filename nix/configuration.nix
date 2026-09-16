@@ -24,8 +24,8 @@
     shell = pkgs.zsh;
     # Every `wsl.exe -u <user> -- …` is its own logind session, and user@<uid>
     # stops shortly after the last one ends, taking the ssh-agent and its loaded
-    # key with it: the provisioner's second switch, the clone sweep and the
-    # backup timer all ran into an empty agent. Lingering keeps user@<uid> up.
+    # key with it before the provisioner's second switch, the clone sweep, or the
+    # backup timer can use it. Lingering keeps user@<uid> up.
     linger = true;
   };
 
@@ -116,7 +116,6 @@
     dates = "weekly";
     options = "--delete-older-than 30d";
   };
-  # Hardlinks identical store files.
   nix.optimise = {
     automatic = true;
     dates = [ "weekly" ];
