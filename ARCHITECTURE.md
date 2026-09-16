@@ -10,7 +10,7 @@ How flakelab is put together, and why. Usage lives in
    `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
    `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `tooling`, `health`, `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
-   with no nixpkgs path (kiro-cli, the Claude installer) and SSH key material —
+   whose nixpkgs builds lag upstream (kiro-cli, Claude Code) and SSH key material —
    both behind guarded, idempotent activation, never in the store.
 3. **Per-user values are data.** `nix/users/default.nix` holds placeholders; real
    values are injected by the private overlay through `lib.mkSystem`. Flakes
@@ -415,8 +415,8 @@ one more reason the seed stays out.
 
 ## Language runtimes
 
-`nix/home/packages.nix` ships Go (`gopls`), Node 24 (`nodeenv` for the
-npm-globals baseline, `bun`, `typescript`, `typescript-language-server`) and
+`nix/home/packages.nix` ships Go (`gopls`), Node 24 (`nodeenv`, `bun`,
+`typescript`, `typescript-language-server`) and
 `python3` with `uv` and `pyright`. The Python interpreter is there for
 `#!/usr/bin/env python3` scripts — without it every such script dies with "no
 such file or directory", and the Claude marketplace's PreToolUse guard hooks are

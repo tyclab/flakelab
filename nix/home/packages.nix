@@ -46,39 +46,33 @@ in
   home.packages =
     with pkgs;
     [
-      # Kubernetes
       kubectl
       kubernetes-helm
       k9s
       kubectx # provides kubectx + kubens
       kubelogin-oidc # int128 kubectl oidc-login, not the Azure AD one
-      # IaC / security
       opentofu
       tofu-ls
       tflint
       trivy
       gitleaks
-      # Languages / runtimes
       go
       gopls
       nodejs_24
       typescript-language-server
       typescript
       pyright
-      nodeenv # npm globals baseline
+      nodeenv
       bun
       uv
       # Interpreter for `#!/usr/bin/env python3` hooks; `uv` above installs Python tooling.
       python3
-      # Cloud / git
       glab
       gh
       awscli2
       gitless
-      # Secrets
       bitwarden-cli
       openbao
-      # Lint / dev utilities
       pre-commit
       yamllint
       shellcheck
@@ -86,13 +80,13 @@ in
       nixfmt
       statix
       deadnix
-      # claude and kiro-cli come from their own installers (kiro.nix, claude.nix):
-      # the nixpkgs builds lag the versions those tools require.
-      # Data
       yq-go
+      # claude and kiro-cli come from their own installers (kiro.nix, claude.nix):
+      # the nixpkgs builds lag upstream.
     ]
     ++ [
-      # The one entrypoint for the distro commands; no per-command name is on PATH.
+      # The one entrypoint for the distro commands; the old per-command names
+      # survive only as cli.shims.
       cli.flakelab
 
       # Standalone on purpose: other repos and skills invoke them by name.

@@ -68,7 +68,7 @@
   # vsock accept timeout.
   boot.kernel.sysctl."vm.compaction_proactiveness" = 60;
 
-  # Runs the foreign dynamic binaries with no nixpkgs path (the Kiro CLI installer).
+  # Runs foreign dynamically linked binaries, such as the installed Claude Code.
   programs.nix-ld.enable = true;
 
   # The dev toolchain is per-user, in nix/home/packages.nix.

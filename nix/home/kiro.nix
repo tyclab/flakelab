@@ -29,8 +29,8 @@ let
   marketplaceSingleSourced = [ "synology" ];
 in
 {
-  # No nixpkgs path, so the official binary goes into ~/.local/bin and its own
-  # updater keeps it current.
+  # The nixpkgs build lags upstream, so the official binary goes into ~/.local/bin
+  # and its own updater keeps it current.
   home.activation.installKiroCli = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
     lib.optionalString installKiro ''
       export PATH="${
