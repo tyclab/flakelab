@@ -15,9 +15,16 @@ let
     root = ../.;
     fileset = lib.fileset.unions [
       ../files/scripts/nix-overlay-generate
+      ../files/scripts/lib/overlay-git.zsh
       ../templates/overlay
       ../profiles
     ];
+  };
+  # What lib/overlay-git.zsh measures a plain-directory overlay's first commit
+  # against. Named, because a store path cannot start with a dot.
+  overlayGitignore = builtins.path {
+    path = ../templates/overlay/.gitignore;
+    name = "flakelab-overlay-gitignore";
   };
   zsh = "${pkgs.zsh}/bin/zsh";
   bin = lib.makeBinPath;
@@ -253,6 +260,7 @@ rec {
   nix-update = pkgs.writeShellScriptBin "nix-update" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
+    export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
     export PATH=${
       bin [
         pkgs.zsh
@@ -269,6 +277,7 @@ rec {
   nix-update-all = pkgs.writeShellScriptBin "nix-update-all" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
+    export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
     export PATH=${
       bin [
         pkgs.zsh
@@ -339,6 +348,7 @@ rec {
   nix-doctor = pkgs.writeShellScriptBin "nix-doctor" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_TARGET=${cfg.target}
+    export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
     ''}

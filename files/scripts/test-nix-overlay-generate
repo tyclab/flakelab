@@ -51,8 +51,9 @@ run_gen_at() {
 mk_fake_checkout() {
   local dir="$1"
   shift
-  mkdir -p "${dir}/files/scripts" "${dir}/templates/overlay" "${dir}/profiles"
+  mkdir -p "${dir}/files/scripts/lib" "${dir}/templates/overlay" "${dir}/profiles"
   cp "${GEN}" "${dir}/files/scripts/"
+  cp "${GEN:h}/lib/overlay-git.zsh" "${dir}/files/scripts/lib/"
   cp "${REPO_ROOT}/templates/overlay/flake.nix" "${dir}/templates/overlay/flake.nix"
   cp "${REPO_ROOT}/templates/overlay/.gitignore" "${dir}/templates/overlay/.gitignore"
   local p
@@ -683,8 +684,9 @@ contains "and the group survives"  "${f}" 'gitlabGroups = [ "somegroup" ];'
 # ordinary Windows layout. Only the URL is asserted; `nix flake metadata` is by hand.
 print -r -- "a checkout under a path with a space encodes the space"
 SPACED="${BASE}/with space/flakelab"
-mkdir -p "${SPACED}/files/scripts"
+mkdir -p "${SPACED}/files/scripts/lib"
 cp "${GEN}" "${SPACED}/files/scripts/"
+cp "${GEN:h}/lib/overlay-git.zsh" "${SPACED}/files/scripts/lib/"
 cp -r "${REPO_ROOT}/templates" "${SPACED}/templates"
 cp -r "${REPO_ROOT}/profiles" "${SPACED}/profiles"
 cat > "${BASE}/spaced.yaml" <<'YAML'
@@ -741,8 +743,29 @@ tracked="$(git -C "${o}" ls-files)"
 contains "flake.nix is tracked"          "${tracked}" "flake.nix"
 contains ".gitignore is tracked"         "${tracked}" ".gitignore"
 excludes "the secrets stub is not"       "${tracked}" "secrets.env"
+# The template re-includes exactly one path under shared/, and git drops a
+# re-include whose parent directory is excluded - so this is the line that says
+# the template's rules still reach it.
+check    "under shared/ only the key directory's .gitkeep is" \
+  "$(git -C "${o}" ls-files files/config/shared)" "files/config/shared/ssh/keys/.gitkeep"
 check    "core.autocrlf is off"          "$(git -C "${o}" config --get core.autocrlf)" "false"
 contains "and it says so"                "${OUT}" "git: initialised"
+
+# The generator keeps a .gitignore that is already there, so the first commit
+# would go through whatever that file covers. One that lets a key through gets
+# no repository at all - the overlay is still written, and the paths are named.
+print -r -- "a kept .gitignore that lets a secret through gets no repository"
+o="$(out gitleaky)"
+mkdir -p "${o}/files/config/shared/ssh/keys"
+print -r -- 'result' > "${o}/.gitignore"
+print -r -- 'PRIVATE' > "${o}/files/config/shared/ssh/keys/id_ed25519"
+run_gen --out "${o}" --config "${EXAMPLE}"
+check    "it generates"                  "${RC}" "0"
+exists   "flake.nix is written"          "${o}/flake.nix"
+check    "the .gitignore is the kept one" "$(< "${o}/.gitignore")" "result"
+[[ -e "${o}/.git" ]] && bad "no .git is left" || ok "no .git is left"
+contains "the key is named"              "${OUT}" "files/config/shared/ssh/keys/id_ed25519"
+contains "and the summary says why"      "${OUT}" "git: NOT initialised"
 
 # A repository that is already there - a remote, an unborn branch, history -
 # is left as is, and the generator commits nothing into it.

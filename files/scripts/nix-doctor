@@ -543,16 +543,26 @@ fi
 # The overlay itself. A repository with no remote is the shape the generators
 # leave and gets no drift check from `flakelab update`, which says so there. A
 # plain directory is the one shape `flakelab update` changes: it initialises it
-# (one commit, no remote) when the template .gitignore is in place, so a plain
-# directory that is still one after an update is missing that file or was never
-# updated. What IS worth a line is a remote whose branch tracks nothing - the
+# (one commit, no remote) unless lib/overlay-git.zsh refuses, and the same
+# read-only check runs here so the hint names what the update will say. What IS
+# worth a line beyond that is a remote whose branch tracks nothing - the
 # generators add origin but never push, so this is the push that never
 # happened, and until it does the remote is a name, not a copy.
 overlay="${FLAKELAB_REPO_ROOT:-}"
-if [[ -z "${overlay}" ]] || ! git -C "${overlay}" rev-parse --git-dir > /dev/null 2>&1; then
+overlay_gitignore="${FLAKELAB_OVERLAY_GITIGNORE:-${0:A:h:h:h}/templates/overlay/.gitignore}"
+if [[ -z "${overlay}" ]]; then
+  log_ok "no overlay path known (FLAKELAB_REPO_ROOT unset) - nothing to check"
+elif ! git -C "${overlay}" rev-parse --git-dir > /dev/null 2>&1; then
   log_warn "overlay is not a git checkout - no history, no drift check"
-  if [[ -n "${overlay}" && ! -f "${overlay}/.gitignore" ]]; then
-    log_hint "copy templates/overlay/.gitignore from the flakelab checkout into ${overlay}, then: flakelab update (it initialises the repository)"
+  if [[ -e "${overlay}/.git" || -L "${overlay}/.git" ]]; then
+    log_hint "${overlay}/.git exists but git cannot read it; flakelab update leaves it alone. See why: git -C ${(qq)overlay} status"
+  elif [[ ! -f "${overlay}/.gitignore" ]]; then
+    log_hint "install -m 644 ${(qq)overlay_gitignore} ${(qq)overlay}/.gitignore, then: flakelab update (it initialises the repository)"
+  elif [[ ! -f "${overlay_gitignore}" ]] || ! source "${0:A:h}/lib/overlay-git.zsh" \
+    || ! overlaygit_leaks "${overlay}" "${overlay_gitignore}"; then
+    log_hint "flakelab update   (initialises it if its .gitignore keeps the secrets out; could not check that here)"
+  elif (( ${#OVERLAYGIT_LEAKS} )); then
+    log_hint "flakelab update will refuse to initialise it: .gitignore lets ${#OVERLAYGIT_LEAKS} path(s) through that ${overlay_gitignore} keeps out of git (first: ${OVERLAYGIT_LEAKS[1]})"
   else
     log_hint "flakelab update   (initialises it: one commit, no remote)"
   fi

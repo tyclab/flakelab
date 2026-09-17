@@ -158,6 +158,7 @@ check    "and no remote"                    "$(git -C "${d}" remote | wc -l | tr
 check    "autocrlf pinned off"              "$(git -C "${d}" config core.autocrlf)" "false"
 contains "flake.nix committed"              "$(git -C "${d}" ls-files)" "flake.nix"
 contains "and the .gitignore itself"        "$(git -C "${d}" ls-files)" ".gitignore"
+contains "and the key directory's .gitkeep"  "$(git -C "${d}" ls-files)" "files/config/shared/ssh/keys/.gitkeep"
 excludes "but not the private key"          "$(git -C "${d}" ls-files)" "id_ed25519"
 excludes "nor secrets.env"                  "$(git -C "${d}" ls-files)" "secrets.env"
 excludes "nor the backup payload"           "$(git -C "${d}" ls-files)" "files/config/instances/"
@@ -197,7 +198,113 @@ check    "it switches"                      "${RC}" "0"
 contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
 contains "naming the key"                   "${OUT}" "files/config/shared/ssh/keys/id_ed25519"
 contains "and the secrets file"             "${OUT}" "secrets.env"
-check    "with .git removed again"          "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+check    "with no .git left"          "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# The measure is the template, not a list of names: whatever it ignores is a
+# leak, in whatever directory and under whatever name the .gitignore missed it.
+print -r -- "every kind of path the template ignores is refused"
+d="$(mk_plain kinds)"
+print -r -- 'secrets.env' > "${d}/.gitignore"
+mkdir -p "${d}/certs dir" "${d}/files/config/snapshots/s1" "${d}/files/config/instances/box/aws"
+print -r -- 'K' > "${d}/certs dir/tls ü.pem"
+print -r -- 'S' > "${d}/files/config/snapshots/s1/history"
+print -r -- '[saml]' > "${d}/files/config/instances/box/aws/credentials"
+print -r -- '{}' > "${d}/flake.lock"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
+contains "naming the certificate verbatim"  "${OUT}" "certs dir/tls ü.pem"
+contains "the snapshot"                     "${OUT}" "files/config/snapshots/s1/history"
+contains "the payload credentials"          "${OUT}" "files/config/instances/box/aws/credentials"
+contains "and the lock the template keeps untracked" "${OUT}" "    flake.lock"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# README "Secrets": the sops ciphertext is committed on purpose, re-included by
+# the overlay's own `!secrets/secrets.env`. It passes because it IS ciphertext -
+# the same path holding one plaintext value is a leak like any other.
+sops_dotenv() {
+  print -r -- '#ENC[AES256_GCM,data:Zm9v,iv:aXY=,tag:dGFn,type:comment]'
+  print -r -- 'GITLAB_TOKEN=ENC[AES256_GCM,data:Zm9v,iv:aXY=,tag:dGFn,type:str]'
+  print -r -- 'EMPTY='
+  print -r -- 'sops_age__list_0__map_recipient=age1example'
+  print -r -- 'sops_lastmodified=2026-09-17T00:00:00Z'
+  print -r -- 'sops_mac=ENC[AES256_GCM,data:bWFj,iv:aXY=,tag:dGFn,type:str]'
+  print -r -- 'sops_version=3.13.3'
+}
+print -r -- "a re-included sops dotenv is committed"
+d="$(mk_plain_ignored sops)"
+print -r -- '!secrets/secrets.env' >> "${d}/.gitignore"
+mkdir -p "${d}/secrets"
+sops_dotenv > "${d}/secrets/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository"
+contains "with the ciphertext in the commit" "$(git -C "${d}" ls-files)" "secrets/secrets.env"
+
+print -r -- "the same path with a plaintext value in it is not"
+d="$(mk_plain_ignored sopsplain)"
+print -r -- '!secrets/secrets.env' >> "${d}/.gitignore"
+mkdir -p "${d}/secrets"
+{ sops_dotenv; print -r -- 'BW_SESSION=hunter2' } > "${d}/secrets/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
+contains "naming the file"                  "${OUT}" "    secrets/secrets.env"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# `rev-parse --git-dir` also fails on a .git that is damaged, and that one holds
+# someone's history: it is reported and left exactly as it is, never
+# re-initialised and never removed.
+print -r -- "a .git that git cannot read is left untouched"
+d="$(mk_local damaged)"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+rm "${d}/.git/HEAD"
+before="$(cd "${d}/.git" && print -rl -- **/*(.N) | sort)"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says the .git is unreadable"  "${OUT}" "${d}/.git exists but git cannot read it"
+check    "with every file in it still there" "$(cd "${d}/.git" && print -rl -- **/*(.N) | sort)" "${before}"
+check    "and HEAD not written back"        "$([[ -e "${d}/.git/HEAD" ]] && print yes || print no)" "no"
+
+# The commit runs under the operator's global git config. Signing without a key
+# and a hooksPath that rejects are theirs to have; neither decides whether the
+# overlay gets its history.
+print -r -- "commit.gpgsign and a rejecting hooksPath do not stop the adoption"
+d="$(mk_plain_ignored signed)"
+mkdir -p "${BASE}/hooks"
+print -r -- $'#!/bin/sh\nexit 1' > "${BASE}/hooks/pre-commit"
+chmod +x "${BASE}/hooks/pre-commit"
+git config --global commit.gpgsign true
+git config --global core.hooksPath "${BASE}/hooks"
+run_update "${d}"
+git config --global --unset commit.gpgsign
+git config --global --unset core.hooksPath
+check    "it switches"                      "${RC}" "0"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
+
+# All or nothing. A git that dies between `init` and the commit must not leave a
+# .git behind: the next run would read it as a repository with uncommitted
+# changes and never adopt it. With nothing left, the next run simply tries again.
+print -r -- "a commit that fails leaves a plain directory, and the next update adopts it"
+d="$(mk_plain_ignored halfway)"
+BADGIT="${BASE}/badgit"
+mkdir -p "${BADGIT}"
+cat > "${BADGIT}/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = commit ] && { echo "fatal: scripted commit failure" >&2; exit 128; }; done
+exec "${TOOLS}/git" "\$@"
+STUB
+chmod +x "${BADGIT}/git"
+: > "${SUDO_LOG}"
+OUT="$(PATH="${SHIM}:${BADGIT}:${TOOLS}" FLAKELAB_REPO_ROOT="${d}" "${UPDATE}" 2>&1 < /dev/null)"
+RC=$?
+check    "it switches"                      "${RC}" "0"
+contains "and says it could not"            "${OUT}" "${d} could not be initialised as a repository"
+contains "with git's reason"                "${OUT}" "scripted commit failure"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+run_update "${d}"
+contains "the next update adopts it"        "${OUT}" "${d} initialised as a repository"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
 
 # A `%` is a prompt escape to print -P and a backslash an escape to print, so a
 # path carrying either used to come out rewritten: `%B` turned bold, `\t` a tab.

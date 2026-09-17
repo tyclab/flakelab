@@ -10,10 +10,17 @@ flake.lock
 
 # nix-backup payload, snapshots and runtime state: cleartext secrets included.
 files/config/instances/
-files/config/shared/
 files/config/snapshots/
 files/config/.backup.lock
 files/config/.last-restore-kept
+# shared/ the long way: git never looks inside an excluded directory, so a plain
+# `files/config/shared/` makes the .gitkeep re-include below dead. Each level is
+# excluded by content and the one path down to the key directory opened again.
+files/config/shared/*
+!files/config/shared/ssh/
+files/config/shared/ssh/*
+!files/config/shared/ssh/keys/
+files/config/shared/ssh/keys/*
 !files/config/shared/ssh/keys/.gitkeep
 
 # Migration marker written by `setup-wsl-nix.ps1 migrate`.

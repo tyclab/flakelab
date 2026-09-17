@@ -24,6 +24,12 @@ fi
 
 # The same lib the sweep scripts source, so the retry behaviour cannot drift.
 source "${0:A:h}/lib/git-net.zsh" || exit 1
+source "${0:A:h}/lib/overlay-git.zsh" || exit 1
+
+# The template .gitignore a plain-directory overlay is measured against before it
+# becomes a repository. The nix wrapper names the store copy; from a checkout it
+# sits three levels up.
+_overlay_gitignore="${FLAKELAB_OVERLAY_GITIGNORE:-${0:A:h:h:h}/templates/overlay/.gitignore}"
 
 # _url_path <filesystem path> -> the body of a `path:` flake URL. Unescaped, a
 # space makes nix read the whole string as a relative path and `#`/`?` truncate it;
@@ -219,45 +225,48 @@ _nix_wait_boot || exit 1
 # remote, the same shape `provision` and `flakelab overlay-gen` write today. It
 # is what `provision` wrote before that, and what a hand-made overlay still is.
 # Nothing is lost by it - .git is added, no file is touched - so it happens
-# without asking, terminal or not, like the pull of a clean checkout. Two things
-# stop it: no .gitignore, because the overlay holds key material, secrets.env and
-# the backup payload and only the template .gitignore keeps them out of the
-# commit; and a .gitignore that still lets one of those through, in which case
-# the repository just made is removed again rather than left holding a secret.
+# without asking, terminal or not, like the pull of a clean checkout. What stops
+# it is lib/overlay-git.zsh's to decide, and every refusal leaves the directory as
+# it was, without a .git: no .gitignore, a first commit that would carry what the
+# template .gitignore keeps out of git, or a .git already there that git cannot
+# read - which is someone's damaged history, not a plain directory.
 _nix_adopt_overlay() {
-  local _d="${_repo}" _leak
+  local _d="${_repo}" _p
+  local -i _rc=0
   if ! command -v git > /dev/null 2>&1; then
     _say cyan "ℹ ${_d} is not a git checkout — no drift check (git init it to get one)"
     return 1
   fi
-  if [[ ! -f "${_d}/.gitignore" ]]; then
-    _say yellow "⚠ ${_d} is not a git checkout and has no .gitignore — left as it is: the overlay holds key material and secrets that only the template .gitignore keeps out of a commit"
-    _say yellow "  copy templates/overlay/.gitignore from the flakelab checkout into it, then: flakelab update"
-    return 1
-  fi
-  if ! git -C "${_d}" init -q --initial-branch=main 2> /dev/null; then
-    _say yellow "⚠ git init failed in ${_d} — no drift check"
-    return 1
-  fi
-  git -C "${_d}" config core.autocrlf false
-  git -C "${_d}" add -A
-  _leak="$(git -C "${_d}" ls-files \
-    | grep -E '(^|/)(id_ed25519|id_rsa|secrets\.env|credentials)$|\.pem$|^files/config/(instances|shared|snapshots)/' \
-    | grep -v -F 'files/config/shared/ssh/keys/.gitkeep')"
-  if [[ -n "${_leak}" ]]; then
-    rm -rf "${_d}/.git"
-    _say red "✗ ${_d} not initialised: its .gitignore would let secret-shaped files into the first commit — repository removed again"
-    print -r -- "${_leak}" | sed 's/^/    /'
-    _say red "  bring .gitignore up to templates/overlay/.gitignore in the flakelab checkout, then: flakelab update"
-    return 1
-  fi
-  if ! git -C "${_d}" -c user.name=flakelab -c user.email=flakelab@localhost \
-      commit -q -m "overlay adopted by flakelab update"; then
-    _say yellow "⚠ git commit failed in ${_d} — the repository is initialised, nothing is committed"
-    return 1
-  fi
-  _say green "✓ ${_d} initialised as a repository (one commit, no remote) — hand-edits are diffs from here on"
-  return 0
+  overlaygit_adopt "${_d}" "${_overlay_gitignore}" "overlay adopted by flakelab update" || _rc=$?
+  case ${_rc} in
+    0)
+      _say green "✓ ${_d} initialised as a repository (one commit, no remote) — hand-edits are diffs from here on"
+      return 0
+      ;;
+    2)
+      _say yellow "⚠ ${_d}/.git exists but git cannot read it as a repository — left untouched, no drift check"
+      _say yellow "  see why with: git -C ${(qq)_d} status"
+      ;;
+    3)
+      _say yellow "⚠ ${_d} is not a git checkout and has no .gitignore — left as it is: the overlay holds key material and secrets that only the template .gitignore keeps out of a commit"
+      # install, not cp: the nix wrapper names a store copy, and cp would carry its
+      # read-only mode onto a file the operator is meant to edit.
+      _say yellow "  install -m 644 ${(qq)_overlay_gitignore} ${(qq)_d}/.gitignore, then: flakelab update"
+      ;;
+    4)
+      _say cyan "ℹ ${_d} is not a git checkout — no drift check (no template .gitignore at ${_overlay_gitignore} to measure a first commit against)"
+      ;;
+    5)
+      _say red "✗ ${_d} not initialised: its .gitignore would let these into the first commit, and the template .gitignore keeps them out of git"
+      for _p in "${OVERLAYGIT_LEAKS[@]}"; do print -r -- "    ${_p}"; done
+      _say red "  bring .gitignore up to ${_overlay_gitignore}, then: flakelab update (a sops-encrypted dotenv may stay re-included)"
+      ;;
+    *)
+      _say yellow "⚠ ${_d} could not be initialised as a repository — left a plain directory, the next update tries again"
+      [[ -n "${OVERLAYGIT_WHY}" ]] && print -r -- "    ${OVERLAYGIT_WHY%%$'\n'*}"
+      ;;
+  esac
+  return 1
 }
 
 # The overlay comes in three shapes, and the drift check applies to one of
