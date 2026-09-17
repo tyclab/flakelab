@@ -540,14 +540,22 @@ else
   log_hint "flakelab clone   (needs GITLAB_TOKEN, a 600 glab config and a loaded key)"
 fi
 
-# The overlay itself. Three shapes, none a fault: a plain directory and a
-# repository with no remote get no drift check from `flakelab update`, and
-# say so there. What IS worth a line is a remote whose branch tracks nothing -
-# the generators add origin but never push, so this is the push that never
+# The overlay itself. A repository with no remote is the shape the generators
+# leave and gets no drift check from `flakelab update`, which says so there. A
+# plain directory is the one shape `flakelab update` changes: it initialises it
+# (one commit, no remote) when the template .gitignore is in place, so a plain
+# directory that is still one after an update is missing that file or was never
+# updated. What IS worth a line is a remote whose branch tracks nothing - the
+# generators add origin but never push, so this is the push that never
 # happened, and until it does the remote is a name, not a copy.
 overlay="${FLAKELAB_REPO_ROOT:-}"
 if [[ -z "${overlay}" ]] || ! git -C "${overlay}" rev-parse --git-dir > /dev/null 2>&1; then
-  log_ok "overlay is not a git checkout (no drift check)"
+  log_warn "overlay is not a git checkout - no history, no drift check"
+  if [[ -n "${overlay}" && ! -f "${overlay}/.gitignore" ]]; then
+    log_hint "copy templates/overlay/.gitignore from the flakelab checkout into ${overlay}, then: flakelab update (it initialises the repository)"
+  else
+    log_hint "flakelab update   (initialises it: one commit, no remote)"
+  fi
 elif [[ -z "$(git -C "${overlay}" remote 2>/dev/null)" ]]; then
   log_ok "overlay is a repository with no remote (no drift check)"
 elif ! git -C "${overlay}" rev-parse -q --verify '@{u}' > /dev/null 2>&1; then

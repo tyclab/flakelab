@@ -131,7 +131,10 @@ overwrites an existing one, so hand-edits survive. `-Force` regenerates it from
 the config; `generate` writes it and stops, for a look (or a `nix eval`) before
 anything is imported. Either leaves the overlay as a git repository — one
 commit, no remote — so hand-edits and `-Force` regenerations are diffs to
-review, never commits made for you. `overlay_url` in the config names its
+review, never commits made for you. An overlay from before that, a plain
+directory, gets the same one commit from the next `flakelab update`, provided
+the template `.gitignore` is in it: that file is what keeps the key,
+`secrets.env` and the backup payload out of the commit. `overlay_url` in the config names its
 remote: it is added as `origin` and the clone sweep excludes the repository it
 names instead of guessing from the folder name. The push is yours to do;
 `flakelab update` checks drift only once there is a remote, and `flakelab

@@ -95,10 +95,20 @@ switches() { grep -c "nixos-rebuild switch" "${SUDO_LOG}" }
 
 # Fixtures: the three overlay shapes. Each has a flake.nix so the directory
 # looks like an overlay; none has a flake.lock, so the re-lock step is a no-op.
+# mk_plain has no .gitignore, so the adoption leaves it alone and the plain
+# directory stays plain; mk_plain_ignored carries the template .gitignore, the
+# shape an overlay from before the generators made repositories really has.
+GITIGNORE="${SCRIPT_DIR:h:h}/templates/overlay/.gitignore"
 mk_plain() {
   local d="${BASE}/$1"
   mkdir -p "${d}"
   print -r -- '{ }' > "${d}/flake.nix"
+  print -r -- "${d}"
+}
+mk_plain_ignored() {
+  local d
+  d="$(mk_plain "$1")"
+  cp "${GITIGNORE}" "${d}/.gitignore"
   print -r -- "${d}"
 }
 mk_local() {
@@ -122,21 +132,72 @@ mk_remote() {
 print -r -- "test-nix-update"
 
 # ---------------------------------------------------------------------------
-# 1. A plain directory switches, with the drift check named as skipped
+# 1. A plain directory switches, and becomes the repository the generators leave
 # ---------------------------------------------------------------------------
 # What `provision` left behind before the overlay became a repository, and what
 # a hand-made overlay still is. Nothing can be stale against a remote that does
-# not exist, so the switch runs and the one line says why nothing was checked.
-print -r -- "a plain directory is not a drift failure"
-d="$(mk_plain plain)"
+# not exist, so the switch runs; with the template .gitignore in place the
+# directory is adopted first - one commit, no remote - and the ignored files
+# stay out of it.
+print -r -- "a plain directory with the template .gitignore is adopted, then switches"
+d="$(mk_plain_ignored plain)"
+mkdir -p "${d}/files/config/shared/ssh/keys" "${d}/files/config/instances/box/aws"
+print -r -- 'PRIVATE' > "${d}/files/config/shared/ssh/keys/id_ed25519"
+: > "${d}/files/config/shared/ssh/keys/.gitkeep"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+print -r -- '[saml]' > "${d}/files/config/instances/box/aws/credentials"
 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 check    "exactly once"                     "$(switches)" "1"
 contains "from the overlay, as path:"       "$(< "${SUDO_LOG}")" "--flake path:${d}#default"
-contains "and says the check was skipped"   "${OUT}" "not a git checkout"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository (one commit, no remote)"
+check    "as a repository"                  "$(git -C "${d}" rev-parse --is-inside-work-tree 2>/dev/null)" "true"
+check    "on main"                          "$(git -C "${d}" branch --show-current)" "main"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD)" "1"
+check    "and no remote"                    "$(git -C "${d}" remote | wc -l | tr -d ' ')" "0"
+check    "autocrlf pinned off"              "$(git -C "${d}" config core.autocrlf)" "false"
+contains "flake.nix committed"              "$(git -C "${d}" ls-files)" "flake.nix"
+contains "and the .gitignore itself"        "$(git -C "${d}" ls-files)" ".gitignore"
+excludes "but not the private key"          "$(git -C "${d}" ls-files)" "id_ed25519"
+excludes "nor secrets.env"                  "$(git -C "${d}" ls-files)" "secrets.env"
+excludes "nor the backup payload"           "$(git -C "${d}" ls-files)" "files/config/instances/"
 excludes "with no fetch attempted"          "${OUT}" "fetch failed"
 excludes "and no origin/HEAD advice"        "${OUT}" "origin/HEAD"
 excludes "and no stale refusal"             "${OUT}" "stale"
+
+print -r -- "the second update finds a repository with no remote, not a plain directory"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says why nothing was fetched" "${OUT}" "no git remote"
+excludes "without initialising again"       "${OUT}" "initialised"
+check    "still one commit"                 "$(git -C "${d}" rev-list --count HEAD)" "1"
+
+# No .gitignore means the template never reached this overlay, and a commit of
+# everything in it would be a commit of the key: leave it plain, say what to do.
+print -r -- "a plain directory without .gitignore is left alone, and still switches"
+d="$(mk_plain bare)"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "and says it was left as it is"    "${OUT}" "${d} is not a git checkout and has no .gitignore"
+contains "naming the template to copy"      "${OUT}" "templates/overlay/.gitignore"
+check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# A .gitignore that does not cover the secrets is worse than none: the add would
+# stage them. The repository just made is removed again and the paths named.
+print -r -- "a .gitignore that lets a secret through refuses, and removes the repository again"
+d="$(mk_plain leaky)"
+print -r -- 'result' > "${d}/.gitignore"
+mkdir -p "${d}/files/config/shared/ssh/keys"
+print -r -- 'PRIVATE' > "${d}/files/config/shared/ssh/keys/id_ed25519"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
+contains "naming the key"                   "${OUT}" "files/config/shared/ssh/keys/id_ed25519"
+contains "and the secrets file"             "${OUT}" "secrets.env"
+check    "with .git removed again"          "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
 
 # A `%` is a prompt escape to print -P and a backslash an escape to print, so a
 # path carrying either used to come out rewritten: `%B` turned bold, `\t` a tab.
@@ -145,6 +206,19 @@ d="$(mk_plain 'odd%Bdir\tname')"
 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "naming the path verbatim"         "${OUT}" "${d} is not a git checkout"
+
+# Without git there is nothing to adopt with; the old one-liner stands.
+print -r -- "without git on PATH the plain directory is named as unchecked"
+d="$(mk_plain_ignored nogit)"
+NOGIT="${BASE}/nogit-tools"
+mkdir -p "${NOGIT}"
+for f in "${TOOLS}"/*(N); do [[ "${f:t}" == git ]] || ln -s "${f}" "${NOGIT}/${f:t}"; done
+: > "${SUDO_LOG}"
+OUT="$(PATH="${SHIM}:${NOGIT}" FLAKELAB_REPO_ROOT="${d}" "${UPDATE}" 2>&1 < /dev/null)"
+RC=$?
+check    "it switches"                      "${RC}" "0"
+contains "and says the check was skipped"   "${OUT}" "${d} is not a git checkout — no drift check"
+check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
 
 # ---------------------------------------------------------------------------
 # 2. A repository with no remote: local history, nothing to be behind

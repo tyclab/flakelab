@@ -215,18 +215,60 @@ _nix_wait_boot() {
 }
 _nix_wait_boot || exit 1
 
+# A plain directory becomes the repository the generators leave: one commit, no
+# remote, the same shape `provision` and `flakelab overlay-gen` write today. It
+# is what `provision` wrote before that, and what a hand-made overlay still is.
+# Nothing is lost by it - .git is added, no file is touched - so it happens
+# without asking, terminal or not, like the pull of a clean checkout. Two things
+# stop it: no .gitignore, because the overlay holds key material, secrets.env and
+# the backup payload and only the template .gitignore keeps them out of the
+# commit; and a .gitignore that still lets one of those through, in which case
+# the repository just made is removed again rather than left holding a secret.
+_nix_adopt_overlay() {
+  local _d="${_repo}" _leak
+  if ! command -v git > /dev/null 2>&1; then
+    _say cyan "ℹ ${_d} is not a git checkout — no drift check (git init it to get one)"
+    return 1
+  fi
+  if [[ ! -f "${_d}/.gitignore" ]]; then
+    _say yellow "⚠ ${_d} is not a git checkout and has no .gitignore — left as it is: the overlay holds key material and secrets that only the template .gitignore keeps out of a commit"
+    _say yellow "  copy templates/overlay/.gitignore from the flakelab checkout into it, then: flakelab update"
+    return 1
+  fi
+  if ! git -C "${_d}" init -q --initial-branch=main 2> /dev/null; then
+    _say yellow "⚠ git init failed in ${_d} — no drift check"
+    return 1
+  fi
+  git -C "${_d}" config core.autocrlf false
+  git -C "${_d}" add -A
+  _leak="$(git -C "${_d}" ls-files \
+    | grep -E '(^|/)(id_ed25519|id_rsa|secrets\.env|credentials)$|\.pem$|^files/config/(instances|shared|snapshots)/' \
+    | grep -v -F 'files/config/shared/ssh/keys/.gitkeep')"
+  if [[ -n "${_leak}" ]]; then
+    rm -rf "${_d}/.git"
+    _say red "✗ ${_d} not initialised: its .gitignore would let secret-shaped files into the first commit — repository removed again"
+    print -r -- "${_leak}" | sed 's/^/    /'
+    _say red "  bring .gitignore up to templates/overlay/.gitignore in the flakelab checkout, then: flakelab update"
+    return 1
+  fi
+  if ! git -C "${_d}" -c user.name=flakelab -c user.email=flakelab@localhost \
+      commit -q -m "overlay adopted by flakelab update"; then
+    _say yellow "⚠ git commit failed in ${_d} — the repository is initialised, nothing is committed"
+    return 1
+  fi
+  _say green "✓ ${_d} initialised as a repository (one commit, no remote) — hand-edits are diffs from here on"
+  return 0
+}
+
 # The overlay comes in three shapes, and the drift check applies to one of
-# them. A plain directory is what `provision` wrote before the overlay became
-# a repository, and what a hand-made overlay still is; a repository with no
-# remote is what the generator leaves now; the proxmox-vm bootstrap clones
-# from one with a remote. Nothing can be behind a remote that does not exist,
-# so the first two get one line and the switch - not a fetch. Uncommitted
-# changes are still worth a warning in a local repository: that is drift
-# against its own history.
+# them. A plain directory is adopted above; a repository with no remote is what
+# the generator leaves; the proxmox-vm bootstrap clones from one with a remote.
+# Nothing can be behind a remote that does not exist, so the first two get one
+# line and the switch - not a fetch. Uncommitted changes are still worth a
+# warning in a local repository: that is drift against its own history.
 _nix_repo_shape() {
   if ! git -C "${_repo}" rev-parse --git-dir > /dev/null 2>&1; then
-    _say cyan "ℹ ${_repo} is not a git checkout — no drift check (git init it to get one)"
-    return 1
+    _nix_adopt_overlay || return 1
   fi
   [[ -n "$(git -C "${_repo}" remote 2>/dev/null)" ]] && return 0
   if [[ -n "$(git -C "${_repo}" status --porcelain 2>/dev/null)" ]]; then
