@@ -560,7 +560,7 @@ elif ! git -C "${overlay}" rev-parse --git-dir > /dev/null 2>&1; then
     log_hint "install -m 644 ${(qq)overlay_gitignore} ${(qq)overlay}/.gitignore, then: flakelab update (it initialises the repository)"
   elif [[ ! -f "${overlay_gitignore}" ]] || ! source "${0:A:h}/lib/overlay-git.zsh" \
     || ! overlaygit_leaks "${overlay}" "${overlay_gitignore}"; then
-    log_hint "flakelab update   (initialises it if its .gitignore keeps the secrets out; could not check that here)"
+    log_hint "flakelab update   (initialises it if its .gitignore covers what the template keeps out of git; could not check that here)"
   elif (( ${#OVERLAYGIT_LEAKS} )); then
     log_hint "flakelab update will refuse to initialise it: .gitignore lets ${#OVERLAYGIT_LEAKS} path(s) through that ${overlay_gitignore} keeps out of git (first: ${OVERLAYGIT_LEAKS[1]})"
   else

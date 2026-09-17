@@ -13,10 +13,12 @@ _self="${0:t}"
 _say() { print -rP -- "%F{$1}${2//\%/%%}%f" }
 
 # Set by the nix wrapper; the fallback lets this run straight from a checkout.
+_repo_is_own_tree=false
 if [[ -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
   _repo="${FLAKELAB_REPO_ROOT}"
 elif [[ -f "${0:A:h:h:h}/flake.nix" ]]; then
   _repo="${0:A:h:h:h}"
+  _repo_is_own_tree=true
 else
   print -ru2 -- "${_self}: FLAKELAB_REPO_ROOT unset and no flake checkout found."
   exit 1
@@ -52,13 +54,16 @@ while (( $# )); do
       print -r -- ""
       print -r -- "  Rebuild this distro from ${_repo} after a pre-flight: fetch --all --prune,"
       print -r -- "  pull --rebase a clean checkout that is behind its remote, and refuse one"
-      print -r -- "  that is dirty or conflicts (skipped, and said so, when it is not a"
-      print -r -- "  checkout or has no remote). A branch behind the default branch is"
-      print -r -- "  warned about and, at a terminal, offered a rebase."
+      print -r -- "  that is dirty or conflicts (skipped, and said so, when it has no"
+      print -r -- "  remote). A branch behind the default branch is warned about and, at a"
+      print -r -- "  terminal, offered a rebase. An overlay that is a plain directory is"
+      print -r -- "  made a repository first - git init, one commit, no remote - unless that"
+      print -r -- "  commit would carry what the template .gitignore keeps out of git."
       print -r -- ""
       print -r -- "  --all   also run nix-clone-repos after an applied switch"
       print -r -- ""
-      print -r -- "  FLAKELAB_STALE_OK=1  rebuild the checkout as it is: behind, dirty, or unverified"
+      print -r -- "  FLAKELAB_STALE_OK=1  rebuild the checkout as it is: behind, dirty, unverified,"
+      print -r -- "                       or a plain directory that is to stay one"
       exit 0
       ;;
     *)
@@ -233,8 +238,17 @@ _nix_wait_boot || exit 1
 _nix_adopt_overlay() {
   local _d="${_repo}" _p
   local -i _rc=0
-  if ! command -v git > /dev/null 2>&1; then
+  # Three reasons to leave it plain, one line each way: no git; the tree this
+  # script itself sits in (a flakelab ZIP download, which both generators refuse
+  # to write over as well); and the operator's "as it is", which is also the way
+  # to keep an overlay plain on purpose - a folder-synced one, say, where the sync
+  # client would write conflict copies of .git internals.
+  if ! command -v git > /dev/null 2>&1 || ${_repo_is_own_tree}; then
     _say cyan "ℹ ${_d} is not a git checkout — no drift check (git init it to get one)"
+    return 1
+  fi
+  if [[ "${FLAKELAB_STALE_OK:-}" == 1 ]]; then
+    _say cyan "ℹ ${_d} is not a git checkout — FLAKELAB_STALE_OK=1, left a plain directory"
     return 1
   fi
   overlaygit_adopt "${_d}" "${_overlay_gitignore}" "overlay adopted by flakelab update" || _rc=$?
@@ -253,13 +267,20 @@ _nix_adopt_overlay() {
       # read-only mode onto a file the operator is meant to edit.
       _say yellow "  install -m 644 ${(qq)_overlay_gitignore} ${(qq)_d}/.gitignore, then: flakelab update"
       ;;
+    6)
+      _say cyan "ℹ ${_d} is not a directory — no drift check"
+      ;;
     4)
       _say cyan "ℹ ${_d} is not a git checkout — no drift check (no template .gitignore at ${_overlay_gitignore} to measure a first commit against)"
       ;;
     5)
-      _say red "✗ ${_d} not initialised: its .gitignore would let these into the first commit, and the template .gitignore keeps them out of git"
-      for _p in "${OVERLAYGIT_LEAKS[@]}"; do print -r -- "    ${_p}"; done
-      _say red "  bring .gitignore up to ${_overlay_gitignore}, then: flakelab update (a sops-encrypted dotenv may stay re-included)"
+      # Yellow, not the red ✗ that stops a run everywhere else in this file: the
+      # switch goes ahead, the directory is as it was. Capped, because a payload
+      # the .gitignore missed is thousands of paths, again on every update.
+      _say yellow "⚠ ${_d} not initialised: its .gitignore would let ${#OVERLAYGIT_LEAKS} path(s) into the first commit that the template .gitignore keeps out of git"
+      for _p in "${(@)OVERLAYGIT_LEAKS[1,20]}"; do print -r -- "    ${_p}"; done
+      (( ${#OVERLAYGIT_LEAKS} > 20 )) && print -r -- "    … and $(( ${#OVERLAYGIT_LEAKS} - 20 )) more"
+      _say yellow "  bring .gitignore up to ${_overlay_gitignore}, then: flakelab update (a sops-encrypted dotenv may stay re-included)"
       ;;
     *)
       _say yellow "⚠ ${_d} could not be initialised as a repository — left a plain directory, the next update tries again"
@@ -272,8 +293,8 @@ _nix_adopt_overlay() {
 # The overlay comes in three shapes, and the drift check applies to one of
 # them. A plain directory is adopted above; a repository with no remote is what
 # the generator leaves; the proxmox-vm bootstrap clones from one with a remote.
-# Nothing can be behind a remote that does not exist, so the first two get one
-# line and the switch - not a fetch. Uncommitted changes are still worth a
+# Nothing can be behind a remote that does not exist, so the first two get the
+# switch and a line saying so - not a fetch. Uncommitted changes are still worth a
 # warning in a local repository: that is drift against its own history.
 _nix_repo_shape() {
   if ! git -C "${_repo}" rev-parse --git-dir > /dev/null 2>&1; then

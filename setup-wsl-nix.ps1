@@ -1646,7 +1646,8 @@ function Invoke-GitBytes([string[]]$argv, [byte[]]$stdin) {
 
 # files/scripts/lib/overlay-git.zsh's overlaygit_is_sops_dotenv, line for line:
 # every line is an encrypted value or comment, an empty value, or sops's own
-# metadata, with the MAC and version present. One plaintext value fails it.
+# metadata - the keys sops writes, not any `sops_` name - with the MAC and version
+# present. One plaintext value fails it.
 function Test-SopsDotenv([string]$path) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
     $mac = $false; $ver = $false
@@ -1658,7 +1659,7 @@ function Test-SopsDotenv([string]$path) {
         $key = $line.Substring(0, $eq); $val = $line.Substring($eq + 1)
         if ($key -ceq 'sops_mac') { if ($val -cnotmatch '^ENC\[.*\]$') { return $false }; $mac = $true }
         elseif ($key -ceq 'sops_version') { if ($val -eq '') { return $false }; $ver = $true }
-        elseif ($key.StartsWith('sops_', [System.StringComparison]::Ordinal)) { }
+        elseif ($key -cmatch '^sops_(lastmodified|mac_only_encrypted|shamir_threshold|(un)?encrypted_(suffix|regex|comment_regex)|(age|pgp|kms|gcp_kms|azure_kv|hc_vault|key_groups)__.*)$') { }
         elseif ($val -ne '' -and $val -cnotmatch '^ENC\[AES256_GCM,data:.*,iv:.*,tag:.*,type:.*\]$') { return $false }
     }
     return ($mac -and $ver)
@@ -1676,7 +1677,9 @@ function Get-OverlayGitLeaks([string]$root) {
     try {
         $r = Invoke-GitBytes @('init', '-q', $probe) $null
         if ($r.ExitCode -ne 0) { return $null }
-        $r = Invoke-GitBytes @("--git-dir=$probe\.git", "--work-tree=$root", '-c', 'core.quotePath=false',
+        # -C, with the work tree as `.`: ls-files prints paths relative to the directory
+        # git runs in and only below it, and this process's directory is the console's.
+        $r = Invoke-GitBytes @('-C', $root, "--git-dir=$probe\.git", '--work-tree=.', '-c', 'core.quotePath=false',
             'ls-files', '-o', '--exclude-standard', '-z') $null
         if ($r.ExitCode -ne 0) { return $null }
         $result = [pscustomobject]@{ Candidates = $r.Bytes; Leaks = @() }
@@ -1689,7 +1692,8 @@ function Get-OverlayGitLeaks([string]$root) {
         # 1 is check-ignore's "none of them is ignored".
         if ($h.ExitCode -gt 1) { return $null }
         $hits = @([System.Text.Encoding]::UTF8.GetString($h.Bytes) -split "`0" | Where-Object { $_ -ne '' })
-        $result.Leaks = @($hits | Where-Object { -not (Test-SopsDotenv (Join-Path $root ($_ -replace '/', '\'))) })
+        # Only a dotenv can be the sops exception, so only those are opened.
+        $result.Leaks = @($hits | Where-Object { -not ($_ -like '*.env' -and (Test-SopsDotenv (Join-Path $root ($_ -replace '/', '\')))) })
         return $result
     }
     finally {
@@ -1724,7 +1728,8 @@ function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
         if ($null -eq $check) { Warn "could not list what a first commit in $root would carry - the overlay is written, the repository is not"; return }
         if ($check.Leaks.Count -gt 0) {
             Warn "$root is NOT initialised as a repository: its .gitignore would let these into the first commit, and the template keeps them out of git"
-            $check.Leaks | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
+            $check.Leaks | Select-Object -First 20 | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
+            if ($check.Leaks.Count -gt 20) { Write-Host "      ... and $($check.Leaks.Count - 20) more" -ForegroundColor Yellow }
             Warn "bring $root\.gitignore up to $TemplateWin\.gitignore and rerun, or let 'flakelab update' initialise it afterwards"
             return
         }

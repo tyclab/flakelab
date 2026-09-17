@@ -22,9 +22,12 @@ typeset -g OVERLAYGIT_WHY=""
 # writes for a dotenv: an encrypted value or comment, an empty value, or sops's
 # own metadata, with the MAC and version present. A plaintext value anywhere
 # fails, a `_unencrypted` key included: that suffix is sops's contract, and this
-# is about what reaches a commit. `sops_` is trusted as a prefix rather than
-# listed, so a new sops release does not turn into a refusal.
+# is about what reaches a commit. The metadata keys are the ones sops writes -
+# its settings and one `__`-flattened block per key service - not any `sops_`
+# name, or `sops_token=<plaintext>` would ride through the one deliberate
+# exception. A key service sops grows later is a refusal until it is added here.
 overlaygit_is_sops_dotenv() {
+  setopt localoptions extendedglob
   local _f="$1" _line _val
   local -i _mac=0 _ver=0
   [[ -f "${_f}" && -r "${_f}" ]] || return 1
@@ -40,7 +43,9 @@ overlaygit_is_sops_dotenv() {
     case "${_line%%=*}" in
       sops_mac) [[ "${_val}" == 'ENC['*']' ]] || return 1; _mac=1 ;;
       sops_version) [[ -n "${_val}" ]] || return 1; _ver=1 ;;
-      sops_*) ;;
+      sops_lastmodified|sops_mac_only_encrypted|sops_shamir_threshold) ;;
+      sops_(un|)encrypted_(suffix|regex|comment_regex)) ;;
+      sops_(age|pgp|kms|gcp_kms|azure_kv|hc_vault|key_groups)__*) ;;
       *) [[ -z "${_val}" || "${_val}" == 'ENC[AES256_GCM,data:'*',iv:'*',tag:'*',type:'*']' ]] || return 1 ;;
     esac
   done < "${_f}"
@@ -61,9 +66,15 @@ overlaygit_leaks() {
   _probe="$(mktemp -d)" || { OVERLAYGIT_WHY="mktemp failed"; return 1 }
   {
     git init -q "${_probe}" 2> /dev/null || { OVERLAYGIT_WHY="git init of the scratch repository failed"; return 1 }
-    _raw="$(git --git-dir="${_probe}/.git" --work-tree="${_d}" -c core.quotePath=false \
-      ls-files -o --exclude-standard -z 2>&1)" \
-      || { OVERLAYGIT_WHY="listing ${_d} failed: ${_raw}"; return 1 }
+    # -C, with the work tree as `.`: ls-files prints paths relative to the directory
+    # git runs in and only below it, so from a caller standing inside the overlay
+    # the list shrank to that subtree - named from there, matching nothing later.
+    # stderr goes to a file, never into the capture: git warns on a SUCCESSFUL
+    # listing too (a directory it cannot open), and folded into NUL-separated
+    # data the warning becomes part of the first path.
+    _raw="$(git -C "${_d}" --git-dir="${_probe}/.git" --work-tree=. -c core.quotePath=false \
+      ls-files -o --exclude-standard -z 2> "${_probe}/err")" \
+      || { OVERLAYGIT_WHY="listing ${_d} failed: $(< "${_probe}/err")"; return 1 }
     OVERLAYGIT_CANDIDATES=(${(0)_raw})
     (( ${#OVERLAYGIT_CANDIDATES} )) || return 0
     # The template alone decides here: as the scratch repository's info/exclude,
@@ -71,12 +82,15 @@ overlaygit_leaks() {
     mkdir -p "${_probe}/.git/info" && cp -- "${_tpl}" "${_probe}/.git/info/exclude" \
       || { OVERLAYGIT_WHY="cannot read ${_tpl}"; return 1 }
     _raw="$(print -rN -- "${OVERLAYGIT_CANDIDATES[@]}" \
-      | git -C "${_probe}" -c core.quotePath=false check-ignore --no-index --stdin -z 2>&1)" || _rc=$?
+      | git -C "${_probe}" -c core.quotePath=false check-ignore --no-index --stdin -z 2> "${_probe}/err")" || _rc=$?
     # 1 is check-ignore's "none of them is ignored".
-    (( _rc <= 1 )) || { OVERLAYGIT_WHY="check-ignore failed: ${_raw}"; return 1 }
+    (( _rc <= 1 )) || { OVERLAYGIT_WHY="check-ignore failed: $(< "${_probe}/err")"; return 1 }
     _hits=(${(0)_raw})
+    # Only a dotenv can be the sops exception, so only those are opened: a payload
+    # the .gitignore missed is thousands of hits, on a 9p mount, on every update.
     for _p in "${_hits[@]}"; do
-      overlaygit_is_sops_dotenv "${_d}/${_p}" || OVERLAYGIT_LEAKS+=("${_p}")
+      [[ "${_p:t}" == *.env ]] && overlaygit_is_sops_dotenv "${_d}/${_p}" && continue
+      OVERLAYGIT_LEAKS+=("${_p}")
     done
     return 0
   } always {
@@ -91,6 +105,7 @@ overlaygit_leaks() {
 #   3  no <dir>/.gitignore
 #   4  no template to measure against
 #   5  OVERLAYGIT_LEAKS holds what the first commit would have carried
+#   6  <dir> is not a directory - a mount that is not up, not an overlay to adopt
 # All or nothing: <dir> ends up with the finished repository or with no .git at
 # all, an interrupt included, because a half-made one reads as "a repository with
 # uncommitted changes" to every later run and is never adopted again. Only what
@@ -102,6 +117,7 @@ overlaygit_adopt() {
   setopt localoptions localtraps
   local _d="$1" _tpl="$2" _msg="$3" _out
   OVERLAYGIT_LEAKS=() OVERLAYGIT_WHY=""
+  [[ -n "${_d}" && -d "${_d}" ]] || return 6
   [[ -e "${_d}/.git" || -L "${_d}/.git" ]] && return 2
   [[ -f "${_d}/.gitignore" ]] || return 3
   [[ -f "${_tpl}" ]] || return 4

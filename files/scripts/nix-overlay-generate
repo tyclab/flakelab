@@ -941,7 +941,8 @@ else
       ;;
     5)
       warn "not initialising a repository: the kept .gitignore would let these into the first commit, and the template keeps them out of git"
-      for _f in "${OVERLAYGIT_LEAKS[@]}"; do warn "  ${_f}"; done
+      for _f in "${(@)OVERLAYGIT_LEAKS[1,20]}"; do warn "  ${_f}"; done
+      (( ${#OVERLAYGIT_LEAKS} > 20 )) && warn "  … and $(( ${#OVERLAYGIT_LEAKS} - 20 )) more"
       _git_note="NOT initialised - bring .gitignore up to ${_template}/.gitignore and run this again (${#OVERLAYGIT_LEAKS} path(s) named above)"
       ;;
     *)

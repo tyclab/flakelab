@@ -83,12 +83,16 @@ export SUDO_LOG="${BASE}/sudo.log"
 typeset -i RC=0
 OUT=""
 # run_update <overlay> <args...> - sets OUT and RC; stdin is /dev/null so the
-# script sees no terminal.
+# script sees no terminal. RUN_CWD starts it from another directory and RUN_PATH
+# puts a directory in front of the tools, for the cases about where the operator
+# stands and about a git that misbehaves.
+RUN_CWD="" RUN_PATH=""
 run_update() {
   local repo="$1"
   shift
   : > "${SUDO_LOG}"
-  OUT="$(PATH="${SHIM}:${TOOLS}" FLAKELAB_REPO_ROOT="${repo}" "${UPDATE}" "$@" 2>&1 < /dev/null)"
+  OUT="$(cd "${RUN_CWD:-${PWD}}" && PATH="${SHIM}:${RUN_PATH:+${RUN_PATH}:}${TOOLS}" \
+    FLAKELAB_REPO_ROOT="${repo}" "${UPDATE}" "$@" 2>&1 < /dev/null)"
   RC=$?
 }
 switches() { grep -c "nixos-rebuild switch" "${SUDO_LOG}" }
@@ -146,11 +150,16 @@ print -r -- 'PRIVATE' > "${d}/files/config/shared/ssh/keys/id_ed25519"
 : > "${d}/files/config/shared/ssh/keys/.gitkeep"
 print -r -- 'TOKEN=x' > "${d}/secrets.env"
 print -r -- '[saml]' > "${d}/files/config/instances/box/aws/credentials"
+# The suite's own global config says main and names an identity, so with it in
+# place neither --initial-branch nor the -c identity could be seen missing.
+git config --global init.defaultBranch trunk
 run_update "${d}"
+git config --global init.defaultBranch main
 check    "it switches"                      "${RC}" "0"
 check    "exactly once"                     "$(switches)" "1"
 contains "from the overlay, as path:"       "$(< "${SUDO_LOG}")" "--flake path:${d}#default"
 contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository (one commit, no remote)"
+check    "committed as flakelab, not as the operator" "$(git -C "${d}" log -1 --format='%an <%ae>')" "flakelab <flakelab@localhost>"
 check    "as a repository"                  "$(git -C "${d}" rev-parse --is-inside-work-tree 2>/dev/null)" "true"
 check    "on main"                          "$(git -C "${d}" branch --show-current)" "main"
 check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD)" "1"
@@ -172,6 +181,31 @@ check    "it switches"                      "${RC}" "0"
 contains "and says why nothing was fetched" "${OUT}" "no git remote"
 excludes "without initialising again"       "${OUT}" "initialised"
 check    "still one commit"                 "$(git -C "${d}" rev-list --count HEAD)" "1"
+
+# ls-files answers relative to the directory git runs in, and only below it. An
+# operator standing inside the overlay is the ordinary case, so the list has to
+# be the whole overlay from there too - and a leak above them still a leak.
+print -r -- "an update started from inside the overlay adopts the whole of it"
+d="$(mk_plain_ignored inside)"
+mkdir -p "${d}/notes/deeper"
+print -r -- 'n' > "${d}/notes/deeper/todo.txt"
+RUN_CWD="${d}/notes/deeper" run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository"
+check    "with all three files in the one commit" "$(git -C "${d}" ls-files | wc -l | tr -d ' ')" "3"
+contains "the one below the starting directory by its full path" "$(git -C "${d}" ls-files)" "notes/deeper/todo.txt"
+contains "and the ones above it"            "$(git -C "${d}" ls-files)" "flake.nix"
+check    "and a clean tree"                 "$(git -C "${d}" status --porcelain)" ""
+
+print -r -- "and a leak above the directory it was started from is still refused"
+d="$(mk_plain inside-leaky)"
+print -r -- 'result' > "${d}/.gitignore"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+mkdir -p "${d}/notes"
+RUN_CWD="${d}/notes" run_update "${d}"
+contains "it refuses the adoption"          "${OUT}" "${d} not initialised"
+contains "naming the secrets file"          "${OUT}" "    secrets.env"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
 
 # No .gitignore means the template never reached this overlay, and a commit of
 # everything in it would be a commit of the key: leave it plain, say what to do.
@@ -295,9 +329,7 @@ for a in "\$@"; do [ "\$a" = commit ] && { echo "fatal: scripted commit failure"
 exec "${TOOLS}/git" "\$@"
 STUB
 chmod +x "${BADGIT}/git"
-: > "${SUDO_LOG}"
-OUT="$(PATH="${SHIM}:${BADGIT}:${TOOLS}" FLAKELAB_REPO_ROOT="${d}" "${UPDATE}" 2>&1 < /dev/null)"
-RC=$?
+RUN_PATH="${BADGIT}" run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "and says it could not"            "${OUT}" "${d} could not be initialised as a repository"
 contains "with git's reason"                "${OUT}" "scripted commit failure"
@@ -305,6 +337,99 @@ check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes
 run_update "${d}"
 contains "the next update adopts it"        "${OUT}" "${d} initialised as a repository"
 check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
+
+# git warns on a SUCCESSFUL listing too - a directory it cannot open - and the
+# list is NUL-separated data: a warning folded into it is the first path's name.
+print -r -- "a directory git cannot open does not end up in the path list"
+d="$(mk_plain_ignored unreadable)"
+mkdir -p "${d}/locked"
+chmod 000 "${d}/locked"
+run_update "${d}"
+chmod 755 "${d}/locked"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository"
+excludes "with no pathspec made of a warning" "${OUT}" "pathspec"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
+
+# "Rebuild the checkout as it is" includes a plain directory staying one, which
+# is also how an overlay is kept plain on purpose.
+print -r -- "FLAKELAB_STALE_OK=1 leaves a plain directory plain"
+d="$(mk_plain_ignored asitis)"
+FLAKELAB_STALE_OK=1 run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was left"             "${OUT}" "${d} is not a git checkout — FLAKELAB_STALE_OK=1, left a plain directory"
+check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# The refusal is not a stop - the switch runs - so it is not the red ✗ every
+# stopping condition in the script uses, and it stays readable when the
+# .gitignore missed a whole payload.
+print -r -- "a refusal is a warning, and a long list is capped"
+d="$(mk_plain manyleaks)"
+print -r -- 'result' > "${d}/.gitignore"
+mkdir -p "${d}/files/config/instances/box"
+for i in {01..25}; do print -r -- 'x' > "${d}/files/config/instances/box/f${i}"; done
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it warns"                         "${OUT}" "⚠ ${d} not initialised"
+excludes "without the stopping marker"      "${OUT}" "✗"
+contains "says how many"                    "${OUT}" "would let 25 path(s)"
+contains "names the twentieth"              "${OUT}" "files/config/instances/box/f20"
+excludes "but not the twenty-first"         "${OUT}" "files/config/instances/box/f21"
+contains "and counts the rest"              "${OUT}" "… and 5 more"
+
+# An overlay on a mount that is not up is not a directory without a .gitignore.
+print -r -- "a missing overlay directory is named as that"
+run_update "${BASE}/not-there"
+contains "it says so"                       "${OUT}" "${BASE}/not-there is not a directory"
+excludes "without an install hint into it"  "${OUT}" "install -m 644"
+
+# With FLAKELAB_REPO_ROOT unset the script rebuilds the tree it sits in - a
+# flakelab checkout, or a ZIP of one with no .git. That tree is flakelab, not an
+# overlay: both generators refuse to write over it, and the update does not
+# adopt it.
+print -r -- "the tree the script itself sits in is never adopted"
+OWN="${BASE}/own-tree"
+mkdir -p "${OWN}/files/scripts/lib" "${OWN}/templates/overlay"
+cp "${UPDATE}" "${OWN}/files/scripts/"
+cp "${SCRIPT_DIR}"/lib/*.zsh "${OWN}/files/scripts/lib/"
+cp "${GITIGNORE}" "${OWN}/templates/overlay/.gitignore"
+cp "${GITIGNORE}" "${OWN}/.gitignore"
+print -r -- '{ }' > "${OWN}/flake.nix"
+: > "${SUDO_LOG}"
+OUT="$(env -u FLAKELAB_REPO_ROOT PATH="${SHIM}:${TOOLS}" "${OWN}/files/scripts/nix-update" 2>&1 < /dev/null)"
+RC=$?
+check    "it switches"                      "${RC}" "0"
+contains "and says it is not a checkout"    "${OUT}" "${OWN} is not a git checkout — no drift check"
+check    "no repository was made"           "$([[ -e "${OWN}/.git" ]] && print yes || print no)" "no"
+
+# The sops exception lists the metadata keys sops writes; any other sops_ name
+# is a value like the rest, and plaintext in it is a leak.
+print -r -- "a plaintext value under a made-up sops_ key is not ciphertext"
+d="$(mk_plain_ignored sopskey)"
+print -r -- '!secrets/secrets.env' >> "${d}/.gitignore"
+mkdir -p "${d}/secrets"
+{ sops_dotenv; print -r -- 'sops_token=glpat-plaintext' } > "${d}/secrets/secrets.env"
+run_update "${d}"
+contains "it refuses the adoption"          "${OUT}" "${d} not initialised"
+contains "naming the file"                  "${OUT}" "    secrets/secrets.env"
+
+# What the template itself must cover, since it is the measure: the provisioning
+# config setup-wsl-nix.ps1 parks in the overlay carries tokens in cleartext, and
+# a key is a key under any of ssh-keygen's names - its .pub is not.
+print -r -- "the template keeps the provisioning config and every key name out"
+d="$(mk_plain_ignored tplcover)"
+mkdir -p "${d}/files/config" "${d}/keys"
+print -r -- 'custom_env_vars: { GITLAB_TOKEN: x }' > "${d}/files/config/user_data.yaml"
+print -r -- 'PRIVATE' > "${d}/keys/id_ecdsa"
+print -r -- 'ssh-ecdsa AAAA' > "${d}/keys/id_ecdsa.pub"
+print -r -- 'TOKEN=x' > "${d}/.env"
+run_update "${d}"
+contains "it is initialised"                "${OUT}" "${d} initialised as a repository"
+tracked="$(git -C "${d}" ls-files)"
+excludes "without the provisioning config"  "${tracked}" "user_data.yaml"
+excludes "without the dotenv"               "${tracked}" ".env"
+contains "with the public key"              "${tracked}" "keys/id_ecdsa.pub"
+check    "and not the private one"          "$(git -C "${d}" ls-files keys/id_ecdsa)" ""
 
 # A `%` is a prompt escape to print -P and a backslash an escape to print, so a
 # path carrying either used to come out rewritten: `%B` turned bold, `\t` a tab.
@@ -317,13 +442,13 @@ contains "naming the path verbatim"         "${OUT}" "${d} is not a git checkout
 # Without git there is nothing to adopt with; the old one-liner stands.
 print -r -- "without git on PATH the plain directory is named as unchecked"
 d="$(mk_plain_ignored nogit)"
-NOGIT="${BASE}/nogit-tools"
-mkdir -p "${NOGIT}"
-for f in "${TOOLS}"/*(N); do [[ "${f:t}" == git ]] || ln -s "${f}" "${NOGIT}/${f:t}"; done
-: > "${SUDO_LOG}"
-OUT="$(PATH="${SHIM}:${NOGIT}" FLAKELAB_REPO_ROOT="${d}" "${UPDATE}" 2>&1 < /dev/null)"
-RC=$?
+# The one link is moved aside for the run: a second copy of the tool farm is
+# thousands of `ln` processes for the sake of leaving one name out.
+mv "${TOOLS}/git" "${BASE}/git.aside"
+run_update "${d}"
+mv "${BASE}/git.aside" "${TOOLS}/git"
 check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
 contains "and says the check was skipped"   "${OUT}" "${d} is not a git checkout — no drift check"
 check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
 

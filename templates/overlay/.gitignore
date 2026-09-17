@@ -1,8 +1,17 @@
-# Key material and secrets never belong in git, even in a private overlay.
-id_ed25519
-id_rsa
+# Key material and secrets never belong in git, even in a private overlay. This
+# file is also what `flakelab update` and the generators measure a first commit
+# against, so a kind of secret missing here is one that commit may carry.
+id_*
+!id_*.pub
 *.pem
 secrets.env
+.env
+.env.*
+# A filled-in provisioning config carries the same tokens in cleartext, and
+# setup-wsl-nix.ps1 parks it here.
+files/config/user_data.yaml
+# Per-machine Claude Code settings: permission rules quote whole command lines.
+.claude/settings.local.json
 
 # A committed lock pins a local flakelab checkout's NAR hash, and the next change
 # over there aborts the build with "NAR hash mismatch".
