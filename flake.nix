@@ -358,7 +358,8 @@
           let
             wsl = self.nixosConfigurations.default.config;
             vm = self.nixosConfigurations.proxmox-vm.config;
-            hasPkg = cfg: name: builtins.any (p: (p.pname or p.name or "") == name) cfg.environment.systemPackages;
+            hasPkg =
+              cfg: name: builtins.any (p: (p.pname or p.name or "") == name) cfg.environment.systemPackages;
           in
           assert wsl.flakelab.target == "wsl";
           assert wsl.wsl.enable;
