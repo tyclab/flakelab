@@ -83,22 +83,36 @@ export SUDO_LOG="${BASE}/sudo.log"
 typeset -i RC=0
 OUT=""
 # run_update <overlay> <args...> - sets OUT and RC; stdin is /dev/null so the
-# script sees no terminal.
+# script sees no terminal. RUN_CWD starts it from another directory and RUN_PATH
+# puts a directory in front of the tools, for the cases about where the operator
+# stands and about a git that misbehaves.
+RUN_CWD="" RUN_PATH=""
 run_update() {
   local repo="$1"
   shift
   : > "${SUDO_LOG}"
-  OUT="$(PATH="${SHIM}:${TOOLS}" FLAKELAB_REPO_ROOT="${repo}" "${UPDATE}" "$@" 2>&1 < /dev/null)"
+  OUT="$(cd "${RUN_CWD:-${PWD}}" && PATH="${SHIM}:${RUN_PATH:+${RUN_PATH}:}${TOOLS}" \
+    FLAKELAB_REPO_ROOT="${repo}" "${UPDATE}" "$@" 2>&1 < /dev/null)"
   RC=$?
 }
 switches() { grep -c "nixos-rebuild switch" "${SUDO_LOG}" }
 
 # Fixtures: the three overlay shapes. Each has a flake.nix so the directory
 # looks like an overlay; none has a flake.lock, so the re-lock step is a no-op.
+# mk_plain has no .gitignore, so the adoption leaves it alone and the plain
+# directory stays plain; mk_plain_ignored carries the template .gitignore, the
+# shape an overlay from before the generators made repositories really has.
+GITIGNORE="${SCRIPT_DIR:h:h}/templates/overlay/.gitignore"
 mk_plain() {
   local d="${BASE}/$1"
   mkdir -p "${d}"
   print -r -- '{ }' > "${d}/flake.nix"
+  print -r -- "${d}"
+}
+mk_plain_ignored() {
+  local d
+  d="$(mk_plain "$1")"
+  cp "${GITIGNORE}" "${d}/.gitignore"
   print -r -- "${d}"
 }
 mk_local() {
@@ -122,21 +136,300 @@ mk_remote() {
 print -r -- "test-nix-update"
 
 # ---------------------------------------------------------------------------
-# 1. A plain directory switches, with the drift check named as skipped
+# 1. A plain directory switches, and becomes the repository the generators leave
 # ---------------------------------------------------------------------------
 # What `provision` left behind before the overlay became a repository, and what
 # a hand-made overlay still is. Nothing can be stale against a remote that does
-# not exist, so the switch runs and the one line says why nothing was checked.
-print -r -- "a plain directory is not a drift failure"
-d="$(mk_plain plain)"
+# not exist, so the switch runs; with the template .gitignore in place the
+# directory is adopted first - one commit, no remote - and the ignored files
+# stay out of it.
+print -r -- "a plain directory with the template .gitignore is adopted, then switches"
+d="$(mk_plain_ignored plain)"
+mkdir -p "${d}/files/config/shared/ssh/keys" "${d}/files/config/instances/box/aws"
+print -r -- 'PRIVATE' > "${d}/files/config/shared/ssh/keys/id_ed25519"
+: > "${d}/files/config/shared/ssh/keys/.gitkeep"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+print -r -- '[saml]' > "${d}/files/config/instances/box/aws/credentials"
+# The suite's own global config says main and names an identity, so with it in
+# place neither --initial-branch nor the -c identity could be seen missing.
+git config --global init.defaultBranch trunk
 run_update "${d}"
+git config --global init.defaultBranch main
 check    "it switches"                      "${RC}" "0"
 check    "exactly once"                     "$(switches)" "1"
 contains "from the overlay, as path:"       "$(< "${SUDO_LOG}")" "--flake path:${d}#default"
-contains "and says the check was skipped"   "${OUT}" "not a git checkout"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository (one commit, no remote)"
+check    "committed as flakelab, not as the operator" "$(git -C "${d}" log -1 --format='%an <%ae>')" "flakelab <flakelab@localhost>"
+check    "as a repository"                  "$(git -C "${d}" rev-parse --is-inside-work-tree 2>/dev/null)" "true"
+check    "on main"                          "$(git -C "${d}" branch --show-current)" "main"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD)" "1"
+check    "and no remote"                    "$(git -C "${d}" remote | wc -l | tr -d ' ')" "0"
+check    "autocrlf pinned off"              "$(git -C "${d}" config core.autocrlf)" "false"
+contains "flake.nix committed"              "$(git -C "${d}" ls-files)" "flake.nix"
+contains "and the .gitignore itself"        "$(git -C "${d}" ls-files)" ".gitignore"
+contains "and the key directory's .gitkeep"  "$(git -C "${d}" ls-files)" "files/config/shared/ssh/keys/.gitkeep"
+excludes "but not the private key"          "$(git -C "${d}" ls-files)" "id_ed25519"
+excludes "nor secrets.env"                  "$(git -C "${d}" ls-files)" "secrets.env"
+excludes "nor the backup payload"           "$(git -C "${d}" ls-files)" "files/config/instances/"
 excludes "with no fetch attempted"          "${OUT}" "fetch failed"
 excludes "and no origin/HEAD advice"        "${OUT}" "origin/HEAD"
 excludes "and no stale refusal"             "${OUT}" "stale"
+
+print -r -- "the second update finds a repository with no remote, not a plain directory"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says why nothing was fetched" "${OUT}" "no git remote"
+excludes "without initialising again"       "${OUT}" "initialised"
+check    "still one commit"                 "$(git -C "${d}" rev-list --count HEAD)" "1"
+
+# ls-files answers relative to the directory git runs in, and only below it. An
+# operator standing inside the overlay is the ordinary case, so the list has to
+# be the whole overlay from there too - and a leak above them still a leak.
+print -r -- "an update started from inside the overlay adopts the whole of it"
+d="$(mk_plain_ignored inside)"
+mkdir -p "${d}/notes/deeper"
+print -r -- 'n' > "${d}/notes/deeper/todo.txt"
+RUN_CWD="${d}/notes/deeper" run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository"
+check    "with all three files in the one commit" "$(git -C "${d}" ls-files | wc -l | tr -d ' ')" "3"
+contains "the one below the starting directory by its full path" "$(git -C "${d}" ls-files)" "notes/deeper/todo.txt"
+contains "and the ones above it"            "$(git -C "${d}" ls-files)" "flake.nix"
+check    "and a clean tree"                 "$(git -C "${d}" status --porcelain)" ""
+
+print -r -- "and a leak above the directory it was started from is still refused"
+d="$(mk_plain inside-leaky)"
+print -r -- 'result' > "${d}/.gitignore"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+mkdir -p "${d}/notes"
+RUN_CWD="${d}/notes" run_update "${d}"
+contains "it refuses the adoption"          "${OUT}" "${d} not initialised"
+contains "naming the secrets file"          "${OUT}" "    secrets.env"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# No .gitignore means the template never reached this overlay, and a commit of
+# everything in it would be a commit of the key: leave it plain, say what to do.
+print -r -- "a plain directory without .gitignore is left alone, and still switches"
+d="$(mk_plain bare)"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "and says it was left as it is"    "${OUT}" "${d} is not a git checkout and has no .gitignore"
+contains "naming the template to copy"      "${OUT}" "templates/overlay/.gitignore"
+check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# A .gitignore that does not cover the secrets is worse than none: the add would
+# stage them. The repository just made is removed again and the paths named.
+print -r -- "a .gitignore that lets a secret through refuses, and removes the repository again"
+d="$(mk_plain leaky)"
+print -r -- 'result' > "${d}/.gitignore"
+mkdir -p "${d}/files/config/shared/ssh/keys"
+print -r -- 'PRIVATE' > "${d}/files/config/shared/ssh/keys/id_ed25519"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
+contains "naming the key"                   "${OUT}" "files/config/shared/ssh/keys/id_ed25519"
+contains "and the secrets file"             "${OUT}" "secrets.env"
+check    "with no .git left"          "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# The measure is the template, not a list of names: whatever it ignores is a
+# leak, in whatever directory and under whatever name the .gitignore missed it.
+print -r -- "every kind of path the template ignores is refused"
+d="$(mk_plain kinds)"
+print -r -- 'secrets.env' > "${d}/.gitignore"
+mkdir -p "${d}/certs dir" "${d}/files/config/snapshots/s1" "${d}/files/config/instances/box/aws"
+print -r -- 'K' > "${d}/certs dir/tls ü.pem"
+print -r -- 'S' > "${d}/files/config/snapshots/s1/history"
+print -r -- '[saml]' > "${d}/files/config/instances/box/aws/credentials"
+print -r -- '{}' > "${d}/flake.lock"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
+contains "naming the certificate verbatim"  "${OUT}" "certs dir/tls ü.pem"
+contains "the snapshot"                     "${OUT}" "files/config/snapshots/s1/history"
+contains "the payload credentials"          "${OUT}" "files/config/instances/box/aws/credentials"
+contains "and the lock the template keeps untracked" "${OUT}" "    flake.lock"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# README "Secrets": the sops ciphertext is committed on purpose, re-included by
+# the overlay's own `!secrets/secrets.env`. It passes because it IS ciphertext -
+# the same path holding one plaintext value is a leak like any other.
+sops_dotenv() {
+  print -r -- '#ENC[AES256_GCM,data:Zm9v,iv:aXY=,tag:dGFn,type:comment]'
+  print -r -- 'GITLAB_TOKEN=ENC[AES256_GCM,data:Zm9v,iv:aXY=,tag:dGFn,type:str]'
+  print -r -- 'EMPTY='
+  print -r -- 'sops_age__list_0__map_recipient=age1example'
+  print -r -- 'sops_lastmodified=2026-09-17T00:00:00Z'
+  print -r -- 'sops_mac=ENC[AES256_GCM,data:bWFj,iv:aXY=,tag:dGFn,type:str]'
+  print -r -- 'sops_version=3.13.3'
+}
+print -r -- "a re-included sops dotenv is committed"
+d="$(mk_plain_ignored sops)"
+print -r -- '!secrets/secrets.env' >> "${d}/.gitignore"
+mkdir -p "${d}/secrets"
+sops_dotenv > "${d}/secrets/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository"
+contains "with the ciphertext in the commit" "$(git -C "${d}" ls-files)" "secrets/secrets.env"
+
+print -r -- "the same path with a plaintext value in it is not"
+d="$(mk_plain_ignored sopsplain)"
+print -r -- '!secrets/secrets.env' >> "${d}/.gitignore"
+mkdir -p "${d}/secrets"
+{ sops_dotenv; print -r -- 'BW_SESSION=hunter2' } > "${d}/secrets/secrets.env"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and refuses the adoption"         "${OUT}" "${d} not initialised"
+contains "naming the file"                  "${OUT}" "    secrets/secrets.env"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# `rev-parse --git-dir` also fails on a .git that is damaged, and that one holds
+# someone's history: it is reported and left exactly as it is, never
+# re-initialised and never removed.
+print -r -- "a .git that git cannot read is left untouched"
+d="$(mk_local damaged)"
+print -r -- 'TOKEN=x' > "${d}/secrets.env"
+rm "${d}/.git/HEAD"
+before="$(cd "${d}/.git" && print -rl -- **/*(.N) | sort)"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says the .git is unreadable"  "${OUT}" "${d}/.git exists but git cannot read it"
+check    "with every file in it still there" "$(cd "${d}/.git" && print -rl -- **/*(.N) | sort)" "${before}"
+check    "and HEAD not written back"        "$([[ -e "${d}/.git/HEAD" ]] && print yes || print no)" "no"
+
+# The commit runs under the operator's global git config. Signing without a key
+# and a hooksPath that rejects are theirs to have; neither decides whether the
+# overlay gets its history.
+print -r -- "commit.gpgsign and a rejecting hooksPath do not stop the adoption"
+d="$(mk_plain_ignored signed)"
+mkdir -p "${BASE}/hooks"
+print -r -- $'#!/bin/sh\nexit 1' > "${BASE}/hooks/pre-commit"
+chmod +x "${BASE}/hooks/pre-commit"
+git config --global commit.gpgsign true
+git config --global core.hooksPath "${BASE}/hooks"
+run_update "${d}"
+git config --global --unset commit.gpgsign
+git config --global --unset core.hooksPath
+check    "it switches"                      "${RC}" "0"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
+
+# All or nothing. A git that dies between `init` and the commit must not leave a
+# .git behind: the next run would read it as a repository with uncommitted
+# changes and never adopt it. With nothing left, the next run simply tries again.
+print -r -- "a commit that fails leaves a plain directory, and the next update adopts it"
+d="$(mk_plain_ignored halfway)"
+BADGIT="${BASE}/badgit"
+mkdir -p "${BADGIT}"
+cat > "${BADGIT}/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = commit ] && { echo "fatal: scripted commit failure" >&2; exit 128; }; done
+exec "${TOOLS}/git" "\$@"
+STUB
+chmod +x "${BADGIT}/git"
+RUN_PATH="${BADGIT}" run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it could not"            "${OUT}" "${d} could not be initialised as a repository"
+contains "with git's reason"                "${OUT}" "scripted commit failure"
+check    "with no .git left"                "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+run_update "${d}"
+contains "the next update adopts it"        "${OUT}" "${d} initialised as a repository"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
+
+# git warns on a SUCCESSFUL listing too - a directory it cannot open - and the
+# list is NUL-separated data: a warning folded into it is the first path's name.
+print -r -- "a directory git cannot open does not end up in the path list"
+d="$(mk_plain_ignored unreadable)"
+mkdir -p "${d}/locked"
+chmod 000 "${d}/locked"
+run_update "${d}"
+chmod 755 "${d}/locked"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was initialised"      "${OUT}" "${d} initialised as a repository"
+excludes "with no pathspec made of a warning" "${OUT}" "pathspec"
+check    "with exactly one commit"          "$(git -C "${d}" rev-list --count HEAD 2>/dev/null)" "1"
+
+# "Rebuild the checkout as it is" includes a plain directory staying one, which
+# is also how an overlay is kept plain on purpose.
+print -r -- "FLAKELAB_STALE_OK=1 leaves a plain directory plain"
+d="$(mk_plain_ignored asitis)"
+FLAKELAB_STALE_OK=1 run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "and says it was left"             "${OUT}" "${d} is not a git checkout — FLAKELAB_STALE_OK=1, left a plain directory"
+check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
+
+# The refusal is not a stop - the switch runs - so it is not the red ✗ every
+# stopping condition in the script uses, and it stays readable when the
+# .gitignore missed a whole payload.
+print -r -- "a refusal is a warning, and a long list is capped"
+d="$(mk_plain manyleaks)"
+print -r -- 'result' > "${d}/.gitignore"
+mkdir -p "${d}/files/config/instances/box"
+for i in {01..25}; do print -r -- 'x' > "${d}/files/config/instances/box/f${i}"; done
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it warns"                         "${OUT}" "⚠ ${d} not initialised"
+excludes "without the stopping marker"      "${OUT}" "✗"
+contains "says how many"                    "${OUT}" "would let 25 path(s)"
+contains "names the twentieth"              "${OUT}" "files/config/instances/box/f20"
+excludes "but not the twenty-first"         "${OUT}" "files/config/instances/box/f21"
+contains "and counts the rest"              "${OUT}" "… and 5 more"
+
+# An overlay on a mount that is not up is not a directory without a .gitignore.
+print -r -- "a missing overlay directory is named as that"
+run_update "${BASE}/not-there"
+contains "it says so"                       "${OUT}" "${BASE}/not-there is not a directory"
+excludes "without an install hint into it"  "${OUT}" "install -m 644"
+
+# With FLAKELAB_REPO_ROOT unset the script rebuilds the tree it sits in - a
+# flakelab checkout, or a ZIP of one with no .git. That tree is flakelab, not an
+# overlay: both generators refuse to write over it, and the update does not
+# adopt it.
+print -r -- "the tree the script itself sits in is never adopted"
+OWN="${BASE}/own-tree"
+mkdir -p "${OWN}/files/scripts/lib" "${OWN}/templates/overlay"
+cp "${UPDATE}" "${OWN}/files/scripts/"
+cp "${SCRIPT_DIR}"/lib/*.zsh "${OWN}/files/scripts/lib/"
+cp "${GITIGNORE}" "${OWN}/templates/overlay/.gitignore"
+cp "${GITIGNORE}" "${OWN}/.gitignore"
+print -r -- '{ }' > "${OWN}/flake.nix"
+: > "${SUDO_LOG}"
+OUT="$(env -u FLAKELAB_REPO_ROOT PATH="${SHIM}:${TOOLS}" "${OWN}/files/scripts/nix-update" 2>&1 < /dev/null)"
+RC=$?
+check    "it switches"                      "${RC}" "0"
+contains "and says it is not a checkout"    "${OUT}" "${OWN} is not a git checkout — no drift check"
+check    "no repository was made"           "$([[ -e "${OWN}/.git" ]] && print yes || print no)" "no"
+
+# The sops exception lists the metadata keys sops writes; any other sops_ name
+# is a value like the rest, and plaintext in it is a leak.
+print -r -- "a plaintext value under a made-up sops_ key is not ciphertext"
+d="$(mk_plain_ignored sopskey)"
+print -r -- '!secrets/secrets.env' >> "${d}/.gitignore"
+mkdir -p "${d}/secrets"
+{ sops_dotenv; print -r -- 'sops_token=glpat-plaintext' } > "${d}/secrets/secrets.env"
+run_update "${d}"
+contains "it refuses the adoption"          "${OUT}" "${d} not initialised"
+contains "naming the file"                  "${OUT}" "    secrets/secrets.env"
+
+# What the template itself must cover, since it is the measure: the provisioning
+# config setup-wsl-nix.ps1 parks in the overlay carries tokens in cleartext, and
+# a key is a key under any of ssh-keygen's names - its .pub is not.
+print -r -- "the template keeps the provisioning config and every key name out"
+d="$(mk_plain_ignored tplcover)"
+mkdir -p "${d}/files/config" "${d}/keys"
+print -r -- 'custom_env_vars: { GITLAB_TOKEN: x }' > "${d}/files/config/user_data.yaml"
+print -r -- 'PRIVATE' > "${d}/keys/id_ecdsa"
+print -r -- 'ssh-ecdsa AAAA' > "${d}/keys/id_ecdsa.pub"
+print -r -- 'TOKEN=x' > "${d}/.env"
+run_update "${d}"
+contains "it is initialised"                "${OUT}" "${d} initialised as a repository"
+tracked="$(git -C "${d}" ls-files)"
+excludes "without the provisioning config"  "${tracked}" "user_data.yaml"
+excludes "without the dotenv"               "${tracked}" ".env"
+contains "with the public key"              "${tracked}" "keys/id_ecdsa.pub"
+check    "and not the private one"          "$(git -C "${d}" ls-files keys/id_ecdsa)" ""
 
 # A `%` is a prompt escape to print -P and a backslash an escape to print, so a
 # path carrying either used to come out rewritten: `%B` turned bold, `\t` a tab.
@@ -145,6 +438,19 @@ d="$(mk_plain 'odd%Bdir\tname')"
 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "naming the path verbatim"         "${OUT}" "${d} is not a git checkout"
+
+# Without git there is nothing to adopt with; the old one-liner stands.
+print -r -- "without git on PATH the plain directory is named as unchecked"
+d="$(mk_plain_ignored nogit)"
+# The one link is moved aside for the run: a second copy of the tool farm is
+# thousands of `ln` processes for the sake of leaving one name out.
+mv "${TOOLS}/git" "${BASE}/git.aside"
+run_update "${d}"
+mv "${BASE}/git.aside" "${TOOLS}/git"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+contains "and says the check was skipped"   "${OUT}" "${d} is not a git checkout — no drift check"
+check    "no repository was made"           "$([[ -e "${d}/.git" ]] && print yes || print no)" "no"
 
 # ---------------------------------------------------------------------------
 # 2. A repository with no remote: local history, nothing to be behind

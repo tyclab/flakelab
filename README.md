@@ -131,12 +131,20 @@ overwrites an existing one, so hand-edits survive. `-Force` regenerates it from
 the config; `generate` writes it and stops, for a look (or a `nix eval`) before
 anything is imported. Either leaves the overlay as a git repository — one
 commit, no remote — so hand-edits and `-Force` regenerations are diffs to
-review, never commits made for you. `overlay_url` in the config names its
+review, never commits made for you. An overlay from before that, a plain
+directory, gets the same one commit from the next `flakelab update`. Every
+writer keeps a `.gitignore` that is already there, so the first commit is
+measured against the shipped template first: if it would carry anything the
+template keeps out of git - the key, `secrets.env`, the backup payload - the
+paths are named and no repository is made. The sops ciphertext you re-include
+with `!secrets/secrets.env` is the exception, as long as it is ciphertext
+throughout. `overlay_url` in the config names its
 remote: it is added as `origin` and the clone sweep excludes the repository it
 names instead of guessing from the folder name. The push is yours to do;
 `flakelab update` checks drift only once there is a remote, and `flakelab
-doctor` points out an origin that was never pushed to. A box provisioned before
-this keeps its plain directory and rebuilds the same way.
+doctor` points out an origin that was never pushed to. An overlay that is to
+stay a plain directory - a folder-synced one, say - is updated with
+`FLAKELAB_STALE_OK=1`, which rebuilds it as it is.
 
 A `provision` applies the overlay **twice** — the SSH-dependent steps need a
 user that only the first switch creates. The second switch runs **only if a
@@ -241,8 +249,9 @@ one behind its remote is pulled (`--rebase`), a dirty or conflicting one is
 refused with the tree untouched, and an unverifiable one is refused without a
 terminal (`FLAKELAB_STALE_OK=1` rebuilds it as it is, per invocation). A
 checkout behind the default branch warns and, at a terminal, offers a rebase.
-An overlay that is not a git checkout, or has no remote, has
-nothing to be behind: one line says the check was skipped and the switch runs.
+An overlay with no remote has nothing to be behind: one line says the check
+was skipped and the switch runs. One that is not a git checkout is made a
+repository first, as described under the overlay above.
 
 They also re-lock a **`path:`** flakelab input before the switch, saying so in
 one line. An overlay generated from a checkout points at it with `path:`, which
@@ -343,7 +352,9 @@ tried in this order at shell start:
 
 1. **sops-nix (opt-in)** — the overlay sets
    `sopsSecretsFile = ./secrets/secrets.env;`, an age-encrypted sops **dotenv**
-   file it commits as ciphertext. sops-nix decrypts it at activation into the
+   file it commits as ciphertext - the template `.gitignore` ignores every
+   `secrets.env`, so the overlay re-includes this one with
+   `!secrets/secrets.env`. sops-nix decrypts it at activation into the
    `/run/secrets` ramfs (`/run/secrets/tyc-env`, mode 0400, owned by the login)
    and the zsh init sources it from there — plaintext never touches a disk, a
    repo, or a backup. `sops` and `age` ship _with_ the option

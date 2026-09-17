@@ -1,8 +1,17 @@
-# Key material and secrets never belong in git, even in a private overlay.
-id_ed25519
-id_rsa
+# Key material and secrets never belong in git, even in a private overlay. This
+# file is also what `flakelab update` and the generators measure a first commit
+# against, so a kind of secret missing here is one that commit may carry.
+id_*
+!id_*.pub
 *.pem
 secrets.env
+.env
+.env.*
+# A filled-in provisioning config carries the same tokens in cleartext, and
+# setup-wsl-nix.ps1 parks it here.
+files/config/user_data.yaml
+# Per-machine Claude Code settings: permission rules quote whole command lines.
+.claude/settings.local.json
 
 # A committed lock pins a local flakelab checkout's NAR hash, and the next change
 # over there aborts the build with "NAR hash mismatch".
@@ -10,10 +19,17 @@ flake.lock
 
 # nix-backup payload, snapshots and runtime state: cleartext secrets included.
 files/config/instances/
-files/config/shared/
 files/config/snapshots/
 files/config/.backup.lock
 files/config/.last-restore-kept
+# shared/ the long way: git never looks inside an excluded directory, so a plain
+# `files/config/shared/` makes the .gitkeep re-include below dead. Each level is
+# excluded by content and the one path down to the key directory opened again.
+files/config/shared/*
+!files/config/shared/ssh/
+files/config/shared/ssh/*
+!files/config/shared/ssh/keys/
+files/config/shared/ssh/keys/*
 !files/config/shared/ssh/keys/.gitkeep
 
 # Migration marker written by `setup-wsl-nix.ps1 migrate`.

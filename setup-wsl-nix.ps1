@@ -1619,6 +1619,156 @@ function Invoke-NixosRebuild([string]$why) {
     }
 }
 
+# git with stdin and stdout as BYTES. PowerShell's pipeline decodes a native
+# command's output with the console code page and sends stdin as ASCII, so a path
+# outside ASCII comes back as a different name - and a leak check that cannot name
+# a file is one that passes it. stdout is drained asynchronously: check-ignore
+# answers while it is still reading, and a full pipe on either side would hang both.
+function Invoke-GitBytes([string[]]$argv, [byte[]]$stdin) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'git'
+    $psi.Arguments = (@($argv | ForEach-Object { '"' + (($_ -replace '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"' }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $out = New-Object System.IO.MemoryStream
+    $copy = $proc.StandardOutput.BaseStream.CopyToAsync($out)
+    $err = $proc.StandardError.ReadToEndAsync()
+    if ($stdin) { $proc.StandardInput.BaseStream.Write($stdin, 0, $stdin.Length) }
+    $proc.StandardInput.Close()
+    $proc.WaitForExit()
+    $copy.Wait()
+    [pscustomobject]@{ ExitCode = $proc.ExitCode; Bytes = $out.ToArray(); Err = $err.Result }
+}
+
+# files/scripts/lib/overlay-git.zsh's overlaygit_is_sops_dotenv, line for line:
+# every line is an encrypted value or comment, an empty value, or sops's own
+# metadata - the keys sops writes, not any `sops_` name - with the MAC and version
+# present. One plaintext value fails it.
+function Test-SopsDotenv([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    $mac = $false; $ver = $false
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        if ($line -eq '') { continue }
+        if ($line.StartsWith('#')) { if ($line -cnotmatch '^#ENC\[.*\]$') { return $false }; continue }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 0) { return $false }
+        $key = $line.Substring(0, $eq); $val = $line.Substring($eq + 1)
+        if ($key -ceq 'sops_mac') { if ($val -cnotmatch '^ENC\[.*\]$') { return $false }; $mac = $true }
+        elseif ($key -ceq 'sops_version') { if ($val -eq '') { return $false }; $ver = $true }
+        elseif ($key -cmatch '^sops_(lastmodified|mac_only_encrypted|shamir_threshold|(un)?encrypted_(suffix|regex|comment_regex)|(age|pgp|kms|gcp_kms|azure_kv|hc_vault|key_groups)__.*)$') { }
+        elseif ($val -ne '' -and $val -cnotmatch '^ENC\[AES256_GCM,data:.*,iv:.*,tag:.*,type:.*\]$') { return $false }
+    }
+    return ($mac -and $ver)
+}
+
+# The PowerShell twin of overlaygit_leaks: what a first `git add -A` in $root would
+# stage, and which of it the TEMPLATE .gitignore keeps out of git. This script
+# keeps a .gitignore that is already in $root, so that file proves nothing - it can
+# predate a template entry or never have been the template. Read-only: the listing
+# runs from a scratch git dir with $root as its work tree, so nothing is staged and
+# no .git appears in the overlay before the answer is known. $null means git could
+# not answer, which the caller treats as a refusal, never as "no leaks".
+function Get-OverlayGitLeaks([string]$root) {
+    $probe = Join-Path ([System.IO.Path]::GetTempPath()) ('flakelab-probe-' + [guid]::NewGuid().ToString('N'))
+    try {
+        $r = Invoke-GitBytes @('init', '-q', $probe) $null
+        if ($r.ExitCode -ne 0) { return $null }
+        # -C, with the work tree as `.`: ls-files prints paths relative to the directory
+        # git runs in and only below it, and this process's directory is the console's.
+        $r = Invoke-GitBytes @('-C', $root, "--git-dir=$probe\.git", '--work-tree=.', '-c', 'core.quotePath=false',
+            'ls-files', '-o', '--exclude-standard', '-z') $null
+        if ($r.ExitCode -ne 0) { return $null }
+        $result = [pscustomobject]@{ Candidates = $r.Bytes; Leaks = @() }
+        if ($r.Bytes.Length -eq 0) { return $result }
+        # The template alone decides here: as the scratch repository's info\exclude,
+        # with --no-index, the overlay's own .gitignore is nowhere in the lookup.
+        New-Item -ItemType Directory -Force -Path (Join-Path $probe '.git\info') | Out-Null
+        Copy-Item -LiteralPath (Join-Path $TemplateWin '.gitignore') -Destination (Join-Path $probe '.git\info\exclude') -Force
+        $h = Invoke-GitBytes @('-C', $probe, '-c', 'core.quotePath=false', 'check-ignore', '--no-index', '--stdin', '-z') $r.Bytes
+        # 1 is check-ignore's "none of them is ignored".
+        if ($h.ExitCode -gt 1) { return $null }
+        $hits = @([System.Text.Encoding]::UTF8.GetString($h.Bytes) -split "`0" | Where-Object { $_ -ne '' })
+        # Only a dotenv can be the sops exception, so only those are opened.
+        $result.Leaks = @($hits | Where-Object { -not ($_ -like '*.env' -and (Test-SopsDotenv (Join-Path $root ($_ -replace '/', '\')))) })
+        return $result
+    }
+    finally {
+        if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# Same rule as nix-overlay-generate: the overlay is left as a repository -
+# initialised, one commit, no remote - so hand-edits and -Force regenerations
+# are diffs, and `flakelab update` reads the shape (no remote: nothing to be
+# behind, no drift check). An existing .git is left as is and gets no
+# commit. autocrlf is pinned off: Windows git would otherwise check the flake
+# out with CRLF, and the distro reads the same files. Without git on this
+# host the overlay is complete anyway; the warning names the step.
+#
+# The .gitignore above is KEPT when one was already there, so the first commit
+# is measured against the template before it happens (Get-OverlayGitLeaks), and
+# only the checked list is staged, not `add -A`. All or nothing: any failure
+# after `init`, Ctrl-C included, removes the .git this step made - a half-made
+# one reads as "a repository with uncommitted changes" to every later run and
+# is never adopted again. Signing and hooks are off: the identity is
+# flakelab@localhost, and the operator's global git config must not decide
+# whether the overlay gets its history.
+function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
+    if (Test-Path -LiteralPath (Join-Path $root '.git')) { return }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Warn "no git on this Windows host - $root is not a git repository. 'git init' it later for history; 'flakelab update' checks drift once it has a remote."
+        return
+    }
+    Do-Step "git init $root (one commit, no remote)" {
+        $check = Get-OverlayGitLeaks $root
+        if ($null -eq $check) { Warn "could not list what a first commit in $root would carry - the overlay is written, the repository is not"; return }
+        if ($check.Leaks.Count -gt 0) {
+            Warn "$root is NOT initialised as a repository: its .gitignore would let these into the first commit, and the template keeps them out of git"
+            $check.Leaks | Select-Object -First 20 | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
+            if ($check.Leaks.Count -gt 20) { Write-Host "      ... and $($check.Leaks.Count - 20) more" -ForegroundColor Yellow }
+            Warn "bring $root\.gitignore up to $TemplateWin\.gitignore and rerun, or let 'flakelab update' initialise it afterwards"
+            return
+        }
+        if ($check.Candidates.Length -eq 0) { Warn "nothing in $root to commit - the repository is not initialised"; return }
+        $dotGit = Join-Path $root '.git'
+        $list = [System.IO.Path]::GetTempFileName()
+        $done = $false
+        try {
+            [System.IO.File]::WriteAllBytes($list, $check.Candidates)
+            $steps = [ordered]@{
+                init   = @('init', '-q', '--initial-branch=main')
+                config = @('config', 'core.autocrlf', 'false')
+                add    = @('--literal-pathspecs', 'add', "--pathspec-from-file=$list", '--pathspec-file-nul')
+                commit = @('-c', 'user.name=flakelab', '-c', 'user.email=flakelab@localhost', '-c', 'commit.gpgsign=false',
+                    'commit', '-q', '--no-verify', '-m', 'overlay generated by setup-wsl-nix.ps1')
+            }
+            foreach ($step in $steps.GetEnumerator()) {
+                $r = Invoke-GitBytes (@('-C', $root) + $step.Value) $null
+                if ($r.ExitCode -ne 0) {
+                    Warn "git $($step.Key) failed in $root - the overlay is written, the repository is not: $(($r.Err -split "`n")[0])"
+                    return
+                }
+            }
+            $done = $true
+        }
+        finally {
+            Remove-Item -LiteralPath $list -Force -ErrorAction SilentlyContinue
+            if (-not $done -and (Test-Path -LiteralPath $dotGit)) { Remove-Item -LiteralPath $dotGit -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        # Named, never pushed to: the first push needs a credential this run
+        # does not hold.
+        if ($overlayUrl) {
+            Invoke-NativeQuiet 'git' @('-C', $root, 'remote', 'add', 'origin', $overlayUrl) | Out-Null
+            if ($LASTEXITCODE -ne 0) { Warn "git remote add origin $overlayUrl failed in $root" }
+            else { Say "  origin $overlayUrl (not pushed)" 'DarkGray' }
+        }
+    }
+}
+
 # ---------- commands ----------
 # The overlay skeleton this script needs, from templates/overlay - the same source
 # `nix flake new -t <this repo>#overlay` scaffolds, so there is one copy of the
@@ -1666,34 +1816,7 @@ function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlay
     }
     $keep = Join-Path $root 'files\config\shared\ssh\keys\.gitkeep'
     if (-not (Test-Path $keep)) { Do-Step 'write files\config\shared\ssh\keys\.gitkeep' { Write-LfFile $keep @('') } }
-    # Same rule as nix-overlay-generate: the overlay is left as a repository -
-    # initialised, one commit, no remote - so hand-edits and -Force regenerations
-    # are diffs, and `flakelab update` reads the shape (no remote: nothing to be
-    # behind, no drift check). An existing .git is left as is and gets no
-    # commit. autocrlf is pinned off: Windows git would otherwise check the flake
-    # out with CRLF, and the distro reads the same files. Without git on this
-    # host the overlay is complete anyway; the warning names the step.
-    if (Test-Path (Join-Path $root '.git')) { return }
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Warn "no git on this Windows host - $root is not a git repository. 'git init' it later for history; 'flakelab update' checks drift once it has a remote."
-        return
-    }
-    Do-Step "git init $root (one commit, no remote)" {
-        Invoke-NativeQuiet 'git' @('-C', $root, 'init', '-q', '--initial-branch=main') | Out-Null
-        if ($LASTEXITCODE -ne 0) { Warn "git init failed in $root - the overlay is written, the repository is not"; return }
-        Invoke-NativeQuiet 'git' @('-C', $root, 'config', 'core.autocrlf', 'false') | Out-Null
-        Invoke-NativeQuiet 'git' @('-C', $root, 'add', '-A') | Out-Null
-        Invoke-NativeQuiet 'git' @('-C', $root, '-c', 'user.name=flakelab', '-c', 'user.email=flakelab@localhost',
-            'commit', '-q', '-m', 'overlay generated by setup-wsl-nix.ps1') | Out-Null
-        if ($LASTEXITCODE -ne 0) { Warn "git commit failed in $root - the repository is initialised, nothing is committed"; return }
-        # Named, never pushed to: the first push needs a credential this run
-        # does not hold.
-        if ($overlayUrl) {
-            Invoke-NativeQuiet 'git' @('-C', $root, 'remote', 'add', 'origin', $overlayUrl) | Out-Null
-            if ($LASTEXITCODE -ne 0) { Warn "git remote add origin $overlayUrl failed in $root" }
-            else { Say "  origin $overlayUrl (not pushed)" 'DarkGray' }
-        }
-    }
+    Initialize-OverlayRepository $root $overlayUrl
 }
 
 # The hand-written path: skeleton plus a flake full of placeholders. Only needed
