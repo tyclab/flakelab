@@ -25,6 +25,16 @@ in
         editor = cfg.gitEditor;
       };
       safe.directory = cfg.repoPath;
+      # gh is in the package set, and `gh auth login` ends by writing this helper
+      # with `git config --global` - which fails here: both ~/.gitconfig and
+      # ~/.config/git/config are store symlinks ("could not lock config file:
+      # read-only file system"), so https pushes to github.com kept asking for a
+      # password gh already holds. Declared once instead; answer the login's
+      # "Authenticate Git with your GitHub credentials?" either way.
+      credential = {
+        "https://github.com".helper = "!gh auth git-credential";
+        "https://gist.github.com".helper = "!gh auth git-credential";
+      };
     };
   };
 
