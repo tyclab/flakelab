@@ -322,6 +322,7 @@
         claude-sessions = suiteCheck "claude-sessions";
         nix-update = suiteCheck "nix-update";
         switch-result = suiteCheck "switch-result";
+        xdg-open = suiteCheck "xdg-open";
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 
@@ -357,14 +358,14 @@
           let
             wsl = self.nixosConfigurations.default.config;
             vm = self.nixosConfigurations.proxmox-vm.config;
-            hasPkg = cfg: name: builtins.any (p: (p.pname or "") == name) cfg.environment.systemPackages;
+            hasPkg = cfg: name: builtins.any (p: (p.pname or p.name or "") == name) cfg.environment.systemPackages;
           in
           assert wsl.flakelab.target == "wsl";
           assert wsl.wsl.enable;
-          assert hasPkg wsl "wsl-open";
+          assert hasPkg wsl "xdg-open";
           assert vm.flakelab.target == "proxmox-vm";
           assert !(vm ? wsl);
-          assert !(hasPkg vm "wsl-open");
+          assert !(hasPkg vm "xdg-open");
           assert vm.services.cloud-init.enable;
           # default_user must arrive alongside the module's own system_info defaults.
           assert vm.services.cloud-init.settings.system_info.default_user.name == vm.flakelab.username;

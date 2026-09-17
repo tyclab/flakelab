@@ -1,0 +1,134 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for the WSL xdg-open shim: the real script against stub
+# `rundll32.exe` and `wslpath` executables, so no case needs WSL interop and none
+# can open a window on the box running it.
+
+SCRIPT_DIR="${0:A:h}"
+SHIM="${SCRIPT_DIR}/xdg-open"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the pre-increment value, so an
+# `&& ok || bad` chain would run both arms on the first call.
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# rundll32.exe records its argv one per line; wslpath marks what it converted, so
+# a path that skipped conversion is distinguishable from one that went through it.
+STUBS="${BASE}/bin"
+CALLS="${BASE}/calls"
+mkdir -p "${STUBS}"
+cat > "${STUBS}/rundll32.exe" <<STUB
+#!/usr/bin/env zsh
+print -rl -- "\$@" > "${CALLS}"
+STUB
+cat > "${STUBS}/wslpath" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == "-w" ]] || exit 1
+print -r -- "WIN:$2"
+STUB
+cat > "${BASE}/rundll32-broken" <<'STUB'
+#!/usr/bin/env zsh
+exit 126
+STUB
+chmod +x "${STUBS}/rundll32.exe" "${STUBS}/wslpath" "${BASE}/rundll32-broken"
+
+# run_shim <args...> — sets OUT (stdout+stderr), RC and ARGV (what rundll32.exe got,
+# empty when it never ran).
+typeset -i RC=0
+OUT=""
+typeset -a ARGV=()
+run_shim() {
+  rm -f "${CALLS}"
+  OUT="$(PATH="${STUBS}:${PATH}" "${SHIM}" "$@" 2>&1)"
+  RC=$?
+  ARGV=()
+  [[ -f "${CALLS}" ]] && ARGV=( "${(@f)$(<"${CALLS}")}" )
+  return 0
+}
+
+print -r -- "URLs reach the Windows handler untouched"
+URL='https://idp.example/authorize?client_id=a&redirect_uri=http%3A%2F%2Flocalhost%3A8000&scope=openid+email&state=a%20b'
+run_shim "${URL}"
+check "an OAuth URL exits 0" "${RC}" "0"
+check "rundll32.exe gets the FileProtocolHandler entry point" "${ARGV[1]:-}" "url.dll,FileProtocolHandler"
+check "the query string survives byte for byte" "${ARGV[2]:-}" "${URL}"
+check "nothing else is passed" "${#ARGV}" "2"
+
+run_shim "mailto:someone@example.invalid"
+check "a mailto: target passes through" "${ARGV[2]:-}" "mailto:someone@example.invalid"
+
+print -r -- ""
+print -r -- "paths are converted to Windows paths"
+mkdir -p "${BASE}/work dir"
+print -r -- "x" > "${BASE}/work dir/report one.html"
+run_shim "${BASE}/work dir/report one.html"
+check "an absolute path goes through wslpath -w" "${ARGV[2]:-}" "WIN:${BASE:A}/work dir/report one.html"
+
+OUT="$(cd "${BASE}/work dir" && rm -f "${CALLS}" && PATH="${STUBS}:${PATH}" "${SHIM}" "report one.html" 2>&1)"
+check "a relative path is made absolute first" "$(sed -n 2p "${CALLS}" 2>/dev/null)" "WIN:${BASE:A}/work dir/report one.html"
+
+run_shim "file://${BASE}/work%20dir/report%20one.html"
+check "a file:// URL is percent-decoded and converted" "${ARGV[2]:-}" "WIN:${BASE:A}/work dir/report one.html"
+
+print -r -- ""
+print -r -- "a URL past the Windows command-line limit goes through a redirect page"
+# A draw.io #create= URL carries the whole diagram; 32767 characters is all
+# CreateProcess takes, and rundll32.exe answers the rest with EINVAL.
+# A named empty parameter: the padding flag has nothing to pad under `set -u` otherwise.
+PAD=""
+LONG="https://app.diagrams.example/?a=1&b=\"q\"#create=${(l:40000::Ab0%2B:)PAD}</script>ENDTAG"
+run_shim "${LONG}"
+check "a 40 KB URL exits 0" "${RC}" "0"
+check "rundll32.exe gets a converted .html path, not the URL" "${ARGV[2]:-}" "WIN:${${ARGV[2]:-}#WIN:}"
+PAGE="${${ARGV[2]:-}#WIN:}"
+check "the page is an .html file" "${PAGE:e}" "html"
+BODY="$(<"${PAGE}")" 2>/dev/null || BODY=""
+contains "the page redirects to the URL, tail included" "${BODY}" 'ENDTAG");'
+contains "a quote in the URL cannot end the string literal" "${BODY}" 'b=\"q\"#create='
+contains "a </script> in the URL cannot end the script element" "${BODY}" '\u003C/script>ENDTAG'
+check "the page is private to the user" "$(stat -c %a "${PAGE}" 2>/dev/null)" "600"
+rm -f "${PAGE}"
+
+SHORT="https://a.example/#create=${(l:31000::Ab0%2B:)PAD}"
+run_shim "${SHORT}"
+check "a 31 KB URL is still passed directly" "${ARGV[2]:-}" "${SHORT}"
+
+print -r -- ""
+print -r -- "failures use xdg-open's exit codes and never launch anything"
+run_shim "${BASE}/absent.html"
+check "a missing file exits 2" "${RC}" "2"
+contains "a missing file is named" "${OUT}" "${BASE}/absent.html"
+check "a missing file never reaches rundll32.exe" "${#ARGV}" "0"
+
+run_shim
+check "no argument exits 1" "${RC}" "1"
+contains "no argument prints usage" "${OUT}" "usage: xdg-open"
+
+run_shim "https://a.example" "https://b.example"
+check "two arguments exit 1" "${RC}" "1"
+check "two arguments never reach rundll32.exe" "${#ARGV}" "0"
+
+rm -f "${CALLS}"
+OUT="$(FLAKELAB_RUNDLL32="${BASE}/no-such-rundll32.exe" PATH="${STUBS}:${PATH}" "${SHIM}" "https://a.example/x" 2>&1)"
+RC=$?
+check "an unreachable rundll32.exe exits 3" "${RC}" "3"
+contains "the message blames interop" "${OUT}" "WSL interop"
+contains "the message carries the URL to open by hand" "${OUT}" "https://a.example/x"
+
+OUT="$(FLAKELAB_RUNDLL32="${BASE}/rundll32-broken" PATH="${STUBS}:${PATH}" "${SHIM}" "https://a.example/y" 2>&1)"
+RC=$?
+check "a launcher that fails exits 4" "${RC}" "4"
+contains "a failed launch carries the URL to open by hand" "${OUT}" "https://a.example/y"
+[[ "${OUT}" != *"interop"* ]] && ok "a failed launch does not blame interop" || bad "a failed launch does not blame interop"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))
