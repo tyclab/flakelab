@@ -15,7 +15,7 @@
 
     FRESH PC, NO CONFIG: in an interactive console `provision` asks for the four
     values a config cannot do without (Linux user, git name, git mail, profiles)
-    and writes them as <overlay>\files\config\user_data.yaml - the same schema
+    and writes them as <overlay>-payload\user_data.yaml - the same schema
     -Config takes - then carries on. That file is found again on every later run
     (edit it, re-run with -Force to regenerate the flake). Without a console the
     refusal below stands: there is nobody to answer.
@@ -85,7 +85,7 @@
     Override the base image URL (air-gapped mirror, pinned release).
 
 .PARAMETER SshPassphrase
-    Passphrase of the private key(s) under files\config\shared\ssh\keys. The
+    Passphrase of the private key(s) under <overlay>-payload\shared\ssh\keys. The
     SSH-dependent home-manager activation steps (kiro-plugin clone, Claude
     marketplace + plugins, the statusline that follows them) run from a systemd
     unit with no SSH_AUTH_SOCK, so without a loaded agent they can only DEFER.
@@ -219,6 +219,11 @@ if ($env:WSL_DISTRO_NAME) {
 $NixosWslRelease = 'https://github.com/nix-community/NixOS-WSL/releases/latest/download/nixos.wsl'
 
 function Say([string]$m, [string]$c = 'Cyan') { Write-Host "> $m" -ForegroundColor $c }
+# Keys, secrets.env, the provisioning config and the backup payload live BESIDE
+# the overlay, never in it: every `nix` command given the overlay copies the whole
+# directory into the world-readable store, .gitignore or not. Same rule as
+# nix/scripts.nix's backupRoot default, so both ends name one directory.
+function Get-PayloadRoot([string]$overlay) { return ($overlay.TrimEnd('\', '/') + '-payload') }
 function Warn([string]$m) { Write-Host "! $m" -ForegroundColor Yellow }
 function Do-Step([string]$desc, [scriptblock]$block) {
     if ($DryRun) { Write-Host "  [dry-run] $desc" -ForegroundColor DarkGray; return }
@@ -374,9 +379,10 @@ if ($Config) {
 }
 else {
     $ConfigPath = Join-Path $WslkubeWin 'files\config\user_data.yaml'
-    # Then the overlay's own copy - what the first-run wizard below writes, or a
-    # -Config the operator parked there - so a later `provision -Force` finds it.
-    if (-not (Test-Path $ConfigPath)) { $ConfigPath = Join-Path $FlakeRefFull 'files\config\user_data.yaml' }
+    # Then the copy beside the overlay - what the first-run wizard below writes, or
+    # a -Config the operator parked there - so a later `provision -Force` finds it.
+    # Beside, not in: it carries tokens in cleartext (see Get-PayloadRoot).
+    if (-not (Test-Path $ConfigPath)) { $ConfigPath = Join-Path (Get-PayloadRoot $FlakeRefFull) 'user_data.yaml' }
     if (-not (Test-Path $ConfigPath)) { $ConfigPath = '' }
 }
 
@@ -483,7 +489,7 @@ function Invoke-ConfigWizard([string]$target) {
 
 if (-not $ConfigPath -and $Command -eq 'provision' -and -not $DryRun -and
     -not (Test-Path (Join-Path $FlakeRefFull 'flake.nix')) -and (Test-InteractiveConsole)) {
-    $ConfigPath = Invoke-ConfigWizard (Join-Path $FlakeRefFull 'files\config\user_data.yaml')
+    $ConfigPath = Invoke-ConfigWizard (Join-Path (Get-PayloadRoot $FlakeRefFull) 'user_data.yaml')
 }
 # A -Config that sits INSIDE a wslkube checkout names that checkout, so the
 # migrate step pulls its backup payload from where the config came from rather
@@ -556,14 +562,26 @@ else {
 }
 $OverlayWsl = ToWslPath $OverlayWin
 $OverlayFlakeWin = Join-Path $OverlayWin 'flake.nix'
-$KeyDirWin = Join-Path $OverlayWin 'files\config\shared\ssh\keys'
+$PayloadWin = Get-PayloadRoot $OverlayWin
+$PayloadWsl = ToWslPath $PayloadWin
+$KeyDirWin = Join-Path $PayloadWin 'shared\ssh\keys'
 $KeyWin = Join-Path $KeyDirWin 'id_ed25519'
 # The path nix-backup already owns on both ends (files/scripts/nix-backup, the
 # `secrets` shared category), so a migrated payload lands exactly where seeding
 # reads it and no second location is invented.
-$SecretsDirWin = Join-Path $OverlayWin 'files\config\shared\secrets'
+$SecretsDirWin = Join-Path $PayloadWin 'shared\secrets'
 $SecretsWin = Join-Path $SecretsDirWin 'secrets.env'
 $Marker = Join-Path $OverlayWin '.migrated-from-wslkube'
+# The layout before <overlay>-payload kept all of that under the overlay's
+# files\config. Nothing is moved for the operator - the payload is theirs, and the
+# move is one command - but it is said, because from here on the keys and
+# secrets.env in there are not found, and nix still copies them into the store.
+$OldPayloadHere = @('shared', 'instances', 'snapshots', 'user_data.yaml') |
+    Where-Object { Test-Path (Join-Path $OverlayWin "files\config\$_") }
+if ($OldPayloadHere -and -not $OverlayIsFallback) {
+    Warn ("{0}\files\config still holds {1} - the layout from before {2}. Keys and secrets.env are read from {2} now, and every rebuild copies the overlay, that folder included, into the world-readable nix store." -f $OverlayWin, ($OldPayloadHere -join ', '), $PayloadWin)
+    Warn ("Move it once:  New-Item -ItemType Directory -Force '{0}' | Out-Null; {1}" -f $PayloadWin, (($OldPayloadHere | ForEach-Object { "Move-Item '{0}' '{1}'" -f (Join-Path $OverlayWin "files\config\$_"), $PayloadWin }) -join '; '))
+}
 
 # The overlay's sops-nix ciphertext, when its flake.nix declares one
 # (flakelab.sopsSecretsFile). sops-nix then renders the runtime secrets on every
@@ -1417,7 +1435,7 @@ function Add-SshKeyToAgent {
     if ($keys.Count -eq 0) { Warn "no private key in $KeyDirWin - nothing to load into the ssh-agent"; return $false }
     Resolve-SshPassphrase
     Say ("Loading {0} key(s) into the ssh-agent of '{1}' (non-interactive): {2}" -f $keys.Count, $DistroName, ($keys -join ', '))
-    $keyDirWsl = "$OverlayWsl/files/config/shared/ssh/keys"
+    $keyDirWsl = "$PayloadWsl/shared/ssh/keys"
     if ($DryRun) {
         Write-Host ("  [dry-run] wsl -d {0} -u {1} -- sh {2}/.ssh-agent-load.sh {3} <passphrase-b64> {4}" -f $DistroName, $User, $OverlayWsl, $keyDirWsl, ($keys -join ' ')) -ForegroundColor DarkGray
         return $false
@@ -1492,7 +1510,7 @@ function Copy-OverlayFilesIntoDistro {
         # C:\Users\First Last\ - the ordinary Windows layout - hands sh two words
         # and the copy silently reads the wrong file. ToWslPath refuses the
         # characters this quoting cannot carry.
-        $keySrc = "$OverlayWsl/files/config/shared/ssh/keys"
+        $keySrc = "$PayloadWsl/shared/ssh/keys"
         $names = @()
         foreach ($k in @(Get-OverlayPrivateKeyName)) {
             $names += $k
@@ -1522,7 +1540,7 @@ function Copy-OverlayFilesIntoDistro {
         # space, and only single quotes reach sh intact. The destination stays
         # bare so `~` still expands.
         Say 'Seeding secrets.env'
-        Invoke-Wsl $DistroName $User @('sh', '-c', "set -e; mkdir -p ~/.config/tyc; chmod 700 ~/.config/tyc; cp '$OverlayWsl/files/config/shared/secrets/secrets.env' ~/.config/tyc/secrets.env; chmod 600 ~/.config/tyc/secrets.env")
+        Invoke-Wsl $DistroName $User @('sh', '-c', "set -e; mkdir -p ~/.config/tyc; chmod 700 ~/.config/tyc; cp '$PayloadWsl/shared/secrets/secrets.env' ~/.config/tyc/secrets.env; chmod 600 ~/.config/tyc/secrets.env")
     }
 
     $missing = @()
@@ -1593,7 +1611,7 @@ function Invoke-NixosRebuild([string]$why) {
         # uses to reference this checkout.
         Invoke-Wsl $DistroName 'root' @('env', 'NIX_CONFIG=experimental-features = nix-command flakes',
             'nix', 'shell', 'nixpkgs#git', '-c',
-            'nixos-rebuild', 'switch', '--flake', "$OverlayWsl#default") -AllowExit @(2, 4)
+            'nixos-rebuild', 'switch', '--flake', "path:$(ConvertTo-PathUrl $OverlayWsl)#default") -AllowExit @(2, 4)
         $switchRc = if ($DryRun) { 0 } else { $LASTEXITCODE }
         Get-SwitchResult @('--rc', "$switchRc")
         Confirm-SwitchResult ($why -split ':')[0] $switchRc
@@ -1781,8 +1799,12 @@ function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
 function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlayUrl) {
     if ($root -eq $RepoWin) { throw "refusing to write the overlay over this repo - pass -FlakeRef <path to the overlay>" }
     if (-not (Test-Path (Join-Path $TemplateWin 'flake.nix'))) { throw "template not found at $TemplateWin" }
-    Do-Step "mkdir $root\files\config\shared\ssh\keys" {
-        New-Item -ItemType Directory -Force -Path (Join-Path $root 'files\config\shared\ssh\keys') | Out-Null
+    # The key directory is made BESIDE the overlay (Get-PayloadRoot): the overlay
+    # holds the flake and nothing a `nix` command must not copy into the store.
+    $keyDir = Join-Path (Get-PayloadRoot $root) 'shared\ssh\keys'
+    Do-Step "mkdir $root, $keyDir" {
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
     }
     foreach ($name in @('flake.nix', '.gitignore')) {
         $dst = Join-Path $root $name
@@ -1814,8 +1836,6 @@ function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlay
         else { $text = Get-Content -Raw -Path (Join-Path $TemplateWin $name) }
         Do-Step "write $name" { Write-LfFile $dst ($text -split "`r?`n") }
     }
-    $keep = Join-Path $root 'files\config\shared\ssh\keys\.gitkeep'
-    if (-not (Test-Path $keep)) { Do-Step 'write files\config\shared\ssh\keys\.gitkeep' { Write-LfFile $keep @('') } }
     Initialize-OverlayRepository $root $overlayUrl
 }
 
@@ -2098,7 +2118,7 @@ function Restore-Backup {
     # the failure this flag exists to fix. Refuse it here, where the names that DO
     # exist can be listed. Only once there is a payload at all: a fresh PC has no
     # instances/ yet, which is the ordinary first run and not an error.
-    $instRoot = Join-Path $OverlayWin 'files\config\instances'
+    $instRoot = Join-Path $PayloadWin 'instances'
     if ($RestoreInstance -and (Test-Path $instRoot) -and -not (Test-Path (Join-Path $instRoot $RestoreInstance))) {
         $have = @(Get-ChildItem -Path $instRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
         $names = if ($have.Count -gt 0) { $have -join ', ' } else { '(none)' }
@@ -2299,7 +2319,7 @@ function Invoke-Migrate {
         # --skip-conflicts keeps local copies rather than failing, and that list
         # scrolls past in the restore's own output. Repeat it here, and put the
         # count in the marker, so "Migration done." can never be the whole story.
-        $keptFile = Join-Path $OverlayWin 'files\config\.last-restore-kept'
+        $keptFile = Join-Path $PayloadWin '.last-restore-kept'
         $kept = if (Test-Path $keptFile) { @(Get-Content $keptFile | Where-Object { $_.Trim() }) } else { @() }
         $note = if ($kept.Count -gt 0) { "; {0} file(s) kept local" -f $kept.Count } else { "" }
         Do-Step "write marker" { Write-LfFile $Marker ("migrated {0} via flakelab backup --from wslkube{1}" -f (Get-Date -Format o), $note) }
@@ -2369,11 +2389,12 @@ function Invoke-Status {
     $secretsState = if (Test-Path $SecretsWin) { 'present' }
     elseif ($sopsSecretsWin -and (Test-Path $sopsSecretsWin)) { 'sops: {0}' -f $sopsSecretsWin }
     else { 'MISSING' }
-    $payloadState = if (Test-Path (Join-Path $OverlayWin "files\config\instances\$DistroName")) { 'staged' } else { 'none' }
+    $payloadState = if (Test-Path (Join-Path $PayloadWin "instances\$DistroName")) { 'staged' } else { 'none' }
     $migratedState = if (Test-Path $Marker) { Get-Content $Marker -TotalCount 1 } else { 'no' }
     $wslkubeState = if (Test-Path $WslkubeWin) { $WslkubeWin } else { 'absent' }
     $configState = if ($ConfigPath) { $ConfigPath } else { 'none (pass -Config to generate the flake)' }
     Write-Host ("  overlay       : {0} ({1})" -f $OverlayWin, $overlayState)
+    Write-Host ("  payload root  : {0}" -f $PayloadWin)
     Write-Host ("  config        : {0}" -f $configState)
     Write-Host ("  linux user    : {0}" -f $User)
     Write-Host ("  declared keys : {0}" -f ((Get-DeclaredSshKeyName) -join ', '))

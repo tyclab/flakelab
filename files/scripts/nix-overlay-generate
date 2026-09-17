@@ -870,26 +870,30 @@ if ${_dry_run}; then
   say "dry run - nothing is written"
 fi
 
+# Keys and secrets.env go BESIDE the overlay, never into it: every `nix` command
+# given the overlay copies the whole directory into the world-readable store,
+# .gitignore or not. `<overlay>-payload` is the rule nix/scripts.nix's backupRoot
+# default and setup-wsl-nix.ps1's Get-PayloadRoot share, so all three name one place.
+_payload="${_out%/}-payload"
 if ! ${_dry_run}; then
-  mkdir -p "${_out}/files/config/shared/ssh/keys" "${_out}/files/config/shared/secrets" \
-    || die "cannot create ${_out}"
+  mkdir -p "${_out}" "${_payload}/shared/ssh/keys" "${_payload}/shared/secrets" \
+    || die "cannot create ${_out} and ${_payload}"
 fi
 
 _place flake.nix 644 "${_flake_text}"
 _place .gitignore 644 "$(< "${_template}/.gitignore")"
-_place files/config/shared/ssh/keys/.gitkeep 644 ""
 
 # Empty and never overwritten, --force included: it is the one file that may already
 # hold real tokens.
-_secrets_rel='files/config/shared/secrets/secrets.env'
-if [[ -e "${_out}/${_secrets_rel}" ]]; then
-  _kept+=("${_secrets_rel}")
+_secrets="${_payload}/shared/secrets/secrets.env"
+if [[ -e "${_secrets}" ]]; then
+  _kept+=("${_secrets}")
 elif ${_dry_run}; then
-  _wrote+=("${_secrets_rel}")
+  _wrote+=("${_secrets}")
 else
-  : > "${_out}/${_secrets_rel}" || die "cannot create ${_secrets_rel}"
-  chmod 600 "${_out}/${_secrets_rel}" || die "cannot chmod ${_secrets_rel}"
-  _wrote+=("${_secrets_rel}")
+  : > "${_secrets}" || die "cannot create ${_secrets}"
+  chmod 600 "${_secrets}" || die "cannot chmod ${_secrets}"
+  _wrote+=("${_secrets}")
 fi
 
 # --- git ---------------------------------------------------------------------
@@ -972,13 +976,16 @@ if ! ${_have_values}; then
 else
   say "  1. read ${_out}/flake.nix - it is the profile from here on"
 fi
-say "  2. fill ${_out}/${_secrets_rel} (names: flakelab files/config/secrets.env.example)"
-say "  3. drop the private key(s) named in sshKeys into ${_out}/files/config/shared/ssh/keys/ (LF only)"
-say "  4. check it evaluates:  nix flake metadata ${_out}"
+say "  2. fill ${_secrets} (names: flakelab files/config/secrets.env.example)"
+say "  3. drop the private key(s) named in sshKeys into ${_payload}/shared/ssh/keys/ (LF only)"
+# `path:`, spelled out, as `flakelab update` does: a bare path to a directory that
+# is a repository means git+file:, which sees tracked files only - not the
+# flake.lock the template keeps untracked, not a module not yet `git add`ed.
+say "  4. check it evaluates:  nix flake metadata path:$(_url_path "${_out}")"
 # The last step differs per target: a proxmox-vm overlay is pulled in by the seed
 # guest's flakelab-bootstrap, never by the Windows provisioner.
 if [[ "${_target}" == "wsl" ]]; then
-  say "  5. apply it:  sudo nixos-rebuild switch --flake ${_out}#default"
+  say "  5. apply it:  sudo nixos-rebuild switch --flake path:$(_url_path "${_out}")#default"
   say "     (on a machine with no distro yet, provision from Windows instead:"
   say "      setup-wsl-nix.ps1 provision -FlakeRef <the overlay>)"
 else

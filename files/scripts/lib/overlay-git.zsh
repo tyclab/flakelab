@@ -138,3 +138,20 @@ overlaygit_adopt() {
   rm -rf -- "${_d}/.git"
   return 1
 }
+
+# overlaygit_payload_inside <dir> - fills OVERLAYGIT_PAYLOAD_INSIDE with what is
+# still under <dir>/files/config from the layout that kept keys, secrets.env, the
+# provisioning config and the backup payload INSIDE the overlay. .gitignore never
+# protected those from nix: every `nix` command given the overlay as `path:`
+# copies the whole directory into the world-readable store. They belong in
+# <dir>-payload, and there is no migration - the callers name the one-time move.
+typeset -ga OVERLAYGIT_PAYLOAD_INSIDE=()
+overlaygit_payload_inside() {
+  local _d="$1" _n
+  OVERLAYGIT_PAYLOAD_INSIDE=()
+  for _n in shared instances snapshots user_data.yaml .backup.lock .last-restore-kept; do
+    [[ -e "${_d}/files/config/${_n}" ]] && OVERLAYGIT_PAYLOAD_INSIDE+=("files/config/${_n}")
+  done
+  (( ${#OVERLAYGIT_PAYLOAD_INSIDE} ))
+}
+

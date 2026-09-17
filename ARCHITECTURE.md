@@ -179,7 +179,7 @@ switch #1 -> seed key and `secrets.env` -> load the agent (`-SshPassphrase` for
 an unattended run) -> switch #2, which completes what #1 could only defer.
 
 Switch #2 is **conditional on that agent load succeeding**: with no private key
-in the overlay's `files\config\shared\ssh\keys\` there is nothing to load, and
+in `<overlay>-payload\shared\ssh\keys\` there is nothing to load, and
 the script skips the second switch rather than running one that could only defer
 again. So the keyless run the README recommends applies the overlay once, and
 the SSH-dependent steps stay deferred until a `flakelab update` from inside the

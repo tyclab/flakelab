@@ -91,8 +91,11 @@ run_gen --out "${o}"
 check "exits clean" "${RC}" "0"
 exists "flake.nix is written"      "${o}/flake.nix"
 exists ".gitignore is written"     "${o}/.gitignore"
-exists "the ssh key dir is kept"   "${o}/files/config/shared/ssh/keys/.gitkeep"
-exists "the secrets stub is there" "${o}/files/config/shared/secrets/secrets.env"
+# Keys and secrets.env go BESIDE the overlay: nix copies the overlay whole into
+# the world-readable store on every command it is given, .gitignore or not.
+exists "the ssh key dir is made beside the overlay" "${o}-payload/shared/ssh/keys"
+exists "and the secrets stub with it"               "${o}-payload/shared/secrets/secrets.env"
+[[ -e "${o}/files" ]] && bad "nothing under files/ in the overlay itself" || ok "nothing under files/ in the overlay itself"
 f="$(flake_of "${o}")"
 excludes "no placeholder survives"          "${f}" '%FLAKELAB_PATH%'
 contains "the input points at this checkout" "${f}" "inputs.flakelab.url = \"path:${REPO_ROOT}\";"
@@ -131,8 +134,8 @@ excludes "and no store path leaks in"           "${f}" "${STORE_FAKE}"
 # Anything more than an empty private git-ignored stub puts a token in a git repo
 # about to be pushed, or in the world-readable store.
 print -r -- "the secrets stub is empty, private and git-ignored"
-check "it is zero bytes"      "$(wc -c < "${o}/files/config/shared/secrets/secrets.env")" "0"
-check "and owner-only"        "$(file_mode "${o}/files/config/shared/secrets/secrets.env")" "600"
+check "it is zero bytes"      "$(wc -c < "${o}-payload/shared/secrets/secrets.env")" "0"
+check "and owner-only"        "$(file_mode "${o}-payload/shared/secrets/secrets.env")" "600"
 contains "the overlay .gitignore names it" "$(< "${o}/.gitignore")" "secrets.env"
 
 print -r -- "the shipped user_data.example.yaml generates a filled-in overlay"
@@ -184,7 +187,7 @@ excludes "nor is a token VALUE from the config" "${f}" 'your-gitlab-personal-acc
 contains "and the run says which ones it dropped" "${OUT}" "GITLAB_TOKEN"
 contains "saying where they belong instead"       "${OUT}" ".config/tyc/secrets.env"
 check "the stub it wrote is still empty" \
-  "$(wc -c < "${o}/files/config/shared/secrets/secrets.env")" "0"
+  "$(wc -c < "${o}-payload/shared/secrets/secrets.env")" "0"
 
 print -r -- "a second --force run reproduces the first byte for byte"
 first="${f}"
@@ -205,10 +208,10 @@ contains "--force overwrites it" "$(flake_of "${o}")" 'username = "tycuser";'
 
 # The one file --force must not touch: it can already hold real tokens.
 print -r -- "--force never overwrites a secrets.env that already has content"
-print -r -- 'GITLAB_TOKEN="already-here"' > "${o}/files/config/shared/secrets/secrets.env"
+print -r -- 'GITLAB_TOKEN="already-here"' > "${o}-payload/shared/secrets/secrets.env"
 run_gen --out "${o}" --config "${EXAMPLE}" --force
 check "the operator's file survives" \
-  "$(< "${o}/files/config/shared/secrets/secrets.env")" 'GITLAB_TOKEN="already-here"'
+  "$(< "${o}-payload/shared/secrets/secrets.env")" 'GITLAB_TOKEN="already-here"'
 
 print -r -- "--dry-run writes nothing"
 o="$(out dry)"
@@ -743,11 +746,7 @@ tracked="$(git -C "${o}" ls-files)"
 contains "flake.nix is tracked"          "${tracked}" "flake.nix"
 contains ".gitignore is tracked"         "${tracked}" ".gitignore"
 excludes "the secrets stub is not"       "${tracked}" "secrets.env"
-# The template re-includes exactly one path under shared/, and git drops a
-# re-include whose parent directory is excluded - so this is the line that says
-# the template's rules still reach it.
-check    "under shared/ only the key directory's .gitkeep is" \
-  "$(git -C "${o}" ls-files files/config/shared)" "files/config/shared/ssh/keys/.gitkeep"
+check    "and exactly the two files the generator wrote" "$(git -C "${o}" ls-files | wc -l | tr -d ' ')" "2"
 check    "core.autocrlf is off"          "$(git -C "${o}" config --get core.autocrlf)" "false"
 contains "and it says so"                "${OUT}" "git: initialised"
 

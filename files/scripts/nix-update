@@ -308,6 +308,16 @@ _nix_repo_shape() {
   return 1
 }
 
+# The layout before `<overlay>-payload` kept keys, secrets.env and the backup
+# payload under the overlay's files/config, and every switch below copies the
+# overlay - all of it - into the world-readable store. Nothing is moved for the
+# operator: the payload is theirs, a restore may be reading it, and the move is
+# one command. It is said on every run until it is done.
+if overlaygit_payload_inside "${_repo}"; then
+  _say yellow "⚠ ${_repo}/files/config still holds ${(j:, :)${(@)OVERLAYGIT_PAYLOAD_INSIDE:t}} — this switch copies it into the world-readable nix store"
+  _say yellow "  move it beside the overlay, once:  flakelab doctor  prints the commands"
+fi
+
 # Order matters: an accepted pull moves HEAD, which the next check measures.
 if _nix_repo_shape; then
   _nix_check_remote || exit 1

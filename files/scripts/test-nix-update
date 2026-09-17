@@ -167,10 +167,14 @@ check    "and no remote"                    "$(git -C "${d}" remote | wc -l | tr
 check    "autocrlf pinned off"              "$(git -C "${d}" config core.autocrlf)" "false"
 contains "flake.nix committed"              "$(git -C "${d}" ls-files)" "flake.nix"
 contains "and the .gitignore itself"        "$(git -C "${d}" ls-files)" ".gitignore"
-contains "and the key directory's .gitkeep"  "$(git -C "${d}" ls-files)" "files/config/shared/ssh/keys/.gitkeep"
 excludes "but not the private key"          "$(git -C "${d}" ls-files)" "id_ed25519"
 excludes "nor secrets.env"                  "$(git -C "${d}" ls-files)" "secrets.env"
 excludes "nor the backup payload"           "$(git -C "${d}" ls-files)" "files/config/instances/"
+# That overlay is in the layout from before `<overlay>-payload`: a key and a
+# payload under its files/config. Ignored, so not committed - and copied into the
+# store by the switch all the same, which is said on every run until it is moved.
+contains "and warns that the switch copies the payload into the store" "${OUT}" "${d}/files/config still holds shared, instances"
+contains "pointing at the doctor for the move" "${OUT}" "flakelab doctor"
 excludes "with no fetch attempted"          "${OUT}" "fetch failed"
 excludes "and no origin/HEAD advice"        "${OUT}" "origin/HEAD"
 excludes "and no stale refusal"             "${OUT}" "stale"
@@ -185,6 +189,11 @@ check    "still one commit"                 "$(git -C "${d}" rev-list --count HE
 # ls-files answers relative to the directory git runs in, and only below it. An
 # operator standing inside the overlay is the ordinary case, so the list has to
 # be the whole overlay from there too - and a leak above them still a leak.
+print -r -- "an overlay with nothing under files/config gets no payload warning"
+d="$(mk_plain_ignored cleanlayout)"
+run_update "${d}"
+excludes "no warning"                       "${OUT}" "still holds"
+
 print -r -- "an update started from inside the overlay adopts the whole of it"
 d="$(mk_plain_ignored inside)"
 mkdir -p "${d}/notes/deeper"

@@ -327,13 +327,13 @@ in
     backupRoot = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Absolute path of the flakelab backup payload root (secrets, keys, per-host config); null resolves to `\${repoPath}/files/config`, the Windows-mount default `flakelab backup` has always used. A target with no such mount (nothing survives a proxmox-vm guest's own disk across re-provisioning) points this at a mount that outlives it instead.";
+      description = "Absolute path of the flakelab backup payload root (secrets, keys, per-host config); null resolves to `\${repoPath}-payload`, a sibling of the overlay on the same mount: beside it so it survives re-provisioning like the overlay does, never inside it because every `nix` command given the overlay copies the whole directory into the world-readable store. Must not be under repoPath. A target with no such mount (nothing survives a proxmox-vm guest's own disk across re-provisioning) points this at a mount that outlives it instead.";
     };
 
     stateRoot = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Absolute path of a directory for the SHAREABLE backup state — the merged zsh history, Claude auto-memory and (with stateTranscripts) Claude transcripts — so it can be replicated between machines by whatever folder-sync client you already run (Syncthing, Dropbox, rclone, a NAS client, nothing at all). null keeps everything in the payload under repoPath as before. Must be a plain directory, never a git checkout (sync clients write conflict copies of .git internals) and never inside repoPath. Credentials and host-specific config never go there. Exported as FLAKELAB_STATE_ROOT to `flakelab backup`.";
+      description = "Absolute path of a directory for the SHAREABLE backup state — the merged zsh history, Claude auto-memory and (with stateTranscripts) Claude transcripts — so it can be replicated between machines by whatever folder-sync client you already run (Syncthing, Dropbox, rclone, a NAS client, nothing at all). null keeps everything in the payload (backupRoot) as before. Must be a plain directory, never a git checkout (sync clients write conflict copies of .git internals) and never inside repoPath. Credentials and host-specific config never go there. Exported as FLAKELAB_STATE_ROOT to `flakelab backup`.";
     };
 
     stateTranscripts = mkOption {

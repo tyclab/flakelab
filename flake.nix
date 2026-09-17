@@ -560,6 +560,32 @@
           assert hm.home.file.".kiro/settings/cli.json".force;
           pkgs.runCommandLocal "flakelab-check-kiro-cli-json" { } "touch $out";
 
+        # Keys, cleartext secrets and the backup payload live BESIDE the overlay: nix
+        # copies the overlay directory whole into the world-readable store on every
+        # command it is given, and no .gitignore stops that. The default has to stay
+        # outside repoPath, and an overlay that points backupRoot back inside must
+        # fail to evaluate rather than quietly undo it.
+        payload-outside-overlay =
+          let
+            sys = self.nixosConfigurations.default;
+            cfg = sys.config.flakelab;
+            scriptsOf =
+              c:
+              import ./nix/scripts.nix {
+                inherit (sys) pkgs;
+                cfg = c;
+              };
+            inside = root: builtins.tryEval (scriptsOf (cfg // { backupRoot = root; })).nix-backup.drvPath;
+          in
+          assert !(inside "${cfg.repoPath}/files/config").success;
+          assert !(inside cfg.repoPath).success;
+          assert (inside "${cfg.repoPath}-elsewhere").success;
+          pkgs.runCommandLocal "flakelab-check-payload-outside-overlay" { } ''
+            grep -q '^export FLAKELAB_BACKUP_ROOT=${cfg.repoPath}-payload$' \
+              ${(scriptsOf cfg).nix-backup}/bin/nix-backup
+            touch $out
+          '';
+
         # `gh auth login` and `glab auth login` cannot write their credential helper
         # into a store link, so git-ssh.nix declares it. Read back through git, because
         # the shape is the point: the empty value has to come first or it resets the
