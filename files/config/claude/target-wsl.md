@@ -1,4 +1,5 @@
 This is a WSL2 distro: Windows drives are mounted at `/mnt/c/`, `/mnt/d/`.
+`xdg-open <url|path>` opens the target in the Windows default browser or app, and `BROWSER` names the same command; there is no Linux browser to launch.
 
 ## Provisioning
 

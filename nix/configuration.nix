@@ -6,6 +6,12 @@
   pkgs,
   ...
 }:
+let
+  scripts = import ./scripts.nix {
+    inherit pkgs;
+    cfg = config.flakelab;
+  };
+in
 {
   networking.hostName = lib.mkDefault config.flakelab.hostName;
 
@@ -88,19 +94,15 @@
       grc
     ]
     # Inline rather than in nix/targets/wsl.nix, which would reorder the whole
-    # system path.
-    ++ lib.optional (config.flakelab.target == "wsl") pkgs.wsl-open
+    # system path. hiPrio, so an xdg-utils some later package drags in cannot
+    # shadow the one opener that reaches Windows.
+    ++ lib.optional (config.flakelab.target == "wsl") (lib.hiPrio scripts.xdg-open)
     ++ (with pkgs; [
       dnsutils
       gnumake
       gcc
     ])
-    ++ [
-      (import ./scripts.nix {
-        inherit pkgs;
-        cfg = config.flakelab;
-      }).switch-result
-    ];
+    ++ [ scripts.switch-result ];
 
   nix.settings.experimental-features = [
     "nix-command"

@@ -58,7 +58,7 @@ flowchart LR
     SYS --> VMIMG[".#proxmoxImage<br/>seed"]
 ```
 
-Not drawn: `nix flake check` (the eight offline suites plus statix/deadnix) and
+Not drawn: `nix flake check` (the offline suites plus statix/deadnix) and
 `devShells.default` guard every change with the same pinned tooling.
 
 ## Bootstrap
@@ -506,7 +506,7 @@ nixosConfigurations.tycdev = flakelab.lib.mkSystem {
 ## Test and lint
 
 ```bash
-make test          # the eight offline suites, seconds
+make test          # the offline suites, seconds
 nix flake check    # the same suites + statix/deadnix; what CI runs
 ```
 

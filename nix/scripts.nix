@@ -236,6 +236,14 @@ rec {
     exec ${zsh} ${s}/switch-result "$@"
   '';
 
+  # System-wide on the wsl target (nix/configuration.nix). rundll32.exe and wslpath
+  # exist only on the ambient PATH WSL builds, so that one leads; the pinned
+  # coreutils after it covers a caller whose PATH has no mktemp.
+  xdg-open = pkgs.writeShellScriptBin "xdg-open" ''
+    export PATH=$PATH:${bin [ pkgs.coreutils ]}
+    exec ${zsh} ${s}/xdg-open "$@"
+  '';
+
   # Update THIS distro. The repo to rebuild is repoPath, which a store path cannot
   # derive from $0, and FLAKELAB_FLAKE_ATTR names which box in it to switch into.
   # `nix-clone-repos` is pinned, because the script calls it by bare name for --all

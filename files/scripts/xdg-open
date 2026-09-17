@@ -1,0 +1,59 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# xdg-open for the WSL target: hands a URL or a path to the Windows default
+# handler over interop. A NixOS-WSL box has no xdg-open of its own, and a CLI
+# that never reads $BROWSER (kubelogin, so k9s behind it) execs `xdg-open` by
+# name and nothing else. rundll32.exe rather than `powershell.exe Start`: a
+# third of the start-up time, and it takes the URL as one argument, so `&` and
+# `%` in an OAuth query string need no quoting. Exit codes are xdg-open's.
+
+usage() { print -r -u2 -- "usage: xdg-open <url|path>"; exit 1 }
+(( $# == 1 )) || usage
+[[ "$1" == (-h|--help) ]] && usage
+
+target="$1"
+is_url=false
+case "${target}" in
+  # %b turns each \xHH into its byte, which keeps a multi-byte UTF-8 name whole.
+  file://*) target="$(printf '%b' "${${target#file://}//\%/\\x}")" ;;
+  *://*|mailto:*) is_url=true ;;
+esac
+
+shown="${target}"
+if ! ${is_url}; then
+  [[ -e "${target}" ]] || { print -r -u2 -- "xdg-open: no such file: ${target}"; exit 2 }
+  shown="${target:A}"
+  target="$(wslpath -w "${shown}")" || { print -r -u2 -- "xdg-open: wslpath could not convert ${shown}"; exit 4 }
+fi
+
+# CreateProcess takes 32767 characters and rundll32.exe answers more with EINVAL,
+# which a draw.io `#create=` URL - the whole diagram - reaches. Past that the URL
+# travels inside a page that redirects to it. Escaped so that nothing in the URL
+# ends the string literal or the script element.
+if ${is_url} && (( ${#target} > 32000 )); then
+  js="${target//\\/\\\\}"
+  js="${js//\"/\\\"}"
+  js="${js//</\\u003C}"
+  page="$(mktemp --suffix=.html -p "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}" xdg-open-XXXXXX)" \
+    || { print -r -u2 -- "xdg-open: could not write a redirect page for a ${#target}-character URL"; exit 4 }
+  print -r -- "<!DOCTYPE html><meta charset=\"utf-8\"><title>xdg-open</title><script>window.location.replace(\"${js}\");</script>" > "${page}"
+  # The browser reads it after this exits. No inherited fds, or a caller
+  # capturing the output waits the minute out.
+  ( sleep 60; rm -f "${page}" ) </dev/null >/dev/null 2>&1 &!
+  shown="a ${#target}-character URL, as ${page}"
+  target="$(wslpath -w "${page}")" || { print -r -u2 -- "xdg-open: wslpath could not convert ${page}"; exit 4 }
+fi
+
+# FLAKELAB_RUNDLL32 is the offline suite's seam. The absolute fallback covers a
+# PATH without the Windows directories (appendWindowsPath off, a systemd unit).
+rundll="${FLAKELAB_RUNDLL32:-${commands[rundll32.exe]:-/mnt/c/Windows/System32/rundll32.exe}}"
+if [[ ! -x "${rundll}" ]]; then
+  print -r -u2 -- "xdg-open: ${rundll} is unreachable (WSL interop down? see 'flakelab doctor') - open it by hand: ${shown}"
+  exit 3
+fi
+
+"${rundll}" url.dll,FileProtocolHandler "${target}" && exit 0
+print -r -u2 -- "xdg-open: ${rundll} failed - open it by hand: ${shown}"
+exit 4

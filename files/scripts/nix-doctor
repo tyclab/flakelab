@@ -220,6 +220,15 @@ else
     log_hint "It kills every session in the VM, so it never runs from an agent session."
     log_hint "Upstream: https://github.com/microsoft/WSL/issues/8203 (binfmt_misc namespacing, open)"
   fi
+
+  # A CLI that ignores $BROWSER (kubelogin, so k9s behind it) execs xdg-open by
+  # name, and its failure to find one is silent behind a TUI.
+  if (( $+commands[xdg-open] )); then
+    log_ok "xdg-open on PATH (${commands[xdg-open]})"
+  else
+    log_fail "no xdg-open on PATH — a browser login from kubelogin or k9s hangs unopened"
+    log_hint "the wsl target installs one; apply the current flake with 'flakelab update'"
+  fi
 fi
 
 log_head "AI CLIs"

@@ -112,8 +112,9 @@ in
     GLAB_NO_PROMPT = "1";
   }
   // lib.optionalAttrs isWsl {
-    # wsl-open shells to the Windows default browser; a headless target has none.
-    BROWSER = "wsl-open";
+    # The flake's xdg-open hands the URL to the Windows default browser; a headless
+    # target has none. Same command a CLI that ignores BROWSER execs by name.
+    BROWSER = "xdg-open";
   }
   // lib.optionalAttrs (whatsappMcpDir != null) {
     # Expanded as ${WHATSAPP_MCP_DIR} by the mcp-whatsapp plugin's .mcp.json.

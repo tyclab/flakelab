@@ -21,7 +21,7 @@ or a Proxmox guest.
 ## Required local gate
 
 ```bash
-make test          # the eight offline suites, seconds
+make test          # the offline suites, seconds
 nix flake check    # the same suites plus statix and deadnix; what CI runs
 ```
 
@@ -36,7 +36,12 @@ belongs in an expendable session — see [`known-issues.md`](known-issues.md).
 ```bash
 make install-hooks   # one-time per clone
 make lint            # pre-commit run --all-files
+make lint-nix        # nix fmt + git diff --exit-code, then statix and deadnix
 ```
+
+CI's `lint` job is `make lint && nix fmt && git diff --exit-code`, and neither
+`make lint` nor `nix flake check` formats: a `.nix` change nixfmt would rewrap
+is green locally and red in CI unless `make lint-nix` (or `nix fmt`) ran first.
 
 Hooks: gitleaks, yamllint, markdownlint-cli2, prettier, shellcheck, `zsh -n`,
 ruff-check. `shellcheck` supports sh/bash/dash/ksh only (SC1071), so the
@@ -54,7 +59,8 @@ before anything downstream can point at one.
 ## Opening a pull request
 
 - One change per pull request.
-- `make test` (or `nix flake check`) green, and `make lint` clean.
+- `make test` (or `nix flake check`) green, `make lint` clean, and `make lint-nix`
+  clean when a `.nix` file changed.
 - Conventional-commit subjects, matching the repo's history:
   `feat(backup): …`, `fix(scripts): …`, `docs(readme): …`.
 - Add a `## [Unreleased]` entry to [`CHANGELOG.md`](CHANGELOG.md) for anything
