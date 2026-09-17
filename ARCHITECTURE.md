@@ -366,6 +366,11 @@ the state root has to converge on its own:
   A conflict copy that forks its base is parked the same way before it is
   folded away. `claude --resume <parked file> --fork-session` reopens a branch
   as a session of its own; nothing prunes them, so delete them once read.
+  Counting is reading, and the state root is usually a Windows mount, so a
+  line count is remembered per file in
+  `~/.local/state/flakelab/state-sync/transcript-lines` and reused while the
+  file's size, mtime and inode stand — append-only files placed by rename
+  cannot change count otherwise. Deleting the index only costs one full count.
 - **Session side files** — the tool outputs Claude Code spills to
   `<slug>/<session>/tool-results/`, a subagent's `.meta.json` — travel with the
   transcripts. Write-once, so each is copied only to a side that lacks it,
