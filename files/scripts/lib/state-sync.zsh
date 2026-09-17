@@ -46,6 +46,20 @@ history_merge_ok() {
 # folders holds. Sets `reply`.
 sync_conflict_copies() {
   local merged="$1" f
+  local -a artifacts=()
+  # (D): the merged history is a dotfile, and so are its conflict copies.
+  for f in "${merged:h}"/*(ND.); do
+    is_sync_artifact "${f:t}" && artifacts+=("${f}")
+  done
+  conflict_copies_among "${merged}" "${artifacts[@]}"
+}
+
+# The name half of sync_conflict_copies: which of the sync artifacts beside
+# <merged>, already listed by the caller, are conflict copies OF it. Touches no
+# file, so a caller with many files in one folder lists that folder once.
+conflict_copies_among() {
+  local merged="$1" f
+  shift
   local tail="${merged:t}" stem="" ext=""
   # Dotfiles (.zsh_history_merged) have no extension to insert before; for
   # them only the prefix shape applies.
@@ -54,10 +68,8 @@ sync_conflict_copies() {
     stem="${tail%.*}"
   fi
   reply=()
-  # (D): the merged history is a dotfile, and so are its conflict copies.
-  for f in "${merged:h}"/*(ND.); do
+  for f in "$@"; do
     [[ "${f}" == "${merged}" ]] && continue
-    is_sync_artifact "${f:t}" || continue
     if [[ "${f:t}" == "${tail}"* ]]; then
       reply+=("${f}")
     elif [[ -n "${stem}" && "${f:t}" == "${stem}"*".${ext}" ]]; then
@@ -601,6 +613,95 @@ sync_memory_dir() {
 # Whether the last sync_transcript placed bytes; the gate's redaction warn reads it.
 SYNC_TRANSCRIPT_WROTE=false
 
+# Line counts, remembered across runs. Both legs decide by comparing the line
+# counts of the two copies, and counting is reading: every transcript on both
+# sides, every run — the whole corpus over the mount twice per half hour,
+# growing with a retention that is unlimited by ruling. A transcript is
+# append-only and every placement is a rename, so an unchanged size, mtime and
+# inode is an unchanged count. Only the two trees both legs walk are
+# remembered; a staged candidate has a throwaway path. Local and per-box, like
+# the other state-sync bookkeeping: the identity of a file is this mount's view.
+typeset -gA TRANSCRIPT_LINES=() TRANSCRIPT_LINES_SEEN=()
+TRANSCRIPT_LINES_LOADED=false
+TRANSCRIPT_LINES_DIRTY=false
+TRANSCRIPT_LINES_STAT=false
+transcript_lines_file() { print -r -- "${HOME_DIR}/.local/state/flakelab/state-sync/transcript-lines" }
+
+transcript_lines_load() {
+  ${TRANSCRIPT_LINES_LOADED} && return 0
+  TRANSCRIPT_LINES_LOADED=true
+  # Without zstat nothing is remembered and every count is a read, as before.
+  zmodload -F zsh/stat b:zstat 2> /dev/null || return 0
+  TRANSCRIPT_LINES_STAT=true
+  local file line
+  file="$(transcript_lines_file)"
+  [[ -r "${file}" ]] || return 0
+  while IFS= read -r line; do
+    [[ "${line}" == [0-9]*$'\t'/* ]] || continue
+    TRANSCRIPT_LINES[${line#*$'\t'}]="${line%%$'\t'*}"
+  done < "${file}"
+  return 0
+}
+
+# "<size> <mtime> <inode>" of <file> into REPLY; 1 when it cannot be stat'ed.
+transcript_identity() {
+  local -a st
+  zstat -A st -- "$1" 2> /dev/null || return 1
+  REPLY="${st[8]} ${st[10]} ${st[2]}"
+}
+
+# The line count of <file> into REPLY; 1 when it cannot be read. A file that
+# changed while it was counted (a live session appending) is not remembered.
+transcript_lines() {
+  local file="$1" id="" lines
+  transcript_lines_load
+  if ${TRANSCRIPT_LINES_STAT} \
+    && [[ "${file}" == "${HOME_DIR}/.claude/projects/"* || ( -n "${STATE_ROOT}" && "${file}" == "${STATE_ROOT}/claude/projects/"* ) ]] \
+    && transcript_identity "${file}"; then
+    id="${REPLY}"
+    TRANSCRIPT_LINES_SEEN[${file}]=1
+    if [[ "${TRANSCRIPT_LINES[${file}]:-}" == "${id} "* ]]; then
+      REPLY="${TRANSCRIPT_LINES[${file}]##* }"
+      return 0
+    fi
+  fi
+  lines="$(wc -l < "${file}" 2> /dev/null)" || return 1
+  lines=$(( lines ))
+  if [[ -n "${id}" ]] && transcript_identity "${file}" && [[ "${REPLY}" == "${id}" ]]; then
+    TRANSCRIPT_LINES[${file}]="${id} ${lines}"
+    TRANSCRIPT_LINES_DIRTY=true
+  fi
+  REPLY="${lines}"
+  return 0
+}
+
+# Written after each leg, so a run the timer kills keeps what it counted. An
+# entry not looked at this run survives while its file does (a leg that was
+# skipped, a live session the pull passed over); one whose file is gone is dropped.
+transcript_lines_save() {
+  ${TRANSCRIPT_LINES_DIRTY} || return 0
+  ${DRY_RUN} && return 0
+  local file tmp entry
+  file="$(transcript_lines_file)"
+  ensure_dir "${file:h}"
+  [[ -d "${file:h}" ]] || return 0
+  if ! tmp="$(mktemp "${file}.XXXXXX")"; then
+    log_warn "Could not write the transcript line index; the next run counts every transcript again"
+    return 0
+  fi
+  for entry in "${(@k)TRANSCRIPT_LINES}"; do
+    [[ -n "${TRANSCRIPT_LINES_SEEN[${entry}]:-}" || -e "${entry}" ]] || continue
+    print -r -- "${TRANSCRIPT_LINES[${entry}]}"$'\t'"${entry}"
+  done > "${tmp}"
+  if mv -f "${tmp}" "${file}"; then
+    TRANSCRIPT_LINES_DIRTY=false
+  else
+    rm -f "${tmp}"
+    log_warn "Could not write the transcript line index; the next run counts every transcript again"
+  fi
+  return 0
+}
+
 # The uuid of the last complete entry that carries one — the message a copy ends
 # on. From the tail only: a transcript is append-only, and a half-written last
 # line (a live session mid-append) is skipped, not an error.
@@ -665,15 +766,17 @@ sync_transcript() {
   SYNC_TRANSCRIPT_WROTE=false
 
   local src_size src_lines dst_lines
-  if ! src_lines="$(wc -l < "${src}")"; then
+  if ! transcript_lines "${src}"; then
     record_failure "Could not read transcript: ${src}"
     return 0
   fi
+  src_lines="${REPLY}"
   if [[ -f "${dst}" ]]; then
-    if ! dst_lines="$(wc -l < "${dst}")"; then
+    if ! transcript_lines "${dst}"; then
       record_failure "Could not read transcript copy: ${dst}"
       return 0
     fi
+    dst_lines="${REPLY}"
     (( src_lines <= dst_lines )) && return 0
   fi
   # A longer copy that does not continue the one it would replace is a fork —
@@ -735,22 +838,40 @@ sync_transcript() {
 # it is removed, whichever of the two keeps the path. Runs before both legs so
 # push and pull see the folded file.
 fold_transcript_conflicts() {
-  local base copy rel
-  for base in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
-    rel="${base#${STATE_ROOT}/claude/projects/}"
-    rel_path_is_sync_artifact "${rel}" && continue
-    sync_conflict_copies "${base}"
-    for copy in "${reply[@]}"; do
-      local failures_before=${FAILURES}
-      sync_transcript "${copy}" "${base}"
-      # Not placed, and not contained in the base: a branch of its own, not a
-      # stale write. Left in place when it cannot be parked.
-      if ! ${DRY_RUN} && ! ${SYNC_TRANSCRIPT_WROTE} && ! transcript_continues "${base}" "${copy}"; then
-        park_diverged_transcript "${copy}" "${base}" || continue
-      fi
-      if ! ${DRY_RUN} && (( FAILURES == failures_before )); then
-        fold_conflict_copies transcript "${copy}"
-      fi
+  local base copy rel f dir
+  # ONE walk names the folders that hold a sync artifact at all, and which.
+  # sync_conflict_copies per transcript lists the folder once for every
+  # transcript in it; a workflow's subagent folder holds hundreds, and on a
+  # Windows mount each entry is a round trip — 2 M of them on a real state
+  # root, which ate the state-sync timer's whole 30 min and let no run reach
+  # the push or the pull. No (D): a transcript is never a dotfile, so neither
+  # is a conflict copy of one.
+  local -A artifacts_in=()
+  for f in "${STATE_ROOT}"/claude/projects/**/*(N.); do
+    is_sync_artifact "${f:t}" && artifacts_in[${f:h}]+="${f}"$'\0'
+  done
+  local -a artifacts
+  for dir in "${(@ko)artifacts_in}"; do
+    artifacts=("${(@0)artifacts_in[${dir}]%$'\0'}")
+    for base in "${dir}"/*.jsonl(N.); do
+      rel="${base#${STATE_ROOT}/claude/projects/}"
+      rel_path_is_sync_artifact "${rel}" && continue
+      conflict_copies_among "${base}" "${artifacts[@]}"
+      for copy in "${reply[@]}"; do
+        # Listed once per folder, so a copy an earlier transcript already
+        # folded and removed is still in the list.
+        [[ -f "${copy}" ]] || continue
+        local failures_before=${FAILURES}
+        sync_transcript "${copy}" "${base}"
+        # Not placed, and not contained in the base: a branch of its own, not a
+        # stale write. Left in place when it cannot be parked.
+        if ! ${DRY_RUN} && ! ${SYNC_TRANSCRIPT_WROTE} && ! transcript_continues "${base}" "${copy}"; then
+          park_diverged_transcript "${copy}" "${base}" || continue
+        fi
+        if ! ${DRY_RUN} && (( FAILURES == failures_before )); then
+          fold_conflict_copies transcript "${copy}"
+        fi
+      done
     done
   done
   return 0
@@ -788,6 +909,7 @@ pull_transcripts() {
     fi
     sync_transcript "${transcript}" "${dst}"
   done
+  transcript_lines_save
   return 0
 }
 
@@ -818,8 +940,8 @@ backup_transcripts() {
     rel_path_is_sync_artifact "${rel}" && continue
     dst="${STATE_ROOT}/claude/projects/${rel}"
     if [[ -f "${dst}" ]] \
-      && src_lines="$(wc -l < "${transcript}" 2> /dev/null)" \
-      && dst_lines="$(wc -l < "${dst}" 2> /dev/null)" \
+      && transcript_lines "${transcript}" && src_lines="${REPLY}" \
+      && transcript_lines "${dst}" && dst_lines="${REPLY}" \
       && (( src_lines <= dst_lines )); then
       unchanged=$(( unchanged + 1 ))
       continue
@@ -827,6 +949,7 @@ backup_transcripts() {
     srcs+=("${transcript}")
     dsts+=("${dst}")
   done
+  transcript_lines_save
   if (( ${#srcs} == 0 )); then
     (( unchanged > 0 )) && log_info "Transcripts: ${unchanged} unchanged, nothing to stage"
     return 0
@@ -894,6 +1017,7 @@ backup_transcripts() {
   done
 
   rm -rf "${stage}" "${findings}"
+  transcript_lines_save
   # One journal line per run so a phase creeping back toward activation- and
   # timer-hostile durations is visible before it breaks something again.
   if [[ -n "${phase_started}" ]]; then

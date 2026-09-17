@@ -2453,6 +2453,88 @@ absent "and so is the smaller one" \
 check "the folded file is what the pull hands this box" "$(wc -l < "${SLUG_HOME}/abc.jsonl")" "2"
 absent "no conflict copy leaks into the home"           "${SLUG_HOME}/abc_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
 
+# Asking "which conflict copies sit beside this transcript" per transcript lists
+# its whole folder once for every transcript in it: quadratic, and on a Windows
+# mount every entry is a round trip — 2 M of them on a real state root, the
+# state-sync timer's whole 30 min TimeoutStartSec, so no run got past the fold
+# (2026-09-13 onwards). Name checks stand in for entries visited.
+print -r -- "folding looks at each state-root entry once, however many transcripts share a folder"
+transcript_fixture transcript-fold-linear
+mkdir -p "${SLUG_STATE}/sess/subagents"
+for n in {1..40}; do
+  print -r -- '{"n":1}' > "${SLUG_STATE}/sess/subagents/agent-${n}.jsonl"
+  print -r -- '{}'      > "${SLUG_STATE}/sess/subagents/agent-${n}.meta.json"
+done
+looked="$(STATE_ROOT="${FIX_STATE}" zsh -fc '
+  set -euo pipefail
+  source "$1"
+  typeset -i LOOKED=0
+  is_sync_artifact() { LOOKED+=1; return 1 }
+  DRY_RUN=false; FAILURES=0
+  fold_transcript_conflicts
+  print -r -- "${LOOKED}"' fold "${SCRIPT_DIR}/lib/state-sync.zsh" 2>&1)"
+check "80 entries cost 80 name checks, not 40 x 80" "$(( looked <= 80 ))" "1"
+
+print -r -- "a conflict copy in a crowded folder is still folded into its own transcript only"
+transcript_fixture transcript-fold-crowded
+mkdir -p "${SLUG_STATE}/sess/subagents"
+for n in {1..12}; do
+  print -r -- '{"n":1}' > "${SLUG_STATE}/sess/subagents/agent-${n}x.jsonl"
+done
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' } \
+  > "${SLUG_STATE}/sess/subagents/agent-7x_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}'; print -r -- '{"n":3}' } \
+  > "${SLUG_STATE}/sess/subagents/agent-9x.jsonl_OTHERBOX_Jan-09-003137-2026_Conflict"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+
+run_backup --state-only --force
+check  "the run exits clean"                         "${RC}" "0"
+check  "the extension-inserted copy grew its base"   "$(wc -l < "${SLUG_STATE}/sess/subagents/agent-7x.jsonl")" "2"
+check  "the appended-marker copy grew its base"      "$(wc -l < "${SLUG_STATE}/sess/subagents/agent-9x.jsonl")" "3"
+check  "a neighbour is left alone"                   "$(wc -l < "${SLUG_STATE}/sess/subagents/agent-8x.jsonl")" "1"
+absent "the first copy is removed once folded" \
+  "${SLUG_STATE}/sess/subagents/agent-7x_OTHERBOX_Jan-09-003137-2026_Conflict.jsonl"
+absent "and so is the second" \
+  "${SLUG_STATE}/sess/subagents/agent-9x.jsonl_OTHERBOX_Jan-09-003137-2026_Conflict"
+
+# Both legs compared line counts by reading every transcript on both sides,
+# every run: the whole corpus over the mount twice per half hour, growing with
+# a retention that is unlimited by ruling. A transcript is append-only, so an
+# unchanged size, mtime and inode is an unchanged line count.
+print -r -- "an unchanged transcript is not read again to count its lines"
+transcript_fixture transcript-lines-cached
+for n in {1..6}; do
+  { print -r -- '{"n":1}'; print -r -- '{"n":2}' } > "${SLUG_HOME}/quiet-${n}.jsonl"
+  touch -d '1 hour ago' "${SLUG_HOME}/quiet-${n}.jsonl"
+done
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+REAL_WC="$(command -v wc)"
+cat > "${BASE}/bin/wc" <<STUB
+#!/bin/sh
+# Log what is being counted (stdin, as the script passes it), then count it.
+readlink /proc/\$\$/fd/0 >> "${BASE}/wc.log" 2> /dev/null
+exec "${REAL_WC}" "\$@"
+STUB
+chmod +x "${BASE}/bin/wc"
+
+run_backup --state-only --force
+check "the first run exits clean"   "${RC}" "0"
+is_file "and pushes the transcripts" "${SLUG_STATE}/quiet-3.jsonl"
+run_backup --state-only --force          # settles the state-root copies' identity
+: > "${BASE}/wc.log"
+run_backup --state-only --force
+check "the third run exits clean"   "${RC}" "0"
+check "and counted no transcript again" "$(grep -c -F '.jsonl' "${BASE}/wc.log" || true)" "0"
+
+print -r -- '{"n":3}' >> "${SLUG_HOME}/quiet-2.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/quiet-2.jsonl"
+run_backup --state-only --force
+check "a transcript that grew here is still pushed"  "$(wc -l < "${SLUG_STATE}/quiet-2.jsonl")" "3"
+print -r -- '{"n":3}' >> "${SLUG_STATE}/quiet-5.jsonl"
+run_backup --state-only --force
+check "and one that grew on the other box is still pulled" "$(wc -l < "${SLUG_HOME}/quiet-5.jsonl")" "3"
+rm -f "${BASE}/bin/wc" "${BASE}/wc.log"
+
 print -r -- "a longer copy that forks a quiet local transcript parks the local branch first"
 transcript_fixture diverged-pull
 mkdir -p "${SLUG_STATE}"

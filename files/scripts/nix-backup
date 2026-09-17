@@ -1114,6 +1114,7 @@ do_restore() {
         rel_path_is_sync_artifact "${rel}" && continue
         sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${rel}"
       done
+      transcript_lines_save
       pull_side_files
     fi
     ensure_dir "${HOME_DIR}/.claude/plugins"
