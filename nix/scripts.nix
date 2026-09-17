@@ -29,7 +29,17 @@ let
   zsh = "${pkgs.zsh}/bin/zsh";
   bin = lib.makeBinPath;
   # Backups must land somewhere that survives distro re-provisioning.
-  backupRoot = if cfg.backupRoot != null then cfg.backupRoot else "${cfg.repoPath}/files/config";
+  # Beside repoPath, never under it: every `nix` command given the overlay copies
+  # the whole directory into the world-readable store, .gitignore or not, and the
+  # payload is keys and cleartext secrets. setup-wsl-nix.ps1 (Get-PayloadRoot) and
+  # nix-overlay-generate apply the same `-payload` rule on their side.
+  backupRoot =
+    if cfg.backupRoot == null then
+      "${cfg.repoPath}-payload"
+    else
+      lib.throwIf (cfg.backupRoot == cfg.repoPath || lib.hasPrefix "${cfg.repoPath}/" cfg.backupRoot)
+        "flakelab.backupRoot (${cfg.backupRoot}) is inside repoPath (${cfg.repoPath}): nix copies the overlay directory whole into the world-readable store, so the payload - keys, cleartext secrets - must live outside it. Leave it null for ${cfg.repoPath}-payload."
+        cfg.backupRoot;
   # Exported only when set: unset means "everything stays in the payload" to
   # nix-backup and "no held-findings check" to nix-doctor. The kiro-plugin path comes
   # from the same derivation activation clones into, so a doctor cannot diagnose a

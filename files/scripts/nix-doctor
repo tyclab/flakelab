@@ -549,6 +549,17 @@ fi
 # generators add origin but never push, so this is the push that never
 # happened, and until it does the remote is a name, not a copy.
 overlay="${FLAKELAB_REPO_ROOT:-}"
+# Keys, secrets.env and the backup payload inside the overlay: the layout before
+# `<overlay>-payload`. nix copies the overlay whole into the world-readable store
+# on every update, so this is a finding until the one-time move is done - and the
+# copies already made stay until they are collected.
+if [[ -n "${overlay}" ]] && source "${0:A:h}/lib/overlay-git.zsh" && overlaygit_payload_inside "${overlay}"; then
+  log_warn "overlay still holds ${(j:, :)${(@)OVERLAYGIT_PAYLOAD_INSIDE:t}} under files/config - every update copies it into the world-readable nix store"
+  log_hint "mkdir -p ${(qq)overlay}-payload && mv ${(j: :)${(@qq)OVERLAYGIT_PAYLOAD_INSIDE/#/${overlay}/}} ${(qq)overlay}-payload/"
+  log_hint "then: flakelab update && nix-collect-garbage   (drops the store copies made so far; a key that was in them is worth rotating if this box is shared)"
+elif [[ -n "${overlay}" ]]; then
+  log_ok "no keys, secrets or payload inside the overlay"
+fi
 overlay_gitignore="${FLAKELAB_OVERLAY_GITIGNORE:-${0:A:h:h:h}/templates/overlay/.gitignore}"
 if [[ -z "${overlay}" ]]; then
   log_ok "no overlay path known (FLAKELAB_REPO_ROOT unset) - nothing to check"

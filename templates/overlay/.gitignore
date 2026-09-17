@@ -7,8 +7,8 @@ id_*
 secrets.env
 .env
 .env.*
-# A filled-in provisioning config carries the same tokens in cleartext, and
-# setup-wsl-nix.ps1 parks it here.
+# A filled-in provisioning config carries the same tokens in cleartext. It is
+# parked in <overlay>-payload now; this is for one left here by the old layout.
 files/config/user_data.yaml
 # Per-machine Claude Code settings: permission rules quote whole command lines.
 .claude/settings.local.json
@@ -17,20 +17,15 @@ files/config/user_data.yaml
 # over there aborts the build with "NAR hash mismatch".
 flake.lock
 
-# nix-backup payload, snapshots and runtime state: cleartext secrets included.
+# Where keys, secrets.env and the nix-backup payload USED to live. They belong in
+# <overlay>-payload now, beside the overlay: ignoring them never kept them out of
+# the nix store, which takes the whole directory. The rules stay so an overlay
+# still in the old layout cannot commit them - `flakelab doctor` names the move.
 files/config/instances/
+files/config/shared/
 files/config/snapshots/
 files/config/.backup.lock
 files/config/.last-restore-kept
-# shared/ the long way: git never looks inside an excluded directory, so a plain
-# `files/config/shared/` makes the .gitkeep re-include below dead. Each level is
-# excluded by content and the one path down to the key directory opened again.
-files/config/shared/*
-!files/config/shared/ssh/
-files/config/shared/ssh/*
-!files/config/shared/ssh/keys/
-files/config/shared/ssh/keys/*
-!files/config/shared/ssh/keys/.gitkeep
 
 # Migration marker written by `setup-wsl-nix.ps1 migrate`.
 .migrated-from-wslkube

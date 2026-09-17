@@ -85,17 +85,17 @@ repos) is added there, then `provision -Force` regenerates the flake from it.
 
 **Optional** — same command, add what applies:
 
-| Flag                                       | When                                                                                                                                                                |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `-Config <user_data.yaml>`                 | You already have a config (second machine, unattended runs): skips the questions. Required when there is no console to ask in.                                      |
-| `-FlakeRef <dir>`                          | Put the overlay somewhere other than `..\flakelab-config` (a scratch dir for a test run, a synced folder).                                                          |
-| `-DistroName <name>` / `-InstallDir <dir>` | Distro name and vhdx location (defaults `flakelab`, `%LOCALAPPDATA%\WSL\<name>`). `-InstallDir D:\wsl\flakelab` when C: is tight.                                   |
-| `-Tarball <nixos.wsl>` / `-ImageUrl <url>` | Reuse a downloaded base image, or pin / mirror the release (air-gapped).                                                                                            |
-| `-SshPassphrase <pw>`                      | Load the key under `<overlay>\files\config\shared\ssh\keys` into the distro's ssh-agent unattended, so the SSH-dependent activation steps run instead of deferring. |
-| `-RestoreInstance <name>`                  | Restore a `flakelab backup` payload written under another distro's name (migrating a box called `NixOS` into `flakelab`).                                           |
-| `-SkipCloneRepos` / `-SkipSecondSwitch`    | Faster iteration when debugging provisioning; both steps are idempotent and run later anyway.                                                                       |
-| `-Force`                                   | Regenerate the overlay flake from the config (a hand-edited flake is otherwise kept).                                                                               |
-| `-DryRun`                                  | Print every step, touch nothing.                                                                                                                                    |
+| Flag                                       | When                                                                                                                                                           |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-Config <user_data.yaml>`                 | You already have a config (second machine, unattended runs): skips the questions. Required when there is no console to ask in.                                 |
+| `-FlakeRef <dir>`                          | Put the overlay somewhere other than `..\flakelab-config` (a scratch dir for a test run, a synced folder).                                                     |
+| `-DistroName <name>` / `-InstallDir <dir>` | Distro name and vhdx location (defaults `flakelab`, `%LOCALAPPDATA%\WSL\<name>`). `-InstallDir D:\wsl\flakelab` when C: is tight.                              |
+| `-Tarball <nixos.wsl>` / `-ImageUrl <url>` | Reuse a downloaded base image, or pin / mirror the release (air-gapped).                                                                                       |
+| `-SshPassphrase <pw>`                      | Load the key under `<overlay>-payload\shared\ssh\keys` into the distro's ssh-agent unattended, so the SSH-dependent activation steps run instead of deferring. |
+| `-RestoreInstance <name>`                  | Restore a `flakelab backup` payload written under another distro's name (migrating a box called `NixOS` into `flakelab`).                                      |
+| `-SkipCloneRepos` / `-SkipSecondSwitch`    | Faster iteration when debugging provisioning; both steps are idempotent and run later anyway.                                                                  |
+| `-Force`                                   | Regenerate the overlay flake from the config (a hand-edited flake is otherwise kept).                                                                          |
+| `-DryRun`                                  | Print every step, touch nothing.                                                                                                                               |
 
 `setup-wsl-nix.cmd` is the entry point: it supplies the execution-policy
 boilerplate a bare `.\setup-wsl-nix.ps1` call trips over, passes arguments
@@ -164,10 +164,10 @@ boundary, and the second is the flake-ref fragment delimiter, so `--flake
 <path>#default` would be cut at it.
 
 What is still manual: installing WSL; filling in the config; placing a private
-SSH key in the overlay's `files\config\shared\ssh\keys\` and populating
+SSH key in `<overlay>-payload\shared\ssh\keys\` and populating
 `secrets.env` (see [Secrets](#secrets)) if you want the steps that need them —
 before a distro exists, that file is the Windows-side
-`<overlay>\files\config\shared\secrets\secrets.env`, which is the one
+`<overlay>-payload\shared\secrets\secrets.env`, which is the one
 `provision` reads and writes; and any `flakelab.*` option the config schema has
 no counterpart for — the AI-CLI and plugin options among them — which keep the
 default their option declares in [`nix/options.nix`](nix/options.nix) until the
@@ -298,8 +298,8 @@ nix flake new -t github:tyclab/flakelab#overlay flakelab-config
 All three produce the same two files, but only `.gitignore` is copied from
 `templates/overlay/` verbatim. `flake.nix` is **generated** whenever a config is
 given; `init` and a bare `nix flake new` emit the template's placeholder text
-instead, for hand-editing. `init` and `nix-overlay-generate` also create
-`files/config/shared/ssh/keys/` and point the `flakelab` input at this
+instead, for hand-editing. `init` and `nix-overlay-generate` also create the
+key directory `<overlay>-payload/shared/ssh/keys/` beside it and point the `flakelab` input at this
 checkout; `nix flake new` leaves that input on the
 public coordinate, which you edit (one marked line) or override with
 `--override-input flakelab path:/path/to/flakelab`. Then point `repoPath` at the
@@ -347,8 +347,20 @@ with your own rather than reading them as defaults.
 
 ## Secrets
 
-Nothing secret lives in the repo or the Nix store in plaintext. Two sources,
-tried in this order at shell start:
+Nothing secret lives in the repo or the Nix store in plaintext. That is why
+keys, `secrets.env`, the provisioning config and the `flakelab backup` payload
+sit in **`<overlay>-payload`, beside the overlay and never in it**: every `nix`
+command given the overlay copies the whole directory into the world-readable
+store, and a `.gitignore` does not stop that. `flakelab.backupRoot` names
+another place; one inside `repoPath` fails to evaluate.
+
+An overlay from before that layout still has them under its `files/config/`.
+Nothing moves them for you - `flakelab update`, `flakelab doctor` and
+`setup-wsl-nix.ps1` say so on every run, and the doctor prints the one `mv`.
+Afterwards `nix-collect-garbage` drops the store copies already made; if the
+box is shared, rotate a key that was in them.
+
+Two sources, tried in this order at shell start:
 
 1. **sops-nix (opt-in)** — the overlay sets
    `sopsSecretsFile = ./secrets/secrets.env;`, an age-encrypted sops **dotenv**
@@ -380,7 +392,7 @@ not a setting.)
 
 There are **two** files, and only one of them exists before a distro does. The
 Windows side — `provision`, and anything you edit by hand on a fresh PC — reads
-and writes `<overlay>\files\config\shared\secrets\secrets.env`. The in-distro
+and writes `<overlay>-payload\shared\secrets\secrets.env`. The in-distro
 `~/.config/tyc/secrets.env` that the shell actually sources is restored from it
 by `flakelab backup --restore`, which `provision` runs for you.
 

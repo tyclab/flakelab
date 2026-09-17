@@ -54,7 +54,7 @@
         # Extra roots for the gitcheck/gitclean aliases beyond ~/git.
         extraReposDirs = [ "/mnt/c/Users/WindowsUser/git" ];
 
-        # Keys under files/config/shared/ssh/keys/ to load on login; the first is
+        # Keys under <overlay>-payload/shared/ssh/keys/ to load on login; the first is
         # the git/clone identity.
         # sshKeys = [ "id_ed25519" ];
 
