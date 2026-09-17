@@ -152,7 +152,6 @@ in
       [[ -n "''${HASS_URL:-}" ]] && export HA_URL="$HASS_URL"
       [[ -n "''${HASS_TOKEN:-}" ]] && export HA_TOKEN="$HASS_TOKEN"
 
-      # Merge every ~/.kube/*.yaml into KUBECONFIG.
       export KUBECONFIG="$HOME/.kube/config:"
       for file in $HOME/.kube/*.yaml(N); do
         export KUBECONFIG="$KUBECONFIG$file:"
@@ -176,7 +175,6 @@ in
       PROMPT+=$'\n'
       PROMPT+='%# '
 
-      # Keybindings.
       bindkey '^[[H' beginning-of-line
       bindkey '^[[F' end-of-line
       bindkey '^[[3~' delete-char

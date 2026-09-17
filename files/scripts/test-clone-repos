@@ -88,9 +88,6 @@ run_sweep() {
 
 print -r -- "test-clone-repos"
 
-# ---------------------------------------------------------------------------
-# 1. A missing checkout is cloned
-# ---------------------------------------------------------------------------
 print -r -- "a missing checkout is cloned"
 mk_up fresh
 run_sweep "$(spec fresh)"
@@ -98,18 +95,12 @@ check    "it exits clean"                   "${RC}" "0"
 contains "and reports the clone"            "${OUT}" "1 cloned"
 check    "the checkout is there"            "$([[ -d "${BASE}/repos/fresh/.git" ]] && print yes || print no)" "yes"
 
-# ---------------------------------------------------------------------------
-# 2. A checkout already at its upstream is only fetched
-# ---------------------------------------------------------------------------
 print -r -- "a checkout at its upstream is only fetched"
 run_sweep "$(spec fresh)"
 check    "it exits clean"                   "${RC}" "0"
 contains "nothing was rebased"              "${OUT}" "0 rebased"
 contains "and it was fetched"               "${OUT}" "1 fetched"
 
-# ---------------------------------------------------------------------------
-# 3. A clean checkout behind its upstream is rebased
-# ---------------------------------------------------------------------------
 print -r -- "a clean checkout behind its upstream is rebased"
 mk_up behind
 clone_into behind
@@ -119,9 +110,6 @@ check    "it exits clean"                   "${RC}" "0"
 contains "and rebases"                      "${OUT}" "1 rebased"
 check    "HEAD is the upstream's"           "$(sha behind HEAD)" "$(sha behind origin/main)"
 
-# ---------------------------------------------------------------------------
-# 4. The default branch moves while the checkout sits on a feature branch
-# ---------------------------------------------------------------------------
 # The reported drift: nothing here rebases, because the checked-out branch is
 # already current, and main is not checked out, so it stayed behind forever.
 print -r -- "a behind default branch is fast-forwarded beside a feature branch"
@@ -136,9 +124,6 @@ check    "main is the upstream's"           "$(sha parked main)" "$(sha parked o
 check    "HEAD is untouched"                "$(git -C "${BASE}/repos/parked" symbolic-ref --short HEAD)" "feature"
 contains "and the move is reported"         "${OUT}" "Default branch fast-forwarded"
 
-# ---------------------------------------------------------------------------
-# 5. A stranded branch no longer strands the default branch
-# ---------------------------------------------------------------------------
 print -r -- "an upstream-gone branch no longer holds the default branch back"
 mk_up gone
 clone_into gone
@@ -151,9 +136,6 @@ check    "it exits clean"                   "${RC}" "0"
 contains "the branch is reported stranded"  "${OUT}" "upstream gone"
 check    "but main is current"              "$(sha gone main)" "$(sha gone origin/main)"
 
-# ---------------------------------------------------------------------------
-# 6. A dirty tree blocks the rebase, not the default branch
-# ---------------------------------------------------------------------------
 print -r -- "a dirty tree blocks the rebase but not the default branch"
 mk_up dirty
 clone_into dirty
@@ -166,9 +148,6 @@ contains "the tree is reported dirty"       "${OUT}" "dirty working tree"
 check    "main is current"                  "$(sha dirty main)" "$(sha dirty origin/main)"
 check    "and the edit survives"            "$(git -C "${BASE}/repos/dirty" status --porcelain)" " M f"
 
-# ---------------------------------------------------------------------------
-# 7. A default branch checked out in a linked worktree is left alone
-# ---------------------------------------------------------------------------
 # git refuses to move a branch another worktree has checked out. That refusal
 # is the guard; the run stays clean and says which repo kept its old default.
 print -r -- "a default branch held by another worktree is reported, not moved"
@@ -184,9 +163,6 @@ check    "it exits clean"                   "${RC}" "0"
 check    "main is untouched"                "$(sha held main)" "${before_held}"
 contains "and says it was not updated"      "${OUT}" "Default branch NOT fast-forwarded"
 
-# ---------------------------------------------------------------------------
-# 8. A diverged default branch is reported and never touched
-# ---------------------------------------------------------------------------
 print -r -- "a diverged default branch is reported, never rewritten"
 mk_up diverged
 clone_into diverged
@@ -202,9 +178,6 @@ check    "it exits clean"                   "${RC}" "0"
 contains "the divergence is reported"       "${OUT}" "diverged"
 check    "and main is untouched"            "$(sha diverged main)" "${before_div}"
 
-# ---------------------------------------------------------------------------
-# 9. A detached HEAD skips the rebase and still updates the default branch
-# ---------------------------------------------------------------------------
 print -r -- "a detached HEAD skips the rebase but not the default branch"
 mk_up detached
 clone_into detached
@@ -215,9 +188,6 @@ check    "it exits clean"                   "${RC}" "0"
 contains "the detached HEAD is reported"    "${OUT}" "detached HEAD"
 check    "and main is current"              "$(sha detached main)" "$(sha detached origin/main)"
 
-# ---------------------------------------------------------------------------
-# 10. A rebase conflict is reported with git's text as it is
-# ---------------------------------------------------------------------------
 # zsh's echo reads backslash escapes, and `\c` ends its output without a newline:
 # a commit subject carrying one cut the ledger record short, and the unterminated
 # record was never read back, so the conflict went uncounted.
@@ -233,7 +203,6 @@ run_sweep "$(spec conflict)"
 contains "the conflict is counted"          "${OUT}" "1 rebase-conflict"
 contains "and git's text survives the \\c"  "${OUT}" 'local \c tail-marker'
 
-# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

@@ -10,15 +10,13 @@
 let
   cfg = osConfig.flakelab;
   inherit (flakelab) isWsl;
-
-  # null -> whatsapp is skipped.
   inherit (cfg) whatsappMcpDir;
+
+  # claude.nix's Playwright env defaults read this path, so it is the single source.
+  windowsChromePath = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe";
 
   # Pins live in variables so renovate.json's customManagers can see them; an inline
   # pin in an args list has no manager watching it.
-  # This path is the single source claude.nix's env defaults must agree with.
-  windowsChromePath = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe";
-
   # renovate: datasource=npm depName=@playwright/mcp
   playwrightMcpVersion = "0.0.79";
   # renovate: datasource=npm depName=@jarahkon/hass-mcp-server
@@ -68,21 +66,19 @@ let
     ];
   };
 
-  # Fallback only: kiroMcpMerge prefers the mcp-synology plugin's own definition from
-  # the Claude marketplace clone, so this runs when that clone is absent. Both are the
-  # same pin; bumping it here alone does not change what Kiro runs.
+  # Fallback only: kiroMcpMerge prefers the mcp-synology plugin's definition from the
+  # Claude marketplace clone, which carries the same pin; bumping it here alone does
+  # not change what Kiro runs.
   #
   # DSM hands out its long-lived device token only through the server's settings
   # file -- no env var reads it, and SYNOLOGY_OTP_CODE is spent on the first login.
-  # The wrapper materialises that file on tmpfs at start so the password stays in
-  # the runtime environment, the same reason homeassistantServer is wrapped. No
-  # XDG_RUNTIME_DIR means no tmpfs, and then it refuses rather than write the
-  # password somewhere that survives a reboot.
+  # The wrapper materialises that file on tmpfs so the password stays out of
+  # persistent disk; without XDG_RUNTIME_DIR it refuses.
   #
-  # The three assignments on the exec line are not defaults being restated: the
-  # server reads a generic VERIFY_SSL and defaults it to false for self-signed DSM
-  # certs, XIAOZHI bridges it to a foreign WebSocket endpoint, and MCP_HTTP opens an
-  # unauthenticated listener. None of the three may follow a stray shell variable.
+  # The three exec-line assignments are not restated defaults: the server reads a
+  # generic VERIFY_SSL and defaults it to false, XIAOZHI bridges it to a foreign
+  # WebSocket endpoint, and MCP_HTTP opens an unauthenticated listener. None may
+  # follow a stray shell variable.
   synologyServer = {
     command = "sh";
     args = [
@@ -123,8 +119,6 @@ let
   };
 
   mcpServers =
-    # Off WSL there is no Windows Chrome, so registering it would hand every agent a
-    # broken tool; warn rather than drop the setting silently.
     lib.warnIf (cfg.mcpPlaywright && !isWsl)
       "flakelab.mcpPlaywright is set but flakelab.target is not \"wsl\" — extension mode needs the Windows Chrome path in nix/home/mcp.nix, which is meaningless off WSL; the playwright MCP server was NOT registered."
       (

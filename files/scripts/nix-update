@@ -220,11 +220,9 @@ _nix_wait_boot || exit 1
 # a repository, and what a hand-made overlay still is; a repository with no
 # remote is what the generator leaves now; the proxmox-vm bootstrap clones
 # from one with a remote. Nothing can be behind a remote that does not exist,
-# so the first two get one line and the switch - not a fetch, which used to
-# fail with "not a git repository", retry, and refuse the rebuild without a
-# terminal, then advise `git remote set-head origin -a` on a repository that
-# has no origin. Uncommitted changes are still worth a warning in a local
-# repository: that is drift against its own history.
+# so the first two get one line and the switch - not a fetch. Uncommitted
+# changes are still worth a warning in a local repository: that is drift
+# against its own history.
 _nix_repo_shape() {
   if ! git -C "${_repo}" rev-parse --git-dir > /dev/null 2>&1; then
     _say cyan "ℹ ${_repo} is not a git checkout — no drift check (git init it to get one)"

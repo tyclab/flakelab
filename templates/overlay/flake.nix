@@ -28,7 +28,6 @@
         gitEditor = null; # null -> leave the git default
         backupAutostart = false;
 
-        # This distro's hostname.
         # hostName = "flakelab";
 
         # A second root for the shareable backup state, replicated by your sync

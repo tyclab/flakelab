@@ -118,9 +118,7 @@ if [[ -z "${TARGET}" ]]; then
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# Activation warnings recorded by flakelab-warn
-# ---------------------------------------------------------------------------
+# Activation warnings are recorded by flakelab-warn.
 log_head "Activation"
 if [[ -s "${WARN_LOG}" ]]; then
   log_fail "activation step(s) reported failures (${WARN_LOG}):"
@@ -185,9 +183,6 @@ else
   log_hint "the running system predates it — switch once: flakelab update"
 fi
 
-# ---------------------------------------------------------------------------
-# flakelab input
-# ---------------------------------------------------------------------------
 log_head "flakelab input"
 # A local override is fine for side-by-side work, but a box left on one stops
 # following the published flakelab and no rebuild says so.
@@ -202,9 +197,6 @@ case "${input%% *}" in
   *) log_warn "could not read the flakelab input from the lock" ;;
 esac
 
-# ---------------------------------------------------------------------------
-# WSL interop
-# ---------------------------------------------------------------------------
 log_head "WSL interop"
 if [[ "${TARGET}" != "wsl" ]]; then
   log_ok "target ${TARGET}: no WSL interop to check"
@@ -239,9 +231,6 @@ else
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# AI CLIs
-# ---------------------------------------------------------------------------
 log_head "AI CLIs"
 if [[ -x "${HOME}/.local/bin/kiro-cli" ]]; then
   log_ok "kiro-cli present (~/.local/bin/kiro-cli)"
@@ -267,9 +256,7 @@ else
   log_hint "curl -fsSL https://claude.ai/install.sh | bash"
 fi
 
-# ---------------------------------------------------------------------------
 # Kiro plugins — agents / skills / steering / hooks / mcp.json
-# ---------------------------------------------------------------------------
 log_head "Kiro plugins"
 if [[ -z "${KIRO_PLUGIN_DIR}" ]]; then
   # kiroPluginRepo = null: there is no checkout to find and ~/.kiro is whatever
@@ -319,9 +306,7 @@ else
   log_fail "~/.kiro/settings/mcp.json missing or not valid JSON"
 fi
 
-# ---------------------------------------------------------------------------
-# Git config — which file git actually reads the flake's keys from
-# ---------------------------------------------------------------------------
+# Which file git actually reads the flake's keys from.
 log_head "Git config"
 GITCONFIG="${HOME}/.gitconfig"
 XDG_GITCONFIG="${HOME}/.config/git/config"
@@ -362,9 +347,7 @@ else
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# Secrets (shape only — never a value)
-# ---------------------------------------------------------------------------
+# Shape only — never a value.
 log_head "Secrets"
 # A sops-enrolled box (flakelab.sopsSecretsFile set) sources ONLY the ramfs
 # render — zsh.nix compiles the legacy path out entirely — so the home file
@@ -455,9 +438,6 @@ else
   log_ok "no gitlabGroups configured for this user — skipping the GITLAB_TOKEN check"
 fi
 
-# ---------------------------------------------------------------------------
-# GitLab CLI
-# ---------------------------------------------------------------------------
 log_head "GitLab CLI"
 # glab refuses to start on ANY config file it reads at a mode other than 600 —
 # config.yml and aliases.yml alike — and exits non-zero, which kills
@@ -511,9 +491,7 @@ else
   log_hint "glab auth status   # shows the reason (network, config mode, or token)"
 fi
 
-# ---------------------------------------------------------------------------
-# SSH — the precondition every git@ clone shares
-# ---------------------------------------------------------------------------
+# The precondition every git@ clone shares.
 log_head "SSH"
 if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
   log_fail "SSH_AUTH_SOCK unset — no ssh-agent in this shell"
@@ -550,9 +528,6 @@ else
   log_hint "host is unreachable or no key is loaded: ssh-add ~/.ssh/id_ed25519"
 fi
 
-# ---------------------------------------------------------------------------
-# Repos
-# ---------------------------------------------------------------------------
 log_head "Repos"
 # -prune stops the descent at each .git: without it find walks the internals of
 # every clone to a depth it can never match anything at. No -maxdepth: repos nest
@@ -583,9 +558,6 @@ else
   log_ok "overlay tracks $(git -C "${overlay}" rev-parse --abbrev-ref '@{u}' 2>/dev/null)"
 fi
 
-# ---------------------------------------------------------------------------
-# npm
-# ---------------------------------------------------------------------------
 log_head "npm"
 # npm's default prefix is the read-only nodejs store path, so `npm i -g` dies with
 # ENOENT; the flake writes ~/.npmrc with prefix=$HOME/.npm-global to fix it.
@@ -602,9 +574,7 @@ else
   log_fail "npm prefix ${prefix} is not writable"
 fi
 
-# ---------------------------------------------------------------------------
-# Non-blocking: needs the network, or is merely untidy
-# ---------------------------------------------------------------------------
+# Needs the network, or is merely untidy.
 log_head "Interactive state (non-blocking)"
 if [[ -x "${HOME}/.local/bin/claude" ]]; then
   # `plugin list | grep -qv "No plugins installed"` succeeds on the "Installed
@@ -621,9 +591,7 @@ if [[ -x "${HOME}/.local/bin/claude" ]]; then
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# Shared state — findings the secret gate is sitting on
-# ---------------------------------------------------------------------------
+# Findings the secret gate is sitting on.
 log_head "Shared state"
 # The gate warns into the backup's own output, which a timer sends to a journal
 # nobody reads; without this check a transcript can be held out of the state
@@ -652,9 +620,6 @@ else
   log_ok "no state root configured for this user — nothing for the gate to hold"
 fi
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
 echo ""
 if ${STRICT} && (( WARN > 0 )); then
   FAIL=$(( FAIL + WARN ))

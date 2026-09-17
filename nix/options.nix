@@ -1,22 +1,16 @@
 # The flakelab option facade: every per-user value an overlay may set, declared
 # once with a type and a description.
 #
-# Before this module the same values travelled as an untyped `userData`
-# attrset, which every consumer read field by field with an `or <fallback>`.
-# That shape had two defects this file exists to remove:
-#   - a typo (`instalKiro`) was not an error, it silently kept the fallback;
-#   - the schema was whatever the read sites happened to do, so the only way to
-#     learn a field existed was to grep for it.
+# Declaring them makes a typo (`instalKiro`) an error instead of a silently kept
+# fallback, and puts the schema in one place instead of in the read sites.
 # The descriptions below ARE the adopter documentation — `mkSystem`'s legacy
 # attrset call form and the private overlay template both name these keys, and
 # `nix eval .#nixosConfigurations.default.options.flakelab.<name>.description`
 # prints what they mean (`nixos-option` needs <nixos-config> in NIX_PATH and so
 # does not work on a flake system).
 #
-# Defaults are exactly the fallbacks the read sites used before, so declaring
-# them changes no behaviour. Options WITHOUT a default are the ones that were
-# read bare: leaving them unset must keep aborting evaluation rather than
-# silently defaulting.
+# Options WITHOUT a default have no sensible neutral value: leaving one unset
+# must abort evaluation rather than silently default.
 #
 # Not declared here: `profiles` / `teams` / `teamCliTools`. Those are consumed
 # by profiles/merge.nix BEFORE the module system runs (mkSystem resolves them
@@ -28,12 +22,10 @@ let
 
   # `types.listOf` and `types.nullOr` both carry an `emptyValue` ([ ] and null),
   # which the module system falls back to when an option has no default AND no
-  # definition. For a REQUIRED option that is exactly wrong: `cloneExclude` and
-  # `gitEditor` were read bare before this file existed, so an overlay omitting
-  # one aborted evaluation — with the empty value in place it would instead
-  # resolve to [ ] / null and quietly build a different system. Dropping the
-  # emptyValue restores the "option used but not defined" abort. Verified: both
-  # keys abort when unset, exactly as they did before.
+  # definition. For a REQUIRED option that is exactly wrong: an overlay omitting
+  # `cloneExclude` or `gitEditor` would resolve to [ ] / null and quietly build a
+  # different system. Dropping the emptyValue keeps the "option used but not
+  # defined" abort.
   #
   # Known limit: the strip does NOT survive REDECLARATION. Declaring
   # `flakelab.cloneExclude` or `flakelab.gitEditor` a second time anywhere in the
@@ -46,8 +38,6 @@ let
 in
 {
   options.flakelab = {
-    # ── Set by mkSystem, never by a module ────────────────────────────────────
-
     # readOnly because the answer is already spent: mkSystem selected the
     # platform module set from this value in the flake's `let` (flake.nix
     # targetModules), before a module system existed to hold a definition. A
@@ -61,10 +51,8 @@ in
       description = "Platform this system is built for: `wsl` is a NixOS-WSL distro, `proxmox-vm` a Proxmox guest. Pass it to mkSystem (`mkSystem { target = \"proxmox-vm\"; userData = { … }; }`) — it picks the modules in nix/targets/, so it is the one field that cannot travel inside userData.";
     };
 
-    # ── Required: no default, so an overlay that omits one aborts eval ────────
-    # These were read bare (no `or`) before, and an overlay missing one has no
-    # sensible neutral value: a wrong username or repoPath builds a system for
-    # somebody else.
+    # Required: an overlay missing one has no sensible neutral value, and a wrong
+    # username or repoPath builds a system for somebody else.
 
     username = mkOption {
       type = types.str;
@@ -106,7 +94,6 @@ in
       description = "git core.editor override; null leaves git's own default in place. Read bare, so it must be set — to null if you want no override.";
     };
 
-    # ── Guaranteed present after profiles/merge.nix ───────────────────────────
     # mkSystem folds the selected profiles into these four before the module
     # system sees them, so a definition always arrives. The defaults match the
     # merge's own empty output, which is what an unprofiled overlay produces.
@@ -134,8 +121,6 @@ in
       default = { };
       description = "NON-SECRET session environment. Each entry also GATES its MCP server (nix/home/mcp.nix) — a missing endpoint means a missing server. Token halves belong in ~/.config/tyc/secrets.env, never here: this lands in the world-readable Nix store.";
     };
-
-    # ── Optional: the defaults are the fallbacks the read sites used ──────────
 
     # strMatching, not str: an invalid hostname is rejected AS
     # `flakelab.hostName` with the overlay's value in the message, instead of

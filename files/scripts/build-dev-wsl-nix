@@ -68,7 +68,6 @@ _exists() { wsl_clean --list --quiet 2>/dev/null | grep -qx "${DISTRO_NAME}"; }
 
 _install_win="$(_win "${_repo_root}/files/.wsl-${DISTRO_NAME}-instance")"
 
-# --- (Re)import the distro (base image downloaded fresh only when importing) ---
 if _exists && ${REINSTALL}; then
   _say yellow "Unregistering existing ${DISTRO_NAME}..."
   ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
@@ -108,7 +107,6 @@ if [[ ! -f "${_flake_dir}/flake.lock" ]]; then
     nix flake lock "${_flake_dir}" < /dev/null
 fi
 
-# --- Apply the flake from inside the distro (base image provides nix) ---
 _say cyan "[$(date +%H:%M:%S)] nixos-rebuild switch --flake ${_flake_ref}"
 _say yellow "(first run downloads the store from cache.nixos.org — minutes)"
 _log="${_repo_root}/build-dev-wsl-nix.log"
@@ -176,7 +174,6 @@ case "${_v_verdict}" in
     tail -25 "${_log}"; exit "${_v_rc}" ;;
 esac
 
-# --- Verification (ported from test-provision-nix) ---
 if ${VERIFY}; then
   _pass=0; _fail=0
   check() {
