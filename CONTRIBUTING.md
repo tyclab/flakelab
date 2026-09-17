@@ -21,7 +21,7 @@ or a Proxmox guest.
 ## Required local gate
 
 ```bash
-make test          # the eight offline suites, seconds
+make test          # the offline suites, seconds
 nix flake check    # the same suites plus statix and deadnix; what CI runs
 ```
 
