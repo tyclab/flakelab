@@ -560,6 +560,34 @@
           assert hm.home.file.".kiro/settings/cli.json".force;
           pkgs.runCommandLocal "flakelab-check-kiro-cli-json" { } "touch $out";
 
+        # `gh auth login` and `glab auth login` cannot write their credential helper
+        # into a store link, so git-ssh.nix declares it. Read back through git, because
+        # the shape is the point: the empty value has to come first or it resets the
+        # forge helper too, and without it a general credential.helper is handed the
+        # forge token to keep.
+        forge-credential-helper =
+          let
+            sys = self.nixosConfigurations.default.config;
+            hm = sys.home-manager.users.${sys.flakelab.username};
+            rendered = hm.xdg.configFile."git/config".source;
+          in
+          pkgs.runCommandLocal "flakelab-check-forge-credential-helper" { nativeBuildInputs = [ pkgs.git ]; }
+            ''
+              for pair in github.com=gh gist.github.com=gh gitlab.com=glab; do
+                host="https://''${pair%=*}" tool="''${pair#*=}"
+                got="$(git config --file ${rendered} --get-all "credential.$host.helper")"
+                exe="''${got#$'\n'!}"
+                exe="''${exe% auth git-credential}"
+                if [ "$got" != $'\n'"!$exe auth git-credential" ] \
+                  || [ "''${exe##*/}" != "$tool" ] || [ ! -x "$exe" ]; then
+                  echo "credential.$host.helper is not [empty, !<store $tool> auth git-credential]:" >&2
+                  printf '%s\n' "$got" >&2
+                  exit 1
+                fi
+              done
+              touch $out
+            '';
+
         # The sops seam: forced on it must render exactly the contract zsh.nix sources,
         # and at its null default it must contribute nothing.
         sops-optional =

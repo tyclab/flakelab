@@ -1,6 +1,7 @@
 # Git identity, ssh client config, and the systemd user ssh-agent.
 {
   lib,
+  pkgs,
   osConfig,
   flakelab,
   ...
@@ -8,6 +9,16 @@
 let
   cfg = osConfig.flakelab;
   inherit (flakelab) sshKeys;
+  # The two values `gh auth setup-git` writes per host, and glab's login the same.
+  # The empty one first resets the helper list, so a general credential.helper an
+  # overlay adds (store, cache) is neither asked for these hosts nor handed the
+  # forge token to keep.
+  forgeCredential = tool: {
+    helper = [
+      ""
+      "!${lib.getExe tool} auth git-credential"
+    ];
+  };
 in
 {
   # `settings` is canonical; the flat userName/userEmail/extraConfig are deprecated.
@@ -25,15 +36,17 @@ in
         editor = cfg.gitEditor;
       };
       safe.directory = cfg.repoPath;
-      # gh is in the package set, and `gh auth login` ends by writing this helper
-      # with `git config --global` - which fails here: both ~/.gitconfig and
-      # ~/.config/git/config are store symlinks ("could not lock config file:
-      # read-only file system"), so https pushes to github.com kept asking for a
-      # password gh already holds. Declared once instead; answer the login's
-      # "Authenticate Git with your GitHub credentials?" either way.
+      # gh and glab are in the package set, and `gh auth login` / `glab auth login`
+      # end by writing this helper with `git config --global` - which fails here:
+      # both ~/.gitconfig and ~/.config/git/config are store symlinks ("could not
+      # lock config file: read-only file system"), so https pushes kept asking for
+      # a password the CLI already holds. Declared once instead; answer the login's
+      # "Authenticate Git with your ... credentials?" either way. A self-hosted
+      # GitLab is the same one line in the overlay, under its own https://<host>.
       credential = {
-        "https://github.com".helper = "!gh auth git-credential";
-        "https://gist.github.com".helper = "!gh auth git-credential";
+        "https://github.com" = forgeCredential pkgs.gh;
+        "https://gist.github.com" = forgeCredential pkgs.gh;
+        "https://gitlab.com" = forgeCredential pkgs.glab;
       };
     };
   };
