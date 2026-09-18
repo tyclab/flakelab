@@ -25,6 +25,8 @@ GATE_FILTER_HELD=0
 GATE_FILTER_COUNTABLE=0
 GATE_REDACT_HELD=0
 GATE_REDACT_COUNTABLE=0
+# Transcripts held back whole this run: the redaction could not be verified.
+GATE_HELD_WHOLE=0
 GATE_STATUS=""
 GATE_UNAVAILABLE_REPORTED=false
 GATE_DECISIONS_LOADED=false
@@ -481,6 +483,65 @@ gate_filter_history() {
   return 0
 }
 
+# One JSON line with every string value that carries a piece of <needles>
+# replaced whole by [REDACTED:<rule>], on stdout. The fallback for a match the
+# literal replacement tears: gitleaks' private-key rule spans `[\s\S-]*`
+# between its markers, so on a JSON line it runs through the `\"` closing a
+# string and on into the next token, and cutting that span out leaves no JSON.
+# The needle is split at every quote into the fragments that lie inside string
+# values (decoded, since a value holds `\n` where the line holds `\\n`); a
+# fragment too short to name a secret, or that does not decode, is skipped.
+# Returns 1 when no fragment could be used or a fragment survives.
+GATE_FRAGMENT_MIN=12
+gate_redact_line_strings() {
+  local line="$1" rule="$2" needle frag out
+  shift 2
+  local -a frags=()
+  local q=$'\x01' bs=$'\x02' eq=$'\x03'
+  for needle in "$@"; do
+    # Split at the BARE quotes only — the ones that open and close string
+    # values; an escaped quote (`\"`, but not the `\\` before a bare one) is
+    # text inside a value and stays in its fragment.
+    needle="${needle//\\\\/${bs}}"
+    needle="${needle//\\\"/${eq}}"
+    needle="${needle//\"/${q}}"
+    # The pieces alternate: string contents, then the structure between two
+    # strings, then contents again — the span starts inside a value, so the
+    # odd ones are contents. Contents that the structure after them opens
+    # with `:` are a KEY, not a value: matching a key's name against every
+    # value redacts a tool_use `id` for its `wireToolInputs` key.
+    local -a parts=("${(@ps:\x01:)needle}")
+    local -i i
+    for (( i = 1; i <= ${#parts}; i += 2 )); do
+      [[ "${parts[i+1]:-}" == :* ]] && continue
+      frag="${parts[i]}"
+      frag="${frag//${eq}/\\\"}"
+      frag="${frag//${bs}/\\\\}"
+      # Cut mid-escape at the quote: a dangling backslash would not decode.
+      local trail="${frag##*[^\\]}"
+      (( ${#trail} % 2 )) && frag="${frag[1,-2]}"
+      (( ${#frag} >= GATE_FRAGMENT_MIN )) || continue
+      frags+=("${frag}")
+    done
+  done
+  (( ${#frags} )) || return 1
+  out="$(print -r -- "${line}" | jq -c --arg r "${rule}" --args '
+    def pieces: [$ARGS.positional[] | try ("\"" + . + "\"" | fromjson) catch empty | select(length > 0)];
+    pieces as $p
+    | if ($p | length) == 0 then error("no fragment decodes") else . end
+    | walk(if type == "string" and (. as $s | any($p[]; . as $x | $s | contains($x)))
+           then "[REDACTED:" + $r + "]" else . end)
+    # Key names are structure, not values, and a fragment can be one (the
+    # span ran over `"input_tokens":`): what must be gone is every VALUE
+    # holding a piece, checked on the result rather than on the raw text.
+    | if ([.. | strings | select(. as $s | any($p[]; . as $x | $s | contains($x)))] | length) > 0
+      then error("a fragment survives") else . end
+    ' -- "${frags[@]}" 2> /dev/null)" || return 1
+  [[ -n "${out}" ]] || return 1
+  print -r -- "${out}"
+  return 0
+}
+
 # <src> to <out> with every flagged secret replaced by [REDACTED:<rule>]. Sets
 # GATE_REDACT_HELD. Non-zero means the result cannot be trusted (a secret not
 # found literally, a redacted line no longer valid JSON) and the caller holds
@@ -641,17 +702,62 @@ gate_redact_transcript() {
     }
     END { exit (bad ? 3 : 0) }
   ' "${src}" > "${out}"; then
-    rm -f "${spec}"
-    return 1
+    # A needle missing from its line: the literal pass could not clear that
+    # line, and the string-level pass below gets its turn on every checked one.
+    :
   fi
-  rm -f "${spec}"
 
-  # Only the changed lines are validated: one jq per finding, not per line.
-  for ln in "${checked[@]}"; do
-    if ! sed -n "${ln}p" "${out}" | jq -e . > /dev/null 2>&1; then
+  # Only the changed lines are validated: one jq per finding, not per line. A
+  # line the literal pass tore, or still holds a needle, is redone string by
+  # string from the ORIGINAL line; one that cannot be cleared that way either
+  # holds the whole file.
+  local -A redo=()
+  local -a line_needles
+  local orig fixed
+  for ln in "${(@u)checked}"; do
+    line_needles=()
+    while IFS=$'\x01' read -r start end rule needle; do
+      (( ln >= start && ln <= end )) && line_needles+=("${needle}")
+    done < "${spec}"
+    fixed="$(sed -n "${ln}p" "${out}")"
+    if print -r -- "${fixed}" | jq -e . > /dev/null 2>&1; then
+      for needle in "${line_needles[@]}"; do
+        [[ "${fixed}" == *"${needle}"* ]] && { fixed=""; break }
+        # A needle with a bare quote in it ran out of one string value and
+        # into the next token: the literal cut left JSON, but a key or a
+        # value went with it — losing a `role` or `uuid` breaks the session.
+        [[ "${needle}" == (#s)\"* || "${needle}" == *[^\\]\"* ]] && { fixed=""; break }
+      done
+      [[ -n "${fixed}" ]] && continue
+    fi
+    orig="$(sed -n "${ln}p" "${src}")"
+    rule="$(awk -F $'\x01' -v ln="${ln}" '$1 <= ln && ln <= $2 { print $3; exit }' "${spec}")"
+    if ! fixed="$(gate_redact_line_strings "${orig}" "${rule}" "${line_needles[@]}")"; then
+      rm -f "${spec}"
       return 1
     fi
+    redo[${ln}]="${fixed}"
   done
+  rm -f "${spec}"
+  if (( ${#redo} )); then
+    local redo_spec
+    if ! redo_spec="$(mktemp)"; then
+      record_failure "Secret gate: could not create work file for the transcript redactor"
+      return 1
+    fi
+    for ln in "${(@k)redo}"; do
+      print -r -- "${ln}"$'\x01'"${redo[${ln}]}"
+    done > "${redo_spec}"
+    if ! LC_ALL=C awk -v spec="${redo_spec}" '
+      BEGIN { while ((getline line < spec) > 0) { i = index(line, "\001"); fix[substr(line, 1, i - 1) + 0] = substr(line, i + 1) } close(spec) }
+      (NR in fix) { print fix[NR]; next }
+      { print }
+    ' "${out}" > "${out}.strings" || ! mv -f "${out}.strings" "${out}"; then
+      rm -f "${redo_spec}" "${out}.strings"
+      return 1
+    fi
+    rm -f "${redo_spec}"
+  fi
   return 0
 }
 

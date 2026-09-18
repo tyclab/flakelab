@@ -1007,7 +1007,10 @@ backup_transcripts() {
         fi
       fi
     else
-      GATE_HELD_COUNT=$(( GATE_HELD_COUNT + ( GATE_REDACT_HELD > 0 ? GATE_REDACT_HELD : 1 ) ))
+      # Only what the review can show is a record to review: a ruled finding in
+      # a file held whole was counted as one for days, and the review found nothing.
+      GATE_HELD_COUNT=$(( GATE_HELD_COUNT + GATE_REDACT_COUNTABLE ))
+      GATE_HELD_WHOLE=$(( GATE_HELD_WHOLE + 1 ))
       if ${DRY_RUN}; then
         log_dry "Secret gate: would hold back ${srcs[i]:t} whole — the redaction cannot be verified"
       else

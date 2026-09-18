@@ -1263,6 +1263,9 @@ do_backup() {
 
   echo ""
   # Held back is not failed; the count sits last so it is not lost mid-log.
+  if (( GATE_HELD_WHOLE > 0 )); then
+    log_warn "${GATE_HELD_WHOLE} transcript(s) held back whole: the redaction could not be verified, so they stay on this box"
+  fi
   if (( GATE_HELD_COUNT > 0 )); then
     log_warn "${GATE_HELD_COUNT} secret record(s) held back from the state root; review with: flakelab backup --review-secrets"
   fi
@@ -1340,6 +1343,9 @@ do_state_only() {
   fi
 
   echo ""
+  if (( GATE_HELD_WHOLE > 0 )); then
+    log_warn "${GATE_HELD_WHOLE} transcript(s) held back whole: the redaction could not be verified, so they stay on this box"
+  fi
   if (( GATE_HELD_COUNT > 0 )); then
     log_warn "${GATE_HELD_COUNT} secret record(s) held back from the state root; review with: flakelab backup --review-secrets"
   fi
