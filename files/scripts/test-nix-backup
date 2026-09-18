@@ -1407,6 +1407,62 @@ is_file  "the transcript is synced, not held whole" "${synced}"
 excludes "the secret is gone"                     "$(< "${synced}")" "hunter2-secret"
 excludes "nothing was held back whole"            "${OUT}" "held back whole"
 
+# gitleaks' private-key rule matches `[\s\S-]*` between the BEGIN and END
+# markers, so on a JSON line it runs straight through the `\"` that closes a
+# string and on into the next one. Replacing that span literally tears the
+# string open: the line stops being JSON, and the transcript was held whole —
+# forever, once its findings were ruled, with nothing left to review
+# (2026-09-18: two subagent transcripts, 79 and 69 lines, over a FAKE test key).
+print -r -- "a secret that runs across a string boundary is redacted string by string"
+transcript_fixture gate-across-strings
+FAKE_SECRET='-----BEGIN FAKE KEY-----\"quoted\" body-of-the-key-goes-on","ro'
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","message":{"content":"key: -----BEGIN FAKE KEY-----\"quoted\" body-of-the-key-goes-on","role":"user","name":"n"},"uuid":"u1"}' > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the transcript is synced, not held whole" "${synced}"
+excludes "the key body is gone"                   "$(< "${synced}")" "body-of-the-key-goes-on"
+excludes "and so is its header"                   "$(< "${synced}")" "BEGIN FAKE KEY"
+check    "the string that held it is the placeholder" "$(jq -r '.message.content' "${synced}")" "[REDACTED:fake-rule]"
+check    "its neighbours are untouched"           "$(jq -r '.message.role + " " + .message.name + " " + .uuid' "${synced}")" "user n u1"
+excludes "nothing was held back whole"            "${OUT}" "held back whole"
+
+print -r -- "a secret split over two string values empties both"
+transcript_fixture gate-two-strings
+FAKE_SECRET='-----BEGIN FAKE KEY-----first-half-of-the-key","second_string":"second-half-of-the-key-----END FAKE KEY-----'
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+# `c` names the key the span ran over: a key is structure, not a piece of the secret.
+print -r -- '{"a":"-----BEGIN FAKE KEY-----first-half-of-the-key","second_string":"second-half-of-the-key-----END FAKE KEY-----","c":"kept second_string","uuid":"u1"}' > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+is_file  "the transcript is synced"               "${synced}"
+excludes "the first half is gone"                 "$(< "${synced}")" "first-half"
+excludes "and the second"                         "$(< "${synced}")" "second-half"
+check    "both strings are placeholders, the third stands" "$(jq -r '[.a,.second_string,.c]|join(" | ")' "${synced}")" "[REDACTED:fake-rule] | [REDACTED:fake-rule] | kept second_string"
+excludes "nothing was held back whole"            "${OUT}" "held back whole"
+
+# A match the scanner flattened across a line break is literal nowhere, and
+# its pieces are too short to name a secret: that one is still held whole,
+# and the closing line says so instead of counting it as a record to review.
+print -r -- "a transcript held whole is counted as such, not as records to review"
+transcript_fixture gate-held-whole-count
+FAKE_SPAN='one"} {"type":"user","text":"two'
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+{
+  print -r -- '{"type":"user","text":"one"}'
+  print -r -- '{"type":"user","text":"two"}'
+} > "${SLUG_HOME}/abc.jsonl"
+
+run_backup --force
+check    "the run exits clean"                    "${RC}" "0"
+absent   "the transcript stays on this box"       "${SLUG_STATE}/abc.jsonl"
+contains "and the closing line counts the file"   "${OUT}" "1 transcript(s) held back whole"
+contains "with its review hint"                   "${OUT}" "1 secret record(s) held back from the state root; review with"
+
 print -r -- "a delete ruling scrubs a variant-overlapped transcript"
 transcript_fixture gate-variant-scrub
 FAKE_SECRET="jwtvariantbasebasebase"

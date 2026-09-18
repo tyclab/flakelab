@@ -387,7 +387,12 @@ holds findings back:
 - A flagged **history** record is held back whole, header and continuation
   lines; the rest of the merge still goes.
 - A flagged **transcript** is copied with the secret replaced by
-  `[REDACTED:<rule>]`; if redacting would break the JSON the file is held back.
+  `[REDACTED:<rule>]`. A match that runs out of one string value and into the
+  next (gitleaks' private-key rule spans everything between its markers) is
+  redacted string by string instead: every value holding a piece of it becomes
+  the placeholder, keys and the rest of the line stand. Only a file that
+  cannot be cleared either way is held back whole, and the closing line counts
+  those apart from the records the review can show.
 - **Local files are never modified by a backup** — the gate decides what is
   written out, not what you keep.
 - **Memory is not gated**: it is small, curated and hand-written. History is
