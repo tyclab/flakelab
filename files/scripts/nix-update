@@ -391,12 +391,13 @@ _nix_reclaim_lock() {
 _nix_reclaim_lock
 _nix_relock_flakelab || exit 1
 
-# `nixos-rebuild switch` restarts home-manager-<user>.service only when the
-# generation changed, so a switch that builds the same closure never re-runs the
-# activation — and every step it deferred for want of an ssh key stays deferred
-# behind a green run. That is the fresh-provision shape exactly: the key arrives
-# between the two switches, and the second one builds what the first did. The
-# unit's own start timestamp is what tells a restart from a no-op apart.
+# `nixos-rebuild switch` restarts home-manager-<user>.service only when that unit
+# changed, which a switch building the same closure never does — so every step the
+# activation deferred for want of an ssh key stays deferred behind a green run.
+# That is the fresh-provision shape exactly: the key arrives between the two
+# switches, and the second one builds what the first did. The unit's own start
+# timestamp is what tells a restart from a no-op apart, and a 0 there is a unit
+# that has not activated at all this boot.
 _hm_unit="home-manager-${USER:-$(id -un)}.service"
 _hm_stamp() {
   command -v systemctl > /dev/null 2>&1 || return 0
@@ -444,18 +445,39 @@ case "${_result_rc}" in
   *) exit "${_result_rc}" ;;
 esac
 
-# Same closure as the running generation: the switch left the activation alone,
-# so run it here instead. Failures warn only — the switch itself is applied.
+# What activation could not do is never fatal and never printed by the switch, so
+# without this it surfaces only in `flakelab doctor`. Every activation run
+# truncates and rewrites the log, so below the restart it is the run that just
+# happened, and above it — where the unit did not run — the last one's verdict.
+_deferred="$HOME/.local/state/flakelab/activation-deferred"
+
+# The switch left the activation alone, so run it here instead — but only when
+# there is something to re-run: the steps the last activation deferred, or a unit
+# that has never activated this boot, which is the same gap before any log exists.
+# Nothing deferred and a unit already active is a no-op restart, so it is skipped
+# rather than announced. The stamp cannot see a generation, only whether this unit
+# was restarted, and a generation that changed elsewhere in the system leaves this
+# one untouched too — so nothing here says the generation is unchanged. Failures
+# warn only — the switch itself is applied. Read with zsh's own split: this runs
+# before any PATH beyond the wrapper's is assumed.
 if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
-  _say cyan "ℹ generation unchanged, so the switch left ${_hm_unit} alone — restarting it to retry the deferred steps"
-  sudo systemctl restart "${_hm_unit}" \
-    || _say yellow "⚠ ${_hm_unit} did not restart cleanly — inspect: systemctl status ${_hm_unit}"
+  _hm_pending=()
+  [[ -s "${_deferred}" ]] && _hm_pending=("${(@f)$(< "${_deferred}")}")
+  _hm_why=""
+  if (( ${#_hm_pending} )); then
+    _hm_why="to retry the ${#_hm_pending} step(s) the last activation deferred"
+  elif [[ "${_hm_before}" == 0 ]]; then
+    _hm_why="because it has not activated at all this boot"
+  fi
+  if [[ -n "${_hm_why}" ]]; then
+    _say cyan "ℹ the switch left ${_hm_unit} alone — restarting it ${_hm_why}"
+    sudo systemctl restart "${_hm_unit}" \
+      || _say yellow "⚠ ${_hm_unit} did not restart cleanly — inspect: systemctl status ${_hm_unit}"
+  fi
 fi
 
-# What activation could not do is never fatal and never printed by the switch, so
-# without this it surfaces only in `flakelab doctor`. Read with zsh's own split:
-# this runs before any PATH beyond the wrapper's is assumed.
-_deferred="$HOME/.local/state/flakelab/activation-deferred"
+# What is still deferred after all that, named once, whether the restart above
+# ran or not.
 if [[ -s "${_deferred}" ]]; then
   _deferred_lines=("${(@f)$(< "${_deferred}")}")
   _say yellow "⚠ activation deferred ${#_deferred_lines} step(s), also listed by flakelab doctor:"
