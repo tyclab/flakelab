@@ -567,10 +567,10 @@ excludes "without blaming flakelab"         "${OUT}" "flakelab updates"
 # Root writes through a read-only mode, so as root none of this is observable.
 lock_state() { [[ -w "$1/flake.lock" ]] && print -r -- writable || print -r -- read-only }
 shim_nix() {
-  cat > "${SHIM}/nix" <<'STUB'
+cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
 case "$1" in
-  eval)  print -rn -- "path /flakelab" ;;
+  eval)  print -rn -- "path|/flakelab||" ;;
   flake) print -r -u2 -- "error: opening file \"${FLAKELAB_REPO_ROOT}/flake.lock\": Permission denied"; exit 1 ;;
 esac
 exit 0
@@ -776,6 +776,105 @@ excludes "with no restart line"             "${OUT}" "restarting it"
 excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl restart"
 contains "but the deferred step is still listed" "${OUT}" "kiro-plugin not cloned"
 rm -f "${DEFER_LOG}" "${SHIM}/systemctl"
+
+# ---------------------------------------------------------------------------
+# 7. What the re-lock reports
+# ---------------------------------------------------------------------------
+# `nix flake update` exits 0 whether or not the input moved, so the run reads the
+# lock on both sides and says which it was. The count comes from a local clone of
+# the same repo that already has both revs - no fetch, no network. `nix` is shimmed
+# for `flake update` only (it would reach github); `eval` goes to the real one, so
+# the expression that reads the lock is under test too — which needs TOOLS in the
+# shim's own environment.
+export TOOLS
+cat > "${SHIM}/nix" <<'STUB'
+#!/usr/bin/env zsh
+if [[ "$1" == flake && "$2" == update ]]; then
+  [[ -n "${LOCK_AFTER:-}" ]] && cp "${LOCK_AFTER}" "${FLAKELAB_REPO_ROOT}/flake.lock"
+  print -r -- "• Updated input 'flakelab'"
+  exit 0
+fi
+# The real nix reads the lock where there is one. The check sandbox has none, so
+# there the same fields come from the lock directly, with zsh's own expansion: the
+# reporting is what these cases are about, and it is the same either way.
+[[ -x "${TOOLS}/nix" ]] && exec "${TOOLS}/nix" "$@"
+_l="$(< "${FLAKELAB_LOCK}")"
+print -rn -- "github||${${_l##*\"rev\":\"}%%\"*}|tyclab/flakelab"
+exit 0
+STUB
+chmod +x "${SHIM}/nix"
+
+# The clone the count is read from: three commits, its origin naming the same repo
+# as the lock below.
+CLONE="${HOME}/git/tyclab/flakelab"
+mkdir -p "${CLONE}"
+git -C "${CLONE}" init -q
+for _i in 1 2 3 4; do
+  print -r -- "${_i}" > "${CLONE}/n"
+  git -C "${CLONE}" add -A
+  git -C "${CLONE}" commit -q -m "c${_i}"
+done
+git -C "${CLONE}" remote add origin git@github.com:tyclab/flakelab.git
+REV_OLD="$(git -C "${CLONE}" rev-parse HEAD~3)"
+REV_NEW="$(git -C "${CLONE}" rev-parse HEAD)"
+REV_GONE="0123456789abcdef0123456789abcdef01234567"
+
+mk_lock() {
+  print -r -- "{\"nodes\":{\"root\":{\"inputs\":{\"flakelab\":\"flakelab\"}},\"flakelab\":{\"locked\":{\"type\":\"github\",\"owner\":\"tyclab\",\"repo\":\"flakelab\",\"rev\":\"$1\"}}},\"root\":\"root\",\"version\":7}" > "$2"
+}
+
+print -r -- "an input that moved names both revs and counts what came in"
+d="$(mk_local relock)"
+mk_lock "${REV_OLD}" "${d}/flake.lock"
+mk_lock "${REV_NEW}" "${BASE}/lock.after"
+export LOCK_AFTER="${BASE}/lock.after"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it names the old rev"             "${OUT}" "${REV_OLD[1,7]} →"
+contains "and the new one"                  "${OUT}" "→ ${REV_NEW[1,7]}"
+contains "and how many commits came in"     "${OUT}" "3 commit(s)"
+
+print -r -- "an input that moved to a rev no clone has is named without a count"
+mk_lock "${REV_OLD}" "${d}/flake.lock"
+mk_lock "${REV_GONE}" "${BASE}/lock.after"
+export LOCK_AFTER="${BASE}/lock.after"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it still names both revs"         "${OUT}" "${REV_OLD[1,7]} → ${REV_GONE[1,7]}"
+excludes "with no count"                    "${OUT}" "commit(s)"
+
+print -r -- "an input that went backwards says so"
+mk_lock "${REV_NEW}" "${d}/flake.lock"
+mk_lock "${REV_OLD}" "${BASE}/lock.after"
+export LOCK_AFTER="${BASE}/lock.after"
+run_update "${d}"
+contains "it counts the other way"          "${OUT}" "3 commit(s) back"
+
+print -r -- "an input that did not move is not called updated"
+mk_lock "${REV_NEW}" "${d}/flake.lock"
+mk_lock "${REV_NEW}" "${BASE}/lock.after"
+export LOCK_AFTER="${BASE}/lock.after"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it says unchanged, with the rev"  "${OUT}" "flakelab input unchanged (${REV_NEW[1,7]})"
+excludes "and never claims an update"       "${OUT}" "input updated"
+unset LOCK_AFTER
+rm -f "${SHIM}/nix"
+
+# The check sandbox has no `nix` at all, and a lock it cannot read yields nothing
+# to split: every field has to survive that, or `set -u` kills the run at 127.
+print -r -- "a lock the eval cannot read leaves the input alone and still switches"
+cat > "${SHIM}/nix" <<'STUB'
+#!/usr/bin/env zsh
+exit 0
+STUB
+chmod +x "${SHIM}/nix"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+excludes "saying nothing about the input"   "${OUT}" "flakelab input"
+excludes "and not dying on the short split" "${OUT}" "parameter not set"
+rm -f "${SHIM}/nix"
 
 print -r -- "usage"
 run_update "${d}" --help

@@ -324,20 +324,63 @@ if _nix_repo_shape; then
   _nix_check_base || exit 1
 fi
 
+# The lock's flakelab entry as `type|path|rev|owner/repo`, the url in place of the
+# slug when the input is not a forge and empty fields where the shape has none.
+# `nix eval` rather than jq: the wrapper's PATH has no jq. Read on both sides of
+# the re-lock, because `nix flake update` exits 0 whether or not anything moved:
+# its status cannot tell an update from a no-op, and the detail it prints goes to
+# _out, which only a failure shows. `|` separates, so a path with spaces survives.
+_fl_locked() {
+  FLAKELAB_LOCK="${_repo}/flake.lock" nix eval --raw --impure --expr '
+    let
+      l = builtins.fromJSON (builtins.readFile (builtins.getEnv "FLAKELAB_LOCK"));
+      n = l.nodes.${l.root}.inputs.flakelab or null;
+      k = if n == null then { } else l.nodes.${n}.locked or { };
+      slug = if k ? owner && k ? repo then "${k.owner}/${k.repo}" else k.url or "";
+    in
+    "${k.type or ""}|${k.path or ""}|${k.rev or ""}|${slug}"
+  ' 2> /dev/null
+}
+
+# What came in, as the phrase the line ends with, counted in a local clone of the
+# same repo that already has both revs — the operator's own checkout under ~/git
+# (`<group>/<repo>` from the clone sweep, or `<repo>` by hand), usually the one the
+# change was merged from. Nothing is fetched: an update has to work offline, and
+# someone's working tree is not this command's to move. A clone that has not seen
+# the new rev yet yields nothing, and the revs are then printed on their own.
+_fl_commits() {
+  local _slug="${1:l}" _old="$2" _new="$3" _d _url _n
+  [[ -n "${_slug}" && -n "${_old}" && -n "${_new}" ]] || return 1
+  for _d in "$HOME"/git/*/*/.git(N/) "$HOME"/git/*/.git(N/); do
+    # `git@host:owner/repo`, `https://host/owner/repo`, `ssh://git@host/owner/repo`:
+    # the `:` goes to `/` so one tail comparison covers all three.
+    _url="$(git -C "${_d:h}" remote get-url origin 2> /dev/null)" || continue
+    _url="${${${_url:l}%.git}//:/\/}"
+    [[ "${_url}" == *"${_slug%.git}" ]] || continue
+    # rev-list fails on a rev this clone has never seen, which is the next clone's
+    # chance, not an answer.
+    _n="$(git -C "${_d:h}" rev-list --count "${_old}..${_new}" 2> /dev/null)" || continue
+    (( _n )) && { print -r -- " — ${_n} commit(s)"; return 0 }
+    _n="$(git -C "${_d:h}" rev-list --count "${_new}..${_old}" 2> /dev/null)" || continue
+    print -r -- " — ${_n} commit(s) back"
+    return 0
+  done
+  return 1
+}
+
 # A `path:` flakelab input is mutable but its lock entry is not, so without
 # re-locking a `git pull` over there leaves this flake on the previous snapshot and
 # the switch silently builds the old flakelab. `git+file:` is not re-lockable this
 # way and is left alone. `nix eval` rather than jq: the wrapper's PATH has no jq.
 _nix_relock_flakelab() {
-  local _lock="${_repo}/flake.lock" _ty _out
+  local _lock="${_repo}/flake.lock" _out
+  local -a _b _a
   [[ -f "${_lock}" ]] || return 0
-  _ty="$(FLAKELAB_LOCK="${_lock}" nix eval --raw --impure --expr '
-    let
-      l = builtins.fromJSON (builtins.readFile (builtins.getEnv "FLAKELAB_LOCK"));
-      n = l.nodes.${l.root}.inputs.flakelab or null;
-    in if n == null then "" else "${l.nodes.${n}.locked.type or ""} ${l.nodes.${n}.locked.path or ""}"
-  ' 2>/dev/null)"
-  local _where="${_ty#* }"; _ty="${_ty%% *}"
+  # `:-` on every field: the eval yields nothing when it cannot read the lock, or
+  # when there is no `nix` at all (the check sandbox has none), and `set -u` makes
+  # an index past the end of a short array fatal.
+  _b=("${(@s:|:)$(_fl_locked)}")
+  local _ty="${_b[1]:-}" _where="${_b[2]:-}" _rev0="${_b[3]:-}"
   # git+file: serves committed content only, so the edit under test may be absent.
   if [[ "${_ty}" == git+file ]]; then
     _say yellow "⚠ LOCAL flakelab (git+file: ${_where}) — only committed content is in this build"
@@ -347,10 +390,15 @@ _nix_relock_flakelab() {
   # Unprivileged: a root-written lock on the 9p mount breaks the operator's next
   # `nix` command with "opening file flake.lock: Permission denied".
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
+    _a=("${(@s:|:)$(_fl_locked)}")
+    local _rev1="${_a[3]:-}"
     if [[ "${_ty}" == path ]]; then
       _say yellow "⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
+    elif [[ -z "${_rev1}" || "${_rev0}" == "${_rev1}" ]]; then
+      # Said, not skipped: "already current" is the answer an update was asked for.
+      _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"
     else
-      _say cyan "ℹ flakelab input updated"
+      _say cyan "ℹ flakelab input updated: ${${_rev0:-none}[1,7]} → ${_rev1[1,7]}$(_fl_commits "${_a[4]:-}" "${_rev0}" "${_rev1}")"
     fi
   else
     # A path: input the caller cannot re-lock for want of a writable lock would
