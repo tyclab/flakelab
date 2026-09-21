@@ -794,7 +794,13 @@ if [[ "$1" == flake && "$2" == update ]]; then
   print -r -- "• Updated input 'flakelab'"
   exit 0
 fi
-exec "${TOOLS}/nix" "$@"
+# The real nix reads the lock where there is one. The check sandbox has none, so
+# there the same fields come from the lock directly, with zsh's own expansion: the
+# reporting is what these cases are about, and it is the same either way.
+[[ -x "${TOOLS}/nix" ]] && exec "${TOOLS}/nix" "$@"
+_l="$(< "${FLAKELAB_LOCK}")"
+print -rn -- "github||${${_l##*\"rev\":\"}%%\"*}|tyclab/flakelab"
+exit 0
 STUB
 chmod +x "${SHIM}/nix"
 
@@ -853,6 +859,21 @@ check    "it switches"                      "${RC}" "0"
 contains "it says unchanged, with the rev"  "${OUT}" "flakelab input unchanged (${REV_NEW[1,7]})"
 excludes "and never claims an update"       "${OUT}" "input updated"
 unset LOCK_AFTER
+rm -f "${SHIM}/nix"
+
+# The check sandbox has no `nix` at all, and a lock it cannot read yields nothing
+# to split: every field has to survive that, or `set -u` kills the run at 127.
+print -r -- "a lock the eval cannot read leaves the input alone and still switches"
+cat > "${SHIM}/nix" <<'STUB'
+#!/usr/bin/env zsh
+exit 0
+STUB
+chmod +x "${SHIM}/nix"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "exactly once"                     "$(switches)" "1"
+excludes "saying nothing about the input"   "${OUT}" "flakelab input"
+excludes "and not dying on the short split" "${OUT}" "parameter not set"
 rm -f "${SHIM}/nix"
 
 print -r -- "usage"

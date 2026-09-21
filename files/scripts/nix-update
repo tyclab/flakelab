@@ -376,8 +376,11 @@ _nix_relock_flakelab() {
   local _lock="${_repo}/flake.lock" _out
   local -a _b _a
   [[ -f "${_lock}" ]] || return 0
+  # `:-` on every field: the eval yields nothing when it cannot read the lock, or
+  # when there is no `nix` at all (the check sandbox has none), and `set -u` makes
+  # an index past the end of a short array fatal.
   _b=("${(@s:|:)$(_fl_locked)}")
-  local _ty="${_b[1]}" _where="${_b[2]}" _rev0="${_b[3]}"
+  local _ty="${_b[1]:-}" _where="${_b[2]:-}" _rev0="${_b[3]:-}"
   # git+file: serves committed content only, so the edit under test may be absent.
   if [[ "${_ty}" == git+file ]]; then
     _say yellow "⚠ LOCAL flakelab (git+file: ${_where}) — only committed content is in this build"
@@ -388,14 +391,14 @@ _nix_relock_flakelab() {
   # `nix` command with "opening file flake.lock: Permission denied".
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
     _a=("${(@s:|:)$(_fl_locked)}")
-    local _rev1="${_a[3]}"
+    local _rev1="${_a[3]:-}"
     if [[ "${_ty}" == path ]]; then
       _say yellow "⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
     elif [[ -z "${_rev1}" || "${_rev0}" == "${_rev1}" ]]; then
       # Said, not skipped: "already current" is the answer an update was asked for.
       _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"
     else
-      _say cyan "ℹ flakelab input updated: ${${_rev0:-none}[1,7]} → ${_rev1[1,7]}$(_fl_commits "${_a[4]}" "${_rev0}" "${_rev1}")"
+      _say cyan "ℹ flakelab input updated: ${${_rev0:-none}[1,7]} → ${_rev1[1,7]}$(_fl_commits "${_a[4]:-}" "${_rev0}" "${_rev1}")"
     fi
   else
     # A path: input the caller cannot re-lock for want of a writable lock would
