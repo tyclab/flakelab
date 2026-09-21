@@ -84,6 +84,12 @@ in
       # claude and kiro-cli come from their own installers (kiro.nix, claude.nix):
       # the nixpkgs builds lag upstream.
     ]
+    ++ lib.optionals isWsl [
+      # MikroTik's own Linux build of WinBox 4 (a Qt GUI), for the fabric this
+      # workspace's tycnetwork models. WSLg is the only display any target of this
+      # flake has, so the headless proxmox-vm guest does not get it.
+      pkgs.winbox4
+    ]
     ++ [
       # The one entrypoint for the distro commands; the old per-command names
       # survive only as cli.shims.
