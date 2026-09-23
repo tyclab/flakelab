@@ -724,11 +724,15 @@ cat > "${SHIM}/systemctl" <<'STUB'
 case "$1" in
   is-system-running) print -r -- running ;;
   is-active)         print -r -- active ;;
+  is-failed)         [[ -n "${UNIT_FAILED:-}" ]] && exit 0; exit 1 ;;
   show)
-    # show -p ActiveEnterTimestampMonotonic --value <unit>. The stamp only moves
-    # when the case under test says the switch restarted the unit.
+    # show -p <stamp> --value <unit>. The stamp only moves when the case under test
+    # says the switch restarted the unit, and ActiveEnterTimestampMonotonic only
+    # when that start succeeded, the way systemd keeps both.
     print -r -- "$(< "${STAMP_FILE}")"
-    [[ -n "${STAMP_BUMP:-}" ]] && print -r -- "$(( $(< "${STAMP_FILE}") + 1 ))" > "${STAMP_FILE}"
+    if [[ -n "${STAMP_BUMP:-}" && ( "$3" != ActiveEnterTimestampMonotonic || -z "${UNIT_FAILED:-}" ) ]]; then
+      print -r -- "$(( $(< "${STAMP_FILE}") + 1 ))" > "${STAMP_FILE}"
+    fi
     ;;
 esac
 exit 0
@@ -775,7 +779,38 @@ check    "it switches"                      "${RC}" "0"
 excludes "with no restart line"             "${OUT}" "restarting it"
 excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl restart"
 contains "but the deferred step is still listed" "${OUT}" "kiro-plugin not cloned"
-rm -f "${DEFER_LOG}" "${SHIM}/systemctl"
+rm -f "${DEFER_LOG}"
+
+# The health check fails the unit on anything flakelab-warn recorded and on its
+# own post-conditions, and `flakelab doctor` answers both with "Re-run: flakelab
+# update" — which a switch building the same closure never does on its own.
+FAIL_LOG="${HOME}/.local/state/flakelab/activation-failures"
+print -r -- "a unit whose last activation failed is re-run, nothing deferred"
+export UNIT_FAILED=1
+run_update "${d}"
+unset UNIT_FAILED
+check    "it switches"                      "${RC}" "0"
+contains "it says why"                      "${OUT}" "because its last activation failed"
+contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
+
+print -r -- "recorded failures are retried behind a unit that did not fail"
+print -r -- "kiro-cli install failed" > "${FAIL_LOG}"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it names what it retries"         "${OUT}" "retry the 1 step(s) the last activation reported failed"
+contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
+rm -f "${FAIL_LOG}"
+
+# A failed start never enters `active`, so a stamp read from there would not
+# move, and the gate would re-run what the switch had just run and seen fail.
+print -r -- "a unit the switch restarted into a failure is not run a second time"
+export STAMP_BUMP=1 UNIT_FAILED=1
+run_update "${d}"
+unset STAMP_BUMP UNIT_FAILED
+check    "it switches"                      "${RC}" "0"
+excludes "with no restart line"             "${OUT}" "restarting it"
+excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl restart"
+rm -f "${SHIM}/systemctl"
 
 # ---------------------------------------------------------------------------
 # 7. What the re-lock reports
@@ -785,7 +820,8 @@ rm -f "${DEFER_LOG}" "${SHIM}/systemctl"
 # the same repo that already has both revs - no fetch, no network. `nix` is shimmed
 # for `flake update` only (it would reach github); `eval` goes to the real one, so
 # the expression that reads the lock is under test too — which needs TOOLS in the
-# shim's own environment.
+# shim's own environment. The check sandbox has a nix for this suite, evaluating
+# against a dummy store, so there is no second reading of the lock to fall back on.
 export TOOLS
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
@@ -794,13 +830,7 @@ if [[ "$1" == flake && "$2" == update ]]; then
   print -r -- "• Updated input 'flakelab'"
   exit 0
 fi
-# The real nix reads the lock where there is one. The check sandbox has none, so
-# there the same fields come from the lock directly, with zsh's own expansion: the
-# reporting is what these cases are about, and it is the same either way.
-[[ -x "${TOOLS}/nix" ]] && exec "${TOOLS}/nix" "$@"
-_l="$(< "${FLAKELAB_LOCK}")"
-print -rn -- "github||${${_l##*\"rev\":\"}%%\"*}|tyclab/flakelab"
-exit 0
+exec "${TOOLS}/nix" "$@"
 STUB
 chmod +x "${SHIM}/nix"
 
@@ -819,8 +849,12 @@ REV_OLD="$(git -C "${CLONE}" rev-parse HEAD~3)"
 REV_NEW="$(git -C "${CLONE}" rev-parse HEAD)"
 REV_GONE="0123456789abcdef0123456789abcdef01234567"
 
+# mk_lock_entry <locked fields> <file>: a lock whose flakelab input is locked as given.
+mk_lock_entry() {
+  print -r -- "{\"nodes\":{\"root\":{\"inputs\":{\"flakelab\":\"flakelab\"}},\"flakelab\":{\"locked\":{$1}}},\"root\":\"root\",\"version\":7}" > "$2"
+}
 mk_lock() {
-  print -r -- "{\"nodes\":{\"root\":{\"inputs\":{\"flakelab\":\"flakelab\"}},\"flakelab\":{\"locked\":{\"type\":\"github\",\"owner\":\"tyclab\",\"repo\":\"flakelab\",\"rev\":\"$1\"}}},\"root\":\"root\",\"version\":7}" > "$2"
+  mk_lock_entry "\"type\":\"github\",\"owner\":\"tyclab\",\"repo\":\"flakelab\",\"rev\":\"$1\"" "$2"
 }
 
 print -r -- "an input that moved names both revs and counts what came in"
@@ -858,11 +892,79 @@ run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it says unchanged, with the rev"  "${OUT}" "flakelab input unchanged (${REV_NEW[1,7]})"
 excludes "and never claims an update"       "${OUT}" "input updated"
+
+# The lock names a repo as `owner/repo` (a GitLab subgroup's owner keeps its `/`)
+# or, for a git input, as a whole URL; a clone's origin is any of the three URL
+# shapes. Both come down to the path after the host, and the clone is looked for
+# as deep as the clone sweep mirrors a namespace.
+# elsewhere <dir under ~/git> <origin>: another clone of the same history.
+elsewhere() {
+  git clone -q "${CLONE}" "${HOME}/git/$1"
+  git -C "${HOME}/git/$1" remote set-url origin "$2"
+}
+# relock_between <locked fields before> <locked fields after>
+relock_between() {
+  mk_lock_entry "$1" "${d}/flake.lock"
+  mk_lock_entry "$2" "${BASE}/lock.after"
+  run_update "${d}"
+}
+
+print -r -- "a git input is counted in the clone its URL names"
+elsewhere grp/flakelab git@gitlab.com:grp/flakelab.git
+relock_between "\"type\":\"git\",\"url\":\"https://gitlab.com/Grp/flakelab.git\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"git\",\"url\":\"https://gitlab.com/Grp/flakelab.git\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+contains "and counts what came in"          "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]} — 3 commit(s)"
+relock_between "\"type\":\"git\",\"url\":\"ssh://git@gitlab.com:2222/grp/flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"git\",\"url\":\"ssh://git@gitlab.com:2222/grp/flakelab\",\"rev\":\"${REV_NEW}\""
+contains "as an ssh:// URL with a port too" "${OUT}" "— 3 commit(s)"
+rm -rf "${HOME}/git/grp"
+
+print -r -- "a GitLab subgroup is counted in its clone three levels down"
+elsewhere grp/sub/flakelab https://gitlab.com/grp/sub/flakelab.git
+relock_between "\"type\":\"gitlab\",\"owner\":\"grp/sub\",\"repo\":\"flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"gitlab\",\"owner\":\"grp/sub\",\"repo\":\"flakelab\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+contains "and counts what came in"          "${OUT}" "— 3 commit(s)"
+rm -rf "${HOME}/git/grp"
+
+print -r -- "a repo whose path only ends in the same letters is not the input's clone"
+mv "${CLONE}" "${BASE}/clone.aside"
+git clone -q "${BASE}/clone.aside" "${HOME}/git/nottyclab/flakelab"
+git -C "${HOME}/git/nottyclab/flakelab" remote set-url origin git@github.com:nottyclab/flakelab.git
+mk_lock "${REV_OLD}" "${d}/flake.lock"
+mk_lock "${REV_NEW}" "${BASE}/lock.after"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it names both revs"               "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]}"
+excludes "with no count from the other repo" "${OUT}" "commit(s)"
+rm -rf "${HOME}/git/nottyclab"
+mv "${BASE}/clone.aside" "${CLONE}"
+
+# nix locks a `git+file:` input as type `git` with a file:// URL.
+print -r -- "a git+file: input is named as local, and still re-locked"
+relock_between "\"type\":\"git\",\"url\":\"file:///srv/flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"git\",\"url\":\"file:///srv/flakelab\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+contains "it names the checkout"            "${OUT}" "LOCAL flakelab (git+file: /srv/flakelab) — only committed content is in this build"
+contains "and what the re-lock moved"       "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]}"
+
+# A tarball input locks no rev, only the hash of what it unpacked to.
+print -r -- "an input with no rev is compared by its content hash"
+relock_between '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-AAAA"' \
+               '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-BBBB"'
+check    "it switches"                      "${RC}" "0"
+contains "a moved hash is an update"        "${OUT}" "flakelab input updated"
+excludes "not unchanged"                    "${OUT}" "input unchanged"
+relock_between '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-BBBB"' \
+               '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-BBBB"'
+contains "the same hash is unchanged"       "${OUT}" "flakelab input unchanged"
+excludes "and not an update"                "${OUT}" "input updated"
 unset LOCK_AFTER
 rm -f "${SHIM}/nix"
 
-# The check sandbox has no `nix` at all, and a lock it cannot read yields nothing
-# to split: every field has to survive that, or `set -u` kills the run at 127.
+# A box with no `nix` on PATH, like a lock it cannot read, yields nothing to split:
+# every field has to survive that, or `set -u` kills the run at 127.
 print -r -- "a lock the eval cannot read leaves the input alone and still switches"
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
