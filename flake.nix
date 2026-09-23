@@ -507,6 +507,8 @@
             hm = sys.home-manager.users.${sys.flakelab.username};
             entry = name: pkgs.writeText "${name}-activation" hm.home.activation.${name}.data;
           in
+          # Codex's sandbox takes bwrap from PATH, not the store path of a dependency.
+          assert builtins.elem pkgs.bubblewrap hm.home.packages;
           pkgs.runCommandLocal "flakelab-check-cli-installers" { nativeBuildInputs = [ pkgs.bash ]; } ''
             set -u
             export DRY_RUN_CMD=
