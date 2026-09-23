@@ -723,14 +723,14 @@ cat > "${SHIM}/systemctl" <<'STUB'
 #!/usr/bin/env zsh
 case "$1" in
   is-system-running) print -r -- running ;;
-  is-active)         print -r -- active ;;
-  is-failed)         [[ -n "${UNIT_FAILED:-}" ]] && exit 0; exit 1 ;;
+  # UNIT_STATE is the unit's state after the switch, `active` unless a case says.
+  is-active)         print -r -- "${UNIT_STATE:-active}"; [[ "${UNIT_STATE:-active}" == active ]]; exit ;;
   show)
     # show -p <stamp> --value <unit>. The stamp only moves when the case under test
     # says the switch restarted the unit, and ActiveEnterTimestampMonotonic only
     # when that start succeeded, the way systemd keeps both.
     print -r -- "$(< "${STAMP_FILE}")"
-    if [[ -n "${STAMP_BUMP:-}" && ( "$3" != ActiveEnterTimestampMonotonic || -z "${UNIT_FAILED:-}" ) ]]; then
+    if [[ -n "${STAMP_BUMP:-}" && ( "$3" != ActiveEnterTimestampMonotonic || "${UNIT_STATE:-active}" == active ) ]]; then
       print -r -- "$(( $(< "${STAMP_FILE}") + 1 ))" > "${STAMP_FILE}"
     fi
     ;;
@@ -764,7 +764,7 @@ excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl rest
 
 print -r -- "a unit that has not activated at all this boot is re-run regardless"
 print -r -- 0 > "${STAMP_FILE}"
-run_update "${d}"
+UNIT_STATE=inactive run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it says why"                      "${OUT}" "not activated at all this boot"
 contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
@@ -786,11 +786,17 @@ rm -f "${DEFER_LOG}"
 # update" — which a switch building the same closure never does on its own.
 FAIL_LOG="${HOME}/.local/state/flakelab/activation-failures"
 print -r -- "a unit whose last activation failed is re-run, nothing deferred"
-export UNIT_FAILED=1
-run_update "${d}"
-unset UNIT_FAILED
+UNIT_STATE=failed run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it says why"                      "${OUT}" "because its last activation failed"
+contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
+
+# `reset-failed` leaves a unit that failed inactive, its stamps where they were:
+# not failed any more, and not in effect either.
+print -r -- "an inactive unit is re-run, nothing deferred"
+UNIT_STATE=inactive run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it says why"                      "${OUT}" "because it is inactive"
 contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
 
 print -r -- "recorded failures are retried behind a unit that did not fail"
@@ -802,14 +808,19 @@ contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl rest
 rm -f "${FAIL_LOG}"
 
 # A failed start never enters `active`, so a stamp read from there would not
-# move, and the gate would re-run what the switch had just run and seen fail.
+# move, and the gate would re-run what the switch had just run and seen fail —
+# for its deferred steps, or as never activated when it has not succeeded yet.
 print -r -- "a unit the switch restarted into a failure is not run a second time"
-export STAMP_BUMP=1 UNIT_FAILED=1
-run_update "${d}"
-unset STAMP_BUMP UNIT_FAILED
+print -r -- "kiro-plugin not cloned: no key yet" > "${DEFER_LOG}"
+STAMP_BUMP=1 UNIT_STATE=failed run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 excludes "with no restart line"             "${OUT}" "restarting it"
 excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl restart"
+rm -f "${DEFER_LOG}"
+print -r -- 0 > "${STAMP_FILE}"
+STAMP_BUMP=1 UNIT_STATE=failed run_update "${d}"
+print -r -- 100 > "${STAMP_FILE}"
+excludes "nor when it had not succeeded yet this boot" "$(< "${SUDO_LOG}")" "systemctl restart"
 rm -f "${SHIM}/systemctl"
 
 # ---------------------------------------------------------------------------
