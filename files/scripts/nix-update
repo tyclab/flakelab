@@ -377,7 +377,7 @@ _nix_relock_flakelab() {
   local -a _b _a
   [[ -f "${_lock}" ]] || return 0
   # `:-` on every field: the eval yields nothing when it cannot read the lock, or
-  # when there is no `nix` at all (the check sandbox has none), and `set -u` makes
+  # when there is no `nix` on PATH at all, and `set -u` makes
   # an index past the end of a short array fatal.
   _b=("${(@s:|:)$(_fl_locked)}")
   local _ty="${_b[1]:-}" _where="${_b[2]:-}" _rev0="${_b[3]:-}"

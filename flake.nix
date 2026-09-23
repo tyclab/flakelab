@@ -86,19 +86,26 @@
       # sandbox has no /usr/bin/env, and the suites emit that shebang themselves.
       # The whole tree is copied, not just files/scripts: nix-overlay-generate reads
       # templates/overlay/ and profiles/ out of the checkout it sits in.
-      suiteCheck =
-        name:
+      suiteCheck = suiteCheckWith [ ];
+      # A suite that runs the real `nix` gets it here, against a dummy store:
+      # evaluation needs none, and the sandbox has no daemon to reach.
+      suiteCheckWith =
+        extraInputs: name:
         pkgs.runCommandLocal "flakelab-check-${name}"
           {
-            nativeBuildInputs = with pkgs; [
-              zsh
-              git
-              jq
-              util-linux
-              # test-clone-repos generates a throwaway key: the sweep refuses to
-              # start unless it can prove the key needs no agent.
-              openssh
-            ];
+            nativeBuildInputs =
+              with pkgs;
+              [
+                zsh
+                git
+                jq
+                util-linux
+                # test-clone-repos generates a throwaway key: the sweep refuses to
+                # start unless it can prove the key needs no agent.
+                openssh
+              ]
+              ++ extraInputs;
+            NIX_CONFIG = "store = dummy://\nexperimental-features = nix-command";
           }
           ''
             export HOME="$TMPDIR/home"
@@ -320,7 +327,8 @@
         nix-overlay-generate = suiteCheck "nix-overlay-generate";
         flakelab-cli = suiteCheck "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
-        nix-update = suiteCheck "nix-update";
+        # The input report reads the lock with `nix eval`, which is under test too.
+        nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
         switch-result = suiteCheck "switch-result";
         xdg-open = suiteCheck "xdg-open";
         statix = nixLintCheck "statix" pkgs.statix "statix check .";

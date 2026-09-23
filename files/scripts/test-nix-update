@@ -785,7 +785,8 @@ rm -f "${DEFER_LOG}" "${SHIM}/systemctl"
 # the same repo that already has both revs - no fetch, no network. `nix` is shimmed
 # for `flake update` only (it would reach github); `eval` goes to the real one, so
 # the expression that reads the lock is under test too — which needs TOOLS in the
-# shim's own environment.
+# shim's own environment. The check sandbox has a nix for this suite, evaluating
+# against a dummy store, so there is no second reading of the lock to fall back on.
 export TOOLS
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
@@ -794,13 +795,7 @@ if [[ "$1" == flake && "$2" == update ]]; then
   print -r -- "• Updated input 'flakelab'"
   exit 0
 fi
-# The real nix reads the lock where there is one. The check sandbox has none, so
-# there the same fields come from the lock directly, with zsh's own expansion: the
-# reporting is what these cases are about, and it is the same either way.
-[[ -x "${TOOLS}/nix" ]] && exec "${TOOLS}/nix" "$@"
-_l="$(< "${FLAKELAB_LOCK}")"
-print -rn -- "github||${${_l##*\"rev\":\"}%%\"*}|tyclab/flakelab"
-exit 0
+exec "${TOOLS}/nix" "$@"
 STUB
 chmod +x "${SHIM}/nix"
 
@@ -861,8 +856,8 @@ excludes "and never claims an update"       "${OUT}" "input updated"
 unset LOCK_AFTER
 rm -f "${SHIM}/nix"
 
-# The check sandbox has no `nix` at all, and a lock it cannot read yields nothing
-# to split: every field has to survive that, or `set -u` kills the run at 127.
+# A box with no `nix` on PATH, like a lock it cannot read, yields nothing to split:
+# every field has to survive that, or `set -u` kills the run at 127.
 print -r -- "a lock the eval cannot read leaves the input alone and still switches"
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
