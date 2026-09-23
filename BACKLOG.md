@@ -90,3 +90,28 @@ evaluated in place: `nix flake check` and `nix fmt` fail with
 rejects the extension. `nix flake check path:.` works around it; converting the
 clone with `git fetch --refetch --no-filter <remote>` and dropping the promisor
 config fixes it properly. Worth a line in CONTRIBUTING.md.
+
+## Account switching for the agent CLIs
+
+`enhancement` · designed, not started
+
+Several logins per tool on one box, for Claude Code, Codex and Kiro CLI: a
+roster of stored logins, a switch of the live one without a logout, headroom
+on every window the tool reports in the listing and the statusline, a timer
+that switches before the live account hits its limit where the tool exposes
+its usage, and a second account runnable in a second terminal. The design, the
+adapter contract per tool, the cut list and the questions to verify first are
+in [accounts.md](accounts.md); phase 1 (store, `add`, `switch`, the suite, the
+Claude adapter) is usable on its own.
+
+## Remote sessions
+
+`enhancement` · designed, not started
+
+Sessions that outlive their terminal and can be reached from another device:
+tmux as the session host behind `flakelab sessions start|attach`, Codex and
+Kiro in the sessions registry beside Claude Code, Remote Control on its own
+option, a push when a session waits on a prompt, and sshd, mosh and Tailscale
+behind options for the phone. [remote-sessions.md](remote-sessions.md) has the
+design and what to verify first; phase 1 (tmux and the two verbs) is usable on
+its own.
