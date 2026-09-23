@@ -193,6 +193,12 @@ in
       description = "Install Claude Code via its official installer into ~/.local/bin.";
     };
 
+    installCodex = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Install the Codex CLI via its official installer into ~/.local/bin, re-run on every switch to update it.";
+    };
+
     # The tiering is the whole point, and it is easy to get backwards:
     #   hard_deny  cannot be cleared by anything, including a direct operator
     #              instruction. Reserve it for boundaries that are never legitimate.

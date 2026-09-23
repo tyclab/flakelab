@@ -81,8 +81,8 @@ in
       statix
       deadnix
       yq-go
-      # claude and kiro-cli come from their own installers (kiro.nix, claude.nix):
-      # the nixpkgs builds lag upstream.
+      # claude, kiro-cli and codex come from their own installers (kiro.nix,
+      # claude.nix, codex.nix): the nixpkgs builds lag upstream.
     ]
     ++ [
       # The one entrypoint for the distro commands; the old per-command names
@@ -97,7 +97,7 @@ in
     ++ cli.shims
     ++ profilePkgs;
 
-  # ~/.local/bin for the Kiro CLI, Claude Code, and `uv tool` installs.
+  # ~/.local/bin for the Kiro CLI, Claude Code, Codex, and `uv tool` installs.
   home.sessionPath = [ "$HOME/.local/bin" ];
 
   home.sessionVariables = {

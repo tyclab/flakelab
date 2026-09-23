@@ -21,6 +21,7 @@ let
     sshAgentPreamble
     installKiro
     installClaude
+    installCodex
     kiroPluginRepo
     kiroPlugin
     ;
@@ -40,11 +41,11 @@ in
   '';
 
   # ── Post-activation health check (must be the LAST activation entry) ───────
-  # The installers (kiro.nix, claude.nix) are warn-not-fail by design, which is
-  # why a rebuild can report success on a distro with no kiro-cli, no plugins and
-  # no repos. This turns that silence back into a failed activation: it fails on
-  # anything flakelab-warn recorded, plus the post-conditions that must hold
-  # unattended.
+  # The installers (kiro.nix, claude.nix, codex.nix) are warn-not-fail by design,
+  # which is why a rebuild can report success on a distro with no kiro-cli, no
+  # plugins and no repos. This turns that silence back into a failed activation:
+  # it fails on anything flakelab-warn recorded, plus the post-conditions that
+  # must hold unattended.
   # Interactive state (an agent holding a key, a browser login) is deliberately
   # NOT asserted — it needs a TTY, so it lives in `flakelab doctor` instead.
   home.activation.flakelabHealthCheck =
@@ -62,6 +63,7 @@ in
         "claudeMcpMerge"
         "claudeMd"
         "claudeAutoUpdates"
+        "installCodexCli"
         "pinNpm"
         "bwConfigServer"
       ]
@@ -152,6 +154,13 @@ in
               _hcOk "claude installed (~/.local/bin/claude)"
             else
               _hcBadUnlessDeferred "claude missing or not executable: ~/.local/bin/claude" "Claude Code not installed"
+            fi
+          ''}
+          ${lib.optionalString installCodex ''
+            if [ -x "$HOME/.local/bin/codex" ]; then
+              _hcOk "codex installed (~/.local/bin/codex)"
+            else
+              _hcBadUnlessDeferred "codex missing or not executable: ~/.local/bin/codex" "Codex CLI not installed"
             fi
           ''}
 

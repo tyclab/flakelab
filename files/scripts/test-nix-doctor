@@ -4,11 +4,12 @@ set -uo pipefail
 setopt extended_glob
 
 #
-# Offline suite for nix-doctor's reading of the flakelab input: the real script
-# against a throwaway overlay whose flake.lock locks that input in each shape nix
-# writes, with HOME a fresh directory and every tool that would reach the running
-# box, an agent or the network left off PATH. Only the "flakelab input" section is
-# asserted; the rest of the run finds nothing and is not looked at.
+# Offline suite for nix-doctor's reading of the flakelab input and of which AI CLIs
+# it holds the box to: the real script against a throwaway overlay whose flake.lock
+# locks that input in each shape nix writes, with HOME a fresh directory and every
+# tool that would reach the running box, an agent or the network left off PATH.
+# Only the "flakelab input" and "AI CLIs" sections are asserted; the rest of the
+# run finds nothing and is not looked at.
 #
 # Usage: files/scripts/test-nix-doctor
 #
@@ -20,6 +21,7 @@ typeset -i PASS=0 FAIL=0
 ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
 bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
 contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in:      $2" } }
+lacks()    { [[ "$2" != *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       present: $3"; print -r -u2 -- "       in:      $2" } }
 
 BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
@@ -28,7 +30,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|kiro-cli|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
+    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|kiro-cli|codex|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -46,6 +48,18 @@ input_line() {
   local -a lines=("${(@f)out}")
   local -i i=${lines[(i)*==> flakelab input]}
   print -r -- "${lines[i+1]:-}"
+}
+
+# ai_clis [<FLAKELAB_AI_CLIS>]: the doctor's "AI CLIs" section, colours stripped,
+# with the variable exported as given, or unset when no argument is passed.
+ai_clis() {
+  local -a env=(PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)
+  (( $# )) && env+=(FLAKELAB_AI_CLIS="$1")
+  local out
+  out="$(env -i "${env[@]}" zsh "${DOCTOR}" 2>&1 < /dev/null)"
+  out="${out//$'\e'\[[0-9;]#m/}"
+  out="${out#*==> AI CLIs$'\n'}"
+  print -r -- "${out%%$'\n'==> *}"
 }
 
 print -r -- "test-nix-doctor"
@@ -67,6 +81,17 @@ contains "sourcehut"     "$(input_line '"type":"sourcehut","owner":"~tyc","repo"
 
 print -r -- "no lock is not read as any input"
 contains "it warns"      "$(input_line '')" "[WARN] could not read the flakelab input from the lock"
+
+print -r -- "the AI CLIs checked are the ones the overlay installs"
+contains "all three"           "$(ai_clis 'kiro-cli claude codex')" "[FAIL] Codex CLI not installed"
+contains "kiro-cli among them" "$(ai_clis 'kiro-cli claude codex')" "[FAIL] kiro-cli not installed"
+contains "claude among them"   "$(ai_clis 'kiro-cli claude codex')" "[FAIL] Claude Code not installed"
+lacks    "one switched off"    "$(ai_clis 'kiro-cli claude')" "Codex CLI"
+contains "only codex"          "$(ai_clis codex)" "[FAIL] Codex CLI not installed"
+lacks    "not kiro-cli then"   "$(ai_clis codex)" "kiro-cli"
+lacks    "nor claude"          "$(ai_clis codex)" "Claude Code"
+contains "none"                "$(ai_clis '')" "[ OK ] no AI CLI installed by this overlay"
+contains "unset is none"       "$(ai_clis)" "[ OK ] no AI CLI installed by this overlay"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

@@ -62,7 +62,7 @@ let
   # The one target fact the home modules need: whether there is a Windows side.
   isWsl = cfg.target == "wsl";
 
-  inherit (cfg) installKiro installClaude;
+  inherit (cfg) installKiro installClaude installCodex;
 
   inherit (cfg) kiroPluginRepo;
   kiroPlugin = (import ../kiro-plugin.nix { inherit lib cfg; }).dirOrNull;
@@ -76,6 +76,7 @@ in
     ./git-ssh.nix
     ./kiro.nix
     ./claude.nix
+    ./codex.nix
     ./tooling.nix
     ./health.nix
   ];
@@ -95,6 +96,7 @@ in
       cloneKeyResolve
       installKiro
       installClaude
+      installCodex
       kiroPluginRepo
       kiroPlugin
       ;

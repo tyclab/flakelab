@@ -8,10 +8,11 @@ How flakelab is put together, and why. Usage lives in
 1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
    the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
    `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
-   `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `tooling`, `health`, `backup`.
+   `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `codex`, `tooling`, `health`,
+   `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
-   whose nixpkgs builds lag upstream (kiro-cli, Claude Code) and SSH key material —
-   both behind guarded, idempotent activation, never in the store.
+   whose nixpkgs builds lag upstream (kiro-cli, Claude Code, Codex) and SSH key
+   material — both behind guarded, idempotent activation, never in the store.
 3. **Per-user values are data.** `nix/users/default.nix` holds placeholders; real
    values are injected by the private overlay through `lib.mkSystem`. Flakes
    evaluate only git-tracked files, which is what keeps a public fork free of
@@ -443,4 +444,9 @@ defaults migrate to `programs.ssh.settings."*"`; the NixOS-WSL image is
 `virtualisation.docker.enable`, **not** `wsl.docker-desktop.enable`;
 `claude-code` in nixpkgs lags what this environment needs, and kiro-cli has no
 nixpkgs path at all, so both come from their official installers through
-activation with `programs.nix-ld`.
+activation with `programs.nix-ld`. Codex comes from its official installer too:
+nixpkgs' `codex` trailed upstream by ten minor releases on 2026-09-23. Its binary
+is static, so it needs no nix-ld, and the installer runs on every switch because
+`codex update` is that same installer. Each fetch is piped into its shell under
+`pipefail`, or an offline switch runs an empty script, exits 0, and records no
+deferral for the health check to excuse the missing binary with.

@@ -24,6 +24,7 @@
 
   installKiro = true;
   installClaude = true;
+  installCodex = true;
   claudeAutoUpdatesChannel = "stable";
 
   cloneExclude = [ "flakelab" ];

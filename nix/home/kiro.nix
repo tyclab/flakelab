@@ -47,13 +47,14 @@ in
       # store, or `dry-activate` installs software instead of rehearsing.
       # TODO: the settings.json rewrites are still ungated; gate the final move.
       if [ ! -x "$HOME/.local/bin/kiro-cli" ]; then
-        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -c 'curl -fsSL https://cli.kiro.dev/install | bash' || \
+        # pipefail: a failed fetch otherwise pipes an empty script into bash, which exits 0.
+        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://cli.kiro.dev/install | bash' || \
           ${flakelabDefer} "kiro-cli not installed: its installer could not be fetched or run (offline?). Retry: flakelab update, or curl -fsSL https://cli.kiro.dev/install | bash"
       else
         # The CLI moves only through its own updater: there is no pinnable release
         # feed for Renovate to track, and a stale CLI must not fail activation.
         $DRY_RUN_CMD "$HOME/.local/bin/kiro-cli" update --non-interactive || \
-          ${flakelabWarn} "kiro-cli not updated (offline?); it stays on its installed version."
+          ${flakelabDefer} "kiro-cli not updated (offline?); it stays on its installed version."
       fi
     ''
   );
