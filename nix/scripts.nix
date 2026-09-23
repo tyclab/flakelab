@@ -354,7 +354,8 @@ rec {
   '';
 
   # The counts let nix-doctor tell "GitLab is broken" from "this box never used
-  # GitLab", where a missing token is not a finding.
+  # GitLab", where a missing token is not a finding; the CLI list does the same for
+  # an installer the overlay switched off.
   nix-doctor = pkgs.writeShellScriptBin "nix-doctor" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_TARGET=${cfg.target}
@@ -366,6 +367,13 @@ rec {
     export FLAKELAB_KIRO_PLUGIN_REMOTE="${kiroPluginPath}"
     export FLAKELAB_GITLAB_GROUPS="${toString (builtins.length cfg.gitlabGroups)}"
     export FLAKELAB_GITLAB_REPOS="${toString (builtins.length cfg.repos)}"
+    export FLAKELAB_AI_CLIS="${
+      toString (
+        lib.optional cfg.installKiro "kiro-cli"
+        ++ lib.optional cfg.installClaude "claude"
+        ++ lib.optional cfg.installCodex "codex"
+      )
+    }"
     export PATH=${
       bin [
         pkgs.zsh

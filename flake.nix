@@ -496,6 +496,94 @@
               touch $out
             '';
 
+        # The CLI installers fetch a script and pipe it into a shell. Without pipefail a
+        # failed fetch hands the shell an empty script, which exits 0: nothing installed,
+        # nothing deferred, and the health check then fails on the missing binary. The
+        # sandbox has no network, so each rendered entry runs here as an offline switch,
+        # whose failures must all be deferred - a flakelab-warn entry fails the rebuild.
+        cli-installers =
+          let
+            sys = self.nixosConfigurations.default.config;
+            hm = sys.home-manager.users.${sys.flakelab.username};
+            entry = name: pkgs.writeText "${name}-activation" hm.home.activation.${name}.data;
+          in
+          pkgs.runCommandLocal "flakelab-check-cli-installers" { nativeBuildInputs = [ pkgs.bash ]; } ''
+            set -u
+            export DRY_RUN_CMD=
+            # fresh <name>: an empty HOME to activate against.
+            fresh() {
+              export HOME="$TMPDIR/$1"
+              mkdir -p "$HOME/.local/bin"
+            }
+            activate() { bash -euo pipefail "$1"; }
+            # stub <name> <script body>: an installed CLI.
+            stub() {
+              printf '#!%s\n%s\n' "$(command -v bash)" "$2" > "$HOME/.local/bin/$1"
+              chmod +x "$HOME/.local/bin/$1"
+            }
+            deferred() { grep -q -- "$1" "$HOME/.local/state/flakelab/activation-deferred"; }
+            nothingDeferred() { test ! -e "$HOME/.local/state/flakelab/activation-deferred"; }
+            noWarn() { test ! -e "$HOME/.local/state/flakelab/activation-failures"; }
+
+            echo "kiro-cli: an offline first install is deferred"
+            fresh kiro-absent
+            activate ${entry "installKiroCli"}
+            test ! -e "$HOME/.local/bin/kiro-cli"
+            deferred "kiro-cli not installed"
+            noWarn
+
+            echo "kiro-cli: an offline update is deferred, not a warning"
+            fresh kiro-stale
+            stub kiro-cli 'exit 1'
+            activate ${entry "installKiroCli"}
+            deferred "kiro-cli not updated"
+            noWarn
+
+            echo "claude: an offline first install is deferred"
+            fresh claude-absent
+            activate ${entry "installClaudeCode"}
+            test ! -e "$HOME/.local/bin/claude"
+            deferred "Claude Code not installed"
+            noWarn
+
+            echo "codex: an offline first install is deferred"
+            fresh codex-absent
+            activate ${entry "installCodexCli"}
+            test ! -e "$HOME/.local/bin/codex"
+            deferred "Codex CLI not installed"
+            noWarn
+
+            echo "codex: an offline update is deferred and keeps the installed CLI"
+            fresh codex-stale
+            stub codex 'echo stale'
+            activate ${entry "installCodexCli"}
+            test "$("$HOME/.local/bin/codex")" = stale
+            deferred "Codex CLI not updated"
+            noWarn
+
+            # A bash function exported under the name shadows the store curl in the
+            # entry's inner bash, so the fetch returns a stand-in installer that
+            # records what the real one would be run with.
+            echo "codex: the installer runs unprompted, with ~/.local/bin on PATH"
+            fresh codex-online
+            curl() {
+              printf '%s\n' \
+                'printf "%s\n" "$PATH" > "$HOME/installer-path"' \
+                'printf "%s\n" "''${CODEX_NON_INTERACTIVE-}" > "$HOME/installer-prompt"' \
+                'touch "$HOME/.local/bin/codex" && chmod +x "$HOME/.local/bin/codex"'
+            }
+            export -f curl
+            activate ${entry "installCodexCli"}
+            unset -f curl
+            test -x "$HOME/.local/bin/codex"
+            case ":$(cat "$HOME/installer-path"):" in *":$HOME/.local/bin:"*) ;; *) exit 1 ;; esac
+            test "$(cat "$HOME/installer-prompt")" = 1
+            nothingDeferred
+            noWarn
+
+            touch $out
+          '';
+
         # Both backup units must keep the escape hatch in both sections. Forced on,
         # or the units would not render and the check would pass vacuously. The state
         # sync also stands without the daily pass, its SessionEnd push follows it

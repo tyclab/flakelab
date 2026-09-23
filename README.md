@@ -270,8 +270,8 @@ only deferred is in
 failing check with `touch ~/.local/state/flakelab/skip-healthcheck`.
 
 `gitchecker`, `gitcleaner` and `gitpublisher` are **not** subcommands — they stay
-standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro: base / full-trust / in-repo) and
-`c`/`cc` (Claude Code: base / full-trust).
+standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro: base / full-trust / in-repo),
+`c`/`cc` (Claude Code: base / full-trust) and `codex` (Codex, no alias).
 
 **Repo discovery is GitLab-only.** `flakelab clone` enumerates groups through
 `glab`, so `gitlabGroups` and the profiles are a GitLab concept; repos on other
@@ -332,7 +332,7 @@ with your own rather than reading them as defaults.
 | `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record                              |
 | `nix/configuration.nix`               | system, every target: locale, native Docker, nix-ld                                               |
 | `nix/targets/`                        | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
-| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, tooling, health, backup                          |
+| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, codex, tooling, health, backup                   |
 | `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)                                     |
 | `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs                        |
 | `nix/cli.nix`                         | assembles those wrappers into the `flakelab` CLI                                                  |

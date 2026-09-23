@@ -191,7 +191,8 @@ in
           ]
         }:$PATH"
         export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -c 'curl -fsSL https://claude.ai/install.sh | bash' || \
+        # pipefail: a failed fetch otherwise pipes an empty script into bash, which exits 0.
+        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash' || \
           ${flakelabDefer} "Claude Code not installed (offline?). Retry: flakelab update"
       fi
     ''

@@ -41,8 +41,9 @@ while (( $# > 0 )); do
       echo "  --quiet    print only FAIL/WARN lines and the summary"
       echo "  --help     show this help message"
       echo ""
-      echo "Blocking checks cover: the WSLInterop handler (WSL target only), kiro-cli, Claude Code,"
-      echo "the kiro-plugin checkout, ~/.kiro agents/skills/steering, mcp.json,"
+      echo "Blocking checks cover: the WSLInterop handler (WSL target only), the AI CLIs"
+      echo "the overlay installs (kiro-cli, Claude Code, Codex), the kiro-plugin checkout,"
+      echo "~/.kiro agents/skills/steering, mcp.json,"
       echo "which git config file wins, secrets.env (mode + CRLF), glab config"
       echo "modes (global and repo-local), glab auth, the ssh-agent and its keys,"
       echo "GitLab SSH, cloned repos, a writable npm prefix, and the activation"
@@ -93,6 +94,10 @@ KIRO_PLUGIN_REMOTE="${FLAKELAB_KIRO_PLUGIN_REMOTE-}"
 # nothing about this box's options and must not invent a requirement.
 GITLAB_GROUPS="${FLAKELAB_GITLAB_GROUPS-0}"
 GITLAB_REPOS="${FLAKELAB_GITLAB_REPOS-0}"
+# The AI CLIs activation installs (installKiro, installClaude, installCodex),
+# exported by the same wrapper; unset checks none, for the same reason.
+AI_CLIS=(${=FLAKELAB_AI_CLIS-})
+installs() { (( ${AI_CLIS[(Ie)$1]} )) }
 # Group discovery is the only thing that drives glab; any git@ clone — the groups,
 # the explicit repos, the kiro-plugin checkout — needs the SSH identity.
 needs_glab() { (( GITLAB_GROUPS > 0 )) }
@@ -234,28 +239,47 @@ else
 fi
 
 log_head "AI CLIs"
-if [[ -x "${HOME}/.local/bin/kiro-cli" ]]; then
-  log_ok "kiro-cli present (~/.local/bin/kiro-cli)"
-elif command -v kiro-cli > /dev/null 2>&1; then
-  log_ok "kiro-cli on PATH ($(command -v kiro-cli))"
-else
-  log_fail "kiro-cli not installed"
-  log_hint "curl -fsSL https://cli.kiro.dev/install | bash"
+if (( ${#AI_CLIS} == 0 )); then
+  log_ok "no AI CLI installed by this overlay - nothing to check"
 fi
 
-# `which kiro` is a decoy on WSL: interop resolves it to the Windows IDE under
-# /mnt/c/.../Programs/Kiro/bin/kiro, which is not the CLI.
-if command -v kiro > /dev/null 2>&1 && [[ "$(command -v kiro)" == /mnt/* ]]; then
-  log_ok "note: \`kiro\` resolves to the Windows IDE via interop, not the CLI"
+if installs kiro-cli; then
+  if [[ -x "${HOME}/.local/bin/kiro-cli" ]]; then
+    log_ok "kiro-cli present (~/.local/bin/kiro-cli)"
+  elif command -v kiro-cli > /dev/null 2>&1; then
+    log_ok "kiro-cli on PATH ($(command -v kiro-cli))"
+  else
+    log_fail "kiro-cli not installed"
+    log_hint "curl -fsSL https://cli.kiro.dev/install | bash"
+  fi
+
+  # `which kiro` is a decoy on WSL: interop resolves it to the Windows IDE under
+  # /mnt/c/.../Programs/Kiro/bin/kiro, which is not the CLI.
+  if command -v kiro > /dev/null 2>&1 && [[ "$(command -v kiro)" == /mnt/* ]]; then
+    log_ok "note: \`kiro\` resolves to the Windows IDE via interop, not the CLI"
+  fi
 fi
 
-if [[ -x "${HOME}/.local/bin/claude" ]]; then
-  log_ok "claude present ($(${HOME}/.local/bin/claude --version 2>/dev/null || echo 'version unknown'))"
-elif command -v claude > /dev/null 2>&1; then
-  log_ok "claude on PATH ($(command -v claude))"
-else
-  log_fail "Claude Code not installed"
-  log_hint "curl -fsSL https://claude.ai/install.sh | bash"
+if installs claude; then
+  if [[ -x "${HOME}/.local/bin/claude" ]]; then
+    log_ok "claude present ($(${HOME}/.local/bin/claude --version 2>/dev/null || echo 'version unknown'))"
+  elif command -v claude > /dev/null 2>&1; then
+    log_ok "claude on PATH ($(command -v claude))"
+  else
+    log_fail "Claude Code not installed"
+    log_hint "curl -fsSL https://claude.ai/install.sh | bash"
+  fi
+fi
+
+if installs codex; then
+  if [[ -x "${HOME}/.local/bin/codex" ]]; then
+    log_ok "codex present ($(${HOME}/.local/bin/codex --version 2>/dev/null || echo 'version unknown'))"
+  elif command -v codex > /dev/null 2>&1; then
+    log_ok "codex on PATH ($(command -v codex))"
+  else
+    log_fail "Codex CLI not installed"
+    log_hint "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+  fi
 fi
 
 # Kiro plugins — agents / skills / steering / hooks / mcp.json
