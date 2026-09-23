@@ -64,6 +64,7 @@ in
         "claudeMd"
         "claudeAutoUpdates"
         "installCodexCli"
+        "codexWritableConfig"
         "pinNpm"
         "bwConfigServer"
       ]

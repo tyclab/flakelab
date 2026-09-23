@@ -364,28 +364,63 @@
               ];
             };
             hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
-            settings = hm.programs.codex.settings;
+            settings = fixture.config.environment.etc."codex/config.toml".source;
+            oldConfig = pkgs.writeText "codex-config" ''model = "fixture-model"'';
+            migrate = pkgs.writeText "codex-writable-config-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ]
+                hm.home.activation.codexWritableConfig.data
+            );
             baseline = self.nixosConfigurations.default.config;
           in
           assert !baseline.home-manager.users.${baseline.flakelab.username}.programs.codex.enable;
           assert hm.programs.codex.package == null;
           assert hm.programs.codex.skills == { };
           assert hm.programs.codex.context == "";
-          assert settings.model == "fixture-model";
-          assert settings.tui.status_line == [ "git-branch" ];
-          assert !(settings.mcp_servers.docs ? type);
-          assert settings.mcp_servers.local.env_vars == [ "XDG_RUNTIME_DIR" ];
-          assert settings.mcp_servers.docs.tools.search.approval_mode == "approve";
-          assert settings.mcp_servers.local.default_tools_approval_mode == "prompt";
-          assert settings.approvals_reviewer == "auto_review";
-          assert !settings.sandbox_workspace_write.network_access;
-          assert !(settings ? auto_review);
+          assert hm.programs.codex.settings == { };
+          assert !(hm.home.file ? ".codex/config.toml");
+          assert !(baseline.environment.etc ? "codex/config.toml");
           assert fixture.config.flakelab.claudeAutoMode == baseline.flakelab.claudeAutoMode;
-          pkgs.runCommandLocal "flakelab-check-codex-config" { } ''
-            test -s ${hm.home.file.".codex/config.toml".source}
-            test -s ${hm.home.file.".codex/rules/flakelab.rules".source}
-            touch $out
-          '';
+          pkgs.runCommandLocal "flakelab-check-codex-config"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.remarshal
+                pkgs.jq
+              ];
+            }
+            ''
+              toml2json ${settings} > settings.json
+              jq -e '
+                .model == "fixture-model" and .tui.status_line == ["git-branch"]
+                and (.mcp_servers.docs | has("type") | not)
+                and .mcp_servers.local.env_vars == ["XDG_RUNTIME_DIR"]
+                and .mcp_servers.docs.tools.search.approval_mode == "approve"
+                and .mcp_servers.local.default_tools_approval_mode == "prompt"
+                and .approvals_reviewer == "auto_review"
+                and .sandbox_workspace_write.network_access == false
+                and (has("auto_review") | not)
+              ' settings.json
+              test -s ${hm.home.file.".codex/rules/flakelab.rules".source}
+              export fixtureHome="$TMPDIR/codex-home" DRY_RUN_CMD=""
+              mkdir -p "$fixtureHome/.codex"
+              ln -s ${oldConfig} "$fixtureHome/.codex/config.toml"
+              DRY_RUN_CMD=echo bash ${migrate}
+              test -L "$fixtureHome/.codex/config.toml"
+              test "$(find "$fixtureHome" -type f | wc -l)" -eq 0
+              bash ${migrate}
+              test ! -L "$fixtureHome/.codex/config.toml"
+              test -w "$fixtureHome/.codex/config.toml"
+              test "$(stat -c %a "$fixtureHome/.codex/config.toml")" = 600
+              cmp ${oldConfig} "$fixtureHome"/.codex/config.toml.before-system-defaults.*
+              printf '[projects."/fixture"]\ntrust_level = "trusted"\n' > "$fixtureHome/.codex/config.toml"
+              cp "$fixtureHome/.codex/config.toml" expected
+              bash ${migrate}
+              cmp expected "$fixtureHome/.codex/config.toml"
+              export fixtureHome="$TMPDIR/new-codex-home"
+              bash ${migrate}
+              test -w "$fixtureHome/.codex/config.toml"
+              touch $out
+            '';
         claude-mcp-exclusion =
           let
             fixture = self.nixosConfigurations.default.extendModules {

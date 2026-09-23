@@ -43,6 +43,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- Codex fleet settings now use `/etc/codex/config.toml`, leaving the user config writable for trust decisions and UI changes. Activation backs up and replaces the previous Home Manager symlink; existing regular user files are preserved.
+
 - An offline switch on a box without kiro-cli or Claude Code defers their install instead of failing the health check on the missing binary. Each installer is fetched with `curl` and piped into `bash`, and without `pipefail` the failed fetch handed `bash` an empty script that exited 0, so nothing was recorded for the health check to excuse the missing binary with. A failed `kiro-cli update` is deferred too rather than warned: it is the network, which the health check treats as deferred work, and the warning failed the rebuild the comment beside it said a stale CLI must not fail. `checks.cli-installers` runs each rendered installer offline.
 - `flakelab doctor` checks only the AI CLIs the overlay installs. With `installKiro` or `installClaude` off it still failed on the missing binary; the wrapper now exports the enabled set as `FLAKELAB_AI_CLIS`, and `test-nix-doctor` covers it.
 - `flakelab update` names a `git+file:` flakelab input as local again ("only committed content is in this build"), and `flakelab doctor` reports it as a local override instead of "could not read the flakelab input from the lock". Both read the lock's `type` as the URL scheme, but nix locks `git+file:`, `git+https:` and `git+ssh:` alike as `git`, so the local case never matched; doctor also called every remote git input, and a sourcehut one, unreadable. The input is still re-locked to its checkout's last commit, as it has been.

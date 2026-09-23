@@ -259,13 +259,13 @@ in
     codexSettings = mkOption {
       type = types.attrs;
       default = { };
-      description = "Non-secret Codex settings passed to Home Manager's programs.codex.settings. Opting in makes config.toml declarative; put model, trust and terminal status-line settings here. Auth/session files remain runtime state.";
+      description = "Non-secret Codex defaults written to /etc/codex/config.toml. User config.toml remains writable for trust decisions and UI changes and overrides these defaults. Auth/session files remain runtime state.";
     };
 
     codexMcpSources = mkOption {
       type = types.listOf types.path;
       default = [ ];
-      description = "MCP JSON files from locked flake inputs or local Nix paths. Their mcpServers entries become native Codex mcp_servers via Home Manager. No plugin installer, skills, agents or Claude changes.";
+      description = "MCP JSON files from locked flake inputs or local Nix paths. Their mcpServers entries become native Codex mcp_servers in the system defaults. No plugin installer, skills, agents or Claude changes.";
     };
 
     codexAutoReview = mkOption {

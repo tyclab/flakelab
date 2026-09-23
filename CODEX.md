@@ -1,8 +1,9 @@
 # Codex MCP and permissions
 
-Flakelab uses the pinned Home Manager `programs.codex` module. Nix generates
-`~/.codex/config.toml`, the command rules, and non-secret MCP host settings.
-There is no custom configuration merger or runtime plugin installer.
+Nix generates Codex's native system defaults at `/etc/codex/config.toml`.
+The pinned Home Manager `programs.codex` module manages command rules; Home
+Manager also generates non-secret MCP host settings. There is no custom
+configuration merger or runtime plugin installer.
 
 Add the separate MCP repository as a `flake = false` input in the private overlay:
 
@@ -34,11 +35,17 @@ input is fetched, configuration building and activation need no marketplace
 network operation. Removing a source removes its servers on the next switch;
 rolling back the generation restores the prior configuration.
 
-Home Manager owns the complete `config.toml`. Put desired model, trust and other
-non-secret settings in `codexSettings`; back up an existing unmanaged file before
-the first switch. Auth, OAuth tokens, sessions and caches remain mutable runtime
-state. Do not also enable the same servers as Codex plugins: that creates duplicate
-tools. The source repository can still be installed as plugins outside Flakelab.
+`~/.codex/config.toml` stays writable: Codex saves trust decisions, model selections
+and UI changes there. User and trusted project settings override the system
+defaults. Put fleet defaults in `codexSettings` and remove conflicting user
+overrides when a fleet change should take effect. These defaults are not enforced
+`requirements.toml` constraints.
+
+Activation migrates the earlier Home Manager `codex-config` symlink to an empty,
+mode-600 user file and saves its contents as `config.toml.before-system-defaults.*`.
+Existing regular user files are preserved. Auth, OAuth tokens, sessions and caches
+remain runtime state. Do not also enable the same servers as Codex plugins: that
+creates duplicate tools. Plugins remain available outside Flakelab.
 
 The TycLabs launchers obtain credentials from flakelab's existing zsh runtime
 secret source. `~/.config/flakelab/codex-mcp.env` contains only the configured
@@ -63,6 +70,8 @@ Verify with `nix flake check`, `codex mcp list`, and `/mcp` in a fresh thread.
 MCP policy and isolation. Use `codex execpolicy check --rules FILE -- COMMAND` for
 command-rule cases. MCP registration and successful service authentication are
 separate checks; Cloudflare API access requires its own OAuth login.
+The check also exercises symlink migration, private backups, writable trust
+settings, dry runs, and preservation of subsequent user changes.
 
 To exclude a server from Claude as well, remove its entry from `claudePlugins`
 and set `claudeMcpDisabledServers = [ "whatsapp" ];` for the native server name.
@@ -71,5 +80,6 @@ The exclusion does not change Kiro's configuration.
 
 References: [Home Manager Codex options](https://nix-community.github.io/home-manager/options/home-manager/programs/codex.html),
 [Nix flake inputs and lock files](https://nix.dev/manual/nix/stable/command-ref/new-cli/nix3-flake.html),
+[Codex configuration layers](https://learn.chatgpt.com/docs/config-file/config-basic),
 [Codex Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review),
 [Codex command rules](https://learn.chatgpt.com/docs/agent-configuration/rules).
