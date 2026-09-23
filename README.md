@@ -426,8 +426,8 @@ The token is per-unlock (valid until `bw lock`/`bw logout`), so it is not a
 `flakelab backup` writes a provisioning seed (host-specific: secrets, keys, tool
 config) into the payload beside the overlay, and — if `stateRoot` is set —
 machine-independent **state** (merged shell history, Claude Code auto-memory,
-optionally session transcripts) into a plain directory your own sync client
-replicates:
+Codex memories, optionally Claude and Codex session transcripts) into a plain
+directory your own sync client replicates:
 
 ```nix
 # in your overlay (flakelab-config/flake.nix)

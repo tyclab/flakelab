@@ -312,13 +312,17 @@ restore_zsh_history() {
 memory_seen_file() { print -r -- "${HOME_DIR}/.local/state/flakelab/state-sync/memory/$1.seen" }
 memory_tombstone_dir() { print -r -- "${1:h}/memory-tombstones" }
 
-# reply = the topic files under $1, relative: no MEMORY.md, no sync artifacts.
+# The index file a memory directory merges line by line instead of mirroring.
+# sync_memory_dir's fourth argument rebinds it for one call; empty means none.
+MEMORY_INDEX=MEMORY.md
+
+# reply = the topic files under $1, relative: no index, no sync artifacts.
 memory_topic_files() {
   local dir="$1" rel
   local -a found=()
   if [[ -d "${dir}" ]]; then
     while IFS= read -r rel; do
-      [[ "${rel}" == MEMORY.md ]] && continue
+      [[ -n "${MEMORY_INDEX}" && "${rel}" == "${MEMORY_INDEX}" ]] && continue
       found+=("${rel}")
     done < <(cd "${dir}" && sync_artifact_find_args && \
       find . \( "${reply[@]}" \) -prune -o \( -type f -o -type l \) -printf '%P\n' 2> /dev/null)
@@ -510,9 +514,12 @@ merge_memory_index() {
 # copies', then ours, ours winning a file both name; the copies are removed once
 # folded. restore: local lines first, then the incoming index (winning a file
 # both name) and its conflict copies, which stay (the backup run owns the state
-# root's tidiness).
+# root's tidiness). $4 names the index, default MEMORY.md; empty mirrors every
+# file newest-wins, for a directory whose files the tool itself regenerates.
 sync_memory_dir() {
   local mode="$1" src="$2" dst="$3"
+  # Dynamically scoped: every helper below reads this binding.
+  local MEMORY_INDEX="${4-MEMORY.md}"
   if [[ "${mode}" == backup ]]; then
     if [[ ! -d "${src}" ]] || ${DRY_RUN}; then
       backup_dir "${src}" "${dst}" false true
@@ -521,7 +528,7 @@ sync_memory_dir() {
   else
     [[ -d "${src}" ]] || return 0
     if ${DRY_RUN}; then
-      log_dry "${src}/ -> ${dst}/ (MEMORY.md merged)"
+      log_dry "${src}/ -> ${dst}/${MEMORY_INDEX:+ (${MEMORY_INDEX} merged)}"
       return 0
     fi
   fi
@@ -532,7 +539,17 @@ sync_memory_dir() {
   apply_memory_tombstones "${home_dir}" "${state_dir}"
   [[ "${mode}" == backup ]] && propagate_memory_deletions "${home_dir}" "${state_dir}" "${slug}"
 
-  local index="${dst}/MEMORY.md" incoming="${src}/MEMORY.md" verb="restored"
+  if [[ -z "${MEMORY_INDEX}" ]]; then
+    if [[ "${mode}" == backup ]]; then
+      backup_dir "${src}" "${dst}" false true
+    else
+      restore_dir "${src}" "${dst}" true
+      record_memory_seen "${home_dir}" "${slug}"
+    fi
+    return 0
+  fi
+
+  local index="${dst}/${MEMORY_INDEX}" incoming="${src}/${MEMORY_INDEX}" verb="restored"
   local -a conflicts=()
   if [[ "${mode}" == backup ]]; then
     verb="backed up"
@@ -607,8 +624,50 @@ sync_memory_dir() {
 }
 
 # ---------------------------------------------------------------------------
-# Claude transcripts
+# Transcripts: Claude's projects/, Codex's sessions/
 # ---------------------------------------------------------------------------
+
+# The transcript legs below walk one tree pair at a time, this box's (TX_HOME)
+# and the state root's (TX_STATE); transcripts_for picks it before each pass.
+# TX_ID is the field of an entry the fork check matches the copy's last entry
+# by, never redacted: Claude's uuid, the timestamp of a Codex rollout line.
+# TX_PARK is where a local branch is parked; TX_DIVERGED a state-root one.
+typeset -gA TX_SKIP=()
+transcripts_for() {
+  TX_KIND="$1"
+  TX_SKIP=()
+  case "$1" in
+    claude)
+      TX_HOME="${HOME_DIR-}/.claude/projects"
+      TX_STATE="${STATE_ROOT-}/claude/projects"
+      TX_DIVERGED="${STATE_ROOT-}/claude/diverged"
+      TX_PARK="${HOME_DIR-}/.local/state/flakelab/state-sync/diverged"
+      TX_ID=uuid
+      ;;
+    codex)
+      TX_HOME="${HOME_DIR-}/.codex/sessions"
+      TX_STATE="${STATE_ROOT-}/codex/sessions"
+      TX_DIVERGED="${STATE_ROOT-}/codex/diverged"
+      TX_PARK="${HOME_DIR-}/.local/state/flakelab/state-sync/diverged/codex"
+      TX_ID=timestamp
+      # Codex moves a session it archives to archived_sessions/, and compresses
+      # an idle one to <name>.zst beside it: pulling the plain copy back would
+      # undo the archive or put a second copy of the session next to the first.
+      local f
+      for f in "${HOME_DIR-}"/.codex/archived_sessions/**/*.jsonl(|.zst)(N.); do
+        TX_SKIP[${${f:t}%.zst}]=archived
+      done
+      ;;
+  esac
+}
+transcripts_for claude
+
+# Whether the pull leg must leave <rel>'s local copy alone (see transcripts_for).
+tx_pull_skip() {
+  local rel="$1"
+  [[ "${TX_KIND}" == codex ]] || return 1
+  [[ -n "${TX_SKIP[${rel:t}]:-}" || -e "${TX_HOME}/${rel}.zst" ]]
+}
 
 # Whether the last sync_transcript placed bytes; the gate's redaction warn reads it.
 SYNC_TRANSCRIPT_WROTE=false
@@ -656,7 +715,7 @@ transcript_lines() {
   local file="$1" id="" lines
   transcript_lines_load
   if ${TRANSCRIPT_LINES_STAT} \
-    && [[ "${file}" == "${HOME_DIR}/.claude/projects/"* || ( -n "${STATE_ROOT}" && "${file}" == "${STATE_ROOT}/claude/projects/"* ) ]] \
+    && [[ "${file}" == "${TX_HOME}/"* || ( -n "${STATE_ROOT}" && "${file}" == "${TX_STATE}/"* ) ]] \
     && transcript_identity "${file}"; then
     id="${REPLY}"
     TRANSCRIPT_LINES_SEEN[${file}]=1
@@ -702,11 +761,11 @@ transcript_lines_save() {
   return 0
 }
 
-# The uuid of the last complete entry that carries one — the message a copy ends
+# The TX_ID of the last complete entry that carries one — the message a copy ends
 # on. From the tail only: a transcript is append-only, and a half-written last
 # line (a live session mid-append) is skipped, not an error.
 transcript_last_uuid() {
-  tail -n 64 "$1" 2> /dev/null | jq -R -r 'fromjson? | .uuid? // empty' 2> /dev/null | tail -n 1
+  tail -n 64 "$1" 2> /dev/null | jq -R -r --arg id "${TX_ID}" 'fromjson? | .[$id]? // empty' 2> /dev/null | tail -n 1
 }
 
 # Whether <src> continues <dst>: the entry <dst> ends on is somewhere in <src>.
@@ -720,21 +779,20 @@ transcript_continues() {
 }
 
 # Copy <file> — a branch about to lose its path — beside the root it lives in,
-# named after <named>, the transcript whose path it had: the state root's
-# claude/diverged/ for a state-root copy (it replicates, and its bytes already
-# passed a gate), ~/.local/state/flakelab/state-sync/diverged/ for a local one
-# (raw, so it stays on this box). Outside claude/projects/ on purpose: neither
-# leg syncs it again and Claude Code does not list it; `claude --resume <file>
-# --fork-session` reopens it as a session of its own. Returns 1 when it could
-# not be parked, and the caller must then leave the original where it is.
+# named after <named>, the transcript whose path it had: TX_DIVERGED for a
+# state-root copy (it replicates, and its bytes already passed a gate), TX_PARK
+# for a local one (raw, so it stays on this box). Outside the transcript trees on
+# purpose: neither leg syncs it again and neither tool lists it; `claude --resume
+# <file> --fork-session` reopens a Claude branch as a session of its own. Returns
+# 1 when it could not be parked, and the caller must then leave the original.
 park_diverged_transcript() {
   local file="$1" named="${2:-$1}" rel dir parked stamp
-  if [[ -n "${STATE_ROOT}" && "${named}" == "${STATE_ROOT}/claude/projects/"* ]]; then
-    rel="${named#${STATE_ROOT}/claude/projects/}"
-    dir="${STATE_ROOT}/claude/diverged"
+  if [[ -n "${STATE_ROOT}" && "${named}" == "${TX_STATE}/"* ]]; then
+    rel="${named#${TX_STATE}/}"
+    dir="${TX_DIVERGED}"
   else
-    rel="${named#${HOME_DIR}/.claude/projects/}"
-    dir="${HOME_DIR}/.local/state/flakelab/state-sync/diverged"
+    rel="${named#${TX_HOME}/}"
+    dir="${TX_PARK}"
   fi
   if ! stamp="$(date +%Y%m%dT%H%M%S)"; then
     record_failure "Could not read the clock; the diverged branch of ${rel} was not parked"
@@ -752,7 +810,9 @@ park_diverged_transcript() {
     return 1
   fi
   chmod 600 "${parked}" 2> /dev/null || true
-  log_warn "Diverged transcript ${rel}: the session was carried on in two places. The branch that lost its path is parked at ${parked} — reopen it with: claude --resume ${parked} --fork-session"
+  local reopen=" — reopen it with: claude --resume ${parked} --fork-session"
+  [[ "${TX_KIND}" == claude ]] || reopen=""
+  log_warn "Diverged transcript ${rel}: the session was carried on in two places. The branch that lost its path is parked at ${parked}${reopen}"
   return 0
 }
 
@@ -847,14 +907,14 @@ fold_transcript_conflicts() {
   # the push or the pull. No (D): a transcript is never a dotfile, so neither
   # is a conflict copy of one.
   local -A artifacts_in=()
-  for f in "${STATE_ROOT}"/claude/projects/**/*(N.); do
+  for f in "${TX_STATE}"/**/*(N.); do
     is_sync_artifact "${f:t}" && artifacts_in[${f:h}]+="${f}"$'\0'
   done
   local -a artifacts
   for dir in "${(@ko)artifacts_in}"; do
     artifacts=("${(@0)artifacts_in[${dir}]%$'\0'}")
     for base in "${dir}"/*.jsonl(N.); do
-      rel="${base#${STATE_ROOT}/claude/projects/}"
+      rel="${base#${TX_STATE}/}"
       rel_path_is_sync_artifact "${rel}" && continue
       conflict_copies_among "${base}" "${artifacts[@]}"
       for copy in "${reply[@]}"; do
@@ -893,10 +953,11 @@ pull_transcripts() {
   fi
   # `**`: subagent transcripts live below the session file
   # (<slug>/<session>/subagents/*.jsonl), so one level misses them.
-  for transcript in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
-    rel="${transcript#${STATE_ROOT}/claude/projects/}"
+  for transcript in "${TX_STATE}"/**/*.jsonl(N.); do
+    rel="${transcript#${TX_STATE}/}"
     rel_path_is_sync_artifact "${rel}" && continue
-    dst="${HOME_DIR}/.claude/projects/${rel}"
+    tx_pull_skip "${rel}" && continue
+    dst="${TX_HOME}/${rel}"
     if [[ -f "${dst}" ]]; then
       if ! mtime="$(stat -c %Y "${dst}" 2> /dev/null)"; then
         record_failure "Could not stat transcript: ${dst}"
@@ -908,6 +969,20 @@ pull_transcripts() {
       fi
     fi
     sync_transcript "${transcript}" "${dst}"
+  done
+  transcript_lines_save
+  return 0
+}
+
+# Restore leg: the pull without the freshness skip — a restore runs before any
+# session is open on this box.
+restore_transcripts() {
+  local transcript rel
+  for transcript in "${TX_STATE}"/**/*.jsonl(N.); do
+    rel="${transcript#${TX_STATE}/}"
+    rel_path_is_sync_artifact "${rel}" && continue
+    tx_pull_skip "${rel}" && continue
+    sync_transcript "${transcript}" "${TX_HOME}/${rel}"
   done
   transcript_lines_save
   return 0
@@ -935,10 +1010,10 @@ backup_transcripts() {
   local phase_started
   phase_started="$(date +%s)" || phase_started=""
   # `**` mirrors the pull leg: subagent transcripts sit below the session file.
-  for transcript in "${HOME_DIR}"/.claude/projects/**/*.jsonl(N.); do
-    rel="${transcript#${HOME_DIR}/.claude/projects/}"
+  for transcript in "${TX_HOME}"/**/*.jsonl(N.); do
+    rel="${transcript#${TX_HOME}/}"
     rel_path_is_sync_artifact "${rel}" && continue
-    dst="${STATE_ROOT}/claude/projects/${rel}"
+    dst="${TX_STATE}/${rel}"
     if [[ -f "${dst}" ]] \
       && transcript_lines "${transcript}" && src_lines="${REPLY}" \
       && transcript_lines "${dst}" && dst_lines="${REPLY}" \

@@ -89,7 +89,7 @@ Value flags - each one overrides the matching user_data.yaml key:
                              added as origin, never pushed)
   --state-root <path>        shareable-state directory (flakelab.stateRoot);
                              never a git checkout
-  --state-transcripts <bool> also sync Claude transcripts there
+  --state-transcripts <bool> also sync Claude transcripts and Codex sessions there
                              (flakelab.stateTranscripts; requires --state-root,
                              ignored without it)
 
@@ -707,7 +707,7 @@ _generated_flake() {
   print -r -- "        backupAutostart = $(_nix_bool "${_backup_autostart}");"
   # Both have a default (null / false), so they are emitted only when set.
   if [[ -n "${_state_root}" ]]; then
-    print -r -- '        # Shareable backup state (merged history, Claude memory) - a plain'
+    print -r -- '        # Shareable backup state (merged history, Claude and Codex memory) - a plain'
     print -r -- '        # directory your folder-sync client replicates. Never a git checkout.'
     print -r -- "        stateRoot = $(_nix_str "${_state_root}");"
     [[ -n "${_state_transcripts}" ]] && print -r -- "        stateTranscripts = $(_nix_bool "${_state_transcripts}");"

@@ -45,7 +45,7 @@ gitlab_groups:
 # kiro_plugin_repo: 'git@gitlab.com:your-group/plugins/kiro-plugin.git'
 
 # Second directory for the shareable backup state; a sync folder, never a git checkout.
-# state_transcripts adds the Claude session transcripts (large).
+# state_transcripts adds the Claude and Codex session transcripts (large).
 # state_root: /mnt/d/sync/flakelab-state
 # state_transcripts: false
 

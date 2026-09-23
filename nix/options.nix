@@ -339,13 +339,13 @@ in
     stateRoot = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Absolute path of a directory for the SHAREABLE backup state — the merged zsh history, Claude auto-memory and (with stateTranscripts) Claude transcripts — so it can be replicated between machines by whatever folder-sync client you already run (Syncthing, Dropbox, rclone, a NAS client, nothing at all). null keeps everything in the payload (backupRoot) as before. Must be a plain directory, never a git checkout (sync clients write conflict copies of .git internals) and never inside repoPath. Credentials and host-specific config never go there. Exported as FLAKELAB_STATE_ROOT to `flakelab backup`.";
+      description = "Absolute path of a directory for the SHAREABLE backup state — the merged zsh history, Claude auto-memory and Codex memories, and (with stateTranscripts) Claude transcripts and Codex sessions — so it can be replicated between machines by whatever folder-sync client you already run (Syncthing, Dropbox, rclone, a NAS client, nothing at all). null keeps everything in the payload (backupRoot) as before. Must be a plain directory, never a git checkout (sync clients write conflict copies of .git internals) and never inside repoPath. Credentials and host-specific config never go there. Exported as FLAKELAB_STATE_ROOT to `flakelab backup`.";
     };
 
     stateTranscripts = mkOption {
       type = types.bool;
       default = false;
-      description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null.";
+      description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) and Codex sessions (~/.codex/sessions/**/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null.";
     };
 
     stateTranscriptSecrets = mkOption {
@@ -372,7 +372,7 @@ in
     stateSyncInterval = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot (without a root there is nothing to sync) but NOT backupAutostart: the two timers are independent, so a box that must not run the unattended daily payload pass — a guest whose backup root is a soft network mount, say — still converges its state root. While it is scheduled, a Claude Code SessionEnd hook also starts the sync when a session closes, so a finished session does not wait out the period.";
+      description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude and Codex memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot (without a root there is nothing to sync) but NOT backupAutostart: the two timers are independent, so a box that must not run the unattended daily payload pass — a guest whose backup root is a soft network mount, say — still converges its state root. While it is scheduled, a Claude Code SessionEnd hook also starts the sync when a session closes, so a finished session does not wait out the period.";
     };
 
     sessionsAutosaveInterval = mkOption {

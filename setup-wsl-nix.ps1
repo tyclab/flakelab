@@ -897,7 +897,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     # Both have a default (null / false), so they are emitted only when set.
     $stateRoot = [string](Get-UserDataValue $ud 'state_root')
     if ($stateRoot) {
-        $body += '        # Shareable backup state (merged history, Claude memory) - a plain'
+        $body += '        # Shareable backup state (merged history, Claude and Codex memory) - a plain'
         $body += '        # directory your folder-sync client replicates. Never a git checkout.'
         $body += "        stateRoot = $(ConvertTo-NixString $stateRoot);"
         $stateTranscripts = [string](Get-UserDataValue $ud 'state_transcripts')
