@@ -95,6 +95,9 @@ in
       scripts.gitpublisher
     ]
     ++ cli.shims
+    # Codex's Linux sandbox runs the first bwrap on PATH; without one it warns at
+    # every start and falls back to a bundled helper.
+    ++ lib.optional cfg.installCodex pkgs.bubblewrap
     ++ profilePkgs;
 
   # ~/.local/bin for the Kiro CLI, Claude Code, Codex, and `uv tool` installs.
