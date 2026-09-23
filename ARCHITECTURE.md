@@ -293,11 +293,12 @@ to the read-only store and fails; git config is declarative here.
 treatment:
 
 - The **provisioning seed** — `secrets.env`, the SSH key, glab/kube/helm config,
-  the Claude settings with their environment block — describes _this_ host and
-  must never leave the overlay checkout.
+  the Claude settings with their environment block, the Codex config, login and
+  MCP OAuth tokens — describes _this_ host and must never leave the overlay
+  checkout.
 - The **state** — merged shell history, Claude Code auto-memory per checkout,
-  optionally session transcripts — is what you want on every machine you work
-  from.
+  Codex memories, optionally session transcripts — is what you want on every
+  machine you work from.
 
 `stateRoot` splits them: set it and the state is written there instead of into
 the payload. Whether that directory is replicated by Syncthing, Dropbox, rclone,
@@ -378,6 +379,20 @@ the state root has to converge on its own:
   through the same gate as plain text: a reported secret is replaced literally,
   and a file whose secret cannot be matched literally stays on its box, listed
   in `~/.local/state/flakelab/state-sync/side-files.held`.
+- **Codex** follows the same two rules. `~/.codex/memories/` syncs as one memory
+  directory under `<stateRoot>/codex/memories/`, deletions and tombstones
+  included, but without an index merge: Codex regenerates every file there,
+  its `MEMORY.md` too, so the newest copy wins whole. Sessions
+  (`~/.codex/sessions/`, under `stateTranscripts`) take the transcript path
+  above through the same gate; a rollout line carries no id, so the fork check
+  matches the `timestamp` the shorter copy ends on, and branches park under
+  `<stateRoot>/codex/diverged/` or `…/diverged/codex/`. The pull leaves a
+  session alone that this box archived (`archived_sessions/`) or compressed
+  (`<name>.zst` beside it), since the plain copy would undo the one or shadow
+  the other. `codex resume <id>` finds a pulled session by id: Codex falls back
+  to the files when its SQLite state does not know the thread. Side files, the
+  manifest and `--state-gc` stay Claude's: sessions live in dated folders, not
+  per-checkout slugs.
 
 **The gate.** The merged history and the transcripts are everything ever typed
 at a prompt or printed in a session, including anything pasted before you had a

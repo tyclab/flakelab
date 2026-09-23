@@ -2829,6 +2829,170 @@ contains "and names the stale box"        "${OUT}" "OTHERBOX is older than"
 exists   "and removes nothing"            "${FIX_STATE}/claude/projects/orphan-slug"
 
 # ---------------------------------------------------------------------------
+# Codex: payload files, memory and sessions in the state root
+# ---------------------------------------------------------------------------
+# codex_home: a ~/.codex with every payload file, a session and the installer's
+# package cache, plus one user skill.
+codex_home() {
+  CX="${FIX_HOME}/.codex"
+  CX_BAK="${FIX_ROOT}/instances/TestDistro/codex"
+  mkdir -p "${CX}/hooks" "${CX}/rules" "${CX}/sessions/2026/09/23" "${CX}/packages/standalone" \
+    "${FIX_HOME}/.agents/skills/deploy"
+  print -r -- 'model = "gpt-5"'           > "${CX}/config.toml"
+  print -r -- 'model = "gpt-5-mini"'      > "${CX}/work.config.toml"
+  print -r -- '{"tokens":"login"}'        > "${CX}/auth.json"
+  print -r -- '{"mcp":"oauth"}'           > "${CX}/.credentials.json"
+  print -r -- '# global instructions'     > "${CX}/AGENTS.md"
+  print -r -- '{"hooks":{}}'              > "${CX}/hooks.json"
+  print -r -- '#!/bin/sh'                 > "${CX}/hooks/start.sh"
+  chmod +x "${CX}/hooks/start.sh"
+  print -r -- 'prefix_rule(pattern=["ls"], decision="allow")' > "${CX}/rules/default.rules"
+  print -r -- '{"timestamp":"t1"}'        > "${CX}/sessions/2026/09/23/rollout-a.jsonl"
+  print -r -- 'binary'                    > "${CX}/packages/standalone/codex"
+  print -r -- '# deploy skill'            > "${FIX_HOME}/.agents/skills/deploy/SKILL.md"
+}
+
+print -r -- "Codex config, instructions, rules, hooks, skills and tokens round-trip through the payload"
+fixture codex-payload
+codex_home
+run_backup --force
+check   "the backup exits clean"                 "${RC}" "0"
+same    "config.toml is archived"                "${CX}/config.toml"        "${CX_BAK}/config.toml"
+same    "a profile config is archived"           "${CX}/work.config.toml"   "${CX_BAK}/work.config.toml"
+same    "the login is archived"                  "${CX}/auth.json"          "${CX_BAK}/auth.json"
+same    "the MCP OAuth tokens are archived"      "${CX}/.credentials.json"  "${CX_BAK}/.credentials.json"
+same    "AGENTS.md is archived"                  "${CX}/AGENTS.md"          "${CX_BAK}/AGENTS.md"
+same    "the approved-command rules are archived" "${CX}/rules/default.rules" "${CX_BAK}/rules/default.rules"
+same    "a hook script is archived"              "${CX}/hooks/start.sh"     "${CX_BAK}/hooks/start.sh"
+same    "a user skill is archived"               "${FIX_HOME}/.agents/skills/deploy/SKILL.md" "${CX_BAK}/skills/deploy/SKILL.md"
+check   "the archived login is owner-only"       "$(stat -c '%a' "${CX_BAK}/auth.json")" "600"
+check   "and so is the payload's codex dir"      "$(stat -c '%a' "${CX_BAK}")" "700"
+absent  "sessions never enter the payload"       "${CX_BAK}/sessions"
+absent  "nor does the installer's package cache" "${CX_BAK}/packages"
+
+rm -rf "${CX}" "${FIX_HOME}/.agents"
+run_restore
+check   "the restore exits clean"                "${RC}" "0"
+same    "config.toml comes back"                 "${CX_BAK}/config.toml"       "${CX}/config.toml"
+same    "the profile config comes back"          "${CX_BAK}/work.config.toml"  "${CX}/work.config.toml"
+same    "the login comes back"                   "${CX_BAK}/auth.json"         "${CX}/auth.json"
+same    "the MCP OAuth tokens come back"         "${CX_BAK}/.credentials.json" "${CX}/.credentials.json"
+same    "the rules come back"                    "${CX_BAK}/rules/default.rules" "${CX}/rules/default.rules"
+same    "the skill comes back"                   "${CX_BAK}/skills/deploy/SKILL.md" "${FIX_HOME}/.agents/skills/deploy/SKILL.md"
+check   "the restored login is owner-only"       "$(stat -c '%a' "${CX}/auth.json")" "600"
+check   "the restored MCP tokens are owner-only" "$(stat -c '%a' "${CX}/.credentials.json")" "600"
+check   "~/.codex is owner-only"                 "$(stat -c '%a' "${CX}")" "700"
+[[ -x "${CX}/hooks/start.sh" ]] && ok "the hook script comes back executable" || bad "the hook script comes back executable"
+
+print -r -- "a restore keeps this box's refreshed Codex login and the rules it appended to"
+print -r -- '{"tokens":"refreshed here"}' > "${CX}/auth.json"
+print -r -- 'prefix_rule(pattern=["gh"], decision="allow")' >> "${CX}/rules/default.rules"
+touch -d '1 minute' "${CX}/rules/default.rules"
+run_restore
+check    "the unattended restore exits clean"    "${RC}" "0"
+contains "the refreshed login is kept"           "$(< "${CX}/auth.json")" "refreshed here"
+contains "the appended rule is kept"             "$(< "${CX}/rules/default.rules")" '"gh"'
+
+print -r -- "without a Codex directory nothing is archived"
+fixture codex-none
+run_backup --force
+check    "the backup exits clean"                "${RC}" "0"
+absent   "no codex payload dir is made"          "${FIX_ROOT}/instances/TestDistro/codex"
+
+print -r -- "Codex memories go to the state root whole, with no index merge"
+state_fixture codex-memory
+codex_home
+mkdir -p "${CX}/memories/rollout_summaries" "${FIX_STATE}/codex/memories"
+print -r -- "old handbook line"   > "${FIX_STATE}/codex/memories/MEMORY.md"
+touch -d '1 hour ago' "${FIX_STATE}/codex/memories/MEMORY.md"
+print -r -- "regenerated handbook" > "${CX}/memories/MEMORY.md"
+print -r -- "summary here"         > "${CX}/memories/rollout_summaries/a.md"
+print -r -- "summary there"        > "${FIX_STATE}/codex/memories/other.md"
+run_backup --force
+check   "the backup exits clean"                 "${RC}" "0"
+check   "the newer MEMORY.md replaces the older one whole" \
+  "$(< "${FIX_STATE}/codex/memories/MEMORY.md")" "regenerated handbook"
+is_file "a nested memory file reaches the state root" "${FIX_STATE}/codex/memories/rollout_summaries/a.md"
+is_file "the other box's memory stays"           "${FIX_STATE}/codex/memories/other.md"
+absent  "nothing lands in the payload"           "${CX_BAK}/memories"
+run_backup --state-only --force
+check   "the state-only run exits clean"         "${RC}" "0"
+is_file "the other box's memory arrives"         "${CX}/memories/other.md"
+
+print -r -- "a Codex memory deleted here leaves the state root"
+rm "${CX}/memories/rollout_summaries/a.md"
+run_backup --state-only --force
+check   "the run exits clean"                    "${RC}" "0"
+absent  "the deleted memory is gone from the state root" "${FIX_STATE}/codex/memories/rollout_summaries/a.md"
+is_file "and a tombstone stops the other box writing it back" \
+  "${FIX_STATE}/codex/memory-tombstones/rollout_summaries/a.md"
+
+print -r -- "Codex sessions stay home unless transcripts are asked for"
+state_fixture codex-sessions-off
+codex_home
+run_backup --state-only --force
+check   "the run exits clean"                    "${RC}" "0"
+absent  "no session reaches the state root"      "${FIX_STATE}/codex/sessions"
+
+print -r -- "Codex sessions sync both ways, the pushed copy gated"
+state_fixture codex-sessions
+TRANSCRIPTS=1
+codex_home
+FAKE_SECRET="sk-hunter2-and-a-good-deal-more"
+print -r -- '{"timestamp":"t2","text":"key sk-hunter2-and-a-good-deal-more"}' >> "${CX}/sessions/2026/09/23/rollout-a.jsonl"
+touch -d '1 hour ago' "${CX}/sessions/2026/09/23/rollout-a.jsonl"
+mkdir -p "${FIX_STATE}/codex/sessions/2026/09/22"
+print -r -- '{"timestamp":"t9"}' > "${FIX_STATE}/codex/sessions/2026/09/22/rollout-b.jsonl"
+run_backup --state-only --force
+check    "the run exits clean"                   "${RC}" "0"
+is_file  "this box's session reaches the state root" "${FIX_STATE}/codex/sessions/2026/09/23/rollout-a.jsonl"
+excludes "its synced copy is redacted"           "$(< "${FIX_STATE}/codex/sessions/2026/09/23/rollout-a.jsonl")" "sk-hunter2"
+contains "the local session is untouched"        "$(< "${CX}/sessions/2026/09/23/rollout-a.jsonl")" "sk-hunter2"
+check    "the synced copy is owner-only"         "$(stat -c '%a' "${FIX_STATE}/codex/sessions/2026/09/23/rollout-a.jsonl")" "600"
+is_file  "the other box's session arrives"       "${CX}/sessions/2026/09/22/rollout-b.jsonl"
+
+rm -rf "${CX}/sessions/2026/09/22"
+run_restore
+check    "the restore exits clean"               "${RC}" "0"
+is_file  "a restore pulls the session too"       "${CX}/sessions/2026/09/22/rollout-b.jsonl"
+
+print -r -- "an archived or compressed Codex session is not pulled back"
+state_fixture codex-archived
+TRANSCRIPTS=1
+codex_home
+mkdir -p "${FIX_STATE}/codex/sessions/2026/09/20" "${CX}/archived_sessions" "${CX}/sessions/2026/09/20"
+print -r -- '{"timestamp":"t1"}' > "${FIX_STATE}/codex/sessions/2026/09/20/rollout-c.jsonl"
+print -r -- '{"timestamp":"t1"}' > "${FIX_STATE}/codex/sessions/2026/09/20/rollout-d.jsonl"
+print -r -- '{"timestamp":"t1"}' > "${CX}/archived_sessions/rollout-c.jsonl"
+print -r -- 'zstd frame'         > "${CX}/sessions/2026/09/20/rollout-d.jsonl.zst"
+run_backup --state-only --force
+check   "the run exits clean"                    "${RC}" "0"
+absent  "an archived session is not unarchived"  "${CX}/sessions/2026/09/20/rollout-c.jsonl"
+absent  "a compressed one gets no plain twin"    "${CX}/sessions/2026/09/20/rollout-d.jsonl"
+run_restore
+check   "the restore exits clean"                "${RC}" "0"
+absent  "a restore skips the archived one too"   "${CX}/sessions/2026/09/20/rollout-c.jsonl"
+absent  "and the compressed one"                 "${CX}/sessions/2026/09/20/rollout-d.jsonl"
+
+print -r -- "a longer Codex session that forks the local one parks the local branch first"
+state_fixture codex-fork
+TRANSCRIPTS=1
+codex_home
+F_HOME="${CX}/sessions/2026/09/23/rollout-a.jsonl"
+F_STATE="${FIX_STATE}/codex/sessions/2026/09/23/rollout-a.jsonl"
+mkdir -p "${F_STATE:h}"
+{ print -r -- '{"timestamp":"t1"}'; print -r -- '{"timestamp":"t2-here"}' } > "${F_HOME}"
+touch -d '1 hour ago' "${F_HOME}"
+{ print -r -- '{"timestamp":"t1"}'; print -r -- '{"timestamp":"t2-there"}'; print -r -- '{"timestamp":"t3-there"}' } > "${F_STATE}"
+PARK_CX="${FIX_HOME}/.local/state/flakelab/state-sync/diverged/codex/2026/09/23"
+run_backup --state-only --force
+check     "the run exits clean"                  "${RC}" "0"
+check     "the longer branch takes the path"     "$(wc -l < "${F_HOME}")" "3"
+has_match "the local branch is parked on this box" "${PARK_CX}" "rollout-a.*-TestDistro.jsonl"
+contains  "the parked copy is the local branch"  "$(cat "${PARK_CX}"/rollout-a.*.jsonl)" "t2-here"
+excludes  "no Claude reopen hint for a Codex session" "${OUT}" "--fork-session"
+
+# ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

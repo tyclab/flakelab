@@ -4,8 +4,8 @@ set -euo pipefail
 
 # Back up home-dir state to the Windows mount, and restore it. Two roots:
 #   FLAKELAB_BACKUP_ROOT  the provisioning payload — secrets, keys, per-host config
-#   FLAKELAB_STATE_ROOT   optional shareable state — merged history, Claude memory,
-#                         opt-in transcripts — in a folder a sync client replicates
+#   FLAKELAB_STATE_ROOT   optional shareable state — merged history, Claude and Codex
+#                         memory, opt-in transcripts — in a folder a sync client replicates
 # Exit status is non-zero when any file failed to copy or failed verification.
 
 if [[ -n "${FLAKELAB_BACKUP_ROOT:-}" ]]; then
@@ -118,7 +118,7 @@ INSTANCE_ROOT="${BACKUP_ROOT}/instances/${DISTRO_NAME}"
 SHARED_CATEGORIES=(ssh gitconfig secrets)
 # Everything else is per-instance: .gitignore names the shared/ categories one by
 # one, so a new shared category stays committable until .gitignore learns about it.
-INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude helm)
+INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude codex helm)
 
 resolve_backup_path() {
   local category="$1"
@@ -140,6 +140,7 @@ recompute_backup_paths() {
   BACKUP_K9S="$(resolve_backup_path k9s)"
   BACKUP_GLAB="$(resolve_backup_path glab-cli)"
   BACKUP_CLAUDE="$(resolve_backup_path claude)"
+  BACKUP_CODEX="$(resolve_backup_path codex)"
   BACKUP_HELM="$(resolve_backup_path helm)"
 }
 
@@ -196,7 +197,7 @@ while (( $# > 0 )); do
       echo "  --dry-run            show what would be backed up without copying"
       echo "  --restore            restore files from backup into home directory"
       echo "  --state-only         sync ONLY the state-root categories, both directions (merged"
-      echo "                       history, Claude memory, transcripts); never touches the payload,"
+      echo "                       history, Claude and Codex memory, transcripts); never touches the payload,"
       echo "                       takes no snapshot. Needs FLAKELAB_STATE_ROOT / flakelab.stateRoot"
       echo "  --review-secrets     decide per finding the secret gate held back: delete, keep local, allow (needs a terminal)"
       echo "  --revisit-keeps      on a backup/--state-only run, re-hold findings settled as 'keep'"
@@ -215,7 +216,7 @@ while (( $# > 0 )); do
       echo "  FLAKELAB_BACKUP_ROOT        payload root (set by the nix wrapper: <repoPath>-payload, beside the overlay, unless backupRoot names another)"
       echo "  FLAKELAB_INSTANCE           instance name off WSL, where WSL_DISTRO_NAME is unset (set by the nix wrapper from hostName)"
       echo "  FLAKELAB_STATE_ROOT         optional shared-state root (a synced folder, never a git checkout)"
-      echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts in the state root"
+      echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts and Codex sessions in the state root"
       echo "  FLAKELAB_STATE_TRANSCRIPT_SECRETS  review (default): hold each transcript secret for --review-secrets;"
       echo "                       redact: the redacted synced copy is the ruling, nothing is held or asked"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
@@ -283,6 +284,15 @@ memory_root() {
     print -r -- "${STATE_ROOT}/claude/projects"
   else
     print -r -- "${BACKUP_CLAUDE}/projects"
+  fi
+}
+
+# Codex keeps one memory tree, not one per project.
+codex_memory_root() {
+  if state_enabled; then
+    print -r -- "${STATE_ROOT}/codex/memories"
+  else
+    print -r -- "${BACKUP_CODEX}/memories"
   fi
 }
 
@@ -601,10 +611,11 @@ backup_private_file() {
 }
 
 # restore_file's bare `cp` lands at the umask default; secrets must be 0600 in $HOME too.
+# $3 = local_wins, as for restore_file.
 restore_private_file() {
   local src="$1"
   local dst="$2"
-  restore_file "${src}" "${dst}"
+  restore_file "${src}" "${dst}" "${3:-false}"
   if ! ${DRY_RUN} && [[ -f "${dst}" ]] && ! is_nix_managed "${dst}"; then
     chmod 600 "${dst}" 2> /dev/null || record_failure "Cannot set mode 600 on ${dst}"
   fi
@@ -1107,14 +1118,9 @@ do_restore() {
       done
     fi
     if state_enabled && ${STATE_TRANSCRIPTS}; then
-      local transcript rel
-      # `**`: subagent transcripts sit below the session file.
-      for transcript in "${STATE_ROOT}"/claude/projects/**/*.jsonl(N.); do
-        rel="${transcript#${STATE_ROOT}/claude/projects/}"
-        rel_path_is_sync_artifact "${rel}" && continue
-        sync_transcript "${transcript}" "${HOME_DIR}/.claude/projects/${rel}"
-      done
-      transcript_lines_save
+      # `**` inside: subagent transcripts sit below the session file.
+      transcripts_for claude
+      restore_transcripts
       pull_side_files
     fi
     ensure_dir "${HOME_DIR}/.claude/plugins"
@@ -1132,6 +1138,41 @@ do_restore() {
     harden_restored_files "${HOME_DIR}/.claude" "settings*"
     # The mount drops the execute bit; the statusline hook must come back executable.
     fix_script_permissions "${HOME_DIR}/.claude"
+  fi
+
+  log_info "--- Codex ---"
+  if [[ -d "${BACKUP_CODEX}" ]] || ${STATE_CONFIGURED}; then
+    ensure_private_dir "${HOME_DIR}/.codex"
+    # config.toml can carry MCP server headers; auth.json and .credentials.json
+    # are the ChatGPT login and the MCP OAuth tokens. Both token files are
+    # refreshed in use, so the copy here is at least as new: local wins.
+    restore_private_file "${BACKUP_CODEX}/config.toml"       "${HOME_DIR}/.codex/config.toml"
+    local profile
+    for profile in "${BACKUP_CODEX}"/*.config.toml(N.); do
+      restore_private_file "${profile}" "${HOME_DIR}/.codex/${profile:t}"
+    done
+    restore_private_file "${BACKUP_CODEX}/auth.json"         "${HOME_DIR}/.codex/auth.json" true
+    restore_private_file "${BACKUP_CODEX}/.credentials.json" "${HOME_DIR}/.codex/.credentials.json" true
+    restore_file "${BACKUP_CODEX}/AGENTS.md"          "${HOME_DIR}/.codex/AGENTS.md"
+    restore_file "${BACKUP_CODEX}/AGENTS.override.md" "${HOME_DIR}/.codex/AGENTS.override.md"
+    restore_file "${BACKUP_CODEX}/hooks.json"         "${HOME_DIR}/.codex/hooks.json"
+    # keep_newer: the TUI appends approvals to rules/, so a local file can be ahead.
+    restore_dir "${BACKUP_CODEX}/hooks"  "${HOME_DIR}/.codex/hooks"   true
+    restore_dir "${BACKUP_CODEX}/rules"  "${HOME_DIR}/.codex/rules"   true
+    restore_dir "${BACKUP_CODEX}/skills" "${HOME_DIR}/.agents/skills" true
+    # The mount drops the execute bit; hook scripts must come back executable.
+    fix_script_permissions "${HOME_DIR}/.codex/hooks"
+    fix_script_permissions "${HOME_DIR}/.agents/skills"
+    if state_unavailable; then
+      log_warn "State root unavailable; Codex memory not restored this run"
+    else
+      # No index: Codex regenerates every memory file itself, so newest wins.
+      sync_memory_dir restore "$(codex_memory_root)" "${HOME_DIR}/.codex/memories" ""
+    fi
+    if state_enabled && ${STATE_TRANSCRIPTS}; then
+      transcripts_for codex
+      restore_transcripts
+    fi
   fi
 
   echo ""
@@ -1246,6 +1287,7 @@ do_backup() {
     done
   fi
   if state_enabled && ${STATE_TRANSCRIPTS}; then
+    transcripts_for claude
     fold_transcript_conflicts
     backup_transcripts
     backup_side_files
@@ -1258,6 +1300,44 @@ do_backup() {
   backup_file "${HOME_DIR}/.claude/plugins/blocklist.json"          "${BACKUP_CLAUDE}/plugins/blocklist.json"
   backup_file "${HOME_DIR}/.claude/CLAUDE.md"             "${BACKUP_CLAUDE}/CLAUDE.md"
   backup_file "${HOME_DIR}/.claude/statusline-command.sh" "${BACKUP_CLAUDE}/statusline-command.sh"
+
+  log_info "--- Codex ---"
+  if [[ -d "${HOME_DIR}/.codex" || -d "${HOME_DIR}/.agents/skills" ]]; then
+    # 700: auth.json and .credentials.json are live tokens.
+    ensure_private_dir "${BACKUP_CODEX}"
+    backup_private_file "${HOME_DIR}/.codex/config.toml"       "${BACKUP_CODEX}/config.toml"
+    local profile
+    for profile in "${HOME_DIR}"/.codex/*.config.toml(N.); do
+      backup_private_file "${profile}" "${BACKUP_CODEX}/${profile:t}"
+    done
+    backup_private_file "${HOME_DIR}/.codex/auth.json"         "${BACKUP_CODEX}/auth.json"
+    backup_private_file "${HOME_DIR}/.codex/.credentials.json" "${BACKUP_CODEX}/.credentials.json"
+    backup_file "${HOME_DIR}/.codex/AGENTS.md"          "${BACKUP_CODEX}/AGENTS.md"
+    backup_file "${HOME_DIR}/.codex/AGENTS.override.md" "${BACKUP_CODEX}/AGENTS.override.md"
+    backup_file "${HOME_DIR}/.codex/hooks.json"         "${BACKUP_CODEX}/hooks.json"
+    backup_dir "${HOME_DIR}/.codex/hooks"  "${BACKUP_CODEX}/hooks"
+    # Commands approved in the TUI are written here.
+    backup_dir "${HOME_DIR}/.codex/rules"  "${BACKUP_CODEX}/rules"
+    backup_dir "${HOME_DIR}/.agents/skills" "${BACKUP_CODEX}/skills"
+    # Sessions, like Claude transcripts, go to the state root only, opt-in.
+    # Memories are off in Codex by default: no directory, nothing to say.
+    if [[ -d "${HOME_DIR}/.codex/memories" ]]; then
+      if state_unavailable; then
+        log_warn "State root unavailable; Codex memory not backed up this run"
+      elif state_enabled; then
+        sync_memory_dir backup "${HOME_DIR}/.codex/memories" "$(codex_memory_root)" ""
+      else
+        backup_dir "${HOME_DIR}/.codex/memories" "$(codex_memory_root)"
+      fi
+    fi
+    if state_enabled && ${STATE_TRANSCRIPTS}; then
+      transcripts_for codex
+      fold_transcript_conflicts
+      backup_transcripts
+    fi
+  else
+    log_warn "No ~/.codex directory found, skipping"
+  fi
 
   check_dirty_repos
 
@@ -1283,7 +1363,8 @@ do_backup() {
   log_warn "         kubeconfigs, glab tokens) on the Windows mount, including"
   log_warn "         inside the rollback snapshots. They are gitignored, but the"
   log_warn "         mount is unencrypted — treat ${BACKUP_ROOT} as secret."
-  log_warn "         claude/settings.json carries an env block, so it counts too."
+  log_warn "         claude/settings.json carries an env block, so it counts too,"
+  log_warn "         and codex/ holds the Codex login and MCP OAuth tokens."
   log_warn "         Verify nothing is staged: git -C <repo> status --short files/config/"
   # STATE_USABLE too: a run that never reached the root must not claim it holds the transcripts.
   if ${STATE_CONFIGURED} && ${STATE_USABLE} && ${STATE_WROTE}; then
@@ -1331,11 +1412,25 @@ do_state_only() {
 
     if ${STATE_TRANSCRIPTS}; then
       log_info "--- Claude transcripts ---"
+      transcripts_for claude
       fold_transcript_conflicts
       backup_transcripts
       pull_transcripts
       backup_side_files
       pull_side_files
+    fi
+
+    log_info "--- Codex memory ---"
+    [[ -d "${HOME_DIR}/.codex/memories" ]] \
+      && sync_memory_dir backup "${HOME_DIR}/.codex/memories" "$(codex_memory_root)" ""
+    sync_memory_dir restore "$(codex_memory_root)" "${HOME_DIR}/.codex/memories" ""
+
+    if ${STATE_TRANSCRIPTS}; then
+      log_info "--- Codex sessions ---"
+      transcripts_for codex
+      fold_transcript_conflicts
+      backup_transcripts
+      pull_transcripts
     fi
 
     # This box's claim on its slugs; --state-gc judges the root by the union.
