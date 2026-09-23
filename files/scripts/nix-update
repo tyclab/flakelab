@@ -445,11 +445,13 @@ _nix_relock_flakelab || exit 1
 # That is the fresh-provision shape exactly: the key arrives between the two
 # switches, and the second one builds what the first did. The unit's own start
 # timestamp is what tells a restart from a no-op apart, and a 0 there is a unit
-# that has not activated at all this boot.
+# that has not activated at all this boot. It is the one systemd moves on every
+# start, failed or not: a failed start never enters `active`, so the active one
+# would read a restart the switch made and saw fail as a unit left alone.
 _hm_unit="home-manager-${USER:-$(id -un)}.service"
 _hm_stamp() {
   command -v systemctl > /dev/null 2>&1 || return 0
-  systemctl show -p ActiveEnterTimestampMonotonic --value "${_hm_unit}" 2> /dev/null
+  systemctl show -p InactiveExitTimestampMonotonic --value "${_hm_unit}" 2> /dev/null
 }
 _hm_before="$(_hm_stamp)"
 
@@ -498,21 +500,29 @@ esac
 # truncates and rewrites the log, so below the restart it is the run that just
 # happened, and above it — where the unit did not run — the last one's verdict.
 _deferred="$HOME/.local/state/flakelab/activation-deferred"
+_failures="$HOME/.local/state/flakelab/activation-failures"
 
 # The switch left the activation alone, so run it here instead — but only when
-# there is something to re-run: the steps the last activation deferred, or a unit
-# that has never activated this boot, which is the same gap before any log exists.
-# Nothing deferred and a unit already active is a no-op restart, so it is skipped
-# rather than announced. The stamp cannot see a generation, only whether this unit
-# was restarted, and a generation that changed elsewhere in the system leaves this
-# one untouched too — so nothing here says the generation is unchanged. Failures
-# warn only — the switch itself is applied. Read with zsh's own split: this runs
-# before any PATH beyond the wrapper's is assumed.
+# there is something to re-run: a last activation that failed (the unit, or a step
+# it recorded), the steps it deferred, or a unit that has never activated this
+# boot, which is the same gap before any log exists. `flakelab doctor` answers a
+# failure with "Re-run: flakelab update", and this is what makes that true.
+# Nothing failed or deferred and a unit already active is a no-op restart, so it
+# is skipped rather than announced. The stamp cannot see a generation, only
+# whether this unit was restarted, and a generation that changed elsewhere in the
+# system leaves this one untouched too — so nothing here says the generation is
+# unchanged. Failures warn only — the switch itself is applied. Read with zsh's
+# own split: this runs before any PATH beyond the wrapper's is assumed.
 if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
-  _hm_pending=()
+  _hm_failed=() _hm_pending=()
+  [[ -s "${_failures}" ]] && _hm_failed=("${(@f)$(< "${_failures}")}")
   [[ -s "${_deferred}" ]] && _hm_pending=("${(@f)$(< "${_deferred}")}")
   _hm_why=""
-  if (( ${#_hm_pending} )); then
+  if (( ${#_hm_failed} )); then
+    _hm_why="to retry the ${#_hm_failed} step(s) the last activation reported failed"
+  elif systemctl is-failed --quiet "${_hm_unit}" 2> /dev/null; then
+    _hm_why="because its last activation failed"
+  elif (( ${#_hm_pending} )); then
     _hm_why="to retry the ${#_hm_pending} step(s) the last activation deferred"
   elif [[ "${_hm_before}" == 0 ]]; then
     _hm_why="because it has not activated at all this boot"
