@@ -849,8 +849,12 @@ REV_OLD="$(git -C "${CLONE}" rev-parse HEAD~3)"
 REV_NEW="$(git -C "${CLONE}" rev-parse HEAD)"
 REV_GONE="0123456789abcdef0123456789abcdef01234567"
 
+# mk_lock_entry <locked fields> <file>: a lock whose flakelab input is locked as given.
+mk_lock_entry() {
+  print -r -- "{\"nodes\":{\"root\":{\"inputs\":{\"flakelab\":\"flakelab\"}},\"flakelab\":{\"locked\":{$1}}},\"root\":\"root\",\"version\":7}" > "$2"
+}
 mk_lock() {
-  print -r -- "{\"nodes\":{\"root\":{\"inputs\":{\"flakelab\":\"flakelab\"}},\"flakelab\":{\"locked\":{\"type\":\"github\",\"owner\":\"tyclab\",\"repo\":\"flakelab\",\"rev\":\"$1\"}}},\"root\":\"root\",\"version\":7}" > "$2"
+  mk_lock_entry "\"type\":\"github\",\"owner\":\"tyclab\",\"repo\":\"flakelab\",\"rev\":\"$1\"" "$2"
 }
 
 print -r -- "an input that moved names both revs and counts what came in"
@@ -888,6 +892,74 @@ run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it says unchanged, with the rev"  "${OUT}" "flakelab input unchanged (${REV_NEW[1,7]})"
 excludes "and never claims an update"       "${OUT}" "input updated"
+
+# The lock names a repo as `owner/repo` (a GitLab subgroup's owner keeps its `/`)
+# or, for a git input, as a whole URL; a clone's origin is any of the three URL
+# shapes. Both come down to the path after the host, and the clone is looked for
+# as deep as the clone sweep mirrors a namespace.
+# elsewhere <dir under ~/git> <origin>: another clone of the same history.
+elsewhere() {
+  git clone -q "${CLONE}" "${HOME}/git/$1"
+  git -C "${HOME}/git/$1" remote set-url origin "$2"
+}
+# relock_between <locked fields before> <locked fields after>
+relock_between() {
+  mk_lock_entry "$1" "${d}/flake.lock"
+  mk_lock_entry "$2" "${BASE}/lock.after"
+  run_update "${d}"
+}
+
+print -r -- "a git input is counted in the clone its URL names"
+elsewhere grp/flakelab git@gitlab.com:grp/flakelab.git
+relock_between "\"type\":\"git\",\"url\":\"https://gitlab.com/Grp/flakelab.git\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"git\",\"url\":\"https://gitlab.com/Grp/flakelab.git\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+contains "and counts what came in"          "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]} — 3 commit(s)"
+relock_between "\"type\":\"git\",\"url\":\"ssh://git@gitlab.com:2222/grp/flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"git\",\"url\":\"ssh://git@gitlab.com:2222/grp/flakelab\",\"rev\":\"${REV_NEW}\""
+contains "as an ssh:// URL with a port too" "${OUT}" "— 3 commit(s)"
+rm -rf "${HOME}/git/grp"
+
+print -r -- "a GitLab subgroup is counted in its clone three levels down"
+elsewhere grp/sub/flakelab https://gitlab.com/grp/sub/flakelab.git
+relock_between "\"type\":\"gitlab\",\"owner\":\"grp/sub\",\"repo\":\"flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"gitlab\",\"owner\":\"grp/sub\",\"repo\":\"flakelab\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+contains "and counts what came in"          "${OUT}" "— 3 commit(s)"
+rm -rf "${HOME}/git/grp"
+
+print -r -- "a repo whose path only ends in the same letters is not the input's clone"
+mv "${CLONE}" "${BASE}/clone.aside"
+git clone -q "${BASE}/clone.aside" "${HOME}/git/nottyclab/flakelab"
+git -C "${HOME}/git/nottyclab/flakelab" remote set-url origin git@github.com:nottyclab/flakelab.git
+mk_lock "${REV_OLD}" "${d}/flake.lock"
+mk_lock "${REV_NEW}" "${BASE}/lock.after"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+contains "it names both revs"               "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]}"
+excludes "with no count from the other repo" "${OUT}" "commit(s)"
+rm -rf "${HOME}/git/nottyclab"
+mv "${BASE}/clone.aside" "${CLONE}"
+
+# nix locks a `git+file:` input as type `git` with a file:// URL.
+print -r -- "a git+file: input is named as local, and still re-locked"
+relock_between "\"type\":\"git\",\"url\":\"file:///srv/flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"git\",\"url\":\"file:///srv/flakelab\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+contains "it names the checkout"            "${OUT}" "LOCAL flakelab (git+file: /srv/flakelab) — only committed content is in this build"
+contains "and what the re-lock moved"       "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]}"
+
+# A tarball input locks no rev, only the hash of what it unpacked to.
+print -r -- "an input with no rev is compared by its content hash"
+relock_between '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-AAAA"' \
+               '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-BBBB"'
+check    "it switches"                      "${RC}" "0"
+contains "a moved hash is an update"        "${OUT}" "flakelab input updated"
+excludes "not unchanged"                    "${OUT}" "input unchanged"
+relock_between '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-BBBB"' \
+               '"type":"tarball","url":"https://example.invalid/f.tar.gz","narHash":"sha256-BBBB"'
+contains "the same hash is unchanged"       "${OUT}" "flakelab input unchanged"
+excludes "and not an update"                "${OUT}" "input updated"
 unset LOCK_AFTER
 rm -f "${SHIM}/nix"
 
