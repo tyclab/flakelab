@@ -386,6 +386,49 @@
             test -s ${hm.home.file.".codex/rules/flakelab.rules".source}
             touch $out
           '';
+        claude-mcp-exclusion =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    sessionVariables.WHATSAPP_BRIDGE_HOST = "localhost:8180";
+                    whatsappMcpDir = "/example/whatsapp-mcp-server";
+                    claudeMcpDisabledServers = [ "whatsapp" ];
+                    claudeMcpServers.custom = {
+                      command = "example-mcp";
+                    };
+                  };
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            # Isolate the generated activation entry without changing the test
+            # process's HOME or accessing any live Claude account files.
+            entry = pkgs.writeText "claude-mcp-exclusion-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.claudeMcpMerge.data
+            );
+          in
+          assert nixpkgs.lib.hasInfix "whatsapp" hm.home.activation.kiroMcpMerge.data;
+          pkgs.runCommandLocal "flakelab-check-claude-mcp-exclusion"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export fixtureHome="$TMPDIR/fixture" DRY_RUN_CMD=
+              mkdir -p "$fixtureHome"
+              printf '%s\n' '{"account":{"opaque":"sentinel"},"mcpServers":{"whatsapp":{"command":"old"},"manual":{"command":"keep"}}}' > "$fixtureHome/.claude.json"
+              bash -euo pipefail ${entry}
+              jq -e '.account.opaque == "sentinel" and (.mcpServers | has("whatsapp") | not) and .mcpServers.manual.command == "keep" and .mcpServers.custom.command == "example-mcp"' "$fixtureHome/.claude.json"
+              cp "$fixtureHome/.claude.json" before.json
+              bash -euo pipefail ${entry}
+              cmp before.json "$fixtureHome/.claude.json"
+              test "$(stat -c %a "$fixtureHome/.claude.json")" = 600
+              touch $out
+            '';
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 

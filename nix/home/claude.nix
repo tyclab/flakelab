@@ -150,7 +150,7 @@ let
 
   # Skipped where a marketplace plugin already provides the server: two whatsapp
   # servers that can send as the user is worse than one.
-  claudeMcpServers =
+  claudeMcpServers = builtins.removeAttrs (
     lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL && marketplaceOf "mcp-grafana" == null) {
       grafana = grafanaServer // {
         type = "stdio";
@@ -168,7 +168,8 @@ let
             type = "stdio";
           };
         }
-    // cfg.claudeMcpServers;
+    // cfg.claudeMcpServers
+  ) cfg.claudeMcpDisabledServers;
 
   jqPath = ''export PATH="${
     lib.makeBinPath [
@@ -326,21 +327,26 @@ in
   home.activation.claudeMcpMerge =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" ]
       (
-        lib.optionalString (installClaude && claudeMcpServers != { }) ''
-          ${jqPath}
-          _claudeJson="$HOME/.claude.json"
-          _ours=${lib.escapeShellArg (builtins.toJSON claudeMcpServers)}
-          [ -s "$_claudeJson" ] || echo '{}' > "$_claudeJson"
-          _tmp="$(mktemp)"
-          if jq --argjson ours "$_ours" '.mcpServers = ((.mcpServers // {}) + $ours)' \
-               "$_claudeJson" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
-            # 600: the same file carries Claude's account and OAuth state.
-            $DRY_RUN_CMD install -m600 "$_tmp" "$_claudeJson"
-          else
-            ${flakelabWarn} "could not merge Claude MCP servers into $_claudeJson."
-          fi
-          rm -f "$_tmp"
-        ''
+        lib.optionalString
+          (installClaude && (claudeMcpServers != { } || cfg.claudeMcpDisabledServers != [ ]))
+          ''
+            ${jqPath}
+            _claudeJson="$HOME/.claude.json"
+            _ours=${lib.escapeShellArg (builtins.toJSON claudeMcpServers)}
+            _disabled=${lib.escapeShellArg (builtins.toJSON cfg.claudeMcpDisabledServers)}
+            [ -s "$_claudeJson" ] || echo '{}' > "$_claudeJson"
+            _tmp="$(mktemp)"
+            if jq --argjson ours "$_ours" --argjson disabled "$_disabled" '
+                 .mcpServers = ((.mcpServers // {}) + $ours)
+                 | reduce $disabled[] as $name (.; del(.mcpServers[$name]))' \
+                 "$_claudeJson" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
+              # 600: the same file carries Claude's account and OAuth state.
+              $DRY_RUN_CMD install -m600 "$_tmp" "$_claudeJson"
+            else
+              ${flakelabWarn} "could not merge Claude MCP servers into $_claudeJson."
+            fi
+            rm -f "$_tmp"
+          ''
       );
 
   # Nothing here pins Claude or its marketplaces, so the two switches that would

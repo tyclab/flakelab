@@ -64,6 +64,11 @@ MCP policy and isolation. Use `codex execpolicy check --rules FILE -- COMMAND` f
 command-rule cases. MCP registration and successful service authentication are
 separate checks; Cloudflare API access requires its own OAuth login.
 
+To exclude a server from Claude as well, remove its entry from `claudePlugins`
+and set `claudeMcpDisabledServers = [ "whatsapp" ];` for the native server name.
+This prevents the legacy native fallback from recreating it after plugin removal.
+The exclusion does not change Kiro's configuration.
+
 References: [Home Manager Codex options](https://nix-community.github.io/home-manager/options/home-manager/programs/codex.html),
 [Nix flake inputs and lock files](https://nix.dev/manual/nix/stable/command-ref/new-cli/nix3-flake.html),
 [Codex Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review),

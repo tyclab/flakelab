@@ -311,6 +311,13 @@ in
       description = "Extra Claude user-scope MCP servers, merged into ~/.claude.json on every rebuild. Same shape as that file's own `mcpServers` entries. The servers this flake defines are already declared in nix/home/mcp.nix; this is where per-developer ones go.";
     };
 
+    claudeMcpDisabledServers = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "whatsapp" ];
+      description = "Claude user-scope native MCP server names to exclude and remove from ~/.claude.json. Also remove the corresponding plugin from claudePlugins. Prevents automatic native fallback from restoring an opted-out server; other clients are unchanged.";
+    };
+
     claudePluginMarketplaces = mkOption {
       type = types.listOf types.attrs;
       default = [ ];
