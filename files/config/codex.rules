@@ -1,0 +1,17 @@
+# Flakelab owns this file; personal rules remain in their own files.
+# Review sensitive operations, including mutations that can run inside the sandbox.
+# These are argv prefixes, not a complete semantic shell classifier.
+prefix_rule(pattern=["git", ["push", "reset", "clean", "rebase", "merge", "-C", "-c"]], decision="prompt")
+prefix_rule(pattern=["git", "branch", ["-d", "-D"]], decision="prompt")
+prefix_rule(pattern=["git", "worktree", ["remove", "prune"]], decision="prompt")
+prefix_rule(pattern=["git", "push", "--mirror"], decision="forbidden", match=["git push --mirror origin"], not_match=["git push origin main"])
+prefix_rule(pattern=["git", "push", "origin", "--mirror"], decision="forbidden")
+prefix_rule(pattern=[["glab", "gh"], "api"], decision="prompt")
+prefix_rule(pattern=[["glab", "gh"], ["mr", "pr"], ["merge", "close"]], decision="prompt")
+prefix_rule(pattern=["glab", "ci", ["run", "trigger"]], decision="prompt")
+prefix_rule(pattern=["gh", "workflow", "run"], decision="prompt")
+prefix_rule(pattern=["flakelab", ["update", "update-all", "provision"]], decision="prompt")
+prefix_rule(pattern=[["gitcleaner", "sudo", "ssh", "scp", "rsync", "rm", "sops", "bao", "bw"]], decision="prompt")
+prefix_rule(pattern=[["tofu", "terraform"], ["apply", "destroy", "import", "state"]], decision="prompt")
+prefix_rule(pattern=["kubectl", ["apply", "delete", "exec", "patch", "replace", "scale"]], decision="prompt")
+prefix_rule(pattern=["docker", ["exec", "rm", "prune", "system"]], decision="prompt")

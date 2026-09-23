@@ -87,6 +87,14 @@
         # Plugins to install from those marketplaces.
         # claudePlugins = [ "agents" "skills" "hooks" "statusbar" ];
 
+        # Independent Codex marketplace. Clone this path before activation, or use
+        # a Git URL with revision = "<immutable 40-character commit>".
+        # Point at MCP JSON paths from a locked, flake=false input. See CODEX.md.
+        # codexMcpSources = [ ./mcp.json ];
+        # codexAutoReview = true;
+        # codexReadOnlyTools.grafana = [ "list_datasources" ];
+        # codexSettings.tui.status_line = [ "model-with-reasoning" "context-remaining" "git-branch" "current-dir" ];
+
         # The agent-box bundle: turn on only for a box meant to run agents unattended.
         # claudeAgentDefaults = true;
 

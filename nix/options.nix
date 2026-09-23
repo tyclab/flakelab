@@ -256,6 +256,33 @@ in
       description = "Auto-mode classifier rules written to settings.autoMode, asserted on every activation alongside defaultMode = \"auto\". User scope is the only scope Claude reads these from, so a provisioner is the only place they can live and stay reproducible. The default is neutral: generic git/IaC guard tiers, no fleet topology. Override the whole attrset from the overlay to describe your environment — see the tiering note above first.";
     };
 
+    codexSettings = mkOption {
+      type = types.attrs;
+      default = { };
+      description = "Non-secret Codex settings passed to Home Manager's programs.codex.settings. Opting in makes config.toml declarative; put model, trust and terminal status-line settings here. Auth/session files remain runtime state.";
+    };
+
+    codexMcpSources = mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      description = "MCP JSON files from locked flake inputs or local Nix paths. Their mcpServers entries become native Codex mcp_servers via Home Manager. No plugin installer, skills, agents or Claude changes.";
+    };
+
+    codexAutoReview = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable native Codex Auto-review, workspace-write with sandbox networking disabled, command review rules and approval-by-default for all configured MCP servers. Retains Codex's built-in reviewer policy; does not copy Claude classifier prose.";
+    };
+
+    codexReadOnlyTools = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      example = {
+        grafana = [ "list_datasources" ];
+      };
+      description = "Server name -> exact read-only tool names allowed without review when codexAutoReview is enabled. Unlisted tools require review. No wildcard grants.";
+    };
+
     claudeAutoUpdatesChannel = mkOption {
       type = types.enum [
         "stable"

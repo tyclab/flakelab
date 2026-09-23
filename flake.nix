@@ -332,6 +332,60 @@
         nix-doctor = suiteCheck "nix-doctor";
         switch-result = suiteCheck "switch-result";
         xdg-open = suiteCheck "xdg-open";
+        codex-config =
+          let
+            manifest = builtins.toFile "codex-mcp-fixture.json" (
+              builtins.toJSON {
+                mcpServers = {
+                  docs = {
+                    type = "http";
+                    url = "https://docs.example.invalid/mcp";
+                  };
+                  local = {
+                    command = "example-mcp";
+                    env_vars = [ "XDG_RUNTIME_DIR" ];
+                  };
+                };
+              }
+            );
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    codexMcpSources = [ manifest ];
+                    codexAutoReview = true;
+                    codexReadOnlyTools.docs = [ "search" ];
+                    codexSettings = {
+                      model = "fixture-model";
+                      tui.status_line = [ "git-branch" ];
+                    };
+                  };
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            settings = hm.programs.codex.settings;
+            baseline = self.nixosConfigurations.default.config;
+          in
+          assert !baseline.home-manager.users.${baseline.flakelab.username}.programs.codex.enable;
+          assert hm.programs.codex.package == null;
+          assert hm.programs.codex.skills == { };
+          assert hm.programs.codex.context == "";
+          assert settings.model == "fixture-model";
+          assert settings.tui.status_line == [ "git-branch" ];
+          assert !(settings.mcp_servers.docs ? type);
+          assert settings.mcp_servers.local.env_vars == [ "XDG_RUNTIME_DIR" ];
+          assert settings.mcp_servers.docs.tools.search.approval_mode == "approve";
+          assert settings.mcp_servers.local.default_tools_approval_mode == "prompt";
+          assert settings.approvals_reviewer == "auto_review";
+          assert !settings.sandbox_workspace_write.network_access;
+          assert !(settings ? auto_review);
+          assert fixture.config.flakelab.claudeAutoMode == baseline.flakelab.claudeAutoMode;
+          pkgs.runCommandLocal "flakelab-check-codex-config" { } ''
+            test -s ${hm.home.file.".codex/config.toml".source}
+            test -s ${hm.home.file.".codex/rules/flakelab.rules".source}
+            touch $out
+          '';
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 
