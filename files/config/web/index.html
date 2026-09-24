@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flakelab</title>
+<style>
+  :root { --bg: #f6f6f4; --fg: #1a1a1a; --mut: #6b6b6b; --line: #ddd; --ok: #2e7d32; --warn: #b26a00; --bad: #c62828; --card: #fff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #151515; --fg: #ececec; --mut: #9a9a9a; --line: #333; --card: #1e1e1e; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 12px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  h1 small { color: var(--mut); font-weight: normal; font-size: 13px; }
+  h2 { font-size: 16px; margin: 20px 0 8px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { color: var(--mut); font-weight: 600; }
+  td.wrap { white-space: normal; }
+  .bar { display: inline-block; width: 90px; height: 8px; background: var(--line); border-radius: 4px; vertical-align: middle; margin-right: 6px; }
+  .bar i { display: block; height: 100%; border-radius: 4px; background: var(--ok); }
+  .bar.warn i { background: var(--warn); } .bar.bad i { background: var(--bad); }
+  .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 12px; background: var(--line); margin-right: 4px; }
+  .tag.active { background: var(--ok); color: #fff; } .tag.profile { background: var(--warn); color: #fff; } .tag.q { background: var(--bad); color: #fff; }
+  button, input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
+  button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
+  form.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
+  .mut { color: var(--mut); } .err { color: var(--bad); }
+  #log { max-height: 240px; overflow: auto; }
+  code { font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>flakelab <small id="clock"></small> <small><a id="terminal" href="#" hidden>terminal ↗</a></small></h1>
+
+<div class="card" id="auth" hidden>
+  <form class="row" id="tokenform">
+    <label>token <input id="token" type="password" size="40" autocomplete="off"></label>
+    <button type="submit">use</button>
+    <span class="mut">from <code>flakelab web --print-token</code> on the box; kept in this browser only</span>
+  </form>
+</div>
+
+<h2>accounts</h2>
+<div class="card">
+  <table id="accounts"><thead><tr><th>tool</th><th>id</th><th>alias</th><th>label</th><th>state</th><th>usage</th><th></th></tr></thead><tbody></tbody></table>
+  <p class="row" style="display:flex;gap:8px;margin:10px 0 0">
+    <button id="fetch">poll usage now</button>
+    <button id="dry">what would auto do?</button>
+    <span class="mut" id="accounts-note"></span>
+  </p>
+</div>
+
+<h2>sessions</h2>
+<div class="card">
+  <table id="sessions"><thead><tr><th>tool</th><th>pid</th><th>age</th><th>session</th><th>host</th><th>directory</th></tr></thead><tbody></tbody></table>
+  <form class="row" id="start" style="margin-top:10px">
+    <select id="tool"><option>claude</option><option>codex</option><option>kiro</option></select>
+    <input id="dir" placeholder="/home/you/git/project" size="36" required>
+    <button type="submit">start in tmux</button>
+    <span class="mut">then <code>flakelab sessions --attach</code>, or the terminal</span>
+  </form>
+</div>
+
+<h2>log</h2>
+<div class="card" id="log"><pre id="logtext" class="mut">—</pre></div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  let token = "";
+  try { token = localStorage.getItem("flakelab.token") || ""; } catch (e) {}
+  const log = (line, err) => {
+    const t = new Date().toLocaleTimeString();
+    const pre = $("#logtext");
+    pre.classList.remove("mut");
+    pre.textContent = `${t}  ${line}\n` + (pre.textContent === "—" ? "" : pre.textContent);
+    if (err) pre.classList.add("err"); else pre.classList.remove("err");
+  };
+  const api = async (path, body) => {
+    const r = await fetch(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (r.status === 401) { $("#auth").hidden = false; throw new Error("token needed"); }
+    const doc = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(doc.error || (doc.call && doc.call.stderr) || ("HTTP " + r.status));
+    return doc;
+  };
+  const pct = (w) => Math.max(0, Math.min(100, Math.round(w.pct || 0)));
+  const barFor = (w) => {
+    const p = pct(w);
+    const cls = p >= 95 ? "bad" : p >= 85 ? "warn" : "";
+    return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${w.label} ${p}%`;
+  };
+  const age = (s) => (s == null ? "" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`);
+
+  const render = (st) => {
+    const now = Math.floor(Date.now() / 1000);
+    const tb = $("#accounts tbody"); tb.innerHTML = "";
+    const active = (st.accounts && st.accounts.active) || {};
+    for (const a of ((st.accounts && st.accounts.accounts) || [])) {
+      const tags = [];
+      if (active[a.tool] === a.id) tags.push('<span class="tag active">active</span>');
+      if (a.disabled) tags.push('<span class="tag">disabled</span>');
+      if (a.quarantine) tags.push(`<span class="tag q">quarantined: ${a.quarantine.reason}</span>`);
+      const u = a.usage || {};
+      const wins = (u.windows || []).map(barFor).join("<br>") || (u.lastError ? `<span class="err">${u.lastError}</span>` : "—");
+      const fetched = u.fetchedAt ? `<span class="mut"> (${age(now - u.fetchedAt)})</span>` : "";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${a.tool}</td><td>${a.id}</td><td>${a.alias || ""}</td><td>${a.label}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;
+      const btn = document.createElement("button");
+      btn.textContent = "switch";
+      btn.disabled = active[a.tool] === a.id || !!a.disabled || !!a.quarantine;
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try { const r = await api("/api/switch", { entry: String(a.id) }); log((r.call.stdout || "").trim() || `switched to ${a.id}`); }
+        catch (e) { log(`switch ${a.id}: ${e.message}`, true); }
+        refresh();
+      };
+      tr.lastElementChild.appendChild(btn);
+      tb.appendChild(tr);
+    }
+    const drift = Object.entries(st.status || {}).filter(([, v]) => v && v.matches === false).map(([k]) => k);
+    $("#accounts-note").textContent = drift.length ? `drift: ${drift.join(", ")} logged in by hand (flakelab accounts add)` : "";
+    const sb = $("#sessions tbody"); sb.innerHTML = "";
+    for (const s of (st.sessions || [])) {
+      const host = s.host ? (s.host.window || s.host.session) : "—";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${s.tool}</td><td>${s.pid}</td><td>${s.age || ""}</td><td><code>${s.session || "—"}</code></td><td>${host}</td><td class="wrap">${s.dir || s.cwd || ""}</td>`;
+      sb.appendChild(tr);
+    }
+    if (st.terminal) { $("#terminal").href = st.terminal; $("#terminal").hidden = false; }
+    $("#clock").textContent = new Date().toLocaleTimeString();
+  };
+
+  const refresh = async () => {
+    try { render(await api("/api/state")); $("#auth").hidden = true; }
+    catch (e) { if (e.message !== "token needed") log(`state: ${e.message}`, true); }
+  };
+
+  $("#tokenform").onsubmit = (ev) => {
+    ev.preventDefault();
+    token = $("#token").value.trim();
+    try { localStorage.setItem("flakelab.token", token); } catch (e) {}
+    refresh();
+  };
+  $("#fetch").onclick = async () => {
+    $("#fetch").disabled = true;
+    try { await api("/api/fetch", {}); log("usage polled"); } catch (e) { log(`poll: ${e.message}`, true); }
+    $("#fetch").disabled = false; refresh();
+  };
+  $("#dry").onclick = async () => {
+    $("#dry").disabled = true;
+    try {
+      const r = await api("/api/auto", { dryRun: true });
+      const lines = r.events.map((e) => `${e.tool || ""} ${e.event}${e.reason ? ": " + e.reason : ""}${e.detail ? " (" + e.detail + ")" : ""}${e.event === "switch" ? `: ${e.from} -> ${e.to} [${e.trigger}]` : ""}`);
+      log(lines.join("\n") || "no events");
+    } catch (e) { log(`auto: ${e.message}`, true); }
+    $("#dry").disabled = false;
+  };
+  $("#start").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await api("/api/sessions/start", { tool: $("#tool").value, dir: $("#dir").value.trim() });
+      log((r.call.stdout || r.call.stderr || "started").trim());
+    } catch (e) { log(`start: ${e.message}`, true); }
+    refresh();
+  };
+
+  refresh();
+  setInterval(refresh, 30000);
+})();
+</script>
+</body>
+</html>

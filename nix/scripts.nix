@@ -206,6 +206,22 @@ rec {
     exec ${zsh} ${s}/notify "$@"
   '';
 
+  # The dashboard: python3 from the store, the page from the store, the two
+  # commands it shells out to by their wrappers so their pinned PATHs hold.
+  web = pkgs.writeShellScriptBin "web" ''
+    export FLAKELAB_WEB_STATIC=${../files/config/web}
+    export FLAKELAB_WEB_ACCOUNTS=${accounts}/bin/accounts
+    export FLAKELAB_WEB_SESSIONS=${claude-sessions}/bin/claude-sessions
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.python3
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/web "$@"
+  '';
+
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''
     export PATH=${
       bin [

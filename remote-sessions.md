@@ -108,6 +108,46 @@ The tmux config (`files/config/tmux/tmux.conf`, via `programs.tmux`) keeps
 the defaults a guest already knows: a large scrollback, mouse on, window
 titles set by the starter, no key rebinding.
 
+## The browser front end
+
+`flakelab web` is the dashboard: one python3 process from the standard
+library serving `files/config/web/index.html` and a small JSON API over the
+two scripts that already know the state, `accounts` and `claude-sessions`.
+The page shows every stored login with its windows as bars, an active or
+profile or quarantined tag and a switch button, drift when a login was made
+by hand, the running sessions with their tmux window and directory, a form
+that starts one in tmux (`--start <tool> <dir> --detach`), "poll usage now",
+"what would auto do?" (the engine's dry run, its events in the log), and a
+link to the terminal when one is on. Every write is one CLI call, so the
+CLI's locks, refusals and exit codes hold (a refusal comes back as 409 with
+the CLI's reason); the server never reads a token file of a tool and never
+touches the network itself.
+
+It binds to 127.0.0.1:8321 unless told otherwise and refuses every-interface
+binds; every API call needs the bearer token from
+`~/.local/state/flakelab/web/token` (0600, made on the first start,
+`flakelab web --print-token` shows it), which the page asks for once and
+keeps in the browser. `flakelab.web.enable` runs it as the user service
+`flakelab-web` on `flakelab.web.bind`; the box's WireGuard address is the
+one to name for a phone.
+
+The terminal beside it is ttyd, `flakelab.web.terminal`: a browser tab
+attached to the `agents` tmux session (created when absent), on the same
+address, basic auth with user `flakelab` and the same token as the password.
+That is the "no SSH app on the phone" option from the table above, at the
+price it names: a shell in a browser tab behind a long-lived token. Keep it
+on the tunnel.
+
+```nix
+flakelab.web = {
+  enable       = true;
+  bind         = "10.66.0.2";   # this box's WireGuard address
+  port         = 8321;
+  terminal     = true;
+  terminalPort = 7681;
+};
+```
+
 ## What the vendors give
 
 **Claude Code, Remote Control.** `claude remote-control` in a project
@@ -211,3 +251,7 @@ flakelab = {
 7. **Codex's `notify` payload fields** on the installed version: `cwd` and
    `thread-id` are taken when present, `turn-id` otherwise; the body degrades
    to the type alone if neither is there.
+8. **The dashboard from a phone** on the tunnel: that the page renders at
+   phone width, that a switch from it lands (the CLI's transaction, the
+   engine's refusals), and that ttyd's basic auth prompt and tmux under it
+   are usable on a touch keyboard.

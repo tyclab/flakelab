@@ -242,6 +242,7 @@ all sixteen.
 | `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
 | `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
 | `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
+| `flakelab web`            | the dashboard in a browser: accounts, sessions, switch, start   |
 | `flakelab overlay-gen`    | write the private overlay from a config                         |
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
@@ -480,7 +481,11 @@ and attaches; close the tab, drop the SSH connection, and
 endpoint in `secrets.env`) when a session waits on a permission or a prompt,
 with the line that answers it; `mosh.enable = true;` puts mosh beside the
 VM's sshd, and `files/config/windows/enable-openssh-host.ps1` opens a WSL
-distro's Windows host on the WireGuard subnet.
+distro's Windows host on the WireGuard subnet. `web.enable = true;` with
+`web.bind` set to the box's WireGuard address serves a dashboard (the logins
+with their windows and a switch button, the sessions, a start form) behind a
+token, and `web.terminal = true;` a browser terminal on the `agents` tmux
+session beside it.
 [`remote-sessions.md`](remote-sessions.md) has
 the whole picture, the phone included.
 

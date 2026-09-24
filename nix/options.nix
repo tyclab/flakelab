@@ -394,6 +394,43 @@ in
       description = "proxmox-vm only: programs.mosh, a mosh-server beside sshd for clients on a flaky link or a changing address (a phone over WireGuard). The NixOS module opens UDP 60000-61000; sshd itself is unchanged. Ignored on wsl.";
     };
 
+    # The browser front end (remote-sessions.md): the dashboard and, on top,
+    # a terminal in a browser tab. Both user services, both behind the one
+    # token `flakelab web --print-token` shows.
+    web = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Run `flakelab web` as the user service flakelab-web: the dashboard over the stored logins (windows, switch) and the running sessions (host window, start in tmux), every API call behind the bearer token in ~/.local/state/flakelab/web/token, made on the first start. Bind it to the box's WireGuard address to reach it from a phone; it refuses every-interface binds.";
+      };
+      bind = mkOption {
+        type = types.str;
+        default = "127.0.0.1";
+        example = "10.66.0.2";
+        description = "The address the dashboard and the terminal listen on: loopback, or the box's WireGuard address. Never a public interface.";
+      };
+      port = mkOption {
+        type = types.port;
+        default = 8321;
+        description = "The dashboard's port.";
+      };
+      terminal = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Also run ttyd as the user service flakelab-ttyd: a terminal in a browser tab attached to the agents tmux session (created when absent), on the same address, basic auth with user `flakelab` and the dashboard's token as the password. The dashboard links to it. A shell in a browser tab behind a long-lived token is the price of no SSH app on the phone; keep it on the tunnel.";
+      };
+      terminalPort = mkOption {
+        type = types.port;
+        default = 7681;
+        description = "ttyd's port.";
+      };
+      tmuxSession = mkOption {
+        type = types.str;
+        default = "agents";
+        description = "The tmux session the browser terminal attaches: the one `flakelab sessions --start` hosts windows in.";
+      };
+    };
+
     claudeMdExtra = mkOption {
       type = types.lines;
       default = "";

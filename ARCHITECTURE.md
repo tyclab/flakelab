@@ -78,6 +78,11 @@ that defaults to off, because every activation here runs on every adopter's box:
   command, removed again when off.
 - `mosh.enable` (bool, default `false`) — proxmox-vm only: `programs.mosh`
   beside sshd, its UDP range opened by the module.
+- `web.*` — `enable` (default `false`) runs `flakelab web` as the user
+  service `flakelab-web` on `bind` (default `127.0.0.1`) and `port` (8321),
+  the dashboard behind the token in `~/.local/state/flakelab/web/token`;
+  `terminal` (default `false`) adds ttyd on `terminalPort` (7681) attached to
+  the `tmuxSession` (`agents`), same token as its basic-auth password.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow

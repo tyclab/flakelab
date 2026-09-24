@@ -1,0 +1,73 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# web — the dashboard for the agent sessions and the stored logins, in a
+# browser (remote-sessions.md): the accounts with their windows and a switch
+# button, the running sessions with their tmux window, a start form, the
+# engine's dry run, and a link to the browser terminal when one is on.
+#
+# Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-url URL] [--print-token]
+#
+# One python3 process (lib/web.py, the standard library only), bound to
+# 127.0.0.1:8321 unless told otherwise, every API call behind a bearer token
+# from the token file (0600 under ~/.local/state/flakelab/web/, made on first
+# start). It shells out to `accounts` and `claude-sessions` for everything,
+# so their locks, refusals and exit codes hold; it never touches a token file
+# of a tool. Bind it to the box's WireGuard address to reach it from a phone;
+# never to a public interface. --print-token prints the token and exits.
+#
+# The two commands: from the dispatch dir when the wrapper set it
+# (FLAKELAB_WEB_ACCOUNTS, FLAKELAB_WEB_SESSIONS), else the siblings of this
+# script, so a checkout serves its own.
+#
+
+SCRIPT_DIR="${0:A:h}"
+BIND="${FLAKELAB_WEB_BIND:-127.0.0.1}"
+PORT="${FLAKELAB_WEB_PORT:-8321}"
+TOKEN_FILE="${FLAKELAB_WEB_TOKEN_FILE:-${HOME}/.local/state/flakelab/web/token}"
+TERMINAL_URL="${FLAKELAB_WEB_TERMINAL_URL:-}"
+PRINT_TOKEN=false
+
+usage() {
+  cat <<'USAGE'
+Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-url URL]
+       flakelab web --print-token
+
+Serves the dashboard on ADDR:N (127.0.0.1:8321), every API call behind the
+bearer token in FILE (~/.local/state/flakelab/web/token, made on first start).
+Bind to the WireGuard address for a phone; never to a public interface.
+USAGE
+}
+
+while (( $# > 0 )); do
+  case $1 in
+    --bind) BIND="${2:-}"; shift ;;
+    --port) PORT="${2:-}"; shift ;;
+    --token-file) TOKEN_FILE="${2:-}"; shift ;;
+    --terminal-url) TERMINAL_URL="${2:-}"; shift ;;
+    --print-token) PRINT_TOKEN=true ;;
+    --help|-h) usage; exit 0 ;;
+    *) print -ru2 -- "web: unknown option: $1"; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ "$PORT" == <1-65535> ]] || { print -ru2 -- "web: --port takes 1 to 65535"; exit 2 }
+[[ -n "$BIND" ]] || { print -ru2 -- "web: --bind needs an address"; exit 2 }
+case "$BIND" in
+  0.0.0.0|::|'*') print -ru2 -- "web: refusing to bind every interface; name the WireGuard address"; exit 2 ;;
+esac
+
+if $PRINT_TOKEN; then
+  [[ -r "$TOKEN_FILE" ]] || { print -ru2 -- "web: no token yet (${TOKEN_FILE}); it is made on the first start"; exit 1 }
+  cat -- "$TOKEN_FILE"
+  exit 0
+fi
+
+command -v python3 >/dev/null 2>&1 || { print -ru2 -- "web: python3 is not on PATH"; exit 1 }
+export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_URL="$TERMINAL_URL"
+export FLAKELAB_WEB_STATIC="${FLAKELAB_WEB_STATIC:-${SCRIPT_DIR:h}/config/web}"
+export FLAKELAB_WEB_ACCOUNTS="${FLAKELAB_WEB_ACCOUNTS:-${SCRIPT_DIR}/accounts}"
+export FLAKELAB_WEB_SESSIONS="${FLAKELAB_WEB_SESSIONS:-${SCRIPT_DIR}/claude-sessions}"
+exec python3 "${SCRIPT_DIR}/lib/web.py"

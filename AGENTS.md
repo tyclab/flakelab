@@ -76,6 +76,13 @@ the private overlay `flakelab-config`, which imports this flake via
     fails its caller. Remote reach: `flakelab.mosh.enable` on the VM,
     `files/config/windows/enable-openssh-host.ps1` for a WSL host, both over
     WireGuard (`remote-sessions.md`).
+  - `web` (new, `web`): the dashboard in a browser (`lib/web.py`, python3
+    stdlib; `files/config/web/index.html`): the logins with their windows
+    and a switch button, the sessions, a start form, the engine's dry run,
+    over `accounts` and `claude-sessions` as CLI calls. 127.0.0.1:8321 and
+    a bearer token from `~/.local/state/flakelab/web/token` (`--print-token`);
+    `flakelab.web.*` runs it as a user service, `web.terminal` adds ttyd on
+    the `agents` tmux session with the same token.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,
@@ -127,19 +134,19 @@ the private overlay `flakelab-config`, which imports this flake via
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
 - Changing any of these means running its offline suite. `make test` runs all
-  fourteen (`test-clone-repos`, `test-gitchecker`, `test-gitcleaner`,
+  fifteen (`test-clone-repos`, `test-gitchecker`, `test-gitcleaner`,
   `test-gitpublisher`, `test-nix-backup`, `test-nix-overlay-generate`,
   `test-flakelab-cli`, `test-claude-sessions`, `test-accounts`, `test-nix-update`,
-  `test-nix-doctor`, `test-switch-result`, `test-xdg-open`, `test-notify`) and stays the
+  `test-nix-doctor`, `test-switch-result`, `test-xdg-open`, `test-notify`, `test-web`) and stays the
   required local gate. These are TEST HARNESSES, not user commands,
   so the `flakelab` CLI did not rename them: `test-nix-backup`,
   `test-nix-doctor` and `test-nix-overlay-generate` keep the old prefix on purpose, because renaming
   them would drag `Makefile` and `flake.nix`'s `checks.<system>.*` along for no
   change in behaviour. They run the scripts by path, not by command name. CI
-  runs the same fourteen as flake checks — `nix flake check` (the `test` job)
+  runs the same fifteen as flake checks — `nix flake check` (the `test` job)
   builds
   `checks.<system>.{clone-repos,gitchecker,gitcleaner,gitpublisher,nix-backup,`
-  `nix-overlay-generate,flakelab-cli,claude-sessions,accounts,nix-update,nix-doctor,switch-result,xdg-open,notify,statix,deadnix}`,
+  `nix-overlay-generate,flakelab-cli,claude-sessions,accounts,nix-update,nix-doctor,switch-result,xdg-open,notify,web,statix,deadnix}`,
   so a red suite blocks the pull
   request rather than surviving to main. Those checks copy the WHOLE tree
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`

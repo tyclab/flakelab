@@ -330,6 +330,11 @@
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
         notify = suiteCheck "notify";
+        # The dashboard's suite runs the server on loopback and talks to it.
+        web = suiteCheckWith [
+          pkgs.python3
+          pkgs.curl
+        ] "web";
         # The input report reads the lock with `nix eval`, which is under test too.
         nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
         nix-doctor = suiteCheck "nix-doctor";
