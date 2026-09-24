@@ -8,12 +8,14 @@ set -uo pipefail
 # A roster of stored logins under ~/.local/state/flakelab/accounts/, one live
 # login per tool, switched without a logout. Each tool answers the adapter
 # contract through files/scripts/lib/accounts-<tool>.zsh; this script never
-# branches on the tool name. Phase 1 ships the Claude Code adapter.
+# branches on the tool name. Adapters: Claude Code, Codex.
 #
 # Usage:
 #   accounts [--json] [--fetch]              the roster with cached usage; --fetch polls what is due
 #   accounts add <tool> [--alias NAME]       snapshot the tool's live login into the store
-#   accounts switch <ID|ALIAS|LABEL>         make a stored account its tool's live login
+#   accounts switch <ID|ALIAS|LABEL> [--force]
+#                                            make a stored account its tool's live login
+#                                            (--force: past a tool's running sessions)
 #   accounts switch --next <tool>            rotate in id order, skipping disabled entries
 #   accounts switch --soonest <tool>         the entry whose weekly windows renew first
 #   accounts switch --best <tool>            the entry with the most weekly headroom
@@ -100,6 +102,10 @@ ENGINE="${SCRIPT_DIR}/lib/accounts-auto.jq"
 now() { print -r -- "${FLAKELAB_NOW:-$(date +%s)}" }
 typeset -a TOOLS=(claude codex kiro)
 typeset -a ADAPTERS=()
+# switch --force: a tool with no live pickup may be switched under its
+# running sessions. The adapter that refuses a switch says why here.
+ACCT_FORCE=false
+ACCT_LOCK_REASON=""
 
 # The adapters that exist: one file per tool under lib/.
 for _t in "${TOOLS[@]}"; do
@@ -111,8 +117,8 @@ usage() {
   cat <<'USAGE'
 Usage: accounts [--json] [--fetch]
        accounts add <tool> [--alias NAME]
-       accounts switch <ID|ALIAS|LABEL>
-       accounts switch --next|--soonest|--best <tool>
+       accounts switch <ID|ALIAS|LABEL> [--force]
+       accounts switch --next|--soonest|--best <tool> [--force]
        accounts alias <ID|ALIAS|LABEL> NAME|--unset
        accounts disable|enable <ID|ALIAS|LABEL>
        accounts remove <ID|ALIAS|LABEL> [--yes]
@@ -130,7 +136,9 @@ Usage: accounts [--json] [--fetch]
   switch      make a stored account the live login of its tool; --next <tool>
               rotates to the next enabled entry in id order; --soonest picks
               the one whose weekly windows renew first, --best the most weekly
-              headroom (both poll what is due first)
+              headroom (both poll what is due first); --force switches a tool
+              with no live pickup (codex) past its running sessions, which
+              keep their old token
   alias       name an entry (letters, digits, . _ -; unique; not all digits)
   disable     hold an entry out of rotation; enable returns it
   remove      delete an entry and its stored login (--yes, or a terminal to ask)
@@ -338,10 +346,11 @@ fetch_entry() {
   else
     local err
     err="$(print -r -- "$result" | jq -r '.error')"
-    if [[ "$err" == invalid_grant ]]; then
-      cache="$(print -r -- "$cache" | jq --arg id "$id" --arg fp "$(acct_${tool}_fingerprint "${STORE}/${id}/credentials.json" 2>/dev/null || print -r -- "")" --argjson now "$(now)" '
-        .quarantine[$id] = {reason: "invalid_grant", fingerprint: $fp, at: $now}')"
-      note "entry ${id} is quarantined: its refresh token was refused (invalid_grant); log in again and run: flakelab accounts add ${tool}"
+    if [[ "$err" == invalid_grant || "$err" == seat-revoked ]]; then
+      cache="$(print -r -- "$cache" | jq --arg id "$id" --arg reason "$err" --arg fp "$(entry_fingerprint "$id")" --argjson now "$(now)" '
+        .quarantine[$id] = {reason: $reason, fingerprint: $fp, at: $now}')"
+      if [[ "$err" == seat-revoked ]]; then note "entry ${id} is quarantined: its seat was revoked (a later login on that account, or a logout); log in again and run: flakelab accounts add ${tool}"
+      else note "entry ${id} is quarantined: its refresh token was refused (invalid_grant); log in again and run: flakelab accounts add ${tool}"; fi
     fi
     fails=$(( $(print -r -- "$entry" | jq -r '.failures // 0') + 1 ))
     backoff=$(( BACKOFF_BASE_S << (fails - 1) )); (( backoff > BACKOFF_CAP_S )) && backoff=$BACKOFF_CAP_S
@@ -375,12 +384,21 @@ fetch_due() {
 
 # Drop an entry's quarantine when its credential is no longer the one that
 # was refused.
+# The lineage fingerprint of an entry's stored credential (its adapter's
+# first file), or empty.
+entry_fingerprint() {
+  local id="$1" tool file
+  tool="$(entry_field "$id" tool)"
+  has_adapter "$tool" || { print -r -- ""; return 0 }
+  file="$(acct_${tool}_files | head -n 1)"
+  acct_${tool}_fingerprint "${STORE}/${id}/${file}" 2>/dev/null || print -r -- ""
+}
+
 lift_quarantine() {
-  local id="$1" tool cache fp
+  local id="$1" cache fp
   cache="$(read_usage)"
   [[ "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id].fingerprint // empty')" != "" ]] || return 0
-  tool="$(entry_field "$id" tool)"
-  fp="$(acct_${tool}_fingerprint "${STORE}/${id}/credentials.json" 2>/dev/null || print -r -- "")"
+  fp="$(entry_fingerprint "$id")"
   [[ "$fp" != "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id].fingerprint')" ]] || return 0
   write_usage "$(print -r -- "$cache" | jq --arg id "$id" 'del(.quarantine[$id])')" && note "entry ${id} left quarantine: its credential changed"
 }
@@ -474,7 +492,7 @@ do_switch() {
     live="$(acct_${tool}_identity 2>/dev/null)" && [[ "$(print -r -- "$live" | jq -r '.id')" == "$(entry_field "$id" id)" ]] && {
       print -r -- "Already on ${tool} $(entry_name "$id")"; return 0 }
   fi
-  acct_${tool}_lock || refuse "${tool} is refreshing its credentials (its lock is held); retry in a few seconds. Nothing changed."
+  acct_${tool}_lock || refuse "${ACCT_LOCK_REASON:-${tool} cannot be switched right now. Nothing changed.}"
   {
     acct_${tool}_snapshot_live || { acct_${tool}_unlock; die "cannot read the live ${tool} login" }
     # Attribute the outgoing login: its own entry, or the unclaimed stash.
@@ -545,6 +563,7 @@ cmd_switch() {
     case $1 in
       --next) next=true; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "--next needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
       --soonest|--best) strategy="${1#--}"; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "$1 needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
+      --force) ACCT_FORCE=true ;;
       -*) refuse "unknown option for switch: $1" ;;
       *) [[ -z "$target" ]] || refuse "switch takes one entry"; target="$1" ;;
     esac
@@ -742,7 +761,7 @@ tick() {
         result="$(freshen_entry "$cand")"
         case "$result" in
           dead)
-            write_usage "$(read_usage | jq --arg id "$cand" --arg fp "$(acct_${tool}_fingerprint "${STORE}/${cand}/credentials.json" 2>/dev/null || print -r -- "")" --argjson now "$(now)" '.quarantine[$id] = {reason: "invalid_grant", fingerprint: $fp, at: $now}')"
+            write_usage "$(read_usage | jq --arg id "$cand" --arg fp "$(entry_fingerprint "$cand")" --argjson now "$(now)" '.quarantine[$id] = {reason: "invalid_grant", fingerprint: $fp, at: $now}')"
             emit "$tool" "$(jq -cn --argjson id "$cand" '{event: "quarantine", entry: $id, reason: "invalid_grant"}')"
             continue ;;
           transient) transient=true; continue ;;

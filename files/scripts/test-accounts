@@ -32,9 +32,12 @@ STUBS="${BASE}/bin"
 mkdir -p "${STUBS}"
 cat > "${STUBS}/pgrep" <<'STUB'
 #!/usr/bin/env zsh
-[[ "$1" == -x && "$2" == claude ]] || exit 1
-[[ -n "${FAKE_CLAUDE_RUNNING:-}" ]] || exit 1
-print -l 100 200
+[[ "$1" == -x ]] || exit 1
+case "$2" in
+  claude) [[ -n "${FAKE_CLAUDE_RUNNING:-}" ]] || exit 1; print -l 100 200 ;;
+  codex)  [[ -n "${FAKE_CODEX_RUNNING:-}" ]] || exit 1; print -l ${(s:,:)FAKE_CODEX_RUNNING} ;;
+  *) exit 1 ;;
+esac
 STUB
 # curl stand-in: answers the token and usage URLs from canned files under
 # FAKE_CURL, records every request (URL, the bearer, the body), writes the
@@ -112,9 +115,9 @@ run add
 check "add without a tool exits 2" "${RC}" "2"
 run add gemini
 check "add with an unknown tool exits 2" "${RC}" "2"
-run add codex
+run add kiro
 check "add for a tool without an adapter exits 2" "${RC}" "2"
-contains "and names the adapters present" "${ERR}" "present: claude"
+contains "and names the adapters present" "${ERR}" "present: claude, codex"
 run add claude
 check "add with no login exits 2" "${RC}" "2"
 contains "and says to log in first" "${ERR}" "log in with the tool first"
@@ -292,7 +295,8 @@ print -r -- ""
 print -r -- "status"
 run status
 check "status exits 0" "${RC}" "0"
-check "status names the active entry" "${OUT}" "claude: 2 (work) bob@example.com [Example GmbH]"
+check "status names the active entry" "$(print -r -- "$OUT" | head -1)" "claude: 2 (work) bob@example.com [Example GmbH]"
+contains "and each other adapter's state" "${OUT}" "codex: no active entry"
 run status --json
 check "status --json says the live login matches" "$(print -r -- "$OUT" | jq -r '.claude.matches')" "true"
 check "status --json names the active entry" "$(print -r -- "$OUT" | jq -r '.claude.active.alias')" "work"
@@ -868,6 +872,180 @@ run remove work --yes
 check "with the session gone, remove takes the entry" "${RC}" "0"
 [[ ! -d "${PROFILE}" ]] && ok "and the profile with it" || bad "the profile directory stayed"
 unset FLAKELAB_NOW
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "the Codex adapter: auth.json whole, no lock, no refresh of ours, usage through the tool"
+FAKE_CODEX="${BASE}/codex"
+mkdir -p "${FAKE_CODEX}" "${HOME}/.codex"
+b64url() { print -rn -- "$1" | base64 -w0 | tr '+/' '-_' | tr -d '=' }
+# A JWT with the claims Codex's id_token carries, and an access token with an expiry.
+jwt() { print -r -- "$(b64url '{"alg":"none"}').$(b64url "$1").sig" }
+# codex_login <email> <account id> <plan> <access token> [<exp>]
+codex_login() {
+  local email="$1" acct="$2" plan="$3" tok="$4" exp="${5:-1900000000}"
+  cat > "${HOME}/.codex/auth.json" <<EOF
+{"OPENAI_API_KEY": null, "tokens": {"id_token": "$(jwt "{\"email\": \"${email}\", \"https://api.openai.com/auth\": {\"chatgpt_account_id\": \"${acct}\", \"chatgpt_plan_type\": \"${plan}\"}}")", "access_token": "$(jwt "{\"sub\": \"${tok}\", \"exp\": ${exp}}")", "refresh_token": "rt-${tok}", "account_id": "${acct}"}, "last_refresh": "2026-09-24T10:00:00Z"}
+EOF
+  chmod 600 "${HOME}/.codex/auth.json"
+}
+codex_live() { jq -r '.tokens.refresh_token' "${HOME}/.codex/auth.json" }
+# The codex stand-in: `login status` exits FAKE_CODEX_LOGIN_RC; `app-server`
+# answers the rateLimits read from limits.<refresh token>.json (or an error
+# from error.<refresh token>.txt), logs CODEX_HOME, and rewrites auth.json from
+# refresh.<refresh token>.json when that exists, as a refresh would; anything
+# else prints the environment it ran with.
+cat > "${STUBS}/codex" <<'STUB'
+#!/usr/bin/env zsh
+if [[ "$1" == login && "$2" == status ]]; then exit "${FAKE_CODEX_LOGIN_RC:-0}"; fi
+if [[ "$1" == app-server ]]; then
+  rt="$(jq -r '.tokens.refresh_token // empty' "${CODEX_HOME}/auth.json" 2>/dev/null)"
+  print -r -- "CODEX_HOME=${CODEX_HOME} rt=${rt}" >> "${FAKE_CODEX}/calls.log"
+  [[ -f "${FAKE_CODEX}/refresh.${rt}.json" ]] && cp "${FAKE_CODEX}/refresh.${rt}.json" "${CODEX_HOME}/auth.json"
+  while IFS= read -r line; do
+    case "$line" in
+      *'"id":1'*) print -r -- '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex/0.0"}}' ;;
+      *'account/rateLimits/read'*)
+        if [[ -f "${FAKE_CODEX}/error.${rt}.txt" ]]; then print -r -- "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,\"message\":\"$(<"${FAKE_CODEX}/error.${rt}.txt")\"}}"
+        elif [[ -f "${FAKE_CODEX}/limits.${rt}.json" ]]; then cat "${FAKE_CODEX}/limits.${rt}.json"
+        fi ;;
+    esac
+  done
+  exit 0
+fi
+print -r -- "codex ran: CODEX_HOME=${CODEX_HOME-unset} OPENAI_API_KEY=${OPENAI_API_KEY-unset} args=$*"
+STUB
+chmod +x "${STUBS}/codex"
+export FAKE_CODEX
+
+run add codex
+check "add codex without a login exits 2" "${RC}" "2"
+print -r -- '{"OPENAI_API_KEY": "sk-abc", "tokens": null}' > "${HOME}/.codex/auth.json"
+run add codex
+check "an API-key login is refused" "${RC}" "2"
+contains "with the shell-variable hint" "${ERR}" "API key"
+codex_login dana@example.com acct-d plus tok-d
+run add codex --alias dana
+check "add codex exits 0" "${RC}" "0"
+check "the entry takes the next id, with the identity from the id_token's claims" "${OUT}" "Added codex 4: dana@example.com [plus] as dana"
+check "the store holds auth.json whole, private" "$(stat -c %a "${STORE}/4/auth.json") $(jq -r '.tokens.refresh_token' "${STORE}/4/auth.json")" "600 rt-tok-d"
+check "the roster's id is the chatgpt account id" "$(jq -r '.accounts["4"].id' "${STORE}/accounts.json")" "acct-d"
+codex_login erin@example.com acct-e pro tok-e
+run add codex --alias erin
+check "a second codex login is a second entry" "${OUT}" "Added codex 5: erin@example.com [pro] as erin"
+check "and the active codex entry" "$(jq -r '.active.codex' "${STORE}/accounts.json")" "5"
+run
+contains "the listing shows both tools" "${OUT}" "$(row codex 4 dana dana@example.com '' -)"
+contains "with the codex entry active" "${OUT}" "$(row codex 5 erin erin@example.com active -)"
+run status
+contains "status reports codex too" "${OUT}" "codex: 5 (erin) erin@example.com [pro]"
+
+FAKE_CODEX_RUNNING=700 run switch dana
+check "a switch while codex runs is refused" "${RC}" "2"
+contains "and says why, with the way out" "${ERR}" "1 codex session(s) are running and a running codex keeps the token it started with"
+contains "naming --force" "${ERR}" "switch --force"
+check "nothing changed" "$(codex_live)" "rt-tok-e"
+PROC="${BASE}/proc"
+mkdir -p "${PROC}/700/fd" "${HOME}/.codex/sessions/2026/09/24"
+SID_R=0a0a0a0a-1111-2222-3333-444444444444
+ln -s "${HOME}/.codex/sessions/2026/09/24/rollout-2026-09-24T10-00-00-${SID_R}.jsonl" "${PROC}/700/fd/5"
+export FLAKELAB_PROC_ROOT="${PROC}"
+FAKE_CODEX_RUNNING=700 run switch dana --force
+check "--force switches past the running session" "${RC}" "0"
+contains "and prints the resume line for it" "${OUT}" "codex resume ${SID_R}"
+check "the live login is dana's" "$(codex_live)" "rt-tok-d"
+check "erin's outgoing login was written back into her entry" "$(jq -r '.tokens.refresh_token' "${STORE}/5/auth.json")" "rt-tok-e"
+run switch erin
+check "a switch with no codex running needs no --force" "${RC}" "0"
+check "the live login is erin's" "$(codex_live)" "rt-tok-e"
+FLAKELAB_ACCOUNTS_FAIL_AT=credentials run switch dana
+check "a failed write exits 1" "${RC}" "1"
+check "and the previous login is restored" "$(codex_live)" "rt-tok-e"
+check "and the roster did not move" "$(jq -r '.active.codex' "${STORE}/accounts.json")" "5"
+
+# Usage through the tool: camel or snake case, a scratch home, a refreshed
+# token copied back, a revoked seat quarantined.
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"primary":{"usedPercent":42,"windowDurationMins":300,"resetsAt":1900000000},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1900500000}}}}' > "${FAKE_CODEX}/limits.rt-tok-e.json"
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rate_limits":{"primary":{"used_percent":90,"window_minutes":300,"resets_at":"2026-09-27T12:00:00Z"},"secondary":{"used_percent":50,"window_minutes":10080}}}}' > "${FAKE_CODEX}/limits.rt-tok-d.json"
+export FLAKELAB_NOW=1758900000
+: > "${FAKE_CODEX}/calls.log"
+run --fetch
+check "--fetch exits 0" "${RC}" "0"
+contains "the active codex entry's windows come from the tool, camelCase" "${OUT}" "$(row codex 5 erin erin@example.com active '5h 42% · 7d 7% (0s)')"
+contains "a stored entry's too, snake_case and an ISO reset" "${OUT}" "$(row codex 4 dana dana@example.com '' '5h 90% · 7d 50% (0s)')"
+check "each read ran in a scratch home seeded with that entry's auth.json" "$(grep -c 'rt=' "${FAKE_CODEX}/calls.log")" "2"
+excludes "never in ~/.codex itself" "$(<"${FAKE_CODEX}/calls.log")" "CODEX_HOME=${HOME}/.codex "
+check "the reset is an epoch" "$(jq -r '.entries["4"].windows[0].resetsAtEpoch' "${STORE}/usage.json")" "1790510400"
+run --json
+check "--json carries the window classes" "$(print -r -- "$OUT" | jq -r '.accounts[] | select(.id == 4) | [.usage.windows[].class] | join(",")')" "session,week"
+
+jq '.tokens.access_token = "refreshed" | .tokens.refresh_token = "rt-tok-d2"' "${STORE}/4/auth.json" > "${FAKE_CODEX}/refresh.rt-tok-d.json"
+jq '.entries["4"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+cp "${FAKE_CODEX}/limits.rt-tok-d.json" "${FAKE_CODEX}/limits.rt-tok-d2.json"
+run --fetch
+check "a token the tool refreshed during the read is kept in the store" "$(jq -r '.tokens.refresh_token' "${STORE}/4/auth.json")" "rt-tok-d2"
+
+print -r -- "401 Unauthorized" > "${FAKE_CODEX}/error.rt-tok-d2.txt"
+jq '.entries["4"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+contains "a seat the server no longer accepts is quarantined" "${ERR}" "entry 4 is quarantined: its seat was revoked"
+check "with its own reason" "$(jq -r '.quarantine["4"].reason' "${STORE}/usage.json")" "seat-revoked"
+run
+contains "and the listing says so" "${OUT}" "$(row codex 4 dana dana@example.com '' 'quarantined (seat-revoked)')"
+codex_login dana@example.com acct-d plus tok-d3
+run add codex
+contains "a fresh login on that account refreshes the entry in place" "${OUT}" "Refreshed codex 4: dana@example.com [plus]"
+check "and lifts the quarantine" "$(jq -r '.quarantine["4"] // "none"' "${STORE}/usage.json")" "none"
+check "and makes it the active codex entry" "$(jq -r '.active.codex' "${STORE}/accounts.json")" "4"
+
+# The engine decides for codex too, once listed.
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"primary":{"usedPercent":92,"resetsAt":1900000000},"secondary":{"usedPercent":20,"resetsAt":1900500000}}}}' > "${FAKE_CODEX}/limits.rt-tok-d3.json"
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"primary":{"usedPercent":10,"resetsAt":1900000000},"secondary":{"usedPercent":7,"resetsAt":1900500000}}}}' > "${FAKE_CODEX}/limits.rt-tok-e.json"
+jq '.entries["5"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+FLAKELAB_ACCOUNTS_TOOLS=claude,codex run auto --once --json
+check "auto ticks every listed tool" "$(print -r -- "$OUT" | jq -r 'select(.event == "poll") | .tool' | sort | tr '\n' ' ')" "claude codex "
+check "and switches codex proactively on its session window" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch" and .tool == "codex") | [.from, .to, .trigger, .axis] | join(" ")')" "4 5 proactive session"
+check "the live codex login is erin's" "$(codex_live)" "rt-tok-e"
+FAKE_CODEX_RUNNING=700 FLAKELAB_ACCOUNTS_TOOLS=codex run auto --once --json
+check "with codex running, the engine has nothing to do (erin is fine)" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | .reason')" "below-threshold"
+
+# A stored token past its expiry is not a candidate: the tool refreshes only
+# at first use, and the engine does not hand over a login that may not work.
+codex_login dana@example.com acct-d plus tok-d4 1000
+run add codex
+run switch erin
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"primary":{"usedPercent":100,"resetsAt":1900000000},"secondary":{"usedPercent":7,"resetsAt":1900500000}}}}' > "${FAKE_CODEX}/limits.rt-tok-e.json"
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"primary":{"usedPercent":10,"resetsAt":1900000000},"secondary":{"usedPercent":7,"resetsAt":1900500000}}}}' > "${FAKE_CODEX}/limits.rt-tok-d4.json"
+jq '.entries["4"].nextPollAt = 0 | .entries["5"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+FLAKELAB_ACCOUNTS_TOOLS=codex run auto --once --json
+check "at the limit, an expired stored token is passed over" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | .reason')" "no-viable-target"
+check "and the live login stays" "$(codex_live)" "rt-tok-e"
+unset FLAKELAB_NOW
+
+# Profiles: CODEX_HOME, the config and sessions shared, a live one found
+# through its environment.
+print -r -- 'model = "x"' > "${HOME}/.codex/config.toml"
+print -r -- 'model = "y"' > "${HOME}/.codex/fast.config.toml"
+codex_login dana@example.com acct-d plus tok-d5
+run add codex
+run switch erin
+run env dana
+check "env for a codex entry exports CODEX_HOME" "$(print -r -- "$OUT" | head -1)" "export CODEX_HOME='${STORE}/profiles/4'"
+contains "and unsets the API key" "${OUT}" "unset OPENAI_API_KEY"
+check "the profile holds the entry's auth.json" "$(jq -r '.tokens.refresh_token' "${STORE}/profiles/4/auth.json")" "rt-tok-d5"
+check "the config is linked" "$(readlink "${STORE}/profiles/4/config.toml")" "${HOME}/.codex/config.toml"
+check "a named config profile too" "$(readlink "${STORE}/profiles/4/fast.config.toml")" "${HOME}/.codex/fast.config.toml"
+check "and the sessions" "$(readlink "${STORE}/profiles/4/sessions")" "${HOME}/.codex/sessions"
+OPENAI_API_KEY=sk-x run run dana -- exec hi
+contains "run points codex at the profile with the key scrubbed" "${OUT}" "codex ran: CODEX_HOME=${STORE}/profiles/4 OPENAI_API_KEY=unset args=exec hi"
+mkdir -p "${PROC}/701"
+printf 'HOME=%s\0CODEX_HOME=%s\0' "${HOME}" "${STORE}/profiles/4" > "${PROC}/701/environ"
+FAKE_CODEX_RUNNING=701 run switch dana
+check "a codex running on the profile blocks a switch onto its entry" "${RC}" "2"
+contains "as a profile session" "${ERR}" "entry 4 is running in a profile session"
+FAKE_CODEX_RUNNING=701 run
+contains "and the listing marks it" "${OUT}" "$(row codex 4 dana dana@example.com profile)"
+unset FLAKELAB_PROC_ROOT
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

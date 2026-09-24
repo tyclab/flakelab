@@ -465,9 +465,11 @@ on with their next message. The listing shows each login's cached windows,
 timer that moves the live login before it hits a limit (`--dry-run` shows
 what it would do). `flakelab accounts run work` runs a second account in a
 second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
-pins a shell to it. The store is `~/.local/state/flakelab/accounts` (not yet
-carried by `flakelab backup`); the Codex and Kiro adapters are the next phases
-in [`accounts.md`](accounts.md).
+pins a shell to it. Codex logins work the same way (`add codex`; a switch
+waits for running `codex` sessions or goes past them with `--force`). The
+store is `~/.local/state/flakelab/accounts` (not yet carried by
+`flakelab backup`); the Kiro adapter is the next phase in
+[`accounts.md`](accounts.md).
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session

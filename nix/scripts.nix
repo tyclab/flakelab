@@ -167,7 +167,9 @@ rec {
 
   # The store is the script's own; flock serialises writers, pgrep counts the
   # tool's running sessions for the post-switch line. Sourced from `s`, so the
-  # adapters under lib/ sit beside it in the store.
+  # adapters under lib/ sit beside it in the store. The user's PATH stays
+  # behind the pinned set: the Codex adapter runs the installed `codex`
+  # (~/.local/bin) for its usage read and profile check.
   accounts = pkgs.writeShellScriptBin "accounts" ''
     export FLAKELAB_ACCOUNTS_TOOLS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.autoSwitchTools)}
     export FLAKELAB_ACCOUNTS_SESSION_THRESHOLD=${toString cfg.accounts.sessionThreshold}

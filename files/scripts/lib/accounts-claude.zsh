@@ -158,6 +158,7 @@ acct_claude_lock_one() {
 # whatever was taken is released and the caller refuses.
 acct_claude_lock() {
   zmodload zsh/datetime 2>/dev/null
+  ACCT_LOCK_REASON="claude is refreshing its credentials (its lock is held); retry in a few seconds. Nothing changed."
   acct_claude_lock_one "${ACCT_CLAUDE_LOCK_CREDS}" || return 1
   acct_claude_lock_one "${ACCT_CLAUDE_LOCK_CONFIG}" || { acct_claude_unlock; return 1 }
   return 0

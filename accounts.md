@@ -593,7 +593,7 @@ revoked seats, and reports the timer.
 ```nix
 flakelab.accounts = {
   autoSwitchInterval = null;          # systemd span; null schedules no timer
-  autoSwitchTools    = [ "claude" ];  # which tools the timer decides for; codex once verify 6/7 pass
+  autoSwitchTools    = [ "claude" ];  # which tools the timer decides for; add "codex" once verify 6/7 pass
   sessionThreshold   = 85;            # the 5h window, Claude and Codex alike
   weekThreshold      = 97;
   modelThreshold     = 95;
@@ -651,7 +651,15 @@ Phases, each shippable on its own:
    the profile-aware fetch, `flakelab sessions` reading profile registries.
 5. The Codex adapter: `add`, `switch` with the running-process refusal,
    profiles, then usage through `app-server` and the engine behind
-   `autoSwitchTools`.
+   `autoSwitchTools`. **Done**: `files/scripts/lib/accounts-codex.zsh`; the
+   identity from the `id_token` claims, `auth.json` whole, the refusal while
+   a `codex` runs and `switch --force` with the `codex resume <id>` lines,
+   usage through `codex app-server` in a scratch home (the endpoint codexctl
+   uses as the fallback without a `codex` on PATH), a refreshed token copied
+   back, `seat-revoked` as a quarantine reason, an expired stored token
+   passed over by the engine, profiles on `CODEX_HOME` with a live one found
+   through its environment. Verify 6 and 7 still stand: until they are
+   checked on the box, `autoSwitchTools` keeps its default of `[ "claude" ]`.
 6. The Kiro adapter: `add`, `switch` through the secret store, profiles once
    verify 8 says how; no usage until verify 10.
 7. `flakelab backup` category, `doctor` checks, README and CHANGELOG, and the
