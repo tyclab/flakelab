@@ -186,6 +186,7 @@ rec {
         pkgs.gnugrep
         pkgs.gawk
         pkgs.curl
+        pkgs.sqlite
         pkgs.jq
       ]
     }:$PATH

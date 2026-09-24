@@ -295,7 +295,8 @@ acct_codex_active_expired() {
 # OAuth store, and with the history the sessions and the prompt history.
 # Never shared: auth.json (the login), log/, packages/, the SQLite state.
 
-acct_codex_profile_var()  { print -r -- CODEX_HOME }
+acct_codex_profile_vars() { print -r -- CODEX_HOME }
+acct_codex_profile_env()  { print -r -- "CODEX_HOME=$1" }
 acct_codex_profile_home() { print -r -- "${ACCT_CODEX_HOME}" }
 
 acct_codex_profile_shared() {

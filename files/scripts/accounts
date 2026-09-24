@@ -941,12 +941,13 @@ cmd_run() {
   for v in $(acct_${tool}_scrub_vars); do unsets+=(-u "$v"); done
   if entry_is_live "$id"; then
     note "entry $(entry_name "$id") is ${tool}'s live login; running it as is"
-    exec env "${unsets[@]}" -u "$(acct_${tool}_profile_var)" "$(acct_${tool}_process)" "${args[@]}"
+    for v in $(acct_${tool}_profile_vars); do unsets+=(-u "$v"); done
+    exec env "${unsets[@]}" "$(acct_${tool}_process)" "${args[@]}"
   fi
   take_lock
   dir="$(ensure_profile "$id" "$share" "$reseed")" || exit 1
   exec 9>&-
-  exec env "${unsets[@]}" "$(acct_${tool}_profile_var)=${dir}" "$(acct_${tool}_process)" "${args[@]}"
+  exec env "${unsets[@]}" "${(f)$(acct_${tool}_profile_env "$dir")}" "$(acct_${tool}_process)" "${args[@]}"
 }
 
 # One line of shell, in the dialect asked for.
@@ -981,7 +982,7 @@ cmd_env() {
   if [[ -n "$unset_tool" ]]; then
     [[ -z "$target" ]] || refuse "--unset takes a tool, not an entry"
     need_adapter "$unset_tool"
-    sh_unset "$shell" "$(acct_${unset_tool}_profile_var)"
+    for v in $(acct_${unset_tool}_profile_vars); do sh_unset "$shell" "$v"; done
     return 0
   fi
   [[ -n "$target" ]] || refuse "env needs an entry: accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh], or env --unset <tool>"
@@ -989,13 +990,13 @@ cmd_env() {
   tool="$(entry_field "$id" tool)"; need_adapter "$tool"
   if entry_is_live "$id"; then
     note "entry $(entry_name "$id") is ${tool}'s live login; this shell is unpinned to it"
-    sh_unset "$shell" "$(acct_${tool}_profile_var)"
+    for v in $(acct_${tool}_profile_vars); do sh_unset "$shell" "$v"; done
   else
     take_lock
     dir="$(ensure_profile "$id" "$share" "$reseed")" || exit 1
     flock -u 9
     note "pinned to ${tool} $(entry_name "$id"): ${dir}"
-    sh_export "$shell" "$(acct_${tool}_profile_var)" "$dir"
+    for v in "${(f)$(acct_${tool}_profile_env "$dir")}"; do sh_export "$shell" "${v%%=*}" "${v#*=}"; done
   fi
   for v in $(acct_${tool}_scrub_vars); do sh_unset "$shell" "$v"; done
   return 0

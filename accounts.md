@@ -661,7 +661,20 @@ Phases, each shippable on its own:
    through its environment. Verify 6 and 7 still stand: until they are
    checked on the box, `autoSwitchTools` keeps its default of `[ "claude" ]`.
 6. The Kiro adapter: `add`, `switch` through the secret store, profiles once
-   verify 8 says how; no usage until verify 10.
+   verify 8 says how; no usage until verify 10. **Done**, ahead of both
+   verifications: `files/scripts/lib/accounts-kiro.zsh` exports the token
+   row (whichever sign-in method), the device registration and the three
+   `state` rows as one JSON document, values verbatim, and writes them back
+   in one SQLite transaction with the other methods' token rows removed;
+   the identity is the start URL, the region and `whoami`'s email when it
+   answers; a switch is refused while a `kiro-cli` runs unless `--force`,
+   which prints `kiro-cli chat --resume-id` for each locked session; usage
+   is `GetUsageLimits` as one `month` window that the engine never counts
+   (an entry with only that window is known, not unhealthy); profiles set
+   `KIRO_HOME` to the profile and `XDG_DATA_HOME` to its `share/`, a copy
+   of the live store with the entry's rows in it. Until verify 8 and 9 are
+   checked on the box, treat `run`/`env` for Kiro as experimental and keep
+   `autoSwitchTools` without it.
 7. `flakelab backup` category, `doctor` checks, README and CHANGELOG, and the
    statusline plugin reading `status --json`.
 

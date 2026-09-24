@@ -34,13 +34,16 @@ def least(a; b): if a == null then b elif b == null then a elif b < a then b els
 # The headroom of a usage entry on each axis, and whether it is trustworthy.
 def headroom($now; $mw):
   (.fetchedAt // null) as $f
+  | ([.windows[]?] | length) as $nw
   | { session: ([.windows[]? | select(.class == "session") | .pct] | if length == 0 then null else (100 - max) end),
       week:    ([.windows[]? | select(.class == "week")    | .pct] | if length == 0 then null else (100 - max) end),
       model:   ([.windows[]? | select(.class == "model") | counted($mw) | .pct] | if length == 0 then null else (100 - max) end) }
   | .weekly = least(.week; .model)
   | .binding = least(.session; .weekly)
   | .age = (if $f == null then null else ($now - $f) end)
-  | .known = (.binding != null and .age != null and .age <= 300);
+  # Known: fetched recently with windows; a tool whose only window is a
+  # month (Kiro) is known and never steered, not unhealthy.
+  | .known = (.age != null and .age <= 300 and $nw > 0);
 
 # The earliest renewal among the weekly windows (week and counted model).
 def weeklyReset($mw):

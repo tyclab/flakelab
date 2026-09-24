@@ -360,7 +360,9 @@ acct_claude_active_expired() {
 # that are not the login linked back into ~/.claude so the two homes share
 # settings, skills, and (by default) the transcripts.
 
-acct_claude_profile_var()  { print -r -- CLAUDE_CONFIG_DIR }
+# The variables that point the tool at a profile (names; NAME=value for DIR).
+acct_claude_profile_vars() { print -r -- CLAUDE_CONFIG_DIR }
+acct_claude_profile_env()  { print -r -- "CLAUDE_CONFIG_DIR=$1" }
 acct_claude_profile_home() { print -r -- "${ACCT_CLAUDE_HOME}" }
 
 # The items shared into a profile by symlink, one per line, a directory with

@@ -36,6 +36,7 @@ cat > "${STUBS}/pgrep" <<'STUB'
 case "$2" in
   claude) [[ -n "${FAKE_CLAUDE_RUNNING:-}" ]] || exit 1; print -l 100 200 ;;
   codex)  [[ -n "${FAKE_CODEX_RUNNING:-}" ]] || exit 1; print -l ${(s:,:)FAKE_CODEX_RUNNING} ;;
+  kiro-cli) [[ -n "${FAKE_KIRO_RUNNING:-}" ]] || exit 1; print -l ${(s:,:)FAKE_KIRO_RUNNING} ;;
   *) exit 1 ;;
 esac
 STUB
@@ -115,9 +116,9 @@ run add
 check "add without a tool exits 2" "${RC}" "2"
 run add gemini
 check "add with an unknown tool exits 2" "${RC}" "2"
-run add kiro
-check "add for a tool without an adapter exits 2" "${RC}" "2"
-contains "and names the adapters present" "${ERR}" "present: claude, codex"
+run add gemini
+check "add for an unknown tool exits 2 too" "${RC}" "2"
+contains "and names the tools" "${ERR}" "(claude|codex|kiro)"
 run add claude
 check "add with no login exits 2" "${RC}" "2"
 contains "and says to log in first" "${ERR}" "log in with the tool first"
@@ -1046,6 +1047,122 @@ contains "as a profile session" "${ERR}" "entry 4 is running in a profile sessio
 FAKE_CODEX_RUNNING=701 run
 contains "and the listing marks it" "${OUT}" "$(row codex 4 dana dana@example.com profile)"
 unset FLAKELAB_PROC_ROOT
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "the Kiro adapter: rows in a SQLite store, swapped in one transaction"
+KIRO_DB="${HOME}/.local/share/kiro-cli/data.sqlite3"
+kiro_tables() {
+  mkdir -p "${KIRO_DB:h}"
+  sqlite3 "${KIRO_DB}" "CREATE TABLE IF NOT EXISTS auth_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT OR REPLACE INTO state VALUES ('other.key', '\"kept\"');"
+}
+# kiro_login <start url> <region> <access token> <refresh token> [<expires_at>] [<row key>]
+kiro_login() {
+  local start="$1" region="$2" tok="$3" rt="$4" exp="${5:-2030-01-01T00:00:00Z}" key="${6:-kirocli:odic:token}" json
+  kiro_tables
+  json="{\"access_token\": \"${tok}\", \"expires_at\": \"${exp}\", \"refresh_token\": \"${rt}\", \"region\": \"${region}\"${start:+, \"start_url\": \"${start}\"}, \"oauth_flow\": \"DeviceCode\", \"scopes\": [\"codewhisperer:completions\"]}"
+  sqlite3 "${KIRO_DB}" "DELETE FROM auth_kv WHERE key LIKE 'kirocli:%:token';
+INSERT OR REPLACE INTO auth_kv VALUES ('${key}', '${json}');
+INSERT OR REPLACE INTO auth_kv VALUES ('kirocli:odic:device-registration', '{\"client_id\": \"c-${region}\", \"client_secret\": \"s\"}');
+INSERT OR REPLACE INTO state VALUES ('api.codewhisperer.profile', '{\"arn\": \"arn:aws:codewhisperer:${region}:123:profile/${rt}\", \"profileName\": \"p\"}');
+INSERT OR REPLACE INTO state VALUES ('auth.idc.start-url', '\"${start}\"');
+INSERT OR REPLACE INTO state VALUES ('auth.idc.region', '\"${region}\"');"
+}
+kiro_live_refresh() { sqlite3 "${KIRO_DB}" "SELECT value FROM auth_kv WHERE key LIKE 'kirocli:%:token'" | jq -r '.refresh_token' }
+kiro_live_arn()     { sqlite3 "${KIRO_DB}" "SELECT value FROM state WHERE key = 'api.codewhisperer.profile'" | jq -r '.arn' }
+# The kiro-cli stand-in: whoami prints FAKE_KIRO_WHOAMI and a plain trailer,
+# exit FAKE_KIRO_WHOAMI_RC; anything else prints the environment it ran with.
+cat > "${STUBS}/kiro-cli" <<'STUB'
+#!/usr/bin/env zsh
+if [[ "$1" == whoami ]]; then
+  print -r -- "${FAKE_KIRO_WHOAMI:-{\}}"
+  print -r -- "Profile: p (arn:...)"
+  exit "${FAKE_KIRO_WHOAMI_RC:-0}"
+fi
+print -r -- "kiro-cli ran: KIRO_HOME=${KIRO_HOME-unset} XDG_DATA_HOME=${XDG_DATA_HOME-unset} KIRO_API_KEY=${KIRO_API_KEY-unset} args=$*"
+STUB
+chmod +x "${STUBS}/kiro-cli"
+
+run add kiro
+check "add kiro without a store exits 2" "${RC}" "2"
+kiro_tables
+KIRO_API_KEY=k-1 run add kiro
+check "an API-key login with no token row is refused" "${RC}" "2"
+contains "with the shell-variable hint" "${ERR}" "API key"
+kiro_login https://view.awsapps.com/start us-east-1 acc-f rt-f
+export FAKE_KIRO_WHOAMI='{"accountType": "BuilderId", "email": "frank@example.com", "region": "us-east-1"}'
+run add kiro --alias frank
+check "add kiro exits 0" "${RC}" "0"
+check "the entry carries whoami's email and account type" "${OUT}" "Added kiro 6: frank@example.com [BuilderId] as frank"
+check "the roster id is the start URL, the region and the email" "$(jq -r '.accounts["6"].id' "${STORE}/accounts.json")" "https://view.awsapps.com/start|us-east-1|frank@example.com"
+check "the store holds the rows as JSON, private" "$(stat -c %a "${STORE}/6/token.json") $(jq -r '[(.auth_kv | keys | join(",")), (.state | keys | join(","))] | join(" / ")' "${STORE}/6/token.json")" "600 kirocli:odic:device-registration,kirocli:odic:token / api.codewhisperer.profile,auth.idc.region,auth.idc.start-url"
+check "values are the stored text, verbatim" "$(jq -r '.state["auth.idc.region"]' "${STORE}/6/token.json")" '"us-east-1"'
+kiro_login https://corp.awsapps.com/start eu-central-1 acc-g rt-g
+export FAKE_KIRO_WHOAMI='{"accountType": "IamIdentityCenter", "email": "grace@example.com"}'
+run add kiro --alias grace
+check "a second kiro login is a second entry, active" "${OUT} $(jq -r '.active.kiro' "${STORE}/accounts.json")" "Added kiro 7: grace@example.com [IamIdentityCenter] as grace 7"
+kiro_login "" eu-west-1 acc-s rt-s 2030-01-01T00:00:00Z kirocli:social:token
+FAKE_KIRO_WHOAMI_RC=1 run add kiro --alias social
+check "a social login without whoami falls back to the row and the region" "${OUT}" "Added kiro 8: kirocli:social:token [social] as social"
+unset FAKE_KIRO_WHOAMI
+
+FAKE_KIRO_RUNNING=800 run switch frank
+check "a switch while kiro-cli runs is refused" "${RC}" "2"
+contains "and says why" "${ERR}" "1 kiro-cli session(s) are running"
+check "nothing changed" "$(kiro_live_refresh)" "rt-s"
+run switch frank
+check "a switch with none running exits 0" "${RC}" "0"
+check "the token row is frank's" "$(kiro_live_refresh)" "rt-f"
+check "and the only token row" "$(sqlite3 "${KIRO_DB}" "SELECT count(*) FROM auth_kv WHERE key LIKE 'kirocli:%:token'")" "1"
+check "the profile row followed" "$(kiro_live_arn)" "arn:aws:codewhisperer:us-east-1:123:profile/rt-f"
+check "a row that is not the login was left alone" "$(sqlite3 "${KIRO_DB}" "SELECT value FROM state WHERE key = 'other.key'")" '"kept"'
+check "the outgoing social login was written back into its entry" "$(jq -r '.auth_kv["kirocli:social:token"] | fromjson | .refresh_token' "${STORE}/8/token.json")" "rt-s"
+mkdir -p "${HOME}/.kiro/sessions/cli"
+SID_KK=cafe0000-1111-2222-3333-444444444444
+: > "${HOME}/.kiro/sessions/cli/${SID_KK}.lock"
+FAKE_KIRO_RUNNING=800 run switch grace --force
+check "--force switches past the running session" "${RC}" "0"
+contains "and prints the resume line for the locked session" "${OUT}" "kiro-cli chat --resume-id ${SID_KK}"
+check "the token row is grace's" "$(kiro_live_refresh)" "rt-g"
+FLAKELAB_ACCOUNTS_FAIL_AT=credentials run switch frank
+check "a failed transaction exits 1" "${RC}" "1"
+check "and the rows are as they were" "$(kiro_live_refresh) $(kiro_live_arn)" "rt-g arn:aws:codewhisperer:eu-central-1:123:profile/rt-g"
+
+# Usage: one monthly window from GetUsageLimits, never a reason to switch.
+export FLAKELAB_NOW=1758900000
+print -r -- '{"usageBreakdownList": [{"resourceType": "CREDIT", "currentUsageWithPrecision": 250.5, "usageLimitWithPrecision": 1000, "nextDateReset": 1761955200}]}' > "${FAKE_CURL}/usage.acc-g.json"
+print -n 200 > "${FAKE_CURL}/usage.acc-g.status"
+print -r -- '{"usageBreakdownList": [{"resourceType": "CREDIT", "currentUsage": 1000, "usageLimit": 1000, "nextDateReset": "2026-11-01T00:00:00Z"}]}' > "${FAKE_CURL}/usage.acc-f.json"
+print -n 200 > "${FAKE_CURL}/usage.acc-f.status"
+: > "${FAKE_CURL}/requests.log"
+run --fetch
+contains "the live kiro entry's credits, from the live rows" "${OUT}" "$(row kiro 7 grace grace@example.com active 'credit 25% (0s)')"
+contains "a stored entry's, from its stored rows" "${OUT}" "$(row kiro 6 frank frank@example.com '' 'credit 100% (0s)')"
+contains "the call goes to the region's endpoint with the profile ARN" "$(<"${FAKE_CURL}/requests.log")" 'https://codewhisperer.eu-central-1.amazonaws.com/ acc-g {"profileArn":"arn:aws:codewhisperer:eu-central-1:123:profile/rt-g"}'
+check "the window is a month, an ISO reset as an epoch" "$(jq -r '.entries["6"].windows[0] | [.class, .resetsAtEpoch] | join(" ")' "${STORE}/usage.json")" "month 1793491200"
+FLAKELAB_ACCOUNTS_TOOLS=kiro run auto --once --json
+check "a spent month is no reason to move" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | [.reason, .detail] | join(" ")')" "below-threshold no window reported"
+unset FLAKELAB_NOW
+
+# Profiles: two moves, the home and the secret store.
+mkdir -p "${HOME}/.kiro/agents"
+run env frank
+check "env for a kiro entry moves the home and the data dir" "$(print -r -- "$OUT" | head -2)" "export KIRO_HOME='${STORE}/profiles/6'
+export XDG_DATA_HOME='${STORE}/profiles/6/share'"
+contains "and unsets the API key" "${OUT}" "unset KIRO_API_KEY"
+check "the profile's store holds frank's rows" "$(sqlite3 "${STORE}/profiles/6/share/kiro-cli/data.sqlite3" "SELECT value FROM auth_kv WHERE key = 'kirocli:odic:token'" | jq -r .refresh_token)" "rt-f"
+check "beside the live store's other state" "$(sqlite3 "${STORE}/profiles/6/share/kiro-cli/data.sqlite3" "SELECT value FROM state WHERE key = 'other.key'")" '"kept"'
+check "the agents are linked from the real home" "$(readlink "${STORE}/profiles/6/agents")" "${HOME}/.kiro/agents"
+KIRO_API_KEY=k-2 run run frank -- chat
+contains "run points kiro-cli at both, the key scrubbed" "${OUT}" "kiro-cli ran: KIRO_HOME=${STORE}/profiles/6 XDG_DATA_HOME=${STORE}/profiles/6/share KIRO_API_KEY=unset args=chat"
+run env --unset kiro
+check "env --unset prints both lines" "${OUT}" "unset KIRO_HOME
+unset XDG_DATA_HOME"
+mkdir -p "${PROC}/801"
+printf 'KIRO_HOME=%s\0' "${STORE}/profiles/6" > "${PROC}/801/environ"
+FLAKELAB_PROC_ROOT="${PROC}" FAKE_KIRO_RUNNING=801 run switch frank
+check "a kiro-cli running on the profile blocks a switch onto its entry" "${RC}" "2"
+contains "as a profile session" "${ERR}" "entry 6 is running in a profile session"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

@@ -61,11 +61,13 @@ the private overlay `flakelab-config`, which imports this flake via
 [-- args]` and `env <entry> [--shell sh|fish|pwsh]` give an entry a
     profile of its own (`profiles/<id>/`, `CLAUDE_CONFIG_DIR`) beside the
     live login; an entry with a running profile session is never switched
-    onto or targeted. Adapters: Claude Code and Codex
-    (`lib/accounts-codex.zsh`: `auth.json` whole, refuses a switch while a
-    `codex` runs unless `--force`, usage through `codex app-server`). The
-    adapter contract, usage, the engine's rules and Kiro are in
-    `accounts.md`. Not yet carried by `flakelab backup`.
+    onto or targeted. Adapters: Claude Code, Codex (`lib/accounts-codex.zsh`:
+    `auth.json` whole, refuses a switch while a `codex` runs unless
+    `--force`, usage through `codex app-server`) and Kiro
+    (`lib/accounts-kiro.zsh`: rows of the SQLite store swapped in one
+    transaction, one monthly window the engine never counts). The adapter
+    contract, usage and the engine's rules are in `accounts.md`. Not yet
+    carried by `flakelab backup`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,
