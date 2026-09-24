@@ -13,6 +13,8 @@ let
   };
 in
 {
+  imports = [ ./codex-config.nix ];
+
   networking.hostName = lib.mkDefault config.flakelab.hostName;
 
   # en_US stays available alongside the configured locale.

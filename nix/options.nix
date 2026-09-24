@@ -256,6 +256,39 @@ in
       description = "Auto-mode classifier rules written to settings.autoMode, asserted on every activation alongside defaultMode = \"auto\". User scope is the only scope Claude reads these from, so a provisioner is the only place they can live and stay reproducible. The default is neutral: generic git/IaC guard tiers, no fleet topology. Override the whole attrset from the overlay to describe your environment — see the tiering note above first.";
     };
 
+    codexSettings = mkOption {
+      type = types.attrs;
+      default = { };
+      description = "Non-secret Codex defaults written to /etc/codex/config.toml. User config.toml remains writable for trust decisions and UI changes and overrides these defaults. Auth/session files remain runtime state.";
+    };
+
+    codexMcpSources = mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      description = "MCP JSON files from locked flake inputs or local Nix paths. Their mcpServers entries become native Codex mcp_servers in the system defaults. No plugin installer, skills, agents or Claude changes.";
+    };
+
+    codexAutoReview = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable native Codex Auto-review, a flakelab permission profile extending :workspace with network access disabled by default, command review rules, and automatic review for MCP/app approval requests. Routine workspace edits and exact MCP read grants run without review. Customize the profile and reviewer policy through codexSettings; no Claude hooks, skills or agents are installed.";
+    };
+
+    codexReadOnlyTools = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      example = {
+        grafana = [ "list_datasources" ];
+      };
+      description = "Server name -> exact read-only tool names allowed without review when codexAutoReview is enabled. Unlisted tools require review. No wildcard grants.";
+    };
+
+    codexEnforcePermissions = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enforce the flakelab profile, on-request approval, automatic reviewer, reviewer policy and sensitive command rules through native /etc/codex/requirements.toml. Requires codexAutoReview. User configuration remains writable; MCP/app per-tool approval modes remain defaults because Codex has no managed equivalent.";
+    };
+
     claudeAutoUpdatesChannel = mkOption {
       type = types.enum [
         "stable"
@@ -282,6 +315,13 @@ in
       type = types.attrsOf types.attrs;
       default = { };
       description = "Extra Claude user-scope MCP servers, merged into ~/.claude.json on every rebuild. Same shape as that file's own `mcpServers` entries. The servers this flake defines are already declared in nix/home/mcp.nix; this is where per-developer ones go.";
+    };
+
+    claudeMcpDisabledServers = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "whatsapp" ];
+      description = "Claude user-scope native MCP server names to exclude and remove from ~/.claude.json. Also remove the corresponding plugin from claudePlugins. Prevents automatic native fallback from restoring an opted-out server; other clients are unchanged.";
     };
 
     claudePluginMarketplaces = mkOption {

@@ -273,6 +273,10 @@ failing check with `touch ~/.local/state/flakelab/skip-healthcheck`.
 standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro: base / full-trust / in-repo),
 `c`/`cc` (Claude Code: base / full-trust) and `codex` (Codex, no alias).
 
+Codex uses native permission profiles, automatic review and exact MCP tool
+grants when `codexAutoReview` is enabled. Setup and verification:
+[`CODEX-PERMISSIONS.md`](CODEX-PERMISSIONS.md).
+
 **Repo discovery is GitLab-only.** `flakelab clone` enumerates groups through
 `glab`, so `gitlabGroups` and the profiles are a GitLab concept; repos on other
 forges are cloned by naming them individually under `repos` in the config.

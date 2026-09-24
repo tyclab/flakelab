@@ -332,6 +332,183 @@
         nix-doctor = suiteCheck "nix-doctor";
         switch-result = suiteCheck "switch-result";
         xdg-open = suiteCheck "xdg-open";
+        codex-config =
+          let
+            manifest = builtins.toFile "codex-mcp-fixture.json" (
+              builtins.toJSON {
+                mcpServers = {
+                  docs = {
+                    type = "http";
+                    url = "https://docs.example.invalid/mcp";
+                  };
+                  local = {
+                    command = "example-mcp";
+                    env_vars = [ "XDG_RUNTIME_DIR" ];
+                    tools.inspect = {
+                      output_token_limit = 512;
+                      approval_mode = "approve";
+                    };
+                  };
+                };
+              }
+            );
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    codexMcpSources = [ manifest ];
+                    codexAutoReview = true;
+                    codexReadOnlyTools.docs = [ "search" ];
+                    codexSettings = {
+                      model = "fixture-model";
+                      tui.status_line = [ "git-branch" ];
+                      permissions.flakelab.filesystem."/fixture/credentials" = "deny";
+                      apps.fixture.tools.search.approval_mode = "approve";
+                    };
+                  };
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            settings = fixture.config.environment.etc."codex/config.toml".source;
+            enforced = fixture.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    codexEnforcePermissions = true;
+                    codexSettings.auto_review.policy = "fixture reviewer policy";
+                  };
+                }
+              ];
+            };
+            enforcedSettings = enforced.config.environment.etc."codex/config.toml".source;
+            requirements = enforced.config.environment.etc."codex/requirements.toml".source;
+            oldConfig = pkgs.writeText "codex-config" ''model = "fixture-model"'';
+            migrate = pkgs.writeText "codex-writable-config-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ]
+                hm.home.activation.codexWritableConfig.data
+            );
+            baseline = self.nixosConfigurations.default.config;
+          in
+          assert !baseline.home-manager.users.${baseline.flakelab.username}.programs.codex.enable;
+          assert hm.programs.codex.package == null;
+          assert hm.programs.codex.skills == { };
+          assert hm.programs.codex.context == "";
+          assert hm.programs.codex.settings == { };
+          assert !(hm.home.file ? ".codex/config.toml");
+          assert !(baseline.environment.etc ? "codex/config.toml");
+          assert fixture.config.flakelab.claudeAutoMode == baseline.flakelab.claudeAutoMode;
+          pkgs.runCommandLocal "flakelab-check-codex-config"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.remarshal
+                pkgs.jq
+              ];
+            }
+            ''
+              toml2json ${settings} > settings.json
+              jq -e '
+                .model == "fixture-model" and .tui.status_line == ["git-branch"]
+                and (.mcp_servers.docs | has("type") | not)
+                and .mcp_servers.local.env_vars == ["XDG_RUNTIME_DIR"]
+                and .mcp_servers.docs.tools.search.approval_mode == "approve"
+                and .mcp_servers.local.default_tools_approval_mode == "prompt"
+                and .mcp_servers.local.tools.inspect.output_token_limit == 512
+                and .mcp_servers.local.tools.inspect.approval_mode == "prompt"
+                and .approvals_reviewer == "auto_review"
+                and .default_permissions == "flakelab"
+                and .permissions.flakelab.extends == ":workspace"
+                and .permissions.flakelab.network.enabled == false
+                and .permissions.flakelab.filesystem["/fixture/credentials"] == "deny"
+                and .apps._default.approvals_reviewer == "auto_review"
+                and .apps._default.default_tools_approval_mode == "prompt"
+                and .apps.fixture.tools.search.approval_mode == "approve"
+                and (has("sandbox_mode") | not)
+                and (has("sandbox_workspace_write") | not)
+                and (has("auto_review") | not)
+              ' settings.json
+              toml2json ${enforcedSettings} | jq -e '
+                .default_permissions == "flakelab"
+                and (has("permissions") | not)
+                and (has("auto_review") | not)
+              '
+              toml2json ${requirements} | jq -e '
+                .allowed_approval_policies == ["on-request"]
+                and .allowed_approvals_reviewers == ["auto_review"]
+                and .default_permissions == "flakelab"
+                and .allowed_permission_profiles == {"flakelab":true, ":read-only":true}
+                and .permissions.flakelab.extends == ":workspace"
+                and .permissions.flakelab.filesystem["/fixture/credentials"] == "deny"
+                and .guardian_policy_config == "fixture reviewer policy"
+                and (.rules.prefix_rules | length) == 17
+                and (.rules.prefix_rules | all(.decision == "prompt" or .decision == "forbidden"))
+                and (.rules.prefix_rules | any(.pattern == [{"token":"git"},{"token":"push"},{"token":"--mirror"}] and .decision == "forbidden"))
+              '
+              test -s ${hm.home.file.".codex/rules/flakelab.rules".source}
+              export fixtureHome="$TMPDIR/codex-home" DRY_RUN_CMD=""
+              mkdir -p "$fixtureHome/.codex"
+              ln -s ${oldConfig} "$fixtureHome/.codex/config.toml"
+              DRY_RUN_CMD=echo bash ${migrate}
+              test -L "$fixtureHome/.codex/config.toml"
+              test "$(find "$fixtureHome" -type f | wc -l)" -eq 0
+              bash ${migrate}
+              test ! -L "$fixtureHome/.codex/config.toml"
+              test -w "$fixtureHome/.codex/config.toml"
+              test "$(stat -c %a "$fixtureHome/.codex/config.toml")" = 600
+              cmp ${oldConfig} "$fixtureHome"/.codex/config.toml.before-system-defaults.*
+              printf '[projects."/fixture"]\ntrust_level = "trusted"\n' > "$fixtureHome/.codex/config.toml"
+              cp "$fixtureHome/.codex/config.toml" expected
+              bash ${migrate}
+              cmp expected "$fixtureHome/.codex/config.toml"
+              export fixtureHome="$TMPDIR/new-codex-home"
+              bash ${migrate}
+              test -w "$fixtureHome/.codex/config.toml"
+              touch $out
+            '';
+        claude-mcp-exclusion =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    sessionVariables.WHATSAPP_BRIDGE_HOST = "localhost:8180";
+                    whatsappMcpDir = "/example/whatsapp-mcp-server";
+                    claudeMcpDisabledServers = [ "whatsapp" ];
+                    claudeMcpServers.custom = {
+                      command = "example-mcp";
+                    };
+                  };
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            # Isolate the generated activation entry without changing the test
+            # process's HOME or accessing any live Claude account files.
+            entry = pkgs.writeText "claude-mcp-exclusion-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.claudeMcpMerge.data
+            );
+          in
+          assert nixpkgs.lib.hasInfix "whatsapp" hm.home.activation.kiroMcpMerge.data;
+          pkgs.runCommandLocal "flakelab-check-claude-mcp-exclusion"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export fixtureHome="$TMPDIR/fixture" DRY_RUN_CMD=
+              mkdir -p "$fixtureHome"
+              printf '%s\n' '{"account":{"opaque":"sentinel"},"mcpServers":{"whatsapp":{"command":"old"},"manual":{"command":"keep"}}}' > "$fixtureHome/.claude.json"
+              bash -euo pipefail ${entry}
+              jq -e '.account.opaque == "sentinel" and (.mcpServers | has("whatsapp") | not) and .mcpServers.manual.command == "keep" and .mcpServers.custom.command == "example-mcp"' "$fixtureHome/.claude.json"
+              cp "$fixtureHome/.claude.json" before.json
+              bash -euo pipefail ${entry}
+              cmp before.json "$fixtureHome/.claude.json"
+              test "$(stat -c %a "$fixtureHome/.claude.json")" = 600
+              touch $out
+            '';
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 
