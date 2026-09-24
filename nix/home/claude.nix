@@ -90,7 +90,8 @@ let
   # quota window (a Notification of type quota_auto_resume_fired), the engine
   # ticks at once instead of at the next timer. Owned by its command, like the
   # SessionEnd hook: a box without the engine drops it again.
-  accountsHook = cfg.accounts.autoSwitchInterval != null && lib.elem "claude" cfg.accounts.autoSwitchTools;
+  accountsHook =
+    cfg.accounts.autoSwitchInterval != null && lib.elem "claude" cfg.accounts.autoSwitchTools;
   accountsHookCmd = "${scripts.accounts}/bin/accounts auto --once --tool claude --json >/dev/null 2>&1 || true";
   accountsHookArg = lib.optionalString accountsHook "--arg accountsHook ${lib.escapeShellArg accountsHookCmd}";
   accountsHookJq = ''
@@ -112,9 +113,7 @@ let
   # reads the endpoint from secrets.env at use time. Owned by its command.
   notifyHook = cfg.notify.enable;
   notifyHookCmd = "${scripts.notify}/bin/notify >/dev/null 2>&1 || true";
-  notifyHookArg = lib.optionalString notifyHook "--arg notifyHook ${lib.escapeShellArg notifyHookCmd} --arg notifyMatcher ${
-    lib.escapeShellArg (lib.concatStringsSep "|" cfg.notify.events)
-  }";
+  notifyHookArg = lib.optionalString notifyHook "--arg notifyHook ${lib.escapeShellArg notifyHookCmd} --arg notifyMatcher ${lib.escapeShellArg (lib.concatStringsSep "|" cfg.notify.events)}";
   notifyHookJq = ''
     | .hooks = ((.hooks // {})
         | .Notification = (((.Notification // [])

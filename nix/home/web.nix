@@ -33,32 +33,34 @@ let
   '';
 in
 {
-  systemd.user.services = lib.optionalAttrs web {
-    flakelab-web = lib.recursiveUpdate neverRestartedByActivation {
-      Unit.Description = "flakelab: the dashboard on ${cfg.web.bind}:${toString cfg.web.port}";
-      Service = {
-        ExecStart = "${scripts.web}/bin/web --bind ${lib.escapeShellArg cfg.web.bind} --port ${toString cfg.web.port}"
-          + lib.optionalString terminal " --terminal-url ${lib.escapeShellArg terminalUrl}";
-        Restart = "on-failure";
-        RestartSec = "5s";
+  systemd.user.services =
+    lib.optionalAttrs web {
+      flakelab-web = lib.recursiveUpdate neverRestartedByActivation {
+        Unit.Description = "flakelab: the dashboard on ${cfg.web.bind}:${toString cfg.web.port}";
+        Service = {
+          ExecStart =
+            "${scripts.web}/bin/web --bind ${lib.escapeShellArg cfg.web.bind} --port ${toString cfg.web.port}"
+            + lib.optionalString terminal " --terminal-url ${lib.escapeShellArg terminalUrl}";
+          Restart = "on-failure";
+          RestartSec = "5s";
+        };
+        Install.WantedBy = [ "default.target" ];
       };
-      Install.WantedBy = [ "default.target" ];
+    }
+    // lib.optionalAttrs terminal {
+      flakelab-ttyd = lib.recursiveUpdate neverRestartedByActivation {
+        Unit = {
+          Description = "flakelab: a browser terminal on the agents tmux session, ${cfg.web.bind}:${toString cfg.web.terminalPort}";
+          # The dashboard makes the token on its first start.
+          After = [ "flakelab-web.service" ];
+          Wants = [ "flakelab-web.service" ];
+        };
+        Service = {
+          ExecStart = "${ttydStart} ${tokenFile}";
+          Restart = "on-failure";
+          RestartSec = "5s";
+        };
+        Install.WantedBy = [ "default.target" ];
+      };
     };
-  }
-  // lib.optionalAttrs terminal {
-    flakelab-ttyd = lib.recursiveUpdate neverRestartedByActivation {
-      Unit = {
-        Description = "flakelab: a browser terminal on the agents tmux session, ${cfg.web.bind}:${toString cfg.web.terminalPort}";
-        # The dashboard makes the token on its first start.
-        After = [ "flakelab-web.service" ];
-        Wants = [ "flakelab-web.service" ];
-      };
-      Service = {
-        ExecStart = "${ttydStart} ${tokenFile}";
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
-      Install.WantedBy = [ "default.target" ];
-    };
-  };
 }
