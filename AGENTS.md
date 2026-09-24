@@ -53,8 +53,12 @@ the private overlay `flakelab-config`, which imports this flake via
     into its entry first (it may hold a rotated refresh token) or into
     `unclaimed/` when no entry carries it. `--next <tool>` rotates; `alias`,
     `disable`/`enable`, `remove --yes`, `status [--json]`. Phase 1 ships the
-    Claude Code adapter (`files/scripts/lib/accounts-claude.zsh`); the
-    adapter contract, usage, auto-switch and the other tools are in
+    Claude Code adapter (`files/scripts/lib/accounts-claude.zsh`).
+    `auto [--once] [--dry-run] [--json]` is the engine
+    (`files/scripts/lib/accounts-auto.jq`, pure jq over one document) that
+    switches before a limit; `flakelab.accounts.autoSwitchInterval` schedules
+    it, the other `flakelab.accounts.*` options set its bars. The adapter
+    contract, usage, the engine's rules and the other tools are in
     `accounts.md`. Not yet carried by `flakelab backup`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.

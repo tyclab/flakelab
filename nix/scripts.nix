@@ -169,6 +169,12 @@ rec {
   # tool's running sessions for the post-switch line. Sourced from `s`, so the
   # adapters under lib/ sit beside it in the store.
   accounts = pkgs.writeShellScriptBin "accounts" ''
+    export FLAKELAB_ACCOUNTS_TOOLS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.autoSwitchTools)}
+    export FLAKELAB_ACCOUNTS_SESSION_THRESHOLD=${toString cfg.accounts.sessionThreshold}
+    export FLAKELAB_ACCOUNTS_WEEK_THRESHOLD=${toString cfg.accounts.weekThreshold}
+    export FLAKELAB_ACCOUNTS_MODEL_THRESHOLD=${toString cfg.accounts.modelThreshold}
+    export FLAKELAB_ACCOUNTS_MODEL_WINDOWS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.modelWindows)}
+    export FLAKELAB_ACCOUNTS_STRATEGY=${cfg.accounts.strategy}
     export PATH=${
       bin [
         pkgs.zsh
@@ -176,6 +182,8 @@ rec {
         pkgs.util-linux
         pkgs.procps
         pkgs.gnugrep
+        pkgs.gawk
+        pkgs.curl
         pkgs.jq
       ]
     }:$PATH

@@ -62,6 +62,16 @@ that defaults to off, because every activation here runs on every adopter's box:
   session is steerable from the Claude app without the trust bundle above;
   `claudeAgentDefaults` implies it. Off, the key and the vars are left as the
   user has them.
+- `accounts.*` — the account switcher's knobs (`accounts.md`):
+  `autoSwitchInterval` (nullable string, default `null`) schedules the
+  `flakelab-accounts-autoswitch` user timer running
+  `flakelab accounts auto --once`; `autoSwitchTools` (default `[ "claude" ]`)
+  names the tools it decides for; `sessionThreshold` (85), `weekThreshold`
+  (97) and `modelThreshold` (95) are the bars, `modelWindows` (`[ "all" ]`)
+  which per-model weeks count, `strategy` (`soonest-reset` or `best`) the
+  target order. The wrapper exports them as `FLAKELAB_ACCOUNTS_*`; with the
+  timer on for Claude Code, a `Notification` hook on
+  `quota_auto_resume_fired` runs one tick at once.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow

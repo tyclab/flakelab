@@ -77,6 +77,7 @@ in
     ./kiro.nix
     ./claude.nix
     ./codex.nix
+    ./accounts.nix
     ./tooling.nix
     ./health.nix
   ];

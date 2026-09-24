@@ -459,9 +459,13 @@ the last day.
 More than one claude.ai login on the box: `flakelab accounts add claude`
 stores the live one, `flakelab accounts switch <alias>` makes another one the
 live login under Claude Code's own lock protocol, and running sessions carry
-on with their next message. The store is `~/.local/state/flakelab/accounts`
-(not yet carried by `flakelab backup`); usage, auto-switch and the Codex and
-Kiro adapters are the next phases in [`accounts.md`](accounts.md).
+on with their next message. The listing shows each login's cached windows,
+`switch --soonest claude` takes the one whose week renews first, and
+`accounts.autoSwitchInterval = "2min";` runs `flakelab accounts auto` on a
+timer that moves the live login before it hits a limit (`--dry-run` shows
+what it would do). The store is `~/.local/state/flakelab/accounts` (not yet
+carried by `flakelab backup`); profiles and the Codex and Kiro adapters are
+the next phases in [`accounts.md`](accounts.md).
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session

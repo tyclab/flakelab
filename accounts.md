@@ -523,7 +523,8 @@ a `Notification` hook on `quota_auto_resume_fired` runs
 so the reactive case does not wait for the timer, and the timer keeps the
 proactive case. Both go through the same engine and the same transaction.
 
-The timer is `flakelab-accounts-autoswitch` in `nix/home/backup.nix`'s style:
+The timer is `flakelab-accounts-autoswitch` (`nix/home/accounts.nix`, in
+`nix/home/backup.nix`'s style):
 `flakelab.accounts.autoSwitchInterval`, default `null` (off), runs
 `flakelab accounts auto --once --json` every interval. Its state between
 ticks is `auto.json`, which is why the unhealthy count and the idle hold are
@@ -624,7 +625,12 @@ Phases, each shippable on its own:
    listing; `status --json`; the strategy switches. **Done**: the usage
    functions in the adapter, `usage.json`, the plan in `plan_after_fetch`,
    quarantine, `--fetch`, `--soonest`, `--best`.
-3. The engine, `auto --once`, the timer, quarantine.
+3. The engine, `auto --once`, the timer, quarantine. **Done**:
+   `files/scripts/lib/accounts-auto.jq` with one fixture per rule, `auto`
+   (`--once`, `--dry-run`, `--json`, the threshold flags), `auto.json` and
+   `auto.log` in the store, the `flakelab.accounts.*` options, the
+   `flakelab-accounts-autoswitch` user timer and the `Notification` hook on
+   `quota_auto_resume_fired`.
 4. Profiles: `run`, `env`.
 5. The Codex adapter: `add`, `switch` with the running-process refusal,
    profiles, then usage through `app-server` and the engine behind

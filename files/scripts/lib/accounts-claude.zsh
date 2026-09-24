@@ -314,3 +314,35 @@ acct_claude_usage() {
   rm -f "$body" "$hdr"
   return 0
 }
+
+# --- the engine's questions ----------------------------------------------------
+
+# Freshen a stored login before it becomes live: a token expiring within the
+# buffer is refreshed now and persisted first. Prints ok, dead (the lineage
+# was refused), transient (retry later) or expired (no refresh token and the
+# token is gone).
+acct_claude_freshen() {
+  local dir="$1" file="$1/credentials.json" expires now_ms outcome
+  [[ -r "$file" ]] || { print -r -- transient; return 0 }
+  now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
+  expires="$(jq -r '.claudeAiOauth.expiresAt // empty' "$file" 2>/dev/null)"
+  if [[ "$expires" == <-> ]] && (( now_ms + ACCT_CLAUDE_REFRESH_BUFFER_MS < expires )); then print -r -- ok; return 0; fi
+  outcome="$(acct_claude_refresh "$file")"
+  case "$outcome" in
+    ok) print -r -- ok ;;
+    invalid_grant) [[ -n "$(jq -r '.claudeAiOauth.refreshToken // empty' "$file" 2>/dev/null)" ]] && print -r -- dead || print -r -- expired ;;
+    *) print -r -- transient ;;
+  esac
+  return 0
+}
+
+# Whether the live token is expired on disk: with no session running that is
+# Claude Code idle, and the engine holds rather than counts a failure.
+acct_claude_active_expired() {
+  local expires now_ms
+  [[ -r "${ACCT_CLAUDE_CREDS}" ]] || return 1
+  expires="$(jq -r '.claudeAiOauth.expiresAt // empty' "${ACCT_CLAUDE_CREDS}" 2>/dev/null)"
+  [[ "$expires" == <-> ]] || return 1
+  now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
+  (( expires <= now_ms ))
+}

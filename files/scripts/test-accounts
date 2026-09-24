@@ -536,6 +536,195 @@ check "no known usage refuses with exit 2" "${RC}" "2"
 contains "and points at --fetch" "${ERR}" "no claude candidate has known usage"
 unset FAKE_CURL_DOWN FLAKELAB_NOW
 
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "the engine: one rule per fixture"
+ENGINE="${SCRIPT_DIR}/lib/accounts-auto.jq"
+# engine <jq edits>: the base document (bob active at 5h 90% / 7d 50%,
+# alice a candidate at 5h 20% / 7d 60%, carol disabled, a codex entry) with
+# the edits applied, through the engine; DEC and EVS hold the results.
+BASE_DOC='{"pass": "decide", "tool": "claude", "now": 1000,
+ "settings": {"sessionThreshold": 85, "weekThreshold": 97, "modelThreshold": 95, "cooldownS": 300, "hysteresisPct": 10, "unhealthyTicks": 3, "idleHoldS": 1800, "strategy": "soonest-reset", "modelWindows": "all"},
+ "roster": {"active": {"claude": 2}, "accounts": {"1": {"tool": "claude"}, "2": {"tool": "claude"}, "3": {"tool": "claude", "disabled": true}, "4": {"tool": "codex"}}},
+ "usage": {"entries": {
+    "2": {"fetchedAt": 990, "nextPollAt": 1170, "windows": [{"label": "5h", "class": "session", "pct": 90, "resetsAtEpoch": 5000}, {"label": "7d", "class": "week", "pct": 50, "resetsAtEpoch": 90000}]},
+    "1": {"fetchedAt": 990, "nextPollAt": 1290, "windows": [{"label": "5h", "class": "session", "pct": 20, "resetsAtEpoch": 4000}, {"label": "7d", "class": "week", "pct": 60, "resetsAtEpoch": 80000}]}},
+   "quarantine": {}},
+ "state": {"lastSwitchAt": null, "lastSwitchTo": null, "unhealthyTicks": {}, "idleHoldSince": {}},
+ "live": {}, "activeTokenExpired": false, "liveUnmanaged": false}'
+engine() {
+  local doc
+  doc="$(print -r -- "$BASE_DOC" | jq "${1:-.}" | jq -f "${ENGINE}")" || { DEC="engine failed"; EVS=""; STATE=""; return 1 }
+  DEC="$(print -r -- "$doc" | jq -c '.decision')"
+  EVS="$(print -r -- "$doc" | jq -c '.events')"
+  STATE="$(print -r -- "$doc" | jq -c '.state')"
+  FETCH="$(print -r -- "$doc" | jq -c '.fetch')"
+}
+dec() { print -r -- "$DEC" | jq -r "$1" }
+
+engine
+check "proactive on the session window" "$(dec '[.action, .trigger, .axis] | join(" ")')" "switch proactive session"
+check "with the one qualifying candidate" "$(dec '.candidates | join(",")')" "1"
+check "and a poll event first" "$(print -r -- "$EVS" | jq -r '.[0].event')" "poll"
+check "a known active entry resets the unhealthy count" "$(print -r -- "$STATE" | jq -r '.unhealthyTicks.claude')" "0"
+
+engine '.usage.entries["2"].windows[0].pct = 84'
+check "under every bar: no switch" "$(dec '[.action, .reason] | join(" ")')" "none below-threshold"
+check "and the detail names the window closest to its bar" "$(dec '.detail')" "session 84% < 85%"
+
+engine '.settings.sessionThreshold = 100 | .usage.entries["2"].windows[0].pct = 99'
+check "a bar at 100 never moves proactively" "$(dec '.reason')" "below-threshold"
+engine '.settings.sessionThreshold = 100 | .usage.entries["2"].windows[0].pct = 100'
+check "but the actual limit still does" "$(dec '[.action, .trigger] | join(" ")')" "switch at-limit"
+
+engine '.usage.entries["2"].windows[1].pct = 98'
+check "the week decides over the session window" "$(dec '.axis')" "week"
+
+engine '.usage.entries["1"].windows[0].pct = 82'
+check "hysteresis: a candidate not ten points better is no target" "$(dec '[.action, .reason] | join(" ")')" "blocked no-qualifying-candidate"
+engine '.usage.entries["1"].windows[0].pct = 86'
+check "landing: a candidate over the bar is no target" "$(dec '.action')" "blocked"
+engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[0].pct = 86'
+check "at the limit both gates are off: any room beats a wall" "$(dec '[.trigger, (.candidates | join(","))] | join(" ")')" "at-limit 1"
+engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[1].pct = 100'
+check "a spent week is never a target, even from a wall" "$(dec '[.action, .reason] | join(" ")')" "blocked all-exhausted"
+check "and the earliest weekly renewal is named" "$(dec '.earliestResetAt')" "80000"
+
+engine '.state.lastSwitchAt = 900'
+check "cooldown stops a proactive move" "$(dec '[.action, .reason] | join(" ")')" "none cooldown"
+check "and says how long is left" "$(dec '.detail')" "200s left"
+engine '.state.lastSwitchAt = 900 | .usage.entries["2"].windows[0].pct = 100'
+check "cooldown never stops an at-limit move" "$(dec '.trigger')" "at-limit"
+
+engine '.usage.entries["2"].fetchedAt = 100'
+check "an unknown active entry counts toward failover" "$(dec '[.reason, .detail] | join(" ")')" "active-usage-unknown 1/3 before failover"
+check "and the count is persisted" "$(print -r -- "$STATE" | jq -r '.unhealthyTicks.claude')" "1"
+engine '.usage.entries["2"].fetchedAt = 100 | .state.unhealthyTicks.claude = 2'
+check "the third unknown tick is a failover" "$(dec '[.action, .trigger] | join(" ")')" "switch failover"
+engine '.usage.entries["2"].fetchedAt = 100 | .activeTokenExpired = true'
+check "an expired token with no session is an idle hold, not a failure" "$(dec '.reason')" "active-idle"
+check "the hold is timestamped" "$(print -r -- "$STATE" | jq -r '.idleHoldSince.claude')" "1000"
+engine '.usage.entries["2"].fetchedAt = 100 | .activeTokenExpired = true | .state.idleHoldSince.claude = -1000'
+check "a hold older than thirty minutes resumes the count" "$(dec '.reason')" "active-usage-unknown"
+
+engine '.roster.accounts["1"].disabled = true'
+check "with every other entry disabled: no candidates" "$(dec '[.action, .reason] | join(" ")')" "blocked no-candidates"
+engine '.usage.quarantine["1"] = {"reason": "invalid_grant"}'
+check "a quarantined entry is no candidate" "$(dec '.reason')" "no-candidates"
+engine '.live["1"] = true'
+check "an entry with a live profile session is no candidate" "$(dec '.reason')" "no-candidates"
+engine '.usage.entries["1"].fetchedAt = 100'
+check "a candidate with stale usage cannot be compared" "$(dec '[.action, .reason] | join(" ")')" "blocked no-comparison"
+
+engine '.roster.active.claude = null'
+check "no active entry: nothing to do, with the hint" "$(dec '[.reason, .detail] | join(" ")')" "no-active run: flakelab accounts add claude"
+engine '.roster.active.claude = null | .liveUnmanaged = true'
+check "an unmanaged live login is named as such" "$(dec '.reason')" "unmanaged-active"
+
+# Order: three candidates, carol enabled with an earlier weekly reset and
+# less headroom, dave over the session bar with the earliest reset of all.
+ORDER='.roster.accounts["3"].disabled = false | .roster.accounts["5"] = {"tool": "claude"}
+  | .usage.entries["3"] = {"fetchedAt": 990, "windows": [{"label": "5h", "class": "session", "pct": 30, "resetsAtEpoch": 4500}, {"label": "7d", "class": "week", "pct": 70, "resetsAtEpoch": 70000}]}
+  | .usage.entries["5"] = {"fetchedAt": 990, "windows": [{"label": "5h", "class": "session", "pct": 86, "resetsAtEpoch": 4600}, {"label": "7d", "class": "week", "pct": 10, "resetsAtEpoch": 60000}]}
+  | .usage.entries["2"].windows[0].pct = 100'
+engine "$ORDER"
+check "soonest-reset orders by the earliest weekly renewal, an entry over a bar last" "$(dec '.candidates | join(",")')" "3,1,5"
+engine "$ORDER | .settings.strategy = \"best\""
+check "best orders by weekly headroom" "$(dec '.candidates | join(",")')" "5,1,3"
+
+# Model windows count only when named.
+MODEL='.usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 85000}] | .usage.entries["2"].windows[0].pct = 50'
+engine "$MODEL"
+check "a per-model week over its bar decides" "$(dec '[.trigger, .axis] | join(" ")')" "proactive model"
+engine "$MODEL | .settings.modelWindows = \"Opus\""
+check "a model window not named does not count" "$(dec '.reason')" "below-threshold"
+
+# The plan pass.
+engine '.pass = "plan" | .now = 1200'
+check "near a bar, every candidate is fetched with the active entry" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
+engine '.pass = "plan"'
+check "near a bar but the active entry not yet due: the candidates alone" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
+engine '.pass = "plan" | .usage.entries["2"].windows[0].pct = 50 | .now = 1100'
+check "far from every bar, only the due active entry" "$(print -r -- "$FETCH" | jq -c .)" "[]"
+engine '.pass = "plan" | .usage.entries["2"].windows[0].pct = 50 | .now = 1300'
+check "and one due candidate" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
+engine '.pass = "plan" | .usage.entries["2"].fetchedAt = 100 | .now = 1100'
+check "an unknown active entry escalates to every candidate" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "auto --once: the engine through the store, the adapter and the switch"
+rm -rf "${STORE}"
+login alice@example.com "${UUID_A}" personal tok-a
+run add claude --alias home
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run add claude --alias work
+export FLAKELAB_NOW=1758800000
+usage_answer tok-b 90 50
+usage_answer tok-a 20 60
+: > "${FAKE_CURL}/requests.log"
+run auto --once --json
+check "auto --once exits 0" "${RC}" "0"
+check "the events are JSON lines with the tool and a stamp" "$(print -r -- "$OUT" | jq -r 'select(.event == "poll") | [.tool, .ts] | join(" ")')" "claude 2025-09-25T11:33:20Z"
+check "a proactive switch happened" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.from, .to, .trigger, .axis] | join(" ")')" "2 1 proactive session"
+check "the live login is alice's" "$(live_email)" "alice@example.com"
+check "the engine state records the switch" "$(jq -r '.lastSwitchAt' "${STORE}/auto.json")" "${FLAKELAB_NOW}"
+check "the events went to the log too" "$(grep -c '"event"' "${STORE}/auto.log")" "2"
+check "the log is private" "$(stat -c %a "${STORE}/auto.log")" "600"
+check "the poll fetched the active entry and the candidate" "$(grep -c oauth/usage "${FAKE_CURL}/requests.log")" "2"
+
+run auto --once --json
+check "a tick with nothing to do exits 0" "${RC}" "0"
+check "and says why, naming the window closest to its bar" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | [.reason, .detail] | join(" ")')" "below-threshold week 60% < 97%"
+
+# Alice hits the bar inside the cooldown: no move; then the cooldown passes.
+usage_answer tok-a 90 60
+usage_answer tok-b 30 50
+export FLAKELAB_NOW=$(( 1758800000 + 200 ))
+jq '.entries["1"].nextPollAt = 0 | .entries["2"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run auto --once --json
+check "inside the cooldown a proactive move waits" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | .reason')" "cooldown"
+export FLAKELAB_NOW=$(( 1758800000 + 400 ))
+run auto --once --json --dry-run
+check "--dry-run decides" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.to, .dryRun] | join(" ")')" "2 true"
+check "but changes nothing" "$(live_email)" "alice@example.com"
+run auto --once
+check "the human form exits 0" "${RC}" "0"
+contains "and prints one line per event" "${OUT}" "claude  switch: 1 -> 2 [proactive on session]"
+check "the switch is real" "$(live_email)" "bob@example.com"
+
+# A dead candidate is quarantined on the way and the next one taken: carol's
+# usage is known from a moment ago and a failed poll has her in backoff, so
+# the tick does not fetch her; the freshen before the switch finds her
+# refresh token refused.
+login carol@example.com "${UUID_C}" personal tok-c
+run add claude --alias spare
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run switch work
+export FLAKELAB_NOW=$(( 1758800000 + 4000 ))
+usage_answer tok-b 100 50
+usage_answer tok-a 20 60
+jq --argjson now "${FLAKELAB_NOW}" '.entries["3"] = {windows: [{label: "5h", class: "session", pct: 10, resetsAtEpoch: ($now + 3600)}, {label: "7d", class: "week", pct: 40, resetsAtEpoch: ($now + 86400)}],
+  fetchedAt: ($now - 120), nextPollAt: ($now + 300), intervalS: 300, failures: 1, lastError: "http-500", backoffUntil: ($now + 30)}' \
+  "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+jq '.claudeAiOauth.expiresAt = 1' "${STORE}/3/credentials.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/3/credentials.json"
+print -r -- '{"error": "invalid_grant"}' > "${FAKE_CURL}/token.json"
+print -n 400 > "${FAKE_CURL}/token.status"
+export FLAKELAB_ACCOUNTS_STRATEGY=best   # carol has the most weekly headroom: tried first
+run auto --once --json
+unset FLAKELAB_ACCOUNTS_STRATEGY
+contains "carol's dead lineage is quarantined by the freshen" "${OUT}" '"event":"quarantine","entry":3,"reason":"invalid_grant"'
+check "and alice is taken instead" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.to, .trigger] | join(" ")')" "1 at-limit"
+check "carol is quarantined in the cache" "$(jq -r '.quarantine["3"].reason' "${STORE}/usage.json")" "invalid_grant"
+
+run auto --once --tool gemini
+check "auto for an unknown tool exits 2" "${RC}" "2"
+run auto --once --session-threshold 40
+check "a threshold under 50 is refused" "${RC}" "2"
+run auto --once --interval 5
+check "an interval under 15 seconds is refused" "${RC}" "2"
+unset FLAKELAB_NOW
+
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

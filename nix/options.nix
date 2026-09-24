@@ -314,6 +314,57 @@ in
       description = "Connect Claude Code's Remote Control at the start of every interactive session (settings.remoteControlAtStartup = true), so each one is steerable from claude.ai/code and the Claude app, and remove the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would defeat the feature-flag evaluation Remote Control depends on. Off by default: the session transcript is stored on Anthropic's servers while a session is connected, which an adopter must choose. claudeAgentDefaults implies it. Needs a full claude.ai login on the box and, on Team and Enterprise, the admin toggle.";
     };
 
+    # The account switcher's knobs (accounts.md). Flat options rather than a
+    # submodule, so mkSystem's attrset form and the overlay template can set
+    # them like every other key.
+    accounts = {
+      autoSwitchInterval = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "2min";
+        description = "systemd time span (OnUnitActiveSec syntax) between ticks of `flakelab accounts auto --once`, the engine that switches a tool's live login to another stored one before the live one hits a rate limit. null (the default) schedules no timer; the engine can still be run by hand. The poll plan, not the timer, decides how often the usage endpoint is asked, so a short interval costs nothing against its budget.";
+      };
+      autoSwitchTools = mkOption {
+        type = types.listOf (
+          types.enum [
+            "claude"
+            "codex"
+            "kiro"
+          ]
+        );
+        default = [ "claude" ];
+        description = "The tools the engine decides for. Only a tool whose adapter reads usage can be listed; Kiro's monthly allowance never steers a switch.";
+      };
+      sessionThreshold = mkOption {
+        type = types.ints.between 50 100;
+        default = 85;
+        description = "Switch when the live entry's session window (Claude's rolling 5h, Codex's primary) reaches this percent. The LOWEST bar on purpose: a fan-out of subagents can fill that window from 85 to 100 between two polls, and an overshoot is a hard stop mid-task. 100 means never move proactively on this window; only an actual limit does.";
+      };
+      weekThreshold = mkOption {
+        type = types.ints.between 50 100;
+        default = 97;
+        description = "Switch when the live entry's weekly window reaches this percent. It creeps rather than bursts, so the week can be squeezed close to full before moving.";
+      };
+      modelThreshold = mkOption {
+        type = types.ints.between 50 100;
+        default = 95;
+        description = "Switch when a counted per-model weekly window reaches this percent; weekly too, so also high.";
+      };
+      modelWindows = mkOption {
+        type = types.listOf types.str;
+        default = [ "all" ];
+        description = "Which per-model weekly windows count, by display name as the account reports them (case-insensitive), or [\"all\"] for every one. Narrow it when a plan reports windows that should not steer switching.";
+      };
+      strategy = mkOption {
+        type = types.enum [
+          "soonest-reset"
+          "best"
+        ];
+        default = "soonest-reset";
+        description = "How qualifying targets are ordered: soonest-reset tries the entry whose weekly windows renew first (quota spent where it returns soonest), best the one with the most weekly headroom.";
+      };
+    };
+
     claudeMdExtra = mkOption {
       type = types.lines;
       default = "";

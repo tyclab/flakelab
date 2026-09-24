@@ -20,6 +20,9 @@ set -uo pipefail
 #   accounts alias <ID|ALIAS|LABEL> NAME     name an entry; --unset drops the name
 #   accounts disable|enable <ID|ALIAS|LABEL> hold an entry out of rotation, or return it
 #   accounts remove <ID|ALIAS|LABEL> [--yes] delete an entry and its stored login
+#   accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
+#                 [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
+#                                            switch before the live entry hits a limit
 #   accounts status [--json]                 per tool: the active entry, whether the
 #                                            live login still matches it, its cached
 #                                            windows; reads no network
@@ -29,6 +32,8 @@ set -uo pipefail
 #   <id>/                the stored login, files named by the adapter, 0600
 #   usage.json           per entry: windows, when fetched, the poll plan, the
 #                        failure backoff; the quarantine of dead lineages
+#   auto.json            the engine's state: cooldown, unhealthy ticks, idle hold
+#   auto.log             the engine's events, one JSON object per line, rotated at 1 MiB
 #   unclaimed/<ts>/      a live credential a switch could not attribute
 #   lock                 flock; every writer takes it first
 #
@@ -71,6 +76,19 @@ ESCALATION_PCT=15; MOVEMENT_PCT=1; RESET_SLACK_S=60
 EDGE_BACKOFF_S=300; RETRY_AFTER_CAP_S=900; POST_429_MIN_S=360; RECENT_429_S=3600
 BACKOFF_BASE_S=30; BACKOFF_CAP_S=600
 SESSION_THRESHOLD="${FLAKELAB_ACCOUNTS_SESSION_THRESHOLD:-85}"
+WEEK_THRESHOLD="${FLAKELAB_ACCOUNTS_WEEK_THRESHOLD:-97}"
+MODEL_THRESHOLD="${FLAKELAB_ACCOUNTS_MODEL_THRESHOLD:-95}"
+STRATEGY="${FLAKELAB_ACCOUNTS_STRATEGY:-soonest-reset}"
+AUTO_INTERVAL="${FLAKELAB_ACCOUNTS_INTERVAL:-120}"
+AUTO_COOLDOWN="${FLAKELAB_ACCOUNTS_COOLDOWN:-300}"
+AUTO_HYSTERESIS=10; AUTO_UNHEALTHY=3; AUTO_IDLE_HOLD=1800
+# The tools the engine decides for: a comma list, default every adapter that
+# reads usage.
+AUTO_TOOLS="${FLAKELAB_ACCOUNTS_TOOLS:-claude}"
+AUTO_STATE="${STORE}/auto.json"
+AUTO_LOG="${STORE}/auto.log"
+AUTO_LOG_MAX=1048576
+ENGINE="${SCRIPT_DIR}/lib/accounts-auto.jq"
 now() { print -r -- "${FLAKELAB_NOW:-$(date +%s)}" }
 typeset -a TOOLS=(claude codex kiro)
 typeset -a ADAPTERS=()
@@ -90,6 +108,8 @@ Usage: accounts [--json] [--fetch]
        accounts alias <ID|ALIAS|LABEL> NAME|--unset
        accounts disable|enable <ID|ALIAS|LABEL>
        accounts remove <ID|ALIAS|LABEL> [--yes]
+       accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
+                     [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
        accounts status [--json]
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
@@ -103,6 +123,10 @@ Usage: accounts [--json] [--fetch]
   alias       name an entry (letters, digits, . _ -; unique; not all digits)
   disable     hold an entry out of rotation; enable returns it
   remove      delete an entry and its stored login (--yes, or a terminal to ask)
+  auto        switch before the live entry hits a limit: one tick per tool with
+              usage (--once, the timer's form; --dry-run decides but never
+              switches; --json prints the events as JSON lines), else a loop
+              every --interval seconds until Ctrl-C
   status      per tool: the active entry, whether the live login is still the
               one the roster thinks, and its cached windows; reads no network
 
@@ -592,6 +616,181 @@ cmd_remove() {
   return 0
 }
 
+# --- auto-switch -----------------------------------------------------------------
+
+read_auto_state() {
+  [[ -f "$AUTO_STATE" ]] && jq -e 'type == "object"' "$AUTO_STATE" >/dev/null 2>&1 && { cat -- "$AUTO_STATE"; return 0 }
+  print -r -- '{"lastSwitchAt": null, "lastSwitchTo": null, "unhealthyTicks": {}, "idleHoldSince": {}}'
+}
+
+write_auto_state() {
+  local tmp="${AUTO_STATE}.flakelab-tmp.$$"
+  print -r -- "$1" | jq -e . > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1 }
+  chmod 600 "$tmp" && mv -f -- "$tmp" "$AUTO_STATE"
+}
+
+# One event: to the log always, to stdout as JSON with --json, else as a line.
+AUTO_JSON=false
+AUTO_DRY=false
+emit() {
+  local tool="$1" ev="$2" line
+  line="$(print -r -- "$ev" | jq -c --arg tool "$tool" --arg ts "$(date -u -d "@$(now)" +%Y-%m-%dT%H:%M:%SZ)" --argjson dry "$AUTO_DRY" '. + {tool: $tool, ts: $ts} + (if $dry then {dryRun: true} else {} end)')"
+  if [[ -f "$AUTO_LOG" ]] && (( $(stat -c %s "$AUTO_LOG" 2>/dev/null || print 0) > AUTO_LOG_MAX )); then mv -f -- "$AUTO_LOG" "${AUTO_LOG}.1"; fi
+  (umask 077; print -r -- "$line" >> "$AUTO_LOG")
+  if $AUTO_JSON; then print -r -- "$line"
+  else print -r -- "$line" | jq -r '"\(.ts | .[11:19])  \(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
+  fi
+}
+
+# The engine's settings document.
+auto_settings() {
+  jq -cn --argjson s "$SESSION_THRESHOLD" --argjson w "$WEEK_THRESHOLD" --argjson m "$MODEL_THRESHOLD" \
+    --argjson c "$AUTO_COOLDOWN" --argjson h "$AUTO_HYSTERESIS" --argjson u "$AUTO_UNHEALTHY" --argjson i "$AUTO_IDLE_HOLD" \
+    --arg st "$STRATEGY" --arg mw "$MODEL_WINDOWS" \
+    '{sessionThreshold: $s, weekThreshold: $w, modelThreshold: $m, cooldownS: $c, hysteresisPct: $h, unhealthyTicks: $u, idleHoldS: $i, strategy: $st, modelWindows: $mw}'
+}
+
+# Entries of a tool with a live profile session: never a target.
+live_profiles() {
+  local tool="$1" out='{}' id
+  for id in $(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" '.accounts | to_entries[] | select(.value.tool == $tool) | .key'); do
+    profile_live "$id" && out="$(print -r -- "$out" | jq --arg id "$id" '.[$id] = true')"
+  done
+  print -r -- "$out"
+}
+
+# A profile session is live when its registry names a live pid; without
+# profiles (this phase) nothing is.
+profile_live() { [[ -d "${STORE}/profiles/$1/sessions" ]] && ls "${STORE}/profiles/$1/sessions"/*.json >/dev/null 2>&1 }
+
+# Run the engine for one pass and print its document.
+run_engine() {
+  local tool="$1" pass="$2" state="$3" expired="$4" unmanaged="$5"
+  jq -n --arg pass "$pass" --arg tool "$tool" --argjson now "$(now)" --argjson settings "$(auto_settings)" \
+    --argjson roster "$(read_roster)" --argjson usage "$(read_usage)" --argjson state "$state" \
+    --argjson live "$(live_profiles "$tool")" --argjson expired "$expired" --argjson unmanaged "$unmanaged" \
+    '{pass: $pass, tool: $tool, now: $now, settings: $settings, roster: $roster, usage: $usage, state: $state, live: $live, activeTokenExpired: $expired, liveUnmanaged: $unmanaged}' \
+    | jq -f "$ENGINE"
+}
+
+# Freshen a candidate before a switch: a token expiring within ten minutes is
+# refreshed and persisted now. Prints ok, dead, transient or expired.
+freshen_entry() {
+  local id="$1" tool
+  tool="$(entry_field "$id" tool)"
+  acct_${tool}_freshen "${STORE}/${id}"
+}
+
+# One tick for one tool. Leaves the outcome in TICK_OUTCOME: switched, none,
+# blocked or error. (Not printed: the events go to stdout, and a command
+# substitution would swallow them.)
+TICK_OUTCOME=none
+tick() {
+  local tool="$1" state doc fetch id expired=false unmanaged=false live decision action cand outcome="none" out result
+  state="$(read_auto_state)"
+  live="$(acct_${tool}_identity 2>/dev/null)" || {
+    [[ $? == 3 || -r "${ACCT_CLAUDE_CREDS:-/nonexistent}" ]] && unmanaged=true
+  }
+  if [[ -n "$live" ]]; then
+    [[ -z "$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$(print -r -- "$live" | jq -r .id)" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')" ]] && unmanaged=true
+    acct_${tool}_active_expired && (( $(pgrep -x "$(acct_${tool}_process)" 2>/dev/null | grep -c .) == 0 )) && expired=true
+  fi
+  # Pass 1: fetch what the engine wants, the plan and the backoff respected.
+  doc="$(run_engine "$tool" plan "$state" "$expired" "$unmanaged")"
+  for id in $(print -r -- "$doc" | jq -r '.fetch[]'); do
+    (( $(read_usage | jq -r --arg id "$id" '.entries[$id].backoffUntil // 0') <= $(now) )) || continue
+    fetch_entry "$id"
+  done
+  # Pass 2: decide.
+  doc="$(run_engine "$tool" decide "$state" "$expired" "$unmanaged")"
+  state="$(print -r -- "$doc" | jq -c '.state')"
+  for ev in "${(f)$(print -r -- "$doc" | jq -c '.events[]')}"; do [[ -n "$ev" ]] && emit "$tool" "$ev"; done
+  decision="$(print -r -- "$doc" | jq -c '.decision')"
+  action="$(print -r -- "$decision" | jq -r '.action')"
+  case "$action" in
+    none) outcome=none ;;
+    blocked) outcome=blocked ;;
+    switch)
+      outcome=blocked
+      local transient=false trigger axis from
+      trigger="$(print -r -- "$decision" | jq -r '.trigger')"; axis="$(print -r -- "$decision" | jq -r '.axis // empty')"
+      from="$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" '.active[$tool] // empty')"
+      for cand in $(print -r -- "$decision" | jq -r '.candidates[]'); do
+        result="$(freshen_entry "$cand")"
+        case "$result" in
+          dead)
+            write_usage "$(read_usage | jq --arg id "$cand" --arg fp "$(acct_${tool}_fingerprint "${STORE}/${cand}/credentials.json" 2>/dev/null || print -r -- "")" --argjson now "$(now)" '.quarantine[$id] = {reason: "invalid_grant", fingerprint: $fp, at: $now}')"
+            emit "$tool" "$(jq -cn --argjson id "$cand" '{event: "quarantine", entry: $id, reason: "invalid_grant"}')"
+            continue ;;
+          transient) transient=true; continue ;;
+          expired) continue ;;
+        esac
+        if $AUTO_DRY; then
+          emit "$tool" "$(jq -cn --arg from "$from" --argjson to "$cand" --arg trigger "$trigger" --arg axis "$axis" '{event: "switch", from: (if $from == "" then null else ($from | tonumber) end), to: $to, trigger: $trigger, axis: (if $axis == "" then null else $axis end)}')"
+          outcome=switched; break
+        fi
+        if out="$(do_switch "$cand" 2>&1)"; then
+          state="$(print -r -- "$state" | jq --argjson now "$(now)" --argjson to "$cand" '.lastSwitchAt = $now | .lastSwitchTo = $to')"
+          emit "$tool" "$(jq -cn --arg from "$from" --argjson to "$cand" --arg trigger "$trigger" --arg axis "$axis" --arg note "$out" '{event: "switch", from: (if $from == "" then null else ($from | tonumber) end), to: $to, trigger: $trigger, axis: (if $axis == "" then null else $axis end), note: $note}')"
+          outcome=switched; break
+        else
+          emit "$tool" "$(jq -cn --argjson to "$cand" --arg err "$out" '{event: "error", entry: $to, message: $err, transient: true}')"
+          transient=true
+        fi
+      done
+      if [[ "$outcome" != switched ]]; then
+        if $transient; then emit "$tool" "$(jq -cn '{event: "error", message: "could not freshen or activate any candidate", transient: true}')"; outcome=error
+        else emit "$tool" "$(jq -cn '{event: "no-switch", reason: "no-viable-target", detail: "every candidate was dead, expired or refused"}')"; fi
+      fi ;;
+  esac
+  $AUTO_DRY || write_auto_state "$state" || die "cannot write ${AUTO_STATE}"
+  TICK_OUTCOME="$outcome"
+}
+
+cmd_auto() {
+  local once=false tool="" tools rc=0 outcome t
+  while (( $# > 0 )); do
+    case $1 in
+      --once) once=true ;;
+      --dry-run) AUTO_DRY=true ;;
+      --json) AUTO_JSON=true ;;
+      --tool) [[ -n "${2:-}" ]] || refuse "--tool needs a tool"; tool="$2"; shift ;;
+      --session-threshold) SESSION_THRESHOLD="$2"; shift ;;
+      --week-threshold) WEEK_THRESHOLD="$2"; shift ;;
+      --model-threshold) MODEL_THRESHOLD="$2"; shift ;;
+      --interval) AUTO_INTERVAL="$2"; shift ;;
+      --cooldown) AUTO_COOLDOWN="$2"; shift ;;
+      *) refuse "unknown option for auto: $1" ;;
+    esac
+    shift
+  done
+  local flag
+  for t in SESSION_THRESHOLD WEEK_THRESHOLD MODEL_THRESHOLD; do
+    flag="--${${t:l}//_/-}"
+    [[ "${(P)t}" == <50-100> ]] || refuse "${flag} must be an integer between 50 and 100 (100: never move proactively on that window)"
+  done
+  [[ "$AUTO_INTERVAL" == <15-3600> ]] || refuse "--interval must be between 15 and 3600 seconds"
+  [[ "$AUTO_COOLDOWN" == <0-86400> ]] || refuse "--cooldown must be between 0 and 86400 seconds"
+  [[ "$STRATEGY" == best || "$STRATEGY" == soonest-reset ]] || refuse "strategy must be best or soonest-reset"
+  if [[ -n "$tool" ]]; then need_adapter "$tool"; tools=("$tool"); else tools=("${(s:,:)AUTO_TOOLS}"); fi
+  for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
+  [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
+  ensure_store
+  local -i sleep_s
+  while true; do
+    for t in "${tools[@]}"; do
+      exec 9>"${STORE}/lock"
+      if ! flock -w 10 9; then emit "$t" "$(jq -cn '{event: "error", message: "the store lock is held; skipped this tick", transient: true}')"; rc=1; continue; fi
+      tick "$t"; outcome="$TICK_OUTCOME"
+      flock -u 9
+      [[ "$outcome" == error ]] && rc=1
+    done
+    $once && return $rc
+    sleep_s=$(( AUTO_INTERVAL * (90 + RANDOM % 21) / 100 ))
+    sleep "$sleep_s" || return 130
+  done
+}
+
 # --- reports ---------------------------------------------------------------------
 
 # One row per entry: tool US id US alias US label US org US flags, in id order.
@@ -681,6 +880,7 @@ case "${1:-}" in
   disable)    shift; cmd_disabled true "$@" ;;
   enable)     shift; cmd_disabled false "$@" ;;
   remove|rm)  shift; cmd_remove "$@" ;;
+  auto)       shift; cmd_auto "$@" ;;
   status)     shift; cmd_status "$@" ;;
   --help|-h|help) usage ;;
   *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;

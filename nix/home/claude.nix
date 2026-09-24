@@ -12,6 +12,7 @@
 }:
 let
   cfg = osConfig.flakelab;
+  scripts = import ../scripts.nix { inherit pkgs cfg; };
   inherit (flakelab)
     installClaude
     isWsl
@@ -82,6 +83,27 @@ let
               if stateSyncScheduled then ''[{hooks: [{type: "command", command: $push}]}]'' else "[]"
             })
         | if .SessionEnd == [] then del(.SessionEnd) else . end)
+    | if .hooks == {} then del(.hooks) else . end
+  '';
+
+  # The reactive half of auto-switch: when Claude Code decides to wait for its
+  # quota window (a Notification of type quota_auto_resume_fired), the engine
+  # ticks at once instead of at the next timer. Owned by its command, like the
+  # SessionEnd hook: a box without the engine drops it again.
+  accountsHook = cfg.accounts.autoSwitchInterval != null && lib.elem "claude" cfg.accounts.autoSwitchTools;
+  accountsHookCmd = "${scripts.accounts}/bin/accounts auto --once --tool claude --json >/dev/null 2>&1 || true";
+  accountsHookArg = lib.optionalString accountsHook "--arg accountsHook ${lib.escapeShellArg accountsHookCmd}";
+  accountsHookJq = ''
+    | .hooks = ((.hooks // {})
+        | .Notification = (((.Notification // [])
+            | map(select((.hooks // []) | any((.command // "") | contains("/bin/accounts auto")) | not)))
+            + ${
+              if accountsHook then
+                ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $accountsHook, timeout: 180}]}]''
+              else
+                "[]"
+            })
+        | if .Notification == [] then del(.Notification) else . end)
     | if .hooks == {} then del(.hooks) else . end
   '';
 
@@ -303,7 +325,7 @@ in
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${claudeStatuslineArg} '
+          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -315,6 +337,7 @@ in
             ${claudeAgentDefaultsJq}
             ${claudeRemoteControlJq}
             ${claudeStatePushJq}
+            ${accountsHookJq}
             ${claudeStatuslineJq}
             ${claudePlaywrightJq}
             ${claudeWhatsappJq}
