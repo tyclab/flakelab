@@ -66,8 +66,9 @@ the private overlay `flakelab-config`, which imports this flake via
     `--force`, usage through `codex app-server`) and Kiro
     (`lib/accounts-kiro.zsh`: rows of the SQLite store swapped in one
     transaction, one monthly window the engine never counts). The adapter
-    contract, usage and the engine's rules are in `accounts.md`. Not yet
-    carried by `flakelab backup`.
+    contract, usage and the engine's rules are in `accounts.md`. The store
+    rides `flakelab backup` (`accounts/`); `flakelab doctor` has an
+    `Accounts` section; `ingest` takes the statusline's `rate_limits`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,

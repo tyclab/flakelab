@@ -130,7 +130,6 @@ login alice@example.com "${UUID_A}" personal tok-a1
 run add claude --alias home
 check "add exits 0" "${RC}" "0"
 check "add reports the entry" "${OUT}" "Added claude 1: alice@example.com [personal] as home"
-contains "add says the store is not yet in the backup" "${ERR}" "Not yet carried by flakelab backup"
 check "the store is private" "$(stat -c %a "${STORE}")" "700"
 check "the entry directory is private" "$(stat -c %a "${STORE}/1")" "700"
 check "the stored credential is 0600" "$(stat -c %a "${STORE}/1/credentials.json")" "600"
@@ -1163,6 +1162,32 @@ printf 'KIRO_HOME=%s\0' "${STORE}/profiles/6" > "${PROC}/801/environ"
 FLAKELAB_PROC_ROOT="${PROC}" FAKE_KIRO_RUNNING=801 run switch frank
 check "a kiro-cli running on the profile blocks a switch onto its entry" "${RC}" "2"
 contains "as a profile session" "${ERR}" "entry 6 is running in a profile session"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "ingest: the statusline's rate_limits for the live login"
+run_in() { OUT="$(print -r -- "$1" | "${CMD}" "${@:2}" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+check "alice is the live claude login" "$(live_email)" "alice@example.com"
+export FLAKELAB_NOW=1758910000
+jq '.entries["1"].windows = [{"label": "Fable", "class": "model", "pct": 12, "resetsAtEpoch": 1900000000}] | .entries["1"].nextPollAt = 1758910050' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run_in '{"session_id": "x", "rate_limits": {"five_hour": {"used_percentage": 33, "resets_at": 1900000000}, "seven_day": {"utilization": 61, "resets_at": "2026-09-27T12:00:00Z"}}}' ingest
+check "ingest exits 0" "${RC}" "0"
+check "and prints nothing" "${OUT}${ERR}" ""
+check "the live entry's session and week windows are the statusline's" "$(jq -r '.entries["1"].windows[] | select(.class != "model") | [.label, .class, .pct, .resetsAtEpoch] | join(" ")' "${STORE}/usage.json" | tr '\n' ';')" "5h session 33 1900000000;7d week 61 1790510400;"
+check "a per-model window from the endpoint is kept" "$(jq -r '.entries["1"].windows[] | select(.class == "model") | .label' "${STORE}/usage.json")" "Fable"
+check "the figures are fresh and marked" "$(jq -r '.entries["1"] | [.fetchedAt, .source] | join(" ")' "${STORE}/usage.json")" "1758910000 statusline"
+check "and the endpoint's turn for the active entry is pushed out" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910300"
+run_in '{"session_id": "x"}' ingest
+check "a statusline payload without rate_limits changes nothing" "$(jq -r '.entries["1"].fetchedAt' "${STORE}/usage.json") ${RC}" "1758910000 0"
+run_in 'not json' ingest
+check "garbage exits 0" "${RC}" "0"
+login zed@example.com zzzzzzzz-0000-0000-0000-000000000026 personal tok-z
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 99}}}' ingest
+check "a live login not in the roster is ignored" "$(jq -r '[.entries[] | select(.source == "statusline")] | length' "${STORE}/usage.json") ${RC}" "1 0"
+login alice@example.com "${UUID_A}" personal tok-a
+FLAKELAB_ACCOUNTS_ROOT="${BASE}/nostore" run_in '{"rate_limits": {"five_hour": {"used_percentage": 99}}}' ingest
+check "without a store, nothing happens" "${RC} $(ls "${BASE}/nostore" 2>/dev/null | wc -l | tr -d ' ')" "0 0"
+unset FLAKELAB_NOW
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

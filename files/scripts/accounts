@@ -34,6 +34,8 @@ set -uo pipefail
 #   accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history]
 #   accounts env --unset <tool>              the lines that pin a shell to a profile,
 #                                            for eval; --unset the one that unpins
+#   accounts ingest [--tool T]               the statusline's rate_limits (stdin) for
+#                                            the live login into the cache; silent
 #
 # The store:
 #   accounts.json        the roster: version, active per tool, next id, entries
@@ -128,6 +130,7 @@ Usage: accounts [--json] [--fetch]
        accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
        accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
        accounts env --unset <tool> [--shell sh|fish|pwsh]
+       accounts ingest [--tool claude]
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
               plan is due first; --json for one document
@@ -155,6 +158,9 @@ Usage: accounts [--json] [--fetch]
   env         the export that pins this shell to that profile and the unsets
               of the tool's auth-override variables: eval "$(accounts env work)";
               --unset <tool> prints the line that unpins it
+  ingest      the statusline's JSON on stdin: its rate_limits become the live
+              login's cached windows, so the endpoint is never asked for the
+              active entry; prints nothing and exits 0 whatever happens
 
 Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
 with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
@@ -475,7 +481,6 @@ cmd_add() {
     | .active[$tool] = ($k | tonumber)')"
   write_roster "$roster" || { rm -rf -- "$dir"; die "cannot write ${ROSTER}" }
   print -r -- "Added ${tool} ${new}: ${label} [${org}]${alias:+ as ${alias}}"
-  note "Not yet carried by flakelab backup: the store is ${STORE}."
 }
 
 # The switch transaction, under our lock and the tool's.
@@ -1002,6 +1007,59 @@ cmd_env() {
   return 0
 }
 
+
+# --- ingest --------------------------------------------------------------------
+#
+# The statusline command receives, with every refresh, a rate_limits object
+# for the live login (five_hour, seven_day: the utilization and the reset).
+# Teed into this verb, those figures are the active entry's usage and the
+# endpoint is never asked for it (accounts.md, "Usage"). In a statusline's
+# pipeline: never a word, never a non-zero exit, a short wait for the lock.
+
+INGEST_JQ='
+  def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
+  def reset: (.resets_at // .resetsAt // null) as $r
+    | if ($r | type) == "number" then (if $r > 100000000000 then ($r / 1000 | floor) else ($r | floor) end)
+      elif ($r | type) == "string" then ($r | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch (tonumber? // null))
+      else null end;
+  def win($label; $class): select(. != null)
+    | {label: $label, class: $class, pct: ((.utilization // .used_percentage // .used_percent // .percent // null) | num), resetsAtEpoch: reset}
+    | select(.pct != null);
+  (.rate_limits // .rateLimits // {}) as $r
+  | [ ($r.five_hour | win("5h"; "session")), ($r.seven_day | win("7d"; "week")) ]
+'
+
+cmd_ingest() {
+  local tool="claude" doc live lid id windows
+  while (( $# > 0 )); do
+    case $1 in
+      --tool) tool="${2:-}"; shift ;;
+      *) return 0 ;;
+    esac
+    shift
+  done
+  [[ -f "$ROSTER" ]] || return 0
+  has_adapter "$tool" || return 0
+  doc="$(cat 2>/dev/null)"; [[ -n "$doc" ]] || return 0
+  windows="$(print -r -- "$doc" | jq -c "${INGEST_JQ}" 2>/dev/null)" || return 0
+  [[ -n "$windows" && "$windows" != "[]" ]] || return 0
+  live="$(acct_${tool}_identity 2>/dev/null)" || return 0
+  lid="$(print -r -- "$live" | jq -r '.id')"
+  id="$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$lid" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key' | head -n 1)"
+  [[ -n "$id" ]] || return 0
+  exec 9>"${STORE}/lock" 2>/dev/null || return 0
+  flock -w 2 9 || return 0
+  # The session and week windows replaced, a per-model window from the
+  # endpoint kept; the endpoint's turn for this entry pushed out.
+  write_usage "$(read_usage | jq --arg id "$id" --argjson w "$windows" --argjson now "$(now)" --argjson defer "$ACTIVE_MAX_S" '
+    .entries[$id] = ((.entries[$id] // {})
+      | .windows = ([.windows[]? | select(.class != "session" and .class != "week")] + $w)
+      | .fetchedAt = $now | .failures = 0 | .lastError = null | .backoffUntil = 0
+      | .nextPollAt = ($now + $defer) | .source = "statusline")')" 2>/dev/null
+  flock -u 9
+  return 0
+}
+
 # --- reports ---------------------------------------------------------------------
 
 # One row per entry: tool US id US alias US label US org US flags, in id order.
@@ -1096,6 +1154,7 @@ case "${1:-}" in
   status)     shift; cmd_status "$@" ;;
   run)        shift; cmd_run "$@" ;;
   env)        shift; cmd_env "$@" ;;
+  ingest)     shift; cmd_ingest "$@" ;;
   --help|-h|help) usage ;;
   *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;
 esac

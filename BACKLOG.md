@@ -93,7 +93,7 @@ config fixes it properly. Worth a line in CONTRIBUTING.md.
 
 ## Account switching for the agent CLIs
 
-`enhancement` · phases 1 to 6 done, the last designed
+`enhancement` · built; the box-side verifications remain
 
 Several logins per tool on one box, for Claude Code, Codex and Kiro CLI: a
 roster of stored logins, a switch of the live one without a logout, headroom
@@ -105,8 +105,12 @@ in [accounts.md](accounts.md). Done: the store, the Claude Code adapter,
 `add`, `switch`, `alias`, `disable`, `enable`, `remove`, `status`, usage in
 the listing and `status`, `switch --soonest`/`--best`, the engine behind
 `auto` with its timer and the quota hook, `run`/`env` profiles, the Codex
-and Kiro adapters, the suite. Open: the store in `flakelab backup`, the
-`doctor` checks, the statusline.
+and Kiro adapters, the backup category, the `doctor` section, the statusline
+`ingest`, the suite. Open: the eleven verifications on a box that
+[accounts.md](accounts.md) lists (a switched credential reaching a running
+session, the usage endpoint's shape and limit, Codex and Kiro live pickup,
+what moves Kiro's secret store), and the statusline plugin in the
+marketplace rendering `status --json`.
 
 ## Remote sessions
 

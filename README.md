@@ -467,9 +467,9 @@ what it would do). `flakelab accounts run work` runs a second account in a
 second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
 pins a shell to it. Codex and Kiro logins work the same way (`add codex`,
 `add kiro`; a switch waits for the tool's running sessions or goes past them
-with `--force`). The store is `~/.local/state/flakelab/accounts` (not yet
-carried by `flakelab backup`); the design and what is still to verify on a
-box are in [`accounts.md`](accounts.md).
+with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
+`flakelab backup` and checked by `flakelab doctor`; the design and what is
+still to verify on a box are in [`accounts.md`](accounts.md).
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session

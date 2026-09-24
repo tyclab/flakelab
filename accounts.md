@@ -676,7 +676,15 @@ Phases, each shippable on its own:
    checked on the box, treat `run`/`env` for Kiro as experimental and keep
    `autoSwitchTools` without it.
 7. `flakelab backup` category, `doctor` checks, README and CHANGELOG, and the
-   statusline plugin reading `status --json`.
+   statusline plugin reading `status --json`. **Done** on this side: the
+   `accounts` payload category (the roster and the entries, 0700 and 0600,
+   local wins on a restore; the cache, the engine state, the profiles and the
+   stash stay on the box), the `Accounts` section of `flakelab doctor`
+   (modes, quarantines, drift through `status --json`, the timer), and
+   `accounts ingest`: the statusline command's stdin teed into it, so the
+   live login's `rate_limits` land in the cache and the endpoint is never
+   asked for the active entry. The statusline plugin rendering the account
+   from `status --json` lives in the marketplace, not here.
 
 ## Verify before building
 

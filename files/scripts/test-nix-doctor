@@ -62,6 +62,15 @@ ai_clis() {
   print -r -- "${out%%$'\n'==> *}"
 }
 
+# accounts_section: the doctor's Accounts section for the store as staged.
+accounts_section() {
+  local out
+  out="$(env -i PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other zsh "${DOCTOR}" 2>&1 < /dev/null)"
+  out="${out//$'\e'\[[0-9;]#m/}"
+  out="${out#*==> Accounts$'\n'}"
+  print -r -- "${out%%$'\n'==> *}"
+}
+
 print -r -- "test-nix-doctor"
 
 print -r -- "a path: input is a local override"
@@ -92,6 +101,29 @@ lacks    "not kiro-cli then"   "$(ai_clis codex)" "kiro-cli"
 lacks    "nor claude"          "$(ai_clis codex)" "Claude Code"
 contains "none"                "$(ai_clis '')" "[ OK ] no AI CLI installed by this overlay"
 contains "unset is none"       "$(ai_clis)" "[ OK ] no AI CLI installed by this overlay"
+
+
+print -r -- "accounts: no store"
+contains "says so"      "$(accounts_section)" "[ OK ] no stored logins"
+
+print -r -- "accounts: a private store with private logins"
+AC="${BASE}/home/.local/state/flakelab/accounts"
+mkdir -p "${AC}/1"
+chmod 700 "${AC}"
+print -r -- '{"version":1}' > "${AC}/accounts.json"; chmod 600 "${AC}/accounts.json"
+print -r -- '{}' > "${AC}/1/credentials.json"; chmod 600 "${AC}/1/credentials.json"
+contains "the store passes"   "$(accounts_section)" "[ OK ] store is owner-only"
+contains "the files pass"     "$(accounts_section)" "[ OK ] stored logins are owner-only (0600)"
+contains "no timer is a note" "$(accounts_section)" "[ OK ] note: no auto-switch timer"
+
+print -r -- "accounts: loose modes and a quarantine"
+chmod 755 "${AC}"
+chmod 644 "${AC}/1/credentials.json"
+print -r -- '{"quarantine":{"3":{"reason":"invalid_grant"}}}' > "${AC}/usage.json"
+contains "a 755 store warns"        "$(accounts_section)" "[WARN] store is mode 755, expected 700"
+contains "a 644 login warns"        "$(accounts_section)" "[WARN] 1 stored login file(s) are not 0600"
+contains "with the chmod"           "$(accounts_section)" "chmod 600 ${AC}/1/credentials.json"
+contains "a quarantined entry warns" "$(accounts_section)" "[WARN] quarantined entries: 3 (invalid_grant)"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
