@@ -43,6 +43,19 @@ the private overlay `flakelab-config`, which imports this flake via
     tool column is Claude Code. Saves go to the state root's `claude/sessions/`
     when one is set, else `~/.local/state/flakelab/sessions/`, never into
     `~/.claude/sessions`.
+  - `accounts` (new, `accounts`): several logins per agent CLI, one live
+    per tool. `add <tool>` snapshots the live login into
+    `~/.local/state/flakelab/accounts/<id>/` (never reused ids; alias, label
+    or id name an entry), `switch <entry>` makes it the live login inside one
+    transaction under our flock and the tool's own locks (Claude Code: the
+    `~/.claude.lock` / `~/.claude.json.lock` mkdir protocol; a held lock
+    refuses with exit 2 and changes nothing), writing the outgoing login back
+    into its entry first (it may hold a rotated refresh token) or into
+    `unclaimed/` when no entry carries it. `--next <tool>` rotates; `alias`,
+    `disable`/`enable`, `remove --yes`, `status [--json]`. Phase 1 ships the
+    Claude Code adapter (`files/scripts/lib/accounts-claude.zsh`); the
+    adapter contract, usage, auto-switch and the other tools are in
+    `accounts.md`. Not yet carried by `flakelab backup`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,
@@ -94,19 +107,19 @@ the private overlay `flakelab-config`, which imports this flake via
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
 - Changing any of these means running its offline suite. `make test` runs all
-  twelve (`test-clone-repos`, `test-gitchecker`, `test-gitcleaner`,
+  thirteen (`test-clone-repos`, `test-gitchecker`, `test-gitcleaner`,
   `test-gitpublisher`, `test-nix-backup`, `test-nix-overlay-generate`,
-  `test-flakelab-cli`, `test-claude-sessions`, `test-nix-update`,
+  `test-flakelab-cli`, `test-claude-sessions`, `test-accounts`, `test-nix-update`,
   `test-nix-doctor`, `test-switch-result`, `test-xdg-open`) and stays the
   required local gate. These are TEST HARNESSES, not user commands,
   so the `flakelab` CLI did not rename them: `test-nix-backup`,
   `test-nix-doctor` and `test-nix-overlay-generate` keep the old prefix on purpose, because renaming
   them would drag `Makefile` and `flake.nix`'s `checks.<system>.*` along for no
   change in behaviour. They run the scripts by path, not by command name. CI
-  runs the same twelve as flake checks — `nix flake check` (the `test` job)
+  runs the same thirteen as flake checks — `nix flake check` (the `test` job)
   builds
   `checks.<system>.{clone-repos,gitchecker,gitcleaner,gitpublisher,nix-backup,`
-  `nix-overlay-generate,flakelab-cli,claude-sessions,nix-update,nix-doctor,switch-result,xdg-open,statix,deadnix}`,
+  `nix-overlay-generate,flakelab-cli,claude-sessions,accounts,nix-update,nix-doctor,switch-result,xdg-open,statix,deadnix}`,
   so a red suite blocks the pull
   request rather than surviving to main. Those checks copy the WHOLE tree
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`

@@ -165,6 +165,23 @@ rec {
     exec ${zsh} ${s}/claude-sessions "$@"
   '';
 
+  # The store is the script's own; flock serialises writers, pgrep counts the
+  # tool's running sessions for the post-switch line. Sourced from `s`, so the
+  # adapters under lib/ sit beside it in the store.
+  accounts = pkgs.writeShellScriptBin "accounts" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.util-linux
+        pkgs.procps
+        pkgs.gnugrep
+        pkgs.jq
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/accounts "$@"
+  '';
+
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''
     export PATH=${
       bin [

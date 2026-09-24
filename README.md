@@ -230,7 +230,7 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all fifteen.
+all sixteen.
 
 | Command                   | Action                                                          |
 | ------------------------- | --------------------------------------------------------------- |
@@ -240,6 +240,7 @@ all fifteen.
 | `flakelab doctor`         | diagnose a provisioned distro                                   |
 | `flakelab backup`         | payload + optional shared state root                            |
 | `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
+| `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
 | `flakelab overlay-gen`    | write the private overlay from a config                         |
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
@@ -454,6 +455,13 @@ snapshots the running agent sessions (Claude Code, Codex, Kiro) every
 `flakelab sessions --resume` prints — and on WSL `--open` reopens — every
 session that was open; `flakelab sessions --recent` lists the ones closed in
 the last day.
+
+More than one claude.ai login on the box: `flakelab accounts add claude`
+stores the live one, `flakelab accounts switch <alias>` makes another one the
+live login under Claude Code's own lock protocol, and running sessions carry
+on with their next message. The store is `~/.local/state/flakelab/accounts`
+(not yet carried by `flakelab backup`); usage, auto-switch and the Codex and
+Kiro adapters are the next phases in [`accounts.md`](accounts.md).
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session

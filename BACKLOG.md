@@ -93,7 +93,7 @@ config fixes it properly. Worth a line in CONTRIBUTING.md.
 
 ## Account switching for the agent CLIs
 
-`enhancement` · designed, not started
+`enhancement` · phase 1 done, the rest designed
 
 Several logins per tool on one box, for Claude Code, Codex and Kiro CLI: a
 roster of stored logins, a switch of the live one without a logout, headroom
@@ -101,8 +101,10 @@ on every window the tool reports in the listing and the statusline, a timer
 that switches before the live account hits its limit where the tool exposes
 its usage, and a second account runnable in a second terminal. The design, the
 adapter contract per tool, the cut list and the questions to verify first are
-in [accounts.md](accounts.md); phase 1 (store, `add`, `switch`, the suite, the
-Claude adapter) is usable on its own.
+in [accounts.md](accounts.md). Done: the store, the Claude Code adapter,
+`add`, `switch`, `alias`, `disable`, `enable`, `remove`, `status`, the suite.
+Open: the store in `flakelab backup`, usage and `status`'s windows, the
+engine and its timer, `run`/`env` profiles, the Codex and Kiro adapters.
 
 ## Remote sessions
 
@@ -110,8 +112,8 @@ Claude adapter) is usable on its own.
 
 Sessions that outlive their terminal and can be reached from another device.
 Done: tmux as the session host behind `flakelab sessions --start` /
-`--attach`, Codex and Kiro in the sessions registry beside Claude Code. Open:
-Remote Control on its own option, a push when a session waits on a prompt,
+`--attach`, Codex and Kiro in the sessions registry beside Claude Code,
+Remote Control on its own option. Open: a push when a session waits on a prompt,
 mosh and Tailscale on the VM, and the Windows-host SSH route into a WSL
 distro. [remote-sessions.md](remote-sessions.md) has the design and what to
 verify first.

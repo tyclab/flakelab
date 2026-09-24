@@ -1,0 +1,308 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for accounts (files/scripts/accounts) and its Claude Code
+# adapter (files/scripts/lib/accounts-claude.zsh): a fake HOME holding the
+# files Claude Code keeps its login in, a pgrep stub for the running-session
+# count, and the two seams the script exposes for the cases that cannot be
+# staged with files alone (a short lock timeout, a forced write failure). No
+# real claude, no network.
+#
+# Usage: files/scripts/test-accounts
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/accounts"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+export HOME="${BASE}/home"
+mkdir -p "${HOME}/.claude"
+STORE="${HOME}/.local/state/flakelab/accounts"
+unset FLAKELAB_ACCOUNTS_ROOT CLAUDE_CONFIG_DIR FLAKELAB_ACCOUNTS_FAIL_AT FLAKELAB_ACCOUNTS_LOCK_TIMEOUT
+
+STUBS="${BASE}/bin"
+mkdir -p "${STUBS}"
+cat > "${STUBS}/pgrep" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == -x && "$2" == claude ]] || exit 1
+[[ -n "${FAKE_CLAUDE_RUNNING:-}" ]] || exit 1
+print -l 100 200
+STUB
+chmod +x "${STUBS}"/*
+export PATH="${STUBS}:${PATH}"
+
+# Claude Code's files for a login: the identity block beside keys the switch
+# must leave alone, and the OAuth blob.
+login() {
+  local email="$1" uuid="$2" org="$3" token="$4"
+  cat > "${HOME}/.claude.json" <<EOF
+{
+  "oauthAccount": {"emailAddress": "${email}", "accountUuid": "${uuid}", "organizationUuid": "org-${uuid}", "organizationName": "${org}"},
+  "projects": {"/work": {"allowedTools": ["Bash"]}},
+  "mcpServers": {"grafana": {"command": "x"}},
+  "theme": "dark",
+  "numStartups": 7
+}
+EOF
+  print -r -- "{\"claudeAiOauth\": {\"accessToken\": \"${token}\", \"refreshToken\": \"rt-${token}\", \"expiresAt\": 1900000000000, \"scopes\": [\"user:inference\"]}}" > "${HOME}/.claude/.credentials.json"
+  chmod 600 "${HOME}/.claude/.credentials.json"
+}
+live_token() { jq -r '.claudeAiOauth.accessToken' "${HOME}/.claude/.credentials.json" }
+live_email() { jq -r '.oauthAccount.emailAddress' "${HOME}/.claude.json" }
+active_id()  { jq -r '.active.claude' "${STORE}/accounts.json" }
+
+run() { OUT="$("${CMD}" "$@" 2>"${BASE}/err" </dev/null)"; RC=$?; ERR="$(<"${BASE}/err")"; }
+typeset -i RC=0
+OUT=""
+ERR=""
+
+UUID_A=aaaaaaaa-0000-0000-0000-000000000001
+UUID_B=bbbbbbbb-0000-0000-0000-000000000002
+UUID_C=cccccccc-0000-0000-0000-000000000003
+
+# ---------------------------------------------------------------------------
+print -r -- "an empty store"
+run
+check "the bare listing exits 0" "${RC}" "0"
+contains "an empty roster says where to start" "${ERR}" "flakelab accounts add <tool>"
+run add
+check "add without a tool exits 2" "${RC}" "2"
+run add gemini
+check "add with an unknown tool exits 2" "${RC}" "2"
+run add codex
+check "add for a tool without an adapter exits 2" "${RC}" "2"
+contains "and names the adapters present" "${ERR}" "present: claude"
+run add claude
+check "add with no login exits 2" "${RC}" "2"
+contains "and says to log in first" "${ERR}" "log in with the tool first"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "add: the live login into the store"
+login alice@example.com "${UUID_A}" personal tok-a1
+run add claude --alias home
+check "add exits 0" "${RC}" "0"
+check "add reports the entry" "${OUT}" "Added claude 1: alice@example.com [personal] as home"
+contains "add says the store is not yet in the backup" "${ERR}" "Not yet carried by flakelab backup"
+check "the store is private" "$(stat -c %a "${STORE}")" "700"
+check "the entry directory is private" "$(stat -c %a "${STORE}/1")" "700"
+check "the stored credential is 0600" "$(stat -c %a "${STORE}/1/credentials.json")" "600"
+check "the stored credential is the live one, verbatim" "$(jq -r '.claudeAiOauth.refreshToken' "${STORE}/1/credentials.json")" "rt-tok-a1"
+check "the identity carries the theme for a later profile" "$(jq -r '.theme' "${STORE}/1/identity.json")" "dark"
+check "the entry is active" "$(active_id)" "1"
+check "the roster records the account id" "$(jq -r '.accounts["1"].id' "${STORE}/accounts.json")" "${UUID_A}"
+
+# The same login again: refreshed in place, the id kept, the token updated.
+login alice@example.com "${UUID_A}" personal tok-a2
+run add claude
+check "adding a stored login exits 0" "${RC}" "0"
+check "and refreshes it in place" "${OUT}" "Refreshed claude 1: alice@example.com [personal]"
+check "the stored credential moved to the new generation" "$(live_token)" "$(jq -r '.claudeAiOauth.accessToken' "${STORE}/1/credentials.json")"
+check "next is untouched by a refresh" "$(jq -r '.next' "${STORE}/accounts.json")" "2"
+
+# An API-key login is a different auth axis.
+jq '.primaryApiKey = "sk-ant-api03-xyz"' "${HOME}/.claude.json" > "${BASE}/t" && mv "${BASE}/t" "${HOME}/.claude.json"
+run add claude
+check "an API-key login is refused" "${RC}" "2"
+contains "and pointed at the shell variable" "${ERR}" "different auth axis"
+
+# A second account, logged in by hand.
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b1
+run add claude --alias work
+check "a second login gets the next id" "${OUT}" "Added claude 2: bob@example.com [Example GmbH] as work"
+check "and becomes active" "$(active_id)" "2"
+run add claude --alias home
+check "a taken alias is refused" "${RC}" "2"
+run add claude --alias 42
+check "an all-digit alias is refused" "${RC}" "2"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "the listing"
+run
+check "the listing exits 0" "${RC}" "0"
+contains "the header" "${OUT}" "TOOL    ID   ALIAS        LABEL                            ORG                STATE"
+contains "entry 1" "${OUT}" "claude  1    home         alice@example.com                personal"
+contains "entry 2 is active" "${OUT}" "claude  2    work         bob@example.com                  Example GmbH       active"
+run --json
+check "--json exits 0" "${RC}" "0"
+check "--json lists both entries" "$(print -r -- "$OUT" | jq '.accounts | length')" "2"
+check "--json carries the active map" "$(print -r -- "$OUT" | jq -r '.active.claude')" "2"
+check "--json entries carry their roster id" "$(print -r -- "$OUT" | jq -r '.accounts[0].id')" "1"
+check "--json entries carry the tool's account id" "$(print -r -- "$OUT" | jq -r '.accounts[0].account')" "${UUID_A}"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "switch: the transaction"
+# Bob's token rotated while live: the switch must carry it into entry 2.
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b2
+run switch home
+check "switch by alias exits 0" "${RC}" "0"
+check "switch reports the entry" "${OUT}" "Switched claude to 1 (home) alice@example.com"
+check "the live credential is alice's" "$(live_token)" "tok-a2"
+check "the live identity is alice's" "$(live_email)" "alice@example.com"
+check "every other key of ~/.claude.json survives" "$(jq -c '[.projects, .mcpServers, .numStartups]' "${HOME}/.claude.json")" '[{"/work":{"allowedTools":["Bash"]}},{"grafana":{"command":"x"}},7]'
+check "the live config is 0600" "$(stat -c %a "${HOME}/.claude.json")" "600"
+check "the outgoing login's rotated token landed in its entry" "$(jq -r '.claudeAiOauth.accessToken' "${STORE}/2/credentials.json")" "tok-b2"
+check "the roster's active moved" "$(active_id)" "1"
+check "no lock directory is left behind" "$(ls -d "${HOME}"/.claude.lock "${HOME}"/.claude.json.lock 2>/dev/null | wc -l | tr -d ' ')" "0"
+excludes "no running session, no restart line" "${OUT}" "running claude session"
+
+FAKE_CLAUDE_RUNNING=1 run switch 2
+check "switch by id exits 0" "${RC}" "0"
+contains "running sessions are told they follow on their next message" "${OUT}" "2 running claude session(s) continue on the new account with their next message"
+check "the live credential is bob's" "$(live_token)" "tok-b2"
+
+before="$(stat -c %Y "${HOME}/.claude/.credentials.json")"
+run switch work
+check "switching to the active entry exits 0" "${RC}" "0"
+check "and says so" "${OUT}" "Already on claude 2 (work) bob@example.com"
+check "without touching the live credential" "$(stat -c %Y "${HOME}/.claude/.credentials.json")" "${before}"
+
+run switch bob@example.com
+check "switch by label exits 0 (already active)" "${RC}" "0"
+run switch nobody
+check "an unknown entry exits 1" "${RC}" "1"
+run switch 1 2
+check "two entries exit 2" "${RC}" "2"
+run switch
+check "no entry exits 2" "${RC}" "2"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "switch --next: rotation in id order, disabled entries skipped"
+run switch --next claude
+check "--next exits 0" "${RC}" "0"
+check "--next from 2 wraps to 1" "$(active_id)" "1"
+run disable work
+check "disable exits 0" "${RC}" "0"
+contains "disable says it is still switchable by hand" "${OUT}" "still switchable by hand"
+run switch --next claude
+check "--next skips the disabled entry and stays on 1" "$(active_id)" "1"
+contains "as a no-op" "${OUT}" "Already on claude 1"
+run switch work
+check "a disabled entry is still switchable by hand" "$(active_id)" "2"
+run enable work
+check "enable exits 0" "${RC}" "0"
+run switch --next gemini
+check "--next with an unknown tool exits 2" "${RC}" "2"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "an unattributed live login is stashed, never lost"
+login carol@example.com "${UUID_C}" personal tok-c1
+run switch home
+check "switch away from an unknown login exits 0" "${RC}" "0"
+contains "and warns" "${ERR}" "the live claude login (carol@example.com) is in no entry; copied to ${STORE}/unclaimed/"
+check "the stash holds carol's credential" "$(jq -r '.claudeAiOauth.accessToken' "${STORE}"/unclaimed/*-claude-${UUID_C}/credentials.json)" "tok-c1"
+check "the stash is private" "$(stat -c %a "${STORE}"/unclaimed/*-claude-${UUID_C})" "700"
+check "the live login is alice's" "$(live_email)" "alice@example.com"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "Claude Code's lock: a held lock refuses, a stale one is taken over"
+mkdir -p "${HOME}/.claude.lock"
+FLAKELAB_ACCOUNTS_LOCK_TIMEOUT=1 run switch work
+check "a fresh lock held by someone else refuses with exit 2" "${RC}" "2"
+contains "and says why" "${ERR}" "refreshing its credentials"
+check "nothing changed" "$(live_email)" "alice@example.com"
+check "the roster did not move" "$(active_id)" "1"
+[[ -d "${HOME}/.claude.lock" ]] && ok "the held lock is left alone" || bad "the held lock was removed"
+touch -d '1 minute ago' "${HOME}/.claude.lock"
+FLAKELAB_ACCOUNTS_LOCK_TIMEOUT=2 run switch work
+check "a stale lock is taken over and the switch runs" "${RC}" "0"
+check "the live login is bob's" "$(live_email)" "bob@example.com"
+check "the taken-over lock is released" "$(ls -d "${HOME}"/.claude.lock 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "a failed write rolls the live login back"
+FLAKELAB_ACCOUNTS_FAIL_AT=config run switch home
+check "a failure after the credential write exits 1" "${RC}" "1"
+contains "and says the previous login was restored" "${ERR}" "the previous login was restored"
+check "the live credential is bob's again" "$(live_token)" "tok-b2"
+check "the live identity is bob's again" "$(live_email)" "bob@example.com"
+check "the roster still says 2" "$(active_id)" "2"
+check "no temp file is left in ~/.claude" "$(ls "${HOME}/.claude" | grep -c flakelab-tmp)" "0"
+check "no lock directory is left behind" "$(ls -d "${HOME}"/.claude.lock "${HOME}"/.claude.json.lock 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "alias"
+run alias 1 --unset
+check "alias --unset exits 0" "${RC}" "0"
+check "the alias is gone" "$(jq -r '.accounts["1"].alias // "none"' "${STORE}/accounts.json")" "none"
+run alias 1 home-2
+check "alias exits 0" "${RC}" "0"
+check "alias reports the name" "${OUT}" "Entry 1 is now 'home-2'"
+run alias 1 work
+check "a taken alias is refused" "${RC}" "2"
+run alias 1 "bad name"
+check "an alias with a space is refused" "${RC}" "2"
+run alias home-2 --unset
+run alias 1 home
+check "an alias resolves an entry after a rename" "${RC}" "0"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "status"
+run status
+check "status exits 0" "${RC}" "0"
+check "status names the active entry" "${OUT}" "claude: 2 (work) bob@example.com [Example GmbH]"
+run status --json
+check "status --json says the live login matches" "$(print -r -- "$OUT" | jq -r '.claude.matches')" "true"
+check "status --json names the active entry" "$(print -r -- "$OUT" | jq -r '.claude.active.alias')" "work"
+check "status --json has an empty windows list in this phase" "$(print -r -- "$OUT" | jq -c '.claude.windows')" "[]"
+login dave@example.com dddddddd-0000-0000-0000-000000000004 personal tok-d1
+run status
+contains "a login by hand is reported as drift" "${OUT}" "is recorded active, but the live login is dave@example.com"
+contains "with the repair" "${OUT}" "flakelab accounts add claude"
+run status --json
+check "status --json says the live login does not match" "$(print -r -- "$OUT" | jq -r '.claude.matches')" "false"
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b2
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "remove"
+run remove work
+check "remove without --yes and without a terminal exits 2" "${RC}" "2"
+[[ -d "${STORE}/2" ]] && ok "and removes nothing" || bad "the entry was removed without --yes"
+run remove work --yes
+check "remove --yes exits 0" "${RC}" "0"
+check "remove reports the entry" "${OUT}" "Removed 2 (work) bob@example.com"
+[[ -d "${STORE}/2" ]] && bad "the stored login is still there" || ok "the stored login is gone"
+check "the active pointer is cleared" "$(jq -r '.active.claude' "${STORE}/accounts.json")" "null"
+contains "and the caller is told the live login is now unlisted" "${ERR}" "no longer in the roster"
+check "next is never reused" "$(jq -r '.next' "${STORE}/accounts.json")" "3"
+run add claude
+check "adding the live login again takes a fresh id" "${OUT}" "Added claude 3: bob@example.com [Example GmbH]"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "guards"
+CLAUDE_CONFIG_DIR="${BASE}/profile" run switch 1
+contains "a pinned shell is told the default login is what moves" "${ERR}" "CLAUDE_CONFIG_DIR is set in this shell"
+check "and the switch still runs on the default login" "$(live_email)" "alice@example.com"
+print -r -- '{"version": 2}' > "${STORE}/accounts.json"
+run
+check "a roster of another version is refused" "${RC}" "2"
+contains "and named" "${ERR}" "version 1 expected"
+print -r -- 'not json' > "${STORE}/accounts.json"
+run switch 1
+check "a corrupt roster refuses rather than reading as empty" "${RC}" "2"
+run --help
+check "--help exits 0" "${RC}" "0"
+run bogus
+check "an unknown verb exits 2" "${RC}" "2"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

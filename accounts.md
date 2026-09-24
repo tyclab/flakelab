@@ -4,8 +4,10 @@ A design for `flakelab accounts`: several logins per agent CLI on one box, for
 the three this flake installs (Claude Code, Codex, Kiro CLI). One login per
 tool is live at a time, switched by hand or, where the tool exposes its rate
 limits, by a timer before the live one hits them, and any stored login is
-runnable in a second terminal beside the live one. Proposal, not implemented;
-the backlog entry points here.
+runnable in a second terminal beside the live one. Phase 1 (the store, the
+Claude Code adapter, `add`, `switch`, `alias`, `disable`, `enable`, `remove`,
+`status`) is implemented; the rest is the plan, and the backlog entry points
+here.
 
 ## The problem
 
@@ -309,6 +311,11 @@ Exit codes follow the sibling scripts: 0, 1 for a failure, 2 for a refusal or
 usage error. `--json` prints one document on stdout and every notice on
 stderr, so a caller parses stdout alone.
 
+Implemented so far: the bare listing, `add`, `switch <entry>`,
+`switch --next`, `alias`, `disable`, `enable`, `remove` and `status`, with
+the Claude Code adapter. `--soonest` and `--best`, `run`, `env`, `auto` and
+the usage columns come with their phases below.
+
 ### Adding a login
 
 `add <tool>` asks the adapter for the live identity and credential. A login
@@ -611,7 +618,8 @@ Phases, each shippable on its own:
 
 1. Store, the adapter contract with the Claude adapter, `add`, the roster
    listing, `switch ID`, `alias`, `disable`, `enable`, `remove`, the suite.
-   Usable the day it lands.
+   Usable the day it lands. **Done**: `files/scripts/accounts`,
+   `files/scripts/lib/accounts-claude.zsh`, `test-accounts`.
 2. Claude usage: fetch, refresh, cache, the poll budget; headroom in the
    listing; `status --json`; the strategy switches.
 3. The engine, `auto --once`, the timer, quarantine.

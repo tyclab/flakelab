@@ -1,0 +1,443 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# accounts — several logins per agent CLI on one box (accounts.md).
+#
+# A roster of stored logins under ~/.local/state/flakelab/accounts/, one live
+# login per tool, switched without a logout. Each tool answers the adapter
+# contract through files/scripts/lib/accounts-<tool>.zsh; this script never
+# branches on the tool name. Phase 1 ships the Claude Code adapter.
+#
+# Usage:
+#   accounts [--json]                        the roster, grouped by tool
+#   accounts add <tool> [--alias NAME]       snapshot the tool's live login into the store
+#   accounts switch <ID|ALIAS|LABEL>         make a stored account its tool's live login
+#   accounts switch --next <tool>            rotate in id order, skipping disabled entries
+#   accounts alias <ID|ALIAS|LABEL> NAME     name an entry; --unset drops the name
+#   accounts disable|enable <ID|ALIAS|LABEL> hold an entry out of rotation, or return it
+#   accounts remove <ID|ALIAS|LABEL> [--yes] delete an entry and its stored login
+#   accounts status [--json]                 per tool: the active entry and whether the
+#                                            live login still matches it; cache only
+#
+# The store:
+#   accounts.json        the roster: version, active per tool, next id, entries
+#   <id>/                the stored login, files named by the adapter, 0600
+#   unclaimed/<ts>.json  a live credential a switch could not attribute
+#   lock                 flock; every writer takes it first
+#
+# Ids are handed out once and never reused; the alias is the name and is
+# unique across tools; the label is what the tool calls the account (the
+# email, for Claude Code). Every command that names an entry takes any of the
+# three. Exit 0; 1 a failure; 2 a refusal or a usage error.
+#
+# Locks: our flock, then the tool's own protocol where it has one (Claude
+# Code's two mkdir locks). A timeout on the tool's lock refuses and changes
+# nothing: the tool is refreshing its token, retry in a few seconds.
+#
+# Attribution on a switch: the outgoing live login is written back into the
+# entry whose id it carries, because the tool may have rotated the refresh
+# token since it was stored and the entry must hold the latest generation. A
+# live login no entry carries is copied to unclaimed/ and never lost.
+#
+
+SCRIPT_DIR="${0:A:h}"
+STORE="${FLAKELAB_ACCOUNTS_ROOT:-${HOME}/.local/state/flakelab/accounts}"
+ROSTER="${STORE}/accounts.json"
+US=$'\x1f'
+typeset -a TOOLS=(claude codex kiro)
+typeset -a ADAPTERS=()
+
+# The adapters that exist: one file per tool under lib/.
+for _t in "${TOOLS[@]}"; do
+  [[ -r "${SCRIPT_DIR}/lib/accounts-${_t}.zsh" ]] && { source "${SCRIPT_DIR}/lib/accounts-${_t}.zsh"; ADAPTERS+=("$_t") }
+done
+unset _t
+
+usage() {
+  cat <<'USAGE'
+Usage: accounts [--json]
+       accounts add <tool> [--alias NAME]
+       accounts switch <ID|ALIAS|LABEL>
+       accounts switch --next <tool>
+       accounts alias <ID|ALIAS|LABEL> NAME|--unset
+       accounts disable|enable <ID|ALIAS|LABEL>
+       accounts remove <ID|ALIAS|LABEL> [--yes]
+       accounts status [--json]
+
+  (no verb)   the roster, grouped by tool; --json for one document
+  add         snapshot <tool>'s live login (claude|codex|kiro) into the store;
+              a login already stored is refreshed in place
+  switch      make a stored account the live login of its tool; --next <tool>
+              rotates to the next enabled entry in id order
+  alias       name an entry (letters, digits, . _ -; unique; not all digits)
+  disable     hold an entry out of rotation; enable returns it
+  remove      delete an entry and its stored login (--yes, or a terminal to ask)
+  status      per tool: the active entry, and whether the live login is still
+              the one the roster thinks; reads no network
+
+Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
+with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
+USAGE
+}
+
+die()    { print -ru2 -- "Error: $*"; exit 1 }
+refuse() { print -ru2 -- "Error: $*"; exit 2 }
+note()   { print -ru2 -- "$*" }
+
+has_adapter() { (( ${ADAPTERS[(Ie)$1]} )) }
+is_tool()     { (( ${TOOLS[(Ie)$1]} )) }
+need_adapter() {
+  is_tool "$1" || refuse "unknown tool '$1' (${(j:|:)TOOLS})"
+  has_adapter "$1" || refuse "no adapter for ${1} yet (accounts.md names the phase); present: ${(j:, :)ADAPTERS}"
+}
+
+# --- the store -----------------------------------------------------------------
+
+ensure_store() {
+  [[ -d "$STORE" ]] || { (umask 077; mkdir -p -- "$STORE") || die "cannot create ${STORE}" }
+  chmod 700 -- "$STORE" 2>/dev/null
+  if [[ ! -f "$ROSTER" ]]; then
+    write_roster '{"version": 1, "active": {}, "next": 1, "accounts": {}}' || die "cannot write ${ROSTER}"
+  fi
+}
+
+# A corrupt roster refuses rather than reading as empty, which would hand out
+# an id the corrupt file may already hold. Checked once, before dispatch, so
+# the refusal exits the script and not a subshell.
+check_roster() {
+  [[ -f "$ROSTER" ]] || return 0
+  jq -e 'type == "object" and .version == 1 and (.accounts | type == "object")' "$ROSTER" >/dev/null 2>&1 ||
+    refuse "${ROSTER} is not a roster this version reads (version 1 expected); repair it or move it aside"
+}
+
+read_roster() {
+  [[ -f "$ROSTER" ]] || { print -r -- '{"version": 1, "active": {}, "next": 1, "accounts": {}}'; return 0 }
+  cat -- "$ROSTER"
+}
+
+write_roster() {
+  local tmp="${ROSTER}.flakelab-tmp.$$"
+  print -r -- "$1" | jq -e . > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1 }
+  chmod 600 "$tmp" && mv -f -- "$tmp" "$ROSTER"
+}
+
+# Serialise every writer. fd 9 stays open for the life of the script.
+take_lock() {
+  ensure_store
+  exec 9>"${STORE}/lock"
+  flock -w 10 9 || refuse "another accounts command holds ${STORE}/lock; retry in a moment"
+}
+
+# --- resolution ----------------------------------------------------------------
+
+# Resolve <ID|ALIAS|LABEL> to an id; prints it. A label shared by two tools
+# (the same email on Claude and Codex) needs the id or the alias.
+resolve() {
+  local want="$1" roster ids n
+  roster="$(read_roster)"
+  if [[ "$want" == <-> ]]; then
+    print -r -- "$roster" | jq -e --arg id "$want" '.accounts[$id]' >/dev/null 2>&1 || die "no entry with id ${want}"
+    print -r -- "$want"; return 0
+  fi
+  ids="$(print -r -- "$roster" | jq -r --arg a "$want" '.accounts | to_entries[] | select(.value.alias == $a) | .key')"
+  if [[ -n "$ids" ]]; then print -r -- "${ids%%$'\n'*}"; return 0; fi
+  ids="$(print -r -- "$roster" | jq -r --arg l "$want" '.accounts | to_entries[] | select(.value.label == $l) | .key')"
+  n="$(print -r -- "$ids" | grep -c .)"
+  (( n == 1 )) && { print -r -- "$ids"; return 0 }
+  (( n > 1 )) && die "'${want}' names ${n} entries (${(j:, :)${(f)ids}}); use the id or an alias"
+  die "no entry named '${want}' (an id, an alias or a label)"
+}
+
+entry_field() { print -r -- "$(read_roster)" | jq -r --arg id "$1" --arg f "$2" '.accounts[$id][$f] // empty' }
+entry_name() {
+  local id="$1" alias label
+  alias="$(entry_field "$id" alias)"; label="$(entry_field "$id" label)"
+  print -r -- "${id}${alias:+ (${alias})} ${label}"
+}
+
+valid_alias() {
+  [[ "$1" =~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$' && "$1" != <-> ]]
+}
+
+# --- verbs ---------------------------------------------------------------------
+
+# add <tool>: the live login into the store; a known id refreshes in place.
+cmd_add() {
+  local tool="${1:-}" alias="" roster ident id label org existing rc dir
+  [[ -n "$tool" ]] || refuse "add needs a tool: ${(j:|:)TOOLS}"
+  shift
+  while (( $# > 0 )); do
+    case $1 in
+      --alias) [[ -n "${2:-}" ]] || refuse "--alias needs a name"; alias="$2"; shift ;;
+      *) refuse "unknown option for add: $1" ;;
+    esac
+    shift
+  done
+  need_adapter "$tool"
+  [[ -z "$alias" ]] || valid_alias "$alias" || refuse "alias '${alias}': letters, digits, . _ -, at most 32, not all digits"
+  take_lock
+  ident="$(acct_${tool}_identity)"; rc=$?
+  case $rc in
+    0) ;;
+    3) refuse "${tool}'s live login is an API key, which is a different auth axis: keep it in the shell variable, not the roster" ;;
+    *) refuse "no ${tool} login to snapshot: log in with the tool first" ;;
+  esac
+  id="$(print -r -- "$ident" | jq -r '.id')"; label="$(print -r -- "$ident" | jq -r '.label')"; org="$(print -r -- "$ident" | jq -r '.org')"
+  roster="$(read_roster)"
+  existing="$(print -r -- "$roster" | jq -r --arg tool "$tool" --arg id "$id" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $id) | .key')"
+  if [[ -n "$alias" ]]; then
+    local taken
+    taken="$(print -r -- "$roster" | jq -r --arg a "$alias" --arg me "${existing:-}" '.accounts | to_entries[] | select(.value.alias == $a and .key != $me) | .key')"
+    [[ -z "$taken" ]] || refuse "alias '${alias}' already names entry ${taken}"
+  fi
+  if [[ -n "$existing" ]]; then
+    dir="${STORE}/${existing}"
+    (umask 077; mkdir -p -- "$dir") || die "cannot create ${dir}"
+    acct_${tool}_read_live "$dir" || die "could not copy the live login into ${dir}"
+    roster="$(print -r -- "$roster" | jq --arg k "$existing" --arg tool "$tool" --arg label "$label" --arg org "$org" --arg alias "$alias" '
+      .accounts[$k].label = $label | .accounts[$k].org = $org
+      | (if $alias != "" then .accounts[$k].alias = $alias else . end)
+      | .active[$tool] = ($k | tonumber)')"
+    write_roster "$roster" || die "cannot write ${ROSTER}"
+    print -r -- "Refreshed ${tool} ${existing}: ${label} [${org}]"
+    return 0
+  fi
+  local new
+  new="$(print -r -- "$roster" | jq -r '.next')"
+  dir="${STORE}/${new}"
+  (umask 077; mkdir -p -- "$dir") || die "cannot create ${dir}"
+  acct_${tool}_read_live "$dir" || { rm -rf -- "$dir"; die "could not copy the live login into ${dir}" }
+  roster="$(print -r -- "$roster" | jq --arg k "$new" --arg tool "$tool" --arg id "$id" --arg label "$label" --arg org "$org" --arg alias "$alias" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    .accounts[$k] = {tool: $tool, id: $id, label: $label, org: $org, added: $now}
+    | (if $alias != "" then .accounts[$k].alias = $alias else . end)
+    | .next = (($k | tonumber) + 1)
+    | .active[$tool] = ($k | tonumber)')"
+  write_roster "$roster" || { rm -rf -- "$dir"; die "cannot write ${ROSTER}" }
+  print -r -- "Added ${tool} ${new}: ${label} [${org}]${alias:+ as ${alias}}"
+  note "Not yet carried by flakelab backup: the store is ${STORE}."
+}
+
+# The switch transaction, under our lock and the tool's.
+do_switch() {
+  local id="$1" tool roster live rc live_id out_id stash n
+  roster="$(read_roster)"
+  tool="$(print -r -- "$roster" | jq -r --arg id "$id" '.accounts[$id].tool')"
+  need_adapter "$tool"
+  [[ -r "${STORE}/${id}/credentials.json" || -r "${STORE}/${id}/auth.json" || -r "${STORE}/${id}/token.json" ]] ||
+    die "entry ${id} has no stored login; add it again with: flakelab accounts add ${tool}"
+  if [[ "$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool] // empty')" == "$id" ]]; then
+    live="$(acct_${tool}_identity 2>/dev/null)" && [[ "$(print -r -- "$live" | jq -r '.id')" == "$(entry_field "$id" id)" ]] && {
+      print -r -- "Already on ${tool} $(entry_name "$id")"; return 0 }
+  fi
+  acct_${tool}_lock || refuse "${tool} is refreshing its credentials (its lock is held); retry in a few seconds. Nothing changed."
+  {
+    acct_${tool}_snapshot_live || { acct_${tool}_unlock; die "cannot read the live ${tool} login" }
+    # Attribute the outgoing login: its own entry, or the unclaimed stash.
+    live="$(acct_${tool}_identity 2>/dev/null)"; rc=$?
+    if (( rc == 0 )); then
+      live_id="$(print -r -- "$live" | jq -r '.id')"
+      out_id="$(print -r -- "$roster" | jq -r --arg tool "$tool" --arg lid "$live_id" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')"
+      if [[ -n "$out_id" ]]; then
+        (umask 077; mkdir -p -- "${STORE}/${out_id}")
+        acct_${tool}_read_live "${STORE}/${out_id}" || note "warning: could not refresh the stored login of entry ${out_id} from the live one"
+      else
+        stash="${STORE}/unclaimed/$(date -u +%Y%m%dT%H%M%SZ)-${tool}-${live_id}"
+        (umask 077; mkdir -p -- "$stash") && acct_${tool}_read_live "$stash" &&
+          note "warning: the live ${tool} login ($(print -r -- "$live" | jq -r '.label')) is in no entry; copied to ${stash}. Add it with: flakelab accounts add ${tool}" ||
+          note "warning: the live ${tool} login is in no entry and could not be copied aside"
+      fi
+    fi
+    if ! acct_${tool}_write_live "${STORE}/${id}"; then
+      acct_${tool}_restore_live
+      acct_${tool}_unlock
+      die "switch to ${tool} ${id} failed; the previous login was restored"
+    fi
+    roster="$(print -r -- "$roster" | jq --arg tool "$tool" --arg id "$id" '.active[$tool] = ($id | tonumber)')"
+    if ! write_roster "$roster"; then
+      acct_${tool}_restore_live
+      acct_${tool}_unlock
+      die "cannot write ${ROSTER}; the previous login was restored"
+    fi
+  }
+  acct_${tool}_unlock
+  print -r -- "Switched ${tool} to $(entry_name "$id")"
+  n="$(pgrep -x "$(acct_${tool}_process)" 2>/dev/null | grep -c .)"
+  acct_${tool}_after_switch "$n"
+  return 0
+}
+
+cmd_switch() {
+  local target="" tool="" next=false id roster ids cur
+  while (( $# > 0 )); do
+    case $1 in
+      --next) next=true; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "--next needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
+      -*) refuse "unknown option for switch: $1" ;;
+      *) [[ -z "$target" ]] || refuse "switch takes one entry"; target="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
+  take_lock
+  if $next; then
+    need_adapter "$tool"
+    roster="$(read_roster)"
+    cur="$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool] // 0')"
+    ids=("${(f)$(print -r -- "$roster" | jq -r --arg tool "$tool" '.accounts | to_entries[] | select(.value.tool == $tool and (.value.disabled // false | not)) | .key' | sort -n)}")
+    (( ${#ids[@]} > 0 )) || refuse "no enabled ${tool} entries to rotate through"
+    id=""
+    for c in "${ids[@]}"; do (( c > cur )) && { id="$c"; break }; done
+    [[ -n "$id" ]] || id="${ids[1]}"
+    do_switch "$id"
+    return $?
+  fi
+  [[ -n "$target" ]] || refuse "switch needs an entry (id, alias or label) or --next <tool>"
+  id="$(resolve "$target")" || exit $?
+  do_switch "$id"
+}
+
+cmd_alias() {
+  local target="${1:-}" name="${2:-}" id roster taken
+  [[ -n "$target" && -n "$name" ]] || refuse "alias needs an entry and a name (or --unset)"
+  take_lock
+  id="$(resolve "$target")" || exit $?
+  roster="$(read_roster)"
+  if [[ "$name" == --unset ]]; then
+    roster="$(print -r -- "$roster" | jq --arg id "$id" 'del(.accounts[$id].alias)')"
+    write_roster "$roster" || die "cannot write ${ROSTER}"
+    print -r -- "Removed the alias of entry ${id}"
+    return 0
+  fi
+  valid_alias "$name" || refuse "alias '${name}': letters, digits, . _ -, at most 32, not all digits"
+  taken="$(print -r -- "$roster" | jq -r --arg a "$name" --arg me "$id" '.accounts | to_entries[] | select(.value.alias == $a and .key != $me) | .key')"
+  [[ -z "$taken" ]] || refuse "alias '${name}' already names entry ${taken}"
+  roster="$(print -r -- "$roster" | jq --arg id "$id" --arg a "$name" '.accounts[$id].alias = $a')"
+  write_roster "$roster" || die "cannot write ${ROSTER}"
+  print -r -- "Entry ${id} is now '${name}'"
+}
+
+cmd_disabled() {
+  local flag="$1" target="${2:-}" id roster
+  [[ -n "$target" ]] || refuse "needs an entry (id, alias or label)"
+  take_lock
+  id="$(resolve "$target")" || exit $?
+  roster="$(print -r -- "$(read_roster)" | jq --arg id "$id" --argjson v "$flag" '.accounts[$id].disabled = $v | if $v then . else del(.accounts[$id].disabled) end')"
+  write_roster "$roster" || die "cannot write ${ROSTER}"
+  if [[ "$flag" == true ]]; then
+    print -r -- "Disabled $(entry_name "$id"): held out of rotation, still switchable by hand"
+  else
+    print -r -- "Enabled $(entry_name "$id"): back in the rotation"
+  fi
+}
+
+cmd_remove() {
+  local target="" yes=false id roster tool name answer
+  while (( $# > 0 )); do
+    case $1 in
+      --yes|-y) yes=true ;;
+      -*) refuse "unknown option for remove: $1" ;;
+      *) target="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$target" ]] || refuse "remove needs an entry (id, alias or label)"
+  take_lock
+  id="$(resolve "$target")" || exit $?
+  name="$(entry_name "$id")"
+  if ! $yes; then
+    [[ -t 0 && -t 1 ]] || refuse "remove ${id} needs --yes when not at a terminal"
+    print -rn -- "Remove ${name} and its stored login? [y/N] "
+    read -r answer
+    [[ "$answer" == [yY]* ]] || { print -r -- "Cancelled"; return 0 }
+  fi
+  roster="$(read_roster)"
+  tool="$(print -r -- "$roster" | jq -r --arg id "$id" '.accounts[$id].tool')"
+  roster="$(print -r -- "$roster" | jq --arg id "$id" --arg tool "$tool" '
+    del(.accounts[$id]) | if (.active[$tool] // null) == ($id | tonumber) then .active[$tool] = null else . end')"
+  write_roster "$roster" || die "cannot write ${ROSTER}"
+  rm -rf -- "${STORE}/${id}"
+  print -r -- "Removed ${name}"
+  [[ "$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool]')" == null ]] &&
+    note "${tool}'s live login is no longer in the roster; add it again with: flakelab accounts add ${tool}"
+  return 0
+}
+
+# --- reports ---------------------------------------------------------------------
+
+# One row per entry: tool US id US alias US label US org US flags, in id order.
+rows() {
+  print -r -- "$(read_roster)" | jq -r --arg us "$US" '
+    .active as $active
+    | .accounts | to_entries | sort_by(.key | tonumber)[]
+    | [.value.tool, .key, (.value.alias // ""), .value.label, .value.org,
+       (if ($active[.value.tool] // null) == (.key | tonumber) then "active" else "" end),
+       (if (.value.disabled // false) then "disabled" else "" end)]
+    | join($us)'
+}
+
+cmd_list() {
+  local row tool id alias label org act dis n=0
+  if [[ "${1:-}" == --json ]]; then
+    print -r -- "$(read_roster)" | jq '{version, active,
+      accounts: (.accounts | to_entries | sort_by(.key | tonumber)
+        | map({id: (.key | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org,
+               alias: (.value.alias // null), disabled: (.value.disabled // false), added: .value.added}))}'
+    return 0
+  fi
+  printf '%-7s %-4s %-12s %-32s %-18s %s\n' TOOL ID ALIAS LABEL ORG STATE
+  while IFS="$US" read -r tool id alias label org act dis; do
+    printf '%-7s %-4s %-12s %-32s %-18s %s\n' "$tool" "$id" "${alias:--}" "$label" "$org" "${act:-}${act:+ }${dis:-}"
+    (( n++ ))
+  done < <(rows)
+  (( n > 0 )) || note "no stored logins; start with: flakelab accounts add <tool>"
+  return 0
+}
+
+# status: per adapter, the active entry and whether the live login is it.
+cmd_status() {
+  local json=false tool roster active live lid matches out="{}" id
+  [[ "${1:-}" == --json ]] && json=true
+  roster="$(read_roster)"
+  for tool in "${ADAPTERS[@]}"; do
+    active="$(print -r -- "$roster" | jq -c --arg tool "$tool" '(.active[$tool] // null) as $a | if $a == null then null else (.accounts[($a | tostring)] // {}) + {entry: $a} end')"
+    live="$(acct_${tool}_identity 2>/dev/null)" || live="null"
+    lid="$(print -r -- "$live" | jq -r '.id // empty')"
+    id="$(print -r -- "$active" | jq -r '.id // empty')"
+    if [[ -n "$lid" && -n "$id" ]]; then matches=$([[ "$lid" == "$id" ]] && print true || print false); else matches=null; fi
+    out="$(print -r -- "$out" | jq --arg tool "$tool" --argjson a "$active" --argjson l "$live" --argjson m "$matches" '
+      .[$tool] = {active: (if $a == null then null else {id: $a.entry, alias: ($a.alias // null), label: $a.label, org: $a.org} end),
+                  live: (if $l == null then null else {account: $l.id, label: $l.label} end),
+                  matches: $m, windows: []}')"
+    if ! $json; then
+      if [[ "$active" == null ]]; then
+        print -r -- "${tool}: no active entry${lid:+ (live login $(print -r -- "$live" | jq -r .label) is not in the roster: flakelab accounts add ${tool})}"
+      elif [[ "$matches" == false ]]; then
+        print -r -- "${tool}: entry $(print -r -- "$active" | jq -r '.entry') ($(print -r -- "$active" | jq -r .label)) is recorded active, but the live login is $(print -r -- "$live" | jq -r .label): someone logged in by hand; run: flakelab accounts add ${tool}"
+      else
+        print -r -- "${tool}: $(print -r -- "$active" | jq -r '"\(.entry)\(if .alias then " (\(.alias))" else "" end) \(.label) [\(.org)]"')${lid:+}${${lid:-  (no live login)}:#${lid}}"
+      fi
+    fi
+  done
+  $json && print -r -- "$out" | jq .
+  return 0
+}
+
+# --- dispatch -------------------------------------------------------------------
+
+case "${1:-}" in
+  --help|-h|help) usage; exit 0 ;;
+esac
+check_roster
+case "${1:-}" in
+  ""|--json)  cmd_list "${1:-}" ;;
+  add)        shift; cmd_add "$@" ;;
+  switch)     shift; cmd_switch "$@" ;;
+  alias)      shift; cmd_alias "$@" ;;
+  disable)    shift; cmd_disabled true "$@" ;;
+  enable)     shift; cmd_disabled false "$@" ;;
+  remove|rm)  shift; cmd_remove "$@" ;;
+  status)     shift; cmd_status "$@" ;;
+  --help|-h|help) usage ;;
+  *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;
+esac

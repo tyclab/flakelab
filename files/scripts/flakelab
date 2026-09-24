@@ -43,6 +43,7 @@ _order=(
   doctor
   backup
   sessions
+  accounts
   clone
   provision
   overlay-gen
@@ -63,6 +64,7 @@ _bin=(
   doctor          nix-doctor
   backup          nix-backup
   sessions        claude-sessions
+  accounts        accounts
   clone           nix-clone-repos
   provision       nix-provision
   overlay-gen     nix-overlay-generate
@@ -84,6 +86,7 @@ _file=(
   doctor          nix-doctor
   backup          nix-backup
   sessions        claude-sessions
+  accounts        accounts
   clone           ''
   provision       nix-provision
   overlay-gen     nix-overlay-generate
@@ -102,6 +105,7 @@ _args=(
   doctor          ''
   backup          ''
   sessions        ''
+  accounts        ''
   clone           ''
   provision       ''
   overlay-gen     ''
@@ -120,6 +124,7 @@ _desc=(
   doctor          'diagnose this distro and print what to run next'
   backup          'back up home-dir data to the backup root (--restore to read it back)'
   sessions        'the running agent sessions; --start/--attach host one in tmux, --save before a restart, --open after'
+  accounts        'stored logins per agent CLI: add the live one, switch without a logout'
   clone           'discover and clone the configured GitLab groups and repos'
   provision       'drive the Windows provisioning script from inside WSL'
   overlay-gen     'scaffold a private flakelab overlay from a user_data.yaml'
