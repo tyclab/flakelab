@@ -365,6 +365,35 @@ in
       };
     };
 
+    # A push when a session waits on you (remote-sessions.md, phase 3).
+    notify = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Write a Claude Code Notification hook that runs `flakelab notify`, which posts the event, the directory and the `flakelab sessions --attach <id>` line to an ntfy topic. The topic URL and token come from ~/.config/tyc/secrets.env (NTFY_URL, NTFY_TOKEN) at use time, never from the store. Redundant with the Claude app's own push where Remote Control is on; it is for Codex (whose `notify` hook in ~/.codex/config.toml calls `flakelab notify --codex`) and for anyone without the app. Off, a hook this option wrote is removed again; a hand-added one is left alone.";
+      };
+      events = mkOption {
+        type = types.listOf types.str;
+        default = [
+          "permission_prompt"
+          "idle_prompt"
+          "agent_needs_input"
+          "quota_auto_resume_pending"
+          "quota_auto_resume_fired"
+        ];
+        description = "The Notification types the hook fires on (its matcher is these joined with |).";
+      };
+    };
+
+    # mosh beside sshd on the VM (remote-sessions.md, phase 4): roaming and a
+    # sleeping phone survive; the UDP range 60000-61000 is opened by the
+    # NixOS module. Nothing for wsl, where no port can be opened from inside.
+    mosh.enable = mkOption {
+      type = types.bool;
+      default = false;
+      description = "proxmox-vm only: programs.mosh, a mosh-server beside sshd for clients on a flaky link or a changing address (a phone over WireGuard). The NixOS module opens UDP 60000-61000; sshd itself is unchanged. Ignored on wsl.";
+    };
+
     claudeMdExtra = mkOption {
       type = types.lines;
       default = "";

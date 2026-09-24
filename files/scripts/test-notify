@@ -1,0 +1,153 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for notify (files/scripts/notify): a curl stand-in on PATH
+# that records the request, a secrets.env fixture, and the three input shapes
+# (a Claude Code Notification hook on stdin, Codex's --codex JSON, --message
+# by hand). No network.
+#
+# Usage: files/scripts/test-notify
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/notify"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+export HOME="${BASE}/home"
+mkdir -p "${HOME}/.config/tyc" "${BASE}/bin"
+unset NTFY_URL NTFY_TOKEN
+
+# The curl stand-in: records the URL, the headers and the body; answers
+# FAKE_CURL_CODE (200) or fails outright with FAKE_CURL_DOWN.
+cat > "${BASE}/bin/curl" <<'STUB'
+#!/usr/bin/env zsh
+typeset url="" hdrs="" body=""
+while (( $# > 0 )); do
+  case $1 in
+    -H) hdrs+="$2"$'\n'; shift ;;
+    -o|-w|-m|-X) shift ;;
+    --data-binary) [[ "$2" == @- ]] && body="$(cat)"; shift ;;
+    -sS) ;;
+    *) url="$1" ;;
+  esac
+  shift
+done
+[[ -n "${FAKE_CURL_DOWN:-}" ]] && exit 7
+{ print -r -- "URL ${url}"; print -rn -- "${hdrs}"; print -r -- "BODY ${body}"; } > "${FAKE_LOG}"
+print -n -- "${FAKE_CURL_CODE:-200}"
+STUB
+chmod +x "${BASE}/bin/curl"
+export PATH="${BASE}/bin:${PATH}"
+export FAKE_LOG="${BASE}/request.log"
+SECRETS="${HOME}/.config/tyc/secrets.env"
+export FLAKELAB_SECRETS_ENV="${SECRETS}"
+
+typeset -i RC=0
+OUT=""; ERR=""
+run()    { OUT="$("${CMD}" "$@" 2>"${BASE}/err" </dev/null)"; RC=$?; ERR="$(<"${BASE}/err")"; }
+run_in() { OUT="$(print -r -- "$1" | "${CMD}" "${@:2}" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+logged() { cat "${FAKE_LOG}" 2>/dev/null; : > "${FAKE_LOG}" }
+
+CLAUDE_HOOK='{"session_id": "11111111-2222-3333-4444-555555555555", "transcript_path": "/x", "cwd": "/home/u/git/work dir", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"}'
+
+print -r -- "unconfigured"
+run_in "${CLAUDE_HOOK}"
+check "a hook run without NTFY_URL exits 0" "${RC}" "0"
+contains "and says why on stderr" "${ERR}" "NTFY_URL is not set"
+check "and sends nothing" "$(logged)" ""
+run --message hi
+check "a run by hand without NTFY_URL exits 2" "${RC}" "2"
+
+print -r -- ""
+print -r -- "the endpoint from secrets.env, at use time"
+print -rl -- '# secrets' 'GITLAB_TOKEN="x"' 'NTFY_URL="https://ntfy.example.com/agents"' 'NTFY_TOKEN="tk_secret"' > "${SECRETS}"
+run_in "${CLAUDE_HOOK}"
+check "a Claude Code permission prompt exits 0" "${RC}" "0"
+REQ="$(logged)"
+contains "posts to the topic" "${REQ}" "URL https://ntfy.example.com/agents"
+contains "with the tool and the directory as the title" "${REQ}" "Title: claude - work dir"
+contains "a permission prompt is high priority" "${REQ}" "Priority: 4"
+contains "and tagged as a question" "${REQ}" "Tags: question"
+contains "the token goes as a bearer" "${REQ}" "Authorization: Bearer tk_secret"
+contains "the body names the event" "${REQ}" "permission_prompt: Claude needs your permission to use Bash"
+contains "the directory" "${REQ}" "in /home/u/git/work dir"
+contains "and the line that answers it" "${REQ}" "flakelab sessions --attach 11111111-2222-3333-4444-555555555555"
+check "nothing on stdout or stderr" "${OUT}${ERR}" ""
+
+run_in "$(print -r -- "${CLAUDE_HOOK}" | jq -c '.notification_type = "idle_prompt" | .message = "Claude is waiting for your input"')"
+REQ="$(logged)"
+contains "an idle prompt is default priority" "${REQ}" "Priority: 3"
+contains "tagged robot" "${REQ}" "Tags: robot"
+run_in "$(print -r -- "${CLAUDE_HOOK}" | jq -c '.notification_type = "quota_auto_resume_fired" | .message = "resumed"')"
+contains "a quota event is tagged hourglass" "$(logged)" "Tags: hourglass"
+
+print -r -- ""
+print -r -- "the environment beats the file"
+NTFY_URL="https://other.example.com/t" NTFY_TOKEN="" run_in "${CLAUDE_HOOK}"
+REQ="$(logged)"
+contains "the URL from the environment is used" "${REQ}" "URL https://other.example.com/t"
+excludes "and no token is sent when it is empty" "${REQ}" "Authorization"
+
+print -r -- ""
+print -r -- "Codex's notify hook"
+run --codex '{"type": "agent-turn-complete", "thread-id": "0a0a0a0a-1111-2222-3333-444444444444", "turn-id": "t1", "cwd": "/home/u/git/proj", "input-messages": ["fix it"], "last-assistant-message": "Done: the fix is in place."}'
+check "exits 0" "${RC}" "0"
+REQ="$(logged)"
+contains "the title names codex and the directory" "${REQ}" "Title: codex - proj"
+contains "the body has the event and the last message" "${REQ}" "agent-turn-complete: Done: the fix is in place."
+contains "and the resume line" "${REQ}" "codex resume 0a0a0a0a-1111-2222-3333-444444444444"
+run --codex 'not json'
+check "a malformed payload still exits 0" "${RC}" "0"
+contains "and sends a bare turn-complete" "$(logged)" "BODY turn-complete"
+
+print -r -- ""
+print -r -- "by hand"
+run --title 'Backup done' --message 'payload synced' --priority 2 --tags floppy_disk
+check "exits 0" "${RC}" "0"
+REQ="$(logged)"
+contains "the title is taken as given" "${REQ}" "Title: Backup done"
+contains "the priority too" "${REQ}" "Priority: 2"
+contains "and the tags" "${REQ}" "Tags: floppy_disk"
+contains "the body is the message" "${REQ}" "BODY payload synced"
+run --message hi --priority 9
+check "a priority outside 1-5 is refused" "${RC}" "2"
+run --title only
+check "a title without a message is refused" "${RC}" "2"
+run_in 'plain text from a pipe'
+contains "plain text on stdin is sent as it is" "$(logged)" "BODY plain text from a pipe"
+run
+check "nothing on stdin and no message exits 0" "${RC}" "0"
+contains "with a note" "${ERR}" "nothing to send"
+
+print -r -- ""
+print -r -- "--dry-run and failures"
+run --dry-run --message 'would send' --title T
+check "--dry-run exits 0" "${RC}" "0"
+contains "and prints the request" "${OUT}" "POST https://ntfy.example.com/agents"
+contains "with the token masked" "${OUT}" "Authorization: Bearer ****"
+excludes "and never the token itself" "${OUT}" "tk_secret"
+check "and sends nothing" "$(logged)" ""
+FAKE_CURL_CODE=500 run_in "${CLAUDE_HOOK}"
+check "a failed post from a hook exits 0" "${RC}" "0"
+contains "and says so" "${ERR}" "failed (HTTP 500)"
+FAKE_CURL_CODE=500 run --message x
+check "a failed post by hand exits 1" "${RC}" "1"
+FAKE_CURL_DOWN=1 run --message x
+check "an unreachable endpoint by hand exits 1" "${RC}" "1"
+contains "as HTTP 000" "${ERR}" "HTTP 000"
+run --help
+check "--help exits 0" "${RC}" "0"
+run --bogus
+check "an unknown option exits 2" "${RC}" "2"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

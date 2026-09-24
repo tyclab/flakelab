@@ -241,6 +241,7 @@ all sixteen.
 | `flakelab backup`         | payload + optional shared state root                            |
 | `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
 | `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
+| `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
 | `flakelab overlay-gen`    | write the private overlay from a config                         |
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
@@ -475,7 +476,12 @@ A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session
 and attaches; close the tab, drop the SSH connection, and
 `flakelab sessions --attach` from any terminal joins it again. The table's
-`HOST` column names the window. [`remote-sessions.md`](remote-sessions.md) has
+`HOST` column names the window. `notify.enable = true;` sends a push (ntfy,
+endpoint in `secrets.env`) when a session waits on a permission or a prompt,
+with the line that answers it; `mosh.enable = true;` puts mosh beside the
+VM's sshd, and `files/config/windows/enable-openssh-host.ps1` opens a WSL
+distro's Windows host on the WireGuard subnet.
+[`remote-sessions.md`](remote-sessions.md) has
 the whole picture, the phone included.
 
 ## Proxmox VM

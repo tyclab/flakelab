@@ -107,6 +107,28 @@ let
     | if .hooks == {} then del(.hooks) else . end
   '';
 
+  # The push when a session waits on you (remote-sessions.md, phase 3): a
+  # Notification hook on the configured types runs `flakelab notify`, which
+  # reads the endpoint from secrets.env at use time. Owned by its command.
+  notifyHook = cfg.notify.enable;
+  notifyHookCmd = "${scripts.notify}/bin/notify >/dev/null 2>&1 || true";
+  notifyHookArg = lib.optionalString notifyHook "--arg notifyHook ${lib.escapeShellArg notifyHookCmd} --arg notifyMatcher ${
+    lib.escapeShellArg (lib.concatStringsSep "|" cfg.notify.events)
+  }";
+  notifyHookJq = ''
+    | .hooks = ((.hooks // {})
+        | .Notification = (((.Notification // [])
+            | map(select((.hooks // []) | any((.command // "") | contains("/bin/notify")) | not)))
+            + ${
+              if notifyHook then
+                ''[{matcher: $notifyMatcher, hooks: [{type: "command", command: $notifyHook, timeout: 15}]}]''
+              else
+                "[]"
+            })
+        | if .Notification == [] then del(.Notification) else . end)
+    | if .hooks == {} then del(.hooks) else . end
+  '';
+
   # Written only when absent, so a local override survives; the sort -V glob
   # resolves the newest cached plugin version at statusline time. The stdin
   # Claude Code hands the statusline carries the live login's rate_limits with
@@ -332,7 +354,7 @@ in
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${claudeStatuslineArg} '
+          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -345,6 +367,7 @@ in
             ${claudeRemoteControlJq}
             ${claudeStatePushJq}
             ${accountsHookJq}
+            ${notifyHookJq}
             ${claudeStatuslineJq}
             ${claudePlaywrightJq}
             ${claudeWhatsappJq}

@@ -193,6 +193,19 @@ rec {
     exec ${zsh} ${s}/accounts "$@"
   '';
 
+  # The endpoint is read from secrets.env at use time; nothing is baked in.
+  notify = pkgs.writeShellScriptBin "notify" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.jq
+        pkgs.curl
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/notify "$@"
+  '';
+
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''
     export PATH=${
       bin [

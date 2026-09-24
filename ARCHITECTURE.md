@@ -72,6 +72,12 @@ that defaults to off, because every activation here runs on every adopter's box:
   target order. The wrapper exports them as `FLAKELAB_ACCOUNTS_*`; with the
   timer on for Claude Code, a `Notification` hook on
   `quota_auto_resume_fired` runs one tick at once.
+- `notify.enable` (bool, default `false`) and `notify.events` (list) — the
+  Claude Code `Notification` hook that runs `flakelab notify`, a push to an
+  ntfy topic named in `secrets.env` (`remote-sessions.md`); owned by its
+  command, removed again when off.
+- `mosh.enable` (bool, default `false`) — proxmox-vm only: `programs.mosh`
+  beside sshd, its UDP range opened by the module.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow

@@ -434,6 +434,22 @@ excludes "--recent leaves a locked kiro session out" "${OUT}" "${SID_K}  #"
 run --recent 96
 contains "--recent <hours> widens the window" "${OUT}" "claude --resume ${SID_D}"
 
+# The state root: a session another box synced and this one has not pulled,
+# a rollout likewise, and a copy of a session this box already has.
+SID_S=99999999-aaaa-bbbb-cccc-dddddddddddd
+SID_T=88888888-aaaa-bbbb-cccc-dddddddddddd
+STATE_TX="${BASE}/state-tx"
+mkdir -p "${STATE_TX}/claude/projects/-work" "${STATE_TX}/codex/sessions/2026/09/24"
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\",\"sessionId\":\"${SID_S}\"}" > "${STATE_TX}/claude/projects/-work/${SID_S}.jsonl"
+cp "${PROJ}/${SID_C}.jsonl" "${STATE_TX}/claude/projects/-work/${SID_C}.jsonl"
+print -r -- "{\"timestamp\":\"2026-09-24T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"${SID_T}\",\"cwd\":\"${WORK}\"}}" > "${STATE_TX}/codex/sessions/2026/09/24/rollout-2026-09-24T11-00-00-${SID_T}.jsonl"
+FLAKELAB_STATE_ROOT="${STATE_TX}" run --recent
+check "--recent with a state root exits 0" "${RC}" "0"
+contains "a session synced from another box is listed, marked as not yet pulled" "${OUT}" "cd ${(q)WORK} && claude --resume ${SID_S}  # "
+contains "with the pull that makes it resumable" "$(print -r -- "$OUT" | grep "${SID_S}")" "synced, not yet pulled here: flakelab backup --state-only first"
+contains "a synced codex rollout too" "$(print -r -- "$OUT" | grep "${SID_T}")" "codex resume ${SID_T}  # "
+check "a session this box already has is listed once" "$(print -r -- "$OUT" | grep -c "${SID_C}")" "1"
+
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "one session open in two processes counts once"

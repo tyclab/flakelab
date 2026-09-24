@@ -1,0 +1,160 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# notify — a push when an agent session waits on you (remote-sessions.md,
+# phase 3). Posts one message to an ntfy topic: what happened, in which
+# directory, and the one line that answers it (`flakelab sessions --attach
+# <id>` for Claude Code, `codex resume <id>` for Codex).
+#
+# Usage:
+#   notify                      a Claude Code hook: the Notification hook's JSON on stdin
+#   notify --codex JSON         Codex's notify hook: the JSON it passes as the last argument
+#   notify --title T --message M [--priority 1-5] [--tags a,b]   by hand, or from a script
+#   notify --dry-run ...        print the request instead of sending it
+#
+# The endpoint comes from the environment or, at use time, from
+# ~/.config/tyc/secrets.env (FLAKELAB_SECRETS_ENV points the suite elsewhere):
+#   NTFY_URL     the topic URL, e.g. https://ntfy.example.com/agents
+#   NTFY_TOKEN   an access token for a protected topic (optional)
+# Nothing is stored. A hook run never fails its caller: unconfigured, offline
+# or malformed input exits 0 with a line on stderr. A run by hand exits 2 when
+# unconfigured and 1 when the post fails.
+#
+# Claude Code's Notification hook input (hook_event_name, notification_type,
+# message, session_id, cwd) is recognised on stdin; a Codex payload (type,
+# last-assistant-message, thread-id or turn-id, cwd) with --codex; anything
+# else on stdin is sent as it is. Titles are ASCII (ntfy's header rule): the
+# tool and the directory's name.
+#
+
+MODE=auto
+TITLE=""
+MESSAGE=""
+PRIORITY=""
+TAGS=""
+DRY_RUN=false
+CODEX_JSON=""
+SECRETS="${FLAKELAB_SECRETS_ENV:-${HOME}/.config/tyc/secrets.env}"
+
+usage() {
+  cat <<'USAGE'
+Usage: notify                       (a Claude Code Notification hook: JSON on stdin)
+       notify --codex JSON          (Codex's notify hook: the JSON it appends)
+       notify --title T --message M [--priority 1-5] [--tags a,b]
+       notify --dry-run ...         print the request, send nothing
+
+Posts to the ntfy topic NTFY_URL (NTFY_TOKEN for a protected one), from the
+environment or ~/.config/tyc/secrets.env at use time. A hook run exits 0
+whatever happens; by hand, 2 unconfigured, 1 when the post fails.
+USAGE
+}
+
+note() { print -ru2 -- "notify: $*" }
+
+while (( $# > 0 )); do
+  case $1 in
+    --codex) MODE=codex; CODEX_JSON="${2:-}"; shift ;;
+    --title) TITLE="${2:-}"; shift ;;
+    --message) MESSAGE="${2:-}"; shift ;;
+    --priority) PRIORITY="${2:-}"; shift ;;
+    --tags) TAGS="${2:-}"; shift ;;
+    --dry-run) DRY_RUN=true ;;
+    --help|-h) usage; exit 0 ;;
+    *) print -ru2 -- "notify: unknown option: $1"; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ -n "$TITLE" || -n "$MESSAGE" ]] && [[ "$MODE" == auto ]] && MODE=manual
+[[ -z "$PRIORITY" || "$PRIORITY" == <1-5> ]] || { print -ru2 -- "notify: --priority takes 1 to 5"; exit 2 }
+
+# --- the endpoint -------------------------------------------------------------
+
+if [[ -z "${NTFY_URL:-}" && -r "$SECRETS" ]]; then
+  # Sourced in a subshell: only the two values come out.
+  eval "$( ( set -a; source "$SECRETS" >/dev/null 2>&1; print -r -- "NTFY_URL=${(qq)NTFY_URL:-}; NTFY_TOKEN=${(qq)NTFY_TOKEN:-}" ) 2>/dev/null )"
+fi
+NTFY_URL="${NTFY_URL:-}"
+NTFY_TOKEN="${NTFY_TOKEN:-}"
+
+# --- the message --------------------------------------------------------------
+
+# ASCII for the header: the tool and the directory's name.
+ascii() { print -rn -- "$1" | LC_ALL=C tr -c '[:print:]\n' '?' }
+short() { local s="$1"; s="${s//$'\n'/ }"; (( ${#s} > 200 )) && s="${s[1,197]}..."; print -r -- "$s" }
+
+HOOK=false
+case "$MODE" in
+  manual)
+    [[ -n "$MESSAGE" ]] || { print -ru2 -- "notify: --message is required"; exit 2 }
+    TITLE="${TITLE:-flakelab}"; PRIORITY="${PRIORITY:-3}"
+    ;;
+  codex)
+    HOOK=true
+    doc="$(print -r -- "$CODEX_JSON" | jq -c . 2>/dev/null)" || doc='{}'
+    cwd="$(print -r -- "$doc" | jq -r '.cwd // empty')"
+    kind="$(print -r -- "$doc" | jq -r '.type // "turn-complete"')"
+    tid="$(print -r -- "$doc" | jq -r '."thread-id" // ."turn-id" // empty')"
+    last="$(print -r -- "$doc" | jq -r '."last-assistant-message" // empty')"
+    TITLE="$(ascii "codex - ${${cwd:t}:-codex}")"
+    MESSAGE="${kind}${last:+: $(short "$last")}"
+    [[ -n "$cwd" ]] && MESSAGE+=$'\n'"in ${cwd}"
+    [[ -n "$tid" ]] && MESSAGE+=$'\n'"codex resume ${tid}"
+    PRIORITY="${PRIORITY:-3}"; TAGS="${TAGS:-robot}"
+    ;;
+  auto)
+    HOOK=true
+    input="$(cat 2>/dev/null)"
+    doc="$(print -r -- "$input" | jq -c . 2>/dev/null)" || doc=""
+    if [[ -n "$doc" && "$(print -r -- "$doc" | jq -r '.hook_event_name // empty')" != "" ]]; then
+      cwd="$(print -r -- "$doc" | jq -r '.cwd // empty')"
+      kind="$(print -r -- "$doc" | jq -r '.notification_type // .hook_event_name')"
+      sid="$(print -r -- "$doc" | jq -r '.session_id // empty')"
+      msg="$(print -r -- "$doc" | jq -r '.message // empty')"
+      TITLE="$(ascii "claude - ${${cwd:t}:-claude}")"
+      MESSAGE="${kind}${msg:+: $(short "$msg")}"
+      [[ -n "$cwd" ]] && MESSAGE+=$'\n'"in ${cwd}"
+      [[ -n "$sid" ]] && MESSAGE+=$'\n'"flakelab sessions --attach ${sid}"
+      case "$kind" in
+        permission_prompt) PRIORITY="${PRIORITY:-4}"; TAGS="${TAGS:-question}" ;;
+        quota_auto_resume_*) PRIORITY="${PRIORITY:-3}"; TAGS="${TAGS:-hourglass}" ;;
+        *) PRIORITY="${PRIORITY:-3}"; TAGS="${TAGS:-robot}" ;;
+      esac
+    elif [[ -n "$input" ]]; then
+      TITLE="${TITLE:-flakelab}"; MESSAGE="$input"; PRIORITY="${PRIORITY:-3}"
+    else
+      note "nothing to send (no hook input on stdin, no --message)"
+      exit 0
+    fi
+    ;;
+esac
+
+# --- the post -----------------------------------------------------------------
+
+if [[ -z "$NTFY_URL" ]]; then
+  note "NTFY_URL is not set (put it in ~/.config/tyc/secrets.env); nothing sent"
+  $HOOK && exit 0 || exit 2
+fi
+
+if $DRY_RUN; then
+  print -r -- "POST ${NTFY_URL}"
+  print -r -- "Title: ${TITLE}"
+  print -r -- "Priority: ${PRIORITY}"
+  [[ -n "$TAGS" ]] && print -r -- "Tags: ${TAGS}"
+  [[ -n "$NTFY_TOKEN" ]] && print -r -- "Authorization: Bearer ****"
+  print -r -- ""
+  print -r -- "$MESSAGE"
+  exit 0
+fi
+
+typeset -a hdr
+hdr=(-H "Title: ${TITLE}" -H "Priority: ${PRIORITY}")
+[[ -n "$TAGS" ]] && hdr+=(-H "Tags: ${TAGS}")
+[[ -n "$NTFY_TOKEN" ]] && hdr+=(-H "Authorization: Bearer ${NTFY_TOKEN}")
+code="$(print -rn -- "$MESSAGE" | curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "${hdr[@]}" --data-binary @- "$NTFY_URL" 2>/dev/null)" || code=000
+if [[ "$code" == 2* ]]; then
+  exit 0
+fi
+note "post to ${NTFY_URL} failed (HTTP ${code})"
+$HOOK && exit 0 || exit 1

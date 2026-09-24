@@ -114,12 +114,15 @@ marketplace rendering `status --json`.
 
 ## Remote sessions
 
-`enhancement` · phase 1 done, the rest designed
+`enhancement` · built; the box-side verifications remain
 
 Sessions that outlive their terminal and can be reached from another device.
 Done: tmux as the session host behind `flakelab sessions --start` /
 `--attach`, Codex and Kiro in the sessions registry beside Claude Code,
-Remote Control on its own option. Open: a push when a session waits on a prompt,
-mosh and Tailscale on the VM, and the Windows-host SSH route into a WSL
-distro. [remote-sessions.md](remote-sessions.md) has the design and what to
-verify first.
+Remote Control on its own option, `flakelab notify` with its hooks, mosh on
+the VM and the Windows-host OpenSSH script for a WSL distro (both over
+WireGuard), `--recent` over the state root, and `flakelab web` as the browser
+front end. Open: the verifications
+[remote-sessions.md](remote-sessions.md) lists (a tmux-hosted session under
+Remote Control, the host route from a phone, mosh through a network change,
+the ntfy payload).

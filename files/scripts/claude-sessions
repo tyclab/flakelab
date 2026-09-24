@@ -626,7 +626,7 @@ open_tabs() {
 # at its head. A Kiro session is its registry entry, skipped while its lock
 # exists.
 print_recent() {
-  local -A live=()
+  local -A live=() seen=()
   local row tool p age sid cwd wid wname f when
   local -i n=0
   gather 2>/dev/null
@@ -638,6 +638,7 @@ print_recent() {
   for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${ACCOUNTS_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
     [[ -n "${live[claude${US}${sid}]:-}" ]] && continue
+    seen[claude${US}${sid}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
     when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
     resume_line claude "$cwd" "$sid" "$when"
@@ -647,11 +648,37 @@ print_recent() {
     sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
     [[ -n "$sid" ]] || continue
     [[ -n "${live[codex${US}${sid}]:-}" ]] && continue
+    seen[codex${US}${sid}]=1
     cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
     when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
     resume_line codex "$cwd" "$sid" "$when"
     (( ++n ))
   done
+  # The state root's synced transcripts (remote-sessions.md, phase 5): what
+  # another box left there and this one has not pulled yet. Resuming one
+  # needs the pull first; the line says so. A session already listed from
+  # this box's own copy is not repeated.
+  if [[ -n "${FLAKELAB_STATE_ROOT:-}" && -d "${FLAKELAB_STATE_ROOT}" ]]; then
+    local pull="synced, not yet pulled here: flakelab backup --state-only first"
+    for f in "${FLAKELAB_STATE_ROOT}"/claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+      sid="${f:t:r}"
+      [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
+      [[ -f "${HOME}/.claude/projects/${f:h:t}/${f:t}" ]] && continue
+      cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
+      when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+      resume_line claude "$cwd" "$sid" "${when}, ${pull}"
+      (( ++n ))
+    done
+    for f in "${FLAKELAB_STATE_ROOT}"/codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
+      sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
+      [[ -n "$sid" ]] || continue
+      [[ -n "${live[codex${US}${sid}]:-}" || -n "${seen[codex${US}${sid}]:-}" ]] && continue
+      cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
+      when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+      resume_line codex "$cwd" "$sid" "${when}, ${pull}"
+      (( ++n ))
+    done
+  fi
   for f in "${KIRO_SESSIONS}"/*.json(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
     [[ -n "${live[kiro${US}${sid}]:-}" ]] && continue

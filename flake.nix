@@ -329,6 +329,7 @@
         claude-sessions = suiteCheck "claude-sessions";
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
+        notify = suiteCheck "notify";
         # The input report reads the lock with `nix eval`, which is under test too.
         nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
         nix-doctor = suiteCheck "nix-doctor";
