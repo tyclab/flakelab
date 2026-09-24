@@ -57,6 +57,11 @@ that defaults to off, because every activation here runs on every adopter's box:
   them. Everything else `claudeSettings` asserts — attribution, the classifier
   rules, `installMethod`, `autoUpdatesChannel`, the deny floor — is
   unconditional, and the whole activation is gated on `installClaude`.
+- `claudeRemoteControl` (bool, default `false`) — `remoteControlAtStartup`
+  on its own, with the same four env vars removed, so every interactive
+  session is steerable from the Claude app without the trust bundle above;
+  `claudeAgentDefaults` implies it. Off, the key and the vars are left as the
+  user has them.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow

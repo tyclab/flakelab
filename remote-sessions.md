@@ -110,16 +110,16 @@ its TUI.
 
 ## The plan
 
-Phases, each shippable on its own. Phase 1 is on this branch.
+Phases, each shippable on its own. Phases 1 and 2 are on this branch.
 
 1. **tmux as the session host** — done: `--start`, `--attach`, the host
    column, `--open` attaching, Codex and Kiro in the registry, saves with a
    tool column.
-2. **Remote Control on its own switch.** `remoteControlAtStartup` moves out
-   of `claudeAgentDefaults` into `flakelab.claudeRemoteControl`, default
-   off, so a box can have every session steerable from the app without
-   adopting the auto-mode trust bundle, and the reverse; whichever of the two
-   is on clears the four variables Remote Control's feature flags need.
+2. **Remote Control on its own switch** — done: `flakelab.claudeRemoteControl`,
+   default off, writes `remoteControlAtStartup` and clears the four variables
+   Remote Control's feature flags need, so a box can have every session
+   steerable from the app without adopting the auto-mode trust bundle;
+   `claudeAgentDefaults` still implies it.
 3. **A push when a session waits on you.** A Claude Code `Notification` hook
    (`permission_prompt`, `idle_prompt`, `agent_needs_input`, the
    `quota_auto_resume_*` events; the hook input carries `session_id`, `cwd`,
@@ -155,11 +155,10 @@ Phases, each shippable on its own. Phase 1 is on this branch.
    what I was doing on the desktop" is one printed command on the laptop,
    forked (`--fork-session`) when both boxes may carry on.
 
-### Options (phases 2 to 4)
+### Options (phases 3 and 4)
 
 ```nix
 flakelab = {
-  claudeRemoteControl = false;   # remoteControlAtStartup on its own
   notify.enable       = false;   # the Notification hook into ntfy; endpoint from secrets.env
   mosh.enable         = false;   # proxmox-vm only
   tailscale.enable    = false;   # proxmox-vm only; Tailscale SSH on

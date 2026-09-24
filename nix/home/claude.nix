@@ -48,11 +48,17 @@ let
   ];
 
   # defaultMode and skipAutoPermissionPrompt travel together: Claude clears the
-  # consent flag whenever the mode is not auto. The four vars are deleted, not set
-  # to "0": they gate the feature-flag evaluation Remote Control needs.
+  # consent flag whenever the mode is not auto.
   claudeAgentDefaultsJq = lib.optionalString cfg.claudeAgentDefaults ''
     | .permissions.defaultMode = "auto"
     | .skipAutoPermissionPrompt = true
+  '';
+
+  # Remote Control on its own switch, which the agent bundle implies. The four
+  # vars are deleted, not set to "0": they gate the feature-flag evaluation
+  # Remote Control needs. Off, both the key and the vars are left as the user
+  # has them.
+  claudeRemoteControlJq = lib.optionalString (cfg.claudeAgentDefaults || cfg.claudeRemoteControl) ''
     | .remoteControlAtStartup = true
     | .env |= del(
         .DISABLE_TELEMETRY,
@@ -307,6 +313,7 @@ in
             | .permissions.deny = $d
             ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
+            ${claudeRemoteControlJq}
             ${claudeStatePushJq}
             ${claudeStatuslineJq}
             ${claudePlaywrightJq}

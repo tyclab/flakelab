@@ -306,6 +306,14 @@ in
       description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\", skipAutoPermissionPrompt, remoteControlAtStartup, and removal of the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would otherwise defeat the feature-flag evaluation Remote Control depends on. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the force-push deny floor) is written regardless.";
     };
 
+    # Its own switch, apart from the trust bundle above: steering a session from
+    # the Claude app is a different decision from auto-approving its tools.
+    claudeRemoteControl = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Connect Claude Code's Remote Control at the start of every interactive session (settings.remoteControlAtStartup = true), so each one is steerable from claude.ai/code and the Claude app, and remove the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would defeat the feature-flag evaluation Remote Control depends on. Off by default: the session transcript is stored on Anthropic's servers while a session is connected, which an adopter must choose. claudeAgentDefaults implies it. Needs a full claude.ai login on the box and, on Team and Enterprise, the admin toggle.";
+    };
+
     claudeMdExtra = mkOption {
       type = types.lines;
       default = "";
