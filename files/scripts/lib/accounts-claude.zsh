@@ -207,7 +207,11 @@ ACCT_CLAUDE_REFRESH_BUFFER_MS=600000
 # the stored one otherwise.
 acct_claude_creds_path() {
   local dir="$1" active="$2"
-  if [[ "$active" == true ]]; then print -r -- "${ACCT_CLAUDE_CREDS}"; else print -r -- "${dir}/credentials.json"; fi
+  case "$active" in
+    true) print -r -- "${ACCT_CLAUDE_CREDS}" ;;        # the live login, Claude Code's to refresh
+    profile) print -r -- "${dir}/.credentials.json" ;;  # a running profile's, its session's to refresh
+    *) print -r -- "${dir}/credentials.json" ;;         # the store's, ours
+  esac
 }
 
 # A lineage fingerprint: the refresh token's hash survives access-token
@@ -279,7 +283,7 @@ acct_claude_usage() {
   [[ -r "$file" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
   now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
   expires="$(jq -r '.claudeAiOauth.expiresAt // empty' "$file" 2>/dev/null)"
-  if [[ "$active" != true && "$expires" == <-> ]] && (( now_ms + ACCT_CLAUDE_REFRESH_BUFFER_MS >= expires )); then
+  if [[ "$active" == false && "$expires" == <-> ]] && (( now_ms + ACCT_CLAUDE_REFRESH_BUFFER_MS >= expires )); then
     outcome="$(acct_claude_refresh "$file")"
     [[ "$outcome" == invalid_grant ]] && { jq -cn '{ok: false, error: "invalid_grant"}'; return 0 }
   fi
@@ -289,7 +293,7 @@ acct_claude_usage() {
   code="$(curl -sS -m 10 -o "$body" -D "$hdr" -w '%{http_code}' \
     -H "Authorization: Bearer ${tok}" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
     "${ACCT_CLAUDE_USAGE_URL}" 2>/dev/null)" || code=000
-  if [[ "$code" == 401 && "$active" != true ]]; then
+  if [[ "$code" == 401 && "$active" == false ]]; then
     outcome="$(acct_claude_refresh "$file")"
     case "$outcome" in
       ok)
@@ -345,4 +349,104 @@ acct_claude_active_expired() {
   [[ "$expires" == <-> ]] || return 1
   now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
   (( expires <= now_ms ))
+}
+
+# --- profiles (accounts.md, "A second account in a second terminal") ---------
+#
+# CLAUDE_CONFIG_DIR moves the whole home: .claude.json, .credentials.json,
+# settings, projects/, sessions/, history.jsonl, keybindings.json, plugins/.
+# A profile is such a directory seeded from a stored login, with the items
+# that are not the login linked back into ~/.claude so the two homes share
+# settings, skills, and (by default) the transcripts.
+
+acct_claude_profile_var()  { print -r -- CLAUDE_CONFIG_DIR }
+acct_claude_profile_home() { print -r -- "${ACCT_CLAUDE_HOME}" }
+
+# The items shared into a profile by symlink, one per line, a directory with
+# a trailing slash; the history items only when $1 is true. Never shared:
+# .claude.json and .credentials.json (the login), sessions/ and ide/ (per
+# process), plugins/ (instance-scoped, per the design; verify 11).
+acct_claude_profile_shared() {
+  print -rl -- settings.json keybindings.json CLAUDE.md skills/ commands/ agents/
+  [[ "${1:-true}" == true ]] && print -rl -- projects/ history.jsonl
+  return 0
+}
+
+# The variables that would override the profile's login (authentication.md).
+acct_claude_scrub_vars() { print -rl -- ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_PROFILE }
+
+# The account a profile's config carries.
+acct_claude_profile_identity() { jq -r '.oauthAccount.accountUuid // empty' "$1/.claude.json" 2>/dev/null }
+
+# Seed profile DIR from the stored login in SRC: the credential verbatim, the
+# identity spliced into the profile's .claude.json (created when absent with
+# onboarding done, the theme and the user-scoped mcpServers mirrored from the
+# live config, so the profile starts as the live login would).
+acct_claude_profile_seed() {
+  local dir="$1" src="$2" live='{}' base='{}'
+  [[ -r "${src}/credentials.json" && -r "${src}/identity.json" ]] || return 1
+  (umask 077; cp -- "${src}/credentials.json" "${dir}/.credentials.json.tmp") || return 1
+  mv -f -- "${dir}/.credentials.json.tmp" "${dir}/.credentials.json" || return 1
+  [[ -r "${ACCT_CLAUDE_CONFIG}" ]] && live="$(jq -c '{theme: (.theme // null), mcpServers: (.mcpServers // {})}' "${ACCT_CLAUDE_CONFIG}" 2>/dev/null)" || live='{}'
+  [[ -s "${dir}/.claude.json" ]] && base="$(jq -c . "${dir}/.claude.json" 2>/dev/null)" || base='{}'
+  (umask 077; jq --argjson live "$live" --argjson base "$base" '
+      . as $ident
+      | $base
+      | .oauthAccount = $ident.oauthAccount
+      | .hasCompletedOnboarding = true
+      | if (.theme // "") == "" and (($ident.theme // $live.theme // "") != "") then .theme = ($ident.theme // $live.theme) else . end
+      | if (.mcpServers // {}) == {} and (($live.mcpServers // {}) != {}) then .mcpServers = $live.mcpServers else . end
+    ' "${src}/identity.json" > "${dir}/.claude.json.tmp") || { rm -f "${dir}/.claude.json.tmp"; return 1 }
+  mv -f -- "${dir}/.claude.json.tmp" "${dir}/.claude.json"
+}
+
+# Whether the profile still logs in: the files, then the tool's own answer
+# (`claude auth status --json`, exit 0 logged in, 1 not; ten seconds) when a
+# claude is on PATH, with the override variables scrubbed so an API key in
+# the shell cannot vouch for it.
+acct_claude_profile_valid() {
+  local dir="$1"
+  local -a unsets
+  [[ -r "${dir}/.credentials.json" && -r "${dir}/.claude.json" ]] || return 1
+  jq -e '.claudeAiOauth.accessToken? // empty | length > 0' "${dir}/.credentials.json" >/dev/null 2>&1 || return 1
+  [[ -n "$(acct_claude_profile_identity "$dir")" ]] || return 1
+  command -v claude >/dev/null 2>&1 || return 0
+  for v in $(acct_claude_scrub_vars); do unsets+=(-u "$v"); done
+  env "${unsets[@]}" CLAUDE_CONFIG_DIR="$dir" timeout 10 claude auth status --json >/dev/null 2>&1
+}
+
+# The profile's credential back into the store when the profile refreshed it:
+# a rotated refresh token lives in one place only, and the store must hold the
+# lineage's newest generation before anything reads it. Prints harvested when
+# it copied.
+acct_claude_profile_harvest() {
+  local dir="$1" src="$2"
+  [[ -f "${dir}/.credentials.json" && -f "${src}/credentials.json" ]] || return 0
+  [[ "${dir}/.credentials.json" -nt "${src}/credentials.json" ]] || return 0
+  cmp -s -- "${dir}/.credentials.json" "${src}/credentials.json" && return 0
+  jq -e '.claudeAiOauth.accessToken? // empty | length > 0' "${dir}/.credentials.json" >/dev/null 2>&1 || return 0
+  (umask 077; cp -- "${dir}/.credentials.json" "${src}/credentials.json.tmp") || return 1
+  mv -f -- "${src}/credentials.json.tmp" "${src}/credentials.json" && print -r -- harvested
+}
+
+# Whether the store's credential is newer than the profile's and differs: the
+# entry was refreshed or written back since the profile was seeded, so the
+# profile holds a superseded generation and must be reseeded before use.
+acct_claude_profile_stale() {
+  local dir="$1" src="$2"
+  [[ -f "${src}/credentials.json" ]] || return 1
+  [[ -f "${dir}/.credentials.json" ]] || return 0
+  [[ "${src}/credentials.json" -nt "${dir}/.credentials.json" ]] || return 1
+  ! cmp -s -- "${src}/credentials.json" "${dir}/.credentials.json"
+}
+
+# Whether a session runs on the profile: its own registry, sessions/<pid>.json,
+# names a live pid.
+acct_claude_profile_live() {
+  local dir="$1" f p
+  for f in "${dir}"/sessions/*.json(N); do
+    p="${${f:t}%.json}"
+    [[ "$p" == <-> ]] && kill -0 "$p" 2>/dev/null && return 0
+  done
+  return 1
 }

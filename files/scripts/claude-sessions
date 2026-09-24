@@ -89,6 +89,9 @@ PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
 # a new one. FLAKELAB_BOOT_ID_FILE is a test seam.
 BOOT_ID_FILE="${FLAKELAB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 REGISTRY="${HOME}/.claude/sessions"
+# A session on an accounts profile (flakelab accounts run) keeps its registry
+# entry, and with the history unshared its transcript, under that profile.
+ACCOUNTS_PROFILES="${FLAKELAB_ACCOUNTS_ROOT:-${HOME}/.local/state/flakelab/accounts}/profiles"
 KIRO_SESSIONS="${HOME}/.kiro/sessions/cli"
 # The tmux session every --start window lands in, and the prefix of the view
 # sessions --attach and --open create on it.
@@ -334,6 +337,7 @@ gather() {
       case "$tool" in
         claude)
           reg="${REGISTRY}/${p}.json"
+          [[ -r "$reg" ]] || for reg in "${ACCOUNTS_PROFILES}"/*/sessions/${p}.json(N); do break; done
           if [[ -r "$reg" ]]; then
             sid="$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)"
             started="$(jq -r '.startedAt // empty' "$reg" 2>/dev/null)"
@@ -631,7 +635,7 @@ print_recent() {
     [[ -n "$sid" ]] && live[${tool}${US}${sid}]=1
   done
   print -r -- "# not running, changed in the last ${RECENT_HOURS}h — newest first"
-  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${ACCOUNTS_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
     [[ -n "${live[claude${US}${sid}]:-}" ]] && continue
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"

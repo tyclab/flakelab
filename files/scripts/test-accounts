@@ -725,6 +725,150 @@ run auto --once --interval 5
 check "an interval under 15 seconds is refused" "${RC}" "2"
 unset FLAKELAB_NOW
 
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "profiles: run and env"
+# The claude stand-in: `auth status` answers with FAKE_CLAUDE_AUTH_RC; anything
+# else prints the environment run hands it and its arguments.
+cat > "${STUBS}/claude" <<'STUB'
+#!/usr/bin/env zsh
+if [[ "$1" == auth && "$2" == status ]]; then exit "${FAKE_CLAUDE_AUTH_RC:-0}"; fi
+print -r -- "claude ran: CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-unset} ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-unset} ANTHROPIC_PROFILE=${ANTHROPIC_PROFILE-unset} args=$*"
+STUB
+chmod +x "${STUBS}/claude"
+# The state: alice (1, home) is the live login, bob (2, work) is stored,
+# carol (3, spare) is quarantined.
+check "alice is the live login" "$(live_email)" "alice@example.com"
+mkdir -p "${HOME}/.claude/skills"
+print -r -- '{"model": "x"}' > "${HOME}/.claude/settings.json"
+print -r -- '# rules' > "${HOME}/.claude/CLAUDE.md"
+PROFILE="${STORE}/profiles/2"
+export ANTHROPIC_API_KEY=sk-must-not-leak ANTHROPIC_PROFILE=other
+run run work -- --version
+check "run exits 0 through the stand-in" "${RC}" "0"
+contains "run points the tool at the entry's profile" "${OUT}" "CLAUDE_CONFIG_DIR=${PROFILE} "
+contains "and scrubs the auth-override variables" "${OUT}" "ANTHROPIC_API_KEY=unset ANTHROPIC_PROFILE=unset"
+contains "and hands over the arguments after --" "${OUT}" "args=--version"
+contains "the first run seeds the profile and says so" "${ERR}" "seeded the profile of entry 2 (work) bob@example.com at ${PROFILE}"
+unset ANTHROPIC_API_KEY ANTHROPIC_PROFILE
+check "the profile is private" "$(stat -c %a "${PROFILE}")" "700"
+check "the profile holds bob's credential, private" "$(stat -c %a "${PROFILE}/.credentials.json") $(jq -r .claudeAiOauth.accessToken "${PROFILE}/.credentials.json")" "600 tok-b"
+check "its config carries the identity, onboarding done, the theme and the MCP servers" \
+  "$(jq -r '[.oauthAccount.accountUuid, (.hasCompletedOnboarding | tostring), .theme, (.mcpServers | keys | join(","))] | join(" ")' "${PROFILE}/.claude.json")" "${UUID_B} true dark grafana"
+check "settings are a link into the real home" "$(readlink "${PROFILE}/settings.json")" "${HOME}/.claude/settings.json"
+check "the transcripts are shared by default" "$(readlink "${PROFILE}/projects")" "${HOME}/.claude/projects"
+[[ -d "${HOME}/.claude/projects" ]] && ok "a shared directory is created in the home first, so the link never dangles" || bad "the home has no projects/ for the link"
+[[ -L "${PROFILE}/history.jsonl" && ! -e "${HOME}/.claude/history.jsonl" ]] && ok "a shared file links even before the home has one" || bad "history.jsonl was not linked"
+[[ ! -e "${PROFILE}/sessions" && ! -L "${PROFILE}/.claude.json" && ! -L "${PROFILE}/.credentials.json" ]] && ok "the login and the session registry are the profile's own" || bad "a per-instance item was linked"
+check "the manifest lists the links made" "$(jq -r '.links | join(" ")' "${PROFILE}/.flakelab-profile.json")" "settings.json keybindings.json CLAUDE.md skills/ commands/ agents/ projects/ history.jsonl"
+check "and records the entry and the tool" "$(jq -r '[.tool, .entry, .shareHistory] | join(" ")' "${PROFILE}/.flakelab-profile.json")" "claude 2 true"
+
+run env work
+check "env exits 0" "${RC}" "0"
+check "env prints the export and the unsets, for eval" "${OUT}" "export CLAUDE_CONFIG_DIR='${PROFILE}'
+unset ANTHROPIC_API_KEY
+unset ANTHROPIC_AUTH_TOKEN
+unset CLAUDE_CODE_OAUTH_TOKEN
+unset ANTHROPIC_PROFILE"
+contains "env says what it pinned, on stderr" "${ERR}" "pinned to claude 2 (work) bob@example.com: ${PROFILE}"
+excludes "a valid profile is reused, not reseeded" "${ERR}" "seeded"
+run env work --shell fish
+contains "the fish dialect exports" "${OUT}" "set -gx CLAUDE_CONFIG_DIR '${PROFILE}'"
+contains "and unsets" "${OUT}" "set -e ANTHROPIC_API_KEY"
+run env work --shell pwsh
+contains "the pwsh dialect exports" "${OUT}" "\$env:CLAUDE_CONFIG_DIR = '${PROFILE}'"
+contains "and removes" "${OUT}" "Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue"
+run env --unset claude
+check "env --unset prints the one line that unpins" "${OUT}" "unset CLAUDE_CONFIG_DIR"
+run env --unset claude --shell fish
+check "in the dialect asked for" "${OUT}" "set -e CLAUDE_CONFIG_DIR"
+run env home
+check "env for the live login unpins the shell" "$(print -r -- "$OUT" | head -1)" "unset CLAUDE_CONFIG_DIR"
+contains "and says why" "${ERR}" "entry 1 (home) alice@example.com is claude's live login"
+run run home -- -p hi
+contains "run on the live login runs the tool as is" "${OUT}" "CLAUDE_CONFIG_DIR=unset ANTHROPIC_API_KEY=unset ANTHROPIC_PROFILE=unset args=-p hi"
+run env --shell csh work
+check "an unknown shell is refused" "${RC}" "2"
+run env
+check "env without an entry is refused" "${RC}" "2"
+run env work home
+check "env with two entries is refused" "${RC}" "2"
+run run
+check "run without an entry is refused" "${RC}" "2"
+run run work --bogus
+check "run refuses an option it does not know" "${RC}" "2"
+run run nobody
+check "run on an unknown entry exits 1" "${RC}" "1"
+
+# The history unshared, then shared again; an own copy kept.
+run env work --no-share-history
+[[ ! -L "${PROFILE}/projects" && ! -L "${PROFILE}/history.jsonl" ]] && ok "--no-share-history removes the history links" || bad "the history links stayed"
+check "and the manifest forgets them" "$(jq -r '[(.links | join(" ")), (.shareHistory | tostring)] | join(" / ")' "${PROFILE}/.flakelab-profile.json")" "settings.json keybindings.json CLAUDE.md skills/ commands/ agents/ / false"
+run env work
+check "the history links return by default" "$(readlink "${PROFILE}/history.jsonl")" "${HOME}/.claude/history.jsonl"
+rm -f -- "${PROFILE:?}/CLAUDE.md"
+print -r -- 'mine' > "${PROFILE}/CLAUDE.md"
+run env work
+[[ ! -L "${PROFILE}/CLAUDE.md" && "$(<"${PROFILE}/CLAUDE.md")" == mine ]] && ok "a profile's own copy of a shared item is kept" || bad "the own copy was replaced by a link"
+
+# A login lives in one place: the profile's refresh reaches the store, the
+# store's refresh reaches the profile.
+print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-rotated", "refreshToken": "rt-tok-b2", "expiresAt": 1900000000000}}' > "${PROFILE}/.credentials.json"
+touch -d @1800000100 "${PROFILE}/.credentials.json"; touch -d @1800000000 "${STORE}/2/credentials.json"
+run env work
+check "a token the profile refreshed is harvested into the store" "$(jq -r .claudeAiOauth.accessToken "${STORE}/2/credentials.json")" "tok-b-rotated"
+contains "and said so" "${ERR}" "entry 2: stored the login its profile refreshed"
+excludes "without reseeding" "${ERR}" "seeded"
+print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-3", "refreshToken": "rt-tok-b3", "expiresAt": 1900000000000}}' > "${STORE}/2/credentials.json"
+touch -d @1800000200 "${STORE}/2/credentials.json"
+run env work
+check "a store entry refreshed since the seed reseeds the profile" "$(jq -r .claudeAiOauth.accessToken "${PROFILE}/.credentials.json")" "tok-b-3"
+contains "and says so" "${ERR}" "seeded the profile"
+jq '.oauthAccount.accountUuid = "someone-else" | .numStartups = 3' "${PROFILE}/.claude.json" > "${BASE}/t" && mv "${BASE}/t" "${PROFILE}/.claude.json"
+run env work
+check "a profile whose identity drifted is reseeded" "$(jq -r .oauthAccount.accountUuid "${PROFILE}/.claude.json")" "${UUID_B}"
+check "and its other keys survive the splice" "$(jq -r .numStartups "${PROFILE}/.claude.json")" "3"
+export FAKE_CLAUDE_AUTH_RC=1
+run env work
+contains "a profile the tool no longer accepts is reseeded" "${ERR}" "seeded the profile"
+unset FAKE_CLAUDE_AUTH_RC
+
+# A running profile session: never switched onto, never removed, never a
+# target, its token read as is.
+mkdir -p "${PROFILE}/sessions"
+print -r -- '{"pid": 4194305}' > "${PROFILE}/sessions/4194305.json"
+run switch work
+check "a registry entry for a dead pid is no session" "${RC}" "0"
+run switch home
+print -r -- "{\"pid\": $$}" > "${PROFILE}/sessions/$$.json"
+run switch work
+check "a switch onto an entry with a running profile session is refused" "${RC}" "2"
+contains "and says why" "${ERR}" "entry 2 is running in a profile session"
+check "and the live login is untouched" "$(live_email)" "alice@example.com"
+run remove work --yes
+check "remove refuses too" "${RC}" "2"
+[[ -d "${STORE}/2" ]] && ok "and removes nothing" || bad "the entry was removed"
+run
+contains "the listing marks the entry" "${OUT}" "$(row claude 2 work bob@example.com profile)"
+export FLAKELAB_NOW=1758900000
+usage_answer tok-a 90 60
+usage_answer tok-b-3 30 30
+usage_answer tok-b-prof 30 30
+print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-prof", "refreshToken": "rt-tok-b3", "expiresAt": 1}}' > "${PROFILE}/.credentials.json"
+touch -d @1800000300 "${PROFILE}/.credentials.json"
+jq '.entries["1"].nextPollAt = 0 | .entries["2"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+: > "${FAKE_CURL}/requests.log"
+run --fetch
+contains "a running profile's usage is read with the profile's token" "$(cut -d' ' -f2 "${FAKE_CURL}/requests.log" | tr '\n' ' ')" "tok-b-prof"
+excludes "and its expired token is left to that session to refresh" "$(<"${FAKE_CURL}/requests.log")" "oauth/token"
+run auto --once --json
+check "the engine never targets it" "$(print -r -- "$OUT" | jq -r 'select(.event == "blocked") | .reason')" "no-candidates"
+rm -f -- "${PROFILE:?}/sessions/$$.json"
+run remove work --yes
+check "with the session gone, remove takes the entry" "${RC}" "0"
+[[ ! -d "${PROFILE}" ]] && ok "and the profile with it" || bad "the profile directory stayed"
+unset FLAKELAB_NOW
+
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

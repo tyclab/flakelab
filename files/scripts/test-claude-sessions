@@ -465,6 +465,22 @@ print -rl -- "# doubled by an older save" "${WORK}  ${SID_A}" "${WORK}  ${SID_A}
 run --resume "${BASE}/doubled.txt"
 check "a doubled saved file resumes once" "$(print -r -- "$OUT" | grep -c 'claude --resume')" "1"
 
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "a session on an accounts profile (flakelab accounts run)"
+SID_P=facefeed-0000-0000-0000-000000000009
+PROFILE="${HOME}/.local/state/flakelab/accounts/profiles/2"
+mkdir -p "${PROFILE}/sessions" "${PROFILE}/projects/-other"
+print -r -- "{\"pid\":300,\"sessionId\":\"${SID_P}\",\"cwd\":\"${BASE}/other\",\"startedAt\":${NOW_MS}}" > "${PROFILE}/sessions/300.json"
+run
+contains "pid 300 takes its id from the profile's own registry" "${OUT}" "claude  300      0m      ${SID_P}"
+excludes "and is no longer noted as id-less" "${ERR}" "claude pid 300"
+SID_Q=facefeed-0000-0000-0000-000000000010
+print -r -- "{\"type\":\"user\",\"cwd\":\"${BASE}/other\"}" > "${PROFILE}/projects/-other/${SID_Q}.jsonl"
+run --recent
+contains "--recent reads a transcript a profile kept for itself" "${OUT}" "claude --resume ${SID_Q}  # "
+excludes "and leaves the running profile session out" "${OUT}" "${SID_P}"
+
 run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus

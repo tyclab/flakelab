@@ -552,16 +552,31 @@ copy of a shared item keeps it; a manifest lists the links this command made,
 and only those are ever removed.
 
 A reused profile is validated the tool's way (`claude auth status --json`,
-`codex login status`, `kiro-cli whoami`; ten-second timeout) and reseeded when
-that fails. `run` scrubs the tool's auth-override variables from the
-environment (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-`CLAUDE_CODE_OAUTH_TOKEN` and the two file-descriptor variants; `OPENAI_API_KEY`;
-`KIRO_API_KEY`), then execs the tool with the arguments after `--`. `env`
-prints the export and the matching `unset` lines, notices on stderr, for
+exit 0 logged in; `codex login status`; `kiro-cli whoami`; ten-second
+timeout, skipped when the tool is not on PATH) and reseeded when that fails,
+when its identity is not the entry's, or when the store's credential is newer
+than the profile's (the entry was refreshed or written back since the seed).
+`run` scrubs the tool's auth-override variables from the environment
+(`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`ANTHROPIC_PROFILE`; `OPENAI_API_KEY`; `KIRO_API_KEY`), then execs the tool
+with the arguments after `--`. `env` prints the export and the matching
+`unset` lines (`--shell sh|fish|pwsh`), notices on stderr, for
 `eval "$(flakelab accounts env work)"`; `env --unset <tool>` prints the one
-`unset`. A live profile session is detected the way `flakelab sessions`
-detects any session: the tool's session registry where it has one, the
-process table otherwise.
+`unset`. Either verb on the entry that is the live login runs the tool as it
+is, or prints the unset: a login lives in one place at a time, and a profile
+of the live account would hold its refresh lineage twice.
+
+That rule is the whole safety story of profiles, because a refresh rotates
+the token and the old generation dies. So: a profile that refreshed its token
+is harvested back into the store (newer file, different bytes) before the
+store is read by anything (`run`, `env`, a fetch, the engine's freshen); an
+entry whose profile has a running session is never switched onto, never
+removed, never a target of the engine, and its usage is polled with the
+profile's own token, never refreshed by us; and a store entry refreshed since
+the seed reseeds the profile before use. A live profile session is detected
+from the profile's own session registry (`sessions/<pid>.json` under the
+profile, a live pid), which is what `flakelab sessions` reads too, so a
+profile session shows in its table with its id.
 
 ### Statusline and doctor
 
@@ -631,7 +646,9 @@ Phases, each shippable on its own:
    `auto.log` in the store, the `flakelab.accounts.*` options, the
    `flakelab-accounts-autoswitch` user timer and the `Notification` hook on
    `quota_auto_resume_fired`.
-4. Profiles: `run`, `env`.
+4. Profiles: `run`, `env`. **Done**: `profiles/<id>/` with the manifest,
+   the harvest and reseed rules, the refusals on a running profile session,
+   the profile-aware fetch, `flakelab sessions` reading profile registries.
 5. The Codex adapter: `add`, `switch` with the running-process refusal,
    profiles, then usage through `app-server` and the engine behind
    `autoSwitchTools`.
@@ -684,3 +701,8 @@ Items 1 to 5 are Claude Code, 6 and 7 Codex, 8 to 10 Kiro.
     what two monitoring tools use; confirm the region routing for an EU
     profile (`q.eu-central-1.amazonaws.com` in one of them) and that the
     profile ARN in the `state` table is the one the token is entitled to.
+11. **Whether `plugins/` can be shared into a profile.** The design keeps it
+    per instance, so a profile session starts without the marketplace
+    plugins (the statusline among them) until `claude plugin install` in
+    that profile; if two processes on one `plugins/` prove harmless, the
+    shared list gains it.

@@ -463,9 +463,11 @@ on with their next message. The listing shows each login's cached windows,
 `switch --soonest claude` takes the one whose week renews first, and
 `accounts.autoSwitchInterval = "2min";` runs `flakelab accounts auto` on a
 timer that moves the live login before it hits a limit (`--dry-run` shows
-what it would do). The store is `~/.local/state/flakelab/accounts` (not yet
-carried by `flakelab backup`); profiles and the Codex and Kiro adapters are
-the next phases in [`accounts.md`](accounts.md).
+what it would do). `flakelab accounts run work` runs a second account in a
+second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
+pins a shell to it. The store is `~/.local/state/flakelab/accounts` (not yet
+carried by `flakelab backup`); the Codex and Kiro adapters are the next phases
+in [`accounts.md`](accounts.md).
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session

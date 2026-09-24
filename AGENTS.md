@@ -57,9 +57,12 @@ the private overlay `flakelab-config`, which imports this flake via
     `auto [--once] [--dry-run] [--json]` is the engine
     (`files/scripts/lib/accounts-auto.jq`, pure jq over one document) that
     switches before a limit; `flakelab.accounts.autoSwitchInterval` schedules
-    it, the other `flakelab.accounts.*` options set its bars. The adapter
-    contract, usage, the engine's rules and the other tools are in
-    `accounts.md`. Not yet carried by `flakelab backup`.
+    it, the other `flakelab.accounts.*` options set its bars. `run <entry>
+[-- args]` and `env <entry> [--shell sh|fish|pwsh]` give an entry a
+    profile of its own (`profiles/<id>/`, `CLAUDE_CONFIG_DIR`) beside the
+    live login; an entry with a running profile session is never switched
+    onto or targeted. The adapter contract, usage, the engine's rules and the
+    other tools are in `accounts.md`. Not yet carried by `flakelab backup`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,

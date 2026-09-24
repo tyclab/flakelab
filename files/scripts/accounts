@@ -26,6 +26,12 @@ set -uo pipefail
 #   accounts status [--json]                 per tool: the active entry, whether the
 #                                            live login still matches it, its cached
 #                                            windows; reads no network
+#   accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
+#                                            the tool on that entry's own profile,
+#                                            beside the live login
+#   accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history]
+#   accounts env --unset <tool>              the lines that pin a shell to a profile,
+#                                            for eval; --unset the one that unpins
 #
 # The store:
 #   accounts.json        the roster: version, active per tool, next id, entries
@@ -35,6 +41,8 @@ set -uo pipefail
 #   auto.json            the engine's state: cooldown, unhealthy ticks, idle hold
 #   auto.log             the engine's events, one JSON object per line, rotated at 1 MiB
 #   unclaimed/<ts>/      a live credential a switch could not attribute
+#   profiles/<id>/       a private home per entry for run / env: the login, and
+#                        links into the real home for everything shared
 #   lock                 flock; every writer takes it first
 #
 # Usage: each window has a class — session (Claude's 5h), week (7d), model (a
@@ -111,6 +119,9 @@ Usage: accounts [--json] [--fetch]
        accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
                      [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
        accounts status [--json]
+       accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
+       accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
+       accounts env --unset <tool> [--shell sh|fish|pwsh]
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
               plan is due first; --json for one document
@@ -129,6 +140,13 @@ Usage: accounts [--json] [--fetch]
               every --interval seconds until Ctrl-C
   status      per tool: the active entry, whether the live login is still the
               one the roster thinks, and its cached windows; reads no network
+  run         the tool on the entry's own profile (profiles/<id>/, seeded from
+              the store, settings and skills linked from the real home, the
+              transcripts too unless --no-share-history) with the arguments
+              after --; the live login is untouched and the two run side by side
+  env         the export that pins this shell to that profile and the unsets
+              of the tool's auth-override variables: eval "$(accounts env work)";
+              --unset <tool> prints the line that unpins it
 
 Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
 with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
@@ -298,7 +316,12 @@ fetch_entry() {
   [[ "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id] // empty')" == "" ]] || return 0
   active=false
   [[ "$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" '.active[$tool] // empty')" == "$id" ]] && active=true
-  result="$(acct_${tool}_usage "${STORE}/${id}" "$active")"
+  if [[ "$active" == false ]] && profile_live "$id"; then
+    harvest_profile "$id"
+    result="$(acct_${tool}_usage "$(profile_dir "$id")" profile)"
+  else
+    result="$(acct_${tool}_usage "${STORE}/${id}" "$active")"
+  fi
   entry="$(print -r -- "$cache" | jq -c --arg id "$id" '.entries[$id] // {}')"
   prev_i="$(print -r -- "$entry" | jq -r '.intervalS // empty')"
   recent429=false
@@ -445,6 +468,8 @@ do_switch() {
   need_adapter "$tool"
   [[ -r "${STORE}/${id}/credentials.json" || -r "${STORE}/${id}/auth.json" || -r "${STORE}/${id}/token.json" ]] ||
     die "entry ${id} has no stored login; add it again with: flakelab accounts add ${tool}"
+  profile_live "$id" && refuse "entry ${id} is running in a profile session (flakelab accounts run); a login lives in one place at a time. Finish that session or pick another entry. Nothing changed."
+  harvest_profile "$id"
   if [[ "$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool] // empty')" == "$id" ]]; then
     live="$(acct_${tool}_identity 2>/dev/null)" && [[ "$(print -r -- "$live" | jq -r '.id')" == "$(entry_field "$id" id)" ]] && {
       print -r -- "Already on ${tool} $(entry_name "$id")"; return 0 }
@@ -598,6 +623,7 @@ cmd_remove() {
   take_lock
   id="$(resolve "$target")" || exit $?
   name="$(entry_name "$id")"
+  profile_live "$id" && refuse "entry ${id} is running in a profile session; finish it first. Nothing changed."
   if ! $yes; then
     [[ -t 0 && -t 1 ]] || refuse "remove ${id} needs --yes when not at a terminal"
     print -rn -- "Remove ${name} and its stored login? [y/N] "
@@ -609,7 +635,7 @@ cmd_remove() {
   roster="$(print -r -- "$roster" | jq --arg id "$id" --arg tool "$tool" '
     del(.accounts[$id]) | if (.active[$tool] // null) == ($id | tonumber) then .active[$tool] = null else . end')"
   write_roster "$roster" || die "cannot write ${ROSTER}"
-  rm -rf -- "${STORE}/${id}"
+  rm -rf -- "${STORE:?}/${id:?}" "${PROFILES:?}/${id:?}"
   print -r -- "Removed ${name}"
   [[ "$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool]')" == null ]] &&
     note "${tool}'s live login is no longer in the roster; add it again with: flakelab accounts add ${tool}"
@@ -659,10 +685,6 @@ live_profiles() {
   print -r -- "$out"
 }
 
-# A profile session is live when its registry names a live pid; without
-# profiles (this phase) nothing is.
-profile_live() { [[ -d "${STORE}/profiles/$1/sessions" ]] && ls "${STORE}/profiles/$1/sessions"/*.json >/dev/null 2>&1 }
-
 # Run the engine for one pass and print its document.
 run_engine() {
   local tool="$1" pass="$2" state="$3" expired="$4" unmanaged="$5"
@@ -678,6 +700,7 @@ run_engine() {
 freshen_entry() {
   local id="$1" tool
   tool="$(entry_field "$id" tool)"
+  harvest_profile "$id"
   acct_${tool}_freshen "${STORE}/${id}"
 }
 
@@ -791,6 +814,174 @@ cmd_auto() {
   done
 }
 
+# --- profiles ------------------------------------------------------------------
+#
+# run and env give an entry a home of its own, profiles/<id>/, and point the
+# tool at it through the adapter's variable; the live login is untouched and
+# the two run side by side. The profile holds the login; everything else the
+# adapter lists is a symlink into the real home, made here and recorded in a
+# manifest so only those links are ever removed. A login lives in one place
+# at a time: a profile that refreshed its token holds the lineage's newest
+# generation and is harvested back into the store before the store is read,
+# a store entry refreshed or written back since the profile was seeded
+# reseeds the profile, and an entry with a running profile session is never
+# switched onto, never a target of the engine and never refreshed by us.
+
+PROFILES="${STORE}/profiles"
+profile_dir() { print -r -- "${PROFILES}/$1" }
+
+# Whether a session runs on entry $1's profile.
+profile_live() {
+  local id="$1" tool dir
+  dir="$(profile_dir "$id")"; [[ -d "$dir" ]] || return 1
+  tool="$(entry_field "$id" tool)"; has_adapter "$tool" || return 1
+  acct_${tool}_profile_live "$dir"
+}
+
+# The profile's newest credential back into the store, when it is newer.
+harvest_profile() {
+  local id="$1" tool dir
+  dir="$(profile_dir "$id")"; [[ -d "$dir" ]] || return 0
+  tool="$(entry_field "$id" tool)"; has_adapter "$tool" || return 0
+  if [[ "$(acct_${tool}_profile_harvest "$dir" "${STORE}/${id}")" == harvested ]]; then
+    note "entry ${id}: stored the login its profile refreshed"
+    lift_quarantine "$id"
+  fi
+  return 0
+}
+
+# Whether entry $1 is its tool's live login right now.
+entry_is_live() {
+  local id="$1" tool live
+  tool="$(entry_field "$id" tool)"
+  live="$(acct_${tool}_identity 2>/dev/null)" || return 1
+  [[ "$(print -r -- "$live" | jq -r '.id')" == "$(entry_field "$id" id)" ]]
+}
+
+# Give entry $1 a private home: create it, validate or reseed it (share the
+# history when $2, reseed regardless when $3), link the shared items, write
+# the manifest. Prints the directory.
+ensure_profile() {
+  local id="$1" share="${2:-true}" reseed="${3:-false}" tool dir home manifest item target links='[]' seeded=false at
+  local -a wanted
+  tool="$(entry_field "$id" tool)"
+  need_adapter "$tool"
+  dir="$(profile_dir "$id")"; home="$(acct_${tool}_profile_home)"; manifest="${dir}/.flakelab-profile.json"
+  (umask 077; mkdir -p -- "$dir") || die "cannot create ${dir}"
+  chmod 700 -- "$dir" 2>/dev/null
+  [[ -f "$manifest" ]] && links="$(jq -c '.links // []' "$manifest" 2>/dev/null)" || links='[]'
+  at="$(jq -r '.seededAt // empty' "$manifest" 2>/dev/null)"
+  harvest_profile "$id"
+  if $reseed || acct_${tool}_profile_stale "$dir" "${STORE}/${id}" || ! acct_${tool}_profile_valid "$dir" ||
+     [[ "$(acct_${tool}_profile_identity "$dir")" != "$(entry_field "$id" id)" ]]; then
+    acct_${tool}_profile_live "$dir" && ! $reseed &&
+      die "entry ${id}'s profile has a running session but no longer matches its stored login; finish the session, then: flakelab accounts run ${id} --reseed"
+    acct_${tool}_profile_seed "$dir" "${STORE}/${id}" ||
+      die "cannot seed the profile of entry ${id} from its stored login; add it again with: flakelab accounts add ${tool}"
+    seeded=true; at="$(date -u -d "@$(now)" +%Y-%m-%dT%H:%M:%SZ)"
+  fi
+  wanted=("${(f)$(acct_${tool}_profile_shared "$share")}")
+  # Links made earlier and no longer wanted (the history unshared): removed.
+  for item in "${(f)$(print -r -- "$links" | jq -r '.[]')}"; do
+    [[ -n "$item" ]] || continue
+    (( ${wanted[(Ie)$item]} )) && continue
+    [[ -L "${dir:?}/${item%/}" ]] && rm -f -- "${dir:?}/${item%/}"
+    links="$(print -r -- "$links" | jq -c --arg i "$item" 'map(select(. != $i))')"
+  done
+  # A link into the real home for each shared item the profile has no own
+  # copy of; a directory is created there first so the link never dangles.
+  for item in "${wanted[@]}"; do
+    target="${dir}/${item%/}"
+    [[ -e "$target" || -L "$target" ]] && continue
+    [[ "$item" == */ ]] && mkdir -p -- "${home}/${item%/}" 2>/dev/null
+    ln -s -- "${home}/${item%/}" "$target" || die "cannot link ${target}"
+    links="$(print -r -- "$links" | jq -c --arg i "$item" 'if index($i) then . else . + [$i] end')"
+  done
+  (umask 077; jq -n --arg tool "$tool" --argjson id "$id" --argjson links "$links" --argjson share "$share" --arg at "${at:-}" \
+    '{version: 1, tool: $tool, entry: $id, links: $links, shareHistory: $share, seededAt: (if $at == "" then null else $at end)}' > "${manifest}.tmp") &&
+    mv -f -- "${manifest}.tmp" "$manifest" || die "cannot write ${manifest}"
+  $seeded && note "seeded the profile of entry $(entry_name "$id") at ${dir}"
+  print -r -- "$dir"
+}
+
+cmd_run() {
+  local id tool share=true reseed=false dir v
+  local -a args unsets
+  [[ -n "${1:-}" && "$1" != -* ]] || refuse "run needs an entry: accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]"
+  id="$(resolve "$1")" || exit 1; shift
+  while (( $# > 0 )); do
+    case $1 in
+      --no-share-history) share=false ;;
+      --reseed) reseed=true ;;
+      --) shift; args=("$@"); break ;;
+      *) refuse "unknown option for run: $1 (the tool's own arguments go after --)" ;;
+    esac
+    shift
+  done
+  tool="$(entry_field "$id" tool)"; need_adapter "$tool"
+  for v in $(acct_${tool}_scrub_vars); do unsets+=(-u "$v"); done
+  if entry_is_live "$id"; then
+    note "entry $(entry_name "$id") is ${tool}'s live login; running it as is"
+    exec env "${unsets[@]}" -u "$(acct_${tool}_profile_var)" "$(acct_${tool}_process)" "${args[@]}"
+  fi
+  take_lock
+  dir="$(ensure_profile "$id" "$share" "$reseed")" || exit 1
+  exec 9>&-
+  exec env "${unsets[@]}" "$(acct_${tool}_profile_var)=${dir}" "$(acct_${tool}_process)" "${args[@]}"
+}
+
+# One line of shell, in the dialect asked for.
+sh_export() {
+  case "$1" in
+    fish) print -r -- "set -gx $2 '${3//\'/\\\'}'" ;;
+    pwsh) print -r -- "\$env:$2 = '${3//\'/\'\'}'" ;;
+    *) print -r -- "export $2=${(qq)3}" ;;
+  esac
+}
+sh_unset() {
+  case "$1" in
+    fish) print -r -- "set -e $2" ;;
+    pwsh) print -r -- "Remove-Item Env:$2 -ErrorAction SilentlyContinue" ;;
+    *) print -r -- "unset $2" ;;
+  esac
+}
+
+cmd_env() {
+  local id="" target="" tool shell=sh share=true reseed=false unset_tool="" dir v
+  while (( $# > 0 )); do
+    case $1 in
+      --shell) [[ "${2:-}" == (sh|fish|pwsh) ]] || refuse "--shell takes sh, fish or pwsh"; shell="$2"; shift ;;
+      --no-share-history) share=false ;;
+      --reseed) reseed=true ;;
+      --unset) [[ -n "${2:-}" ]] || refuse "--unset needs a tool"; unset_tool="$2"; shift ;;
+      -*) refuse "unknown option for env: $1" ;;
+      *) [[ -z "$target" ]] || refuse "env takes one entry"; target="$1" ;;
+    esac
+    shift
+  done
+  if [[ -n "$unset_tool" ]]; then
+    [[ -z "$target" ]] || refuse "--unset takes a tool, not an entry"
+    need_adapter "$unset_tool"
+    sh_unset "$shell" "$(acct_${unset_tool}_profile_var)"
+    return 0
+  fi
+  [[ -n "$target" ]] || refuse "env needs an entry: accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh], or env --unset <tool>"
+  id="$(resolve "$target")" || exit 1
+  tool="$(entry_field "$id" tool)"; need_adapter "$tool"
+  if entry_is_live "$id"; then
+    note "entry $(entry_name "$id") is ${tool}'s live login; this shell is unpinned to it"
+    sh_unset "$shell" "$(acct_${tool}_profile_var)"
+  else
+    take_lock
+    dir="$(ensure_profile "$id" "$share" "$reseed")" || exit 1
+    flock -u 9
+    note "pinned to ${tool} $(entry_name "$id"): ${dir}"
+    sh_export "$shell" "$(acct_${tool}_profile_var)" "$dir"
+  fi
+  for v in $(acct_${tool}_scrub_vars); do sh_unset "$shell" "$v"; done
+  return 0
+}
+
 # --- reports ---------------------------------------------------------------------
 
 # One row per entry: tool US id US alias US label US org US flags, in id order.
@@ -828,6 +1019,7 @@ cmd_list() {
   fi
   printf '%-7s %-4s %-12s %-32s %-16s %s\n' TOOL ID ALIAS LABEL STATE USAGE
   while IFS="$US" read -r tool id alias label org act dis; do
+    profile_live "$id" && act="${act:+${act} }profile"
     printf '%-7s %-4s %-12s %-32s %-16s %s\n' "$tool" "$id" "${alias:--}" "$label" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")"
     (( n++ ))
   done < <(rows)
@@ -882,6 +1074,8 @@ case "${1:-}" in
   remove|rm)  shift; cmd_remove "$@" ;;
   auto)       shift; cmd_auto "$@" ;;
   status)     shift; cmd_status "$@" ;;
+  run)        shift; cmd_run "$@" ;;
+  env)        shift; cmd_env "$@" ;;
   --help|-h|help) usage ;;
   *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;
 esac
