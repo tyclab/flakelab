@@ -56,10 +56,16 @@ Mechanics worth knowing:
   session, named `<tool>-<directory>`. A terminal never attaches `agents`
   itself: `--attach` and `--open` create a grouped session (a "view",
   `agents-<window>-<pid>`) that shares the windows but has its own current
-  window, so two terminals can look at two windows. A view is set to go away
-  with its last client (`destroy-unattached keep-last`; a tmux before 3.4
-  leaves it behind, harmlessly). Inside tmux already, `--attach` switches the
-  client instead of nesting.
+  window, so two terminals can look at two windows. A view goes away with
+  its client through a `client-detached` hook that kills it (not
+  `destroy-unattached`: since tmux 3.4 that option destroys a detached
+  session as soon as the command that set it disconnects, before the
+  terminal attaches). Inside tmux already, `--attach` switches the client
+  instead of nesting. A window's command runs with the tmux server's
+  environment, and the server is born by whoever starts the first window,
+  so `--start` hands the window the caller's PATH (`-e`): the tool resolves
+  the same way it did for the caller, whether the server came from a
+  terminal, the dashboard's service or ttyd.
 - **The host column.** A process is placed by walking its parents until one
   is the pane process of an `agents` window (`tmux list-panes -a`), so a
   session started by hand inside a window is found too, not only `--start`'s.

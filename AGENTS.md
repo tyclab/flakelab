@@ -55,7 +55,8 @@ the private overlay `flakelab-config`, which imports this flake via
     `disable`/`enable`, `remove --yes`, `status [--json]`. Phase 1 ships the
     Claude Code adapter (`files/scripts/lib/accounts-claude.zsh`).
     `auto [--once] [--dry-run] [--json]` is the engine
-    (`files/scripts/lib/accounts-auto.jq`, pure jq over one document) that
+    (`files/scripts/lib/accounts-auto.jq`, pure jq over one document, the
+    headroom defs shared with the script in `lib/accounts-headroom.jq`) that
     switches before a limit; `flakelab.accounts.autoSwitchInterval` schedules
     it, the other `flakelab.accounts.*` options set its bars. `run <entry>
 [-- args]` and `env <entry> [--shell sh|fish|pwsh]` give an entry a

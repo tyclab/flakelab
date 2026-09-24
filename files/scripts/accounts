@@ -259,34 +259,24 @@ write_usage() {
   chmod 600 "$tmp" && mv -f -- "$tmp" "$USAGE"
 }
 
-# jq: the headroom of an entry's cached windows on the three axes, and whether
-# the figure is trustworthy. $mw is the model-window filter, $now the clock.
-HEADROOM_JQ='
-  def counted: if $mw == "all" then . else ($mw | split(",") | map(ascii_downcase)) as $w | select((.label | ascii_downcase) as $l | $w | index($l)) end;
-  def axis(c): [.windows[]? | select(.class == c) | .pct] | if length == 0 then null else (100 - max) end;
-  def modelaxis: [.windows[]? | select(.class == "model") | counted | .pct] | if length == 0 then null else (100 - max) end;
-  def least(a; b): if a == null then b elif b == null then a elif b < a then b else a end;
-  def headroom:
-    (.fetchedAt // null) as $f
-    | {session: axis("session"), week: axis("week"), month: axis("month"), model: modelaxis}
-    | .weekly = least(.week; .model)
-    | .binding = least(.session; .weekly)
-    | .age = (if $f == null then null else ($now - $f) end)
-    | .known = (.binding != null and .age != null and .age <= 300);
-'
+# jq: the headroom of an entry's cached windows, from the module the engine
+# uses too (lib/accounts-headroom.jq, one definition of known and of each
+# axis); $mw is the model-window filter, $now the clock. Every call passes
+# -L "${LIB}" so the include resolves.
+LIB="${SCRIPT_DIR}/lib"
+HEADROOM_JQ='include "accounts-headroom"; def headroom: headroom($now; $mw); def counted: counted($mw);'
 
 # The headroom of entry $1 as one JSON object (empty windows when unfetched).
 entry_headroom() {
-  print -r -- "$(read_usage)" | jq -c --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"'
+  print -r -- "$(read_usage)" | jq -c --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
     (.entries[$id] // {}) | headroom'
 }
 
 # The earliest reset among an entry's weekly windows (week and counted model),
 # as an epoch, or empty.
 entry_weekly_reset() {
-  print -r -- "$(read_usage)" | jq -r --arg id "$1" --arg mw "$MODEL_WINDOWS" "${HEADROOM_JQ}"'
-    [ (.entries[$id].windows // [])[] | select(.class == "week" or (.class == "model" and (counted | length > 0))) | .resetsAtEpoch | numbers ]
-    | if length == 0 then empty else min end'
+  print -r -- "$(read_usage)" | jq -r -L "${LIB}" --arg id "$1" --arg mw "$MODEL_WINDOWS" 'include "accounts-headroom";
+    (.entries[$id] // {}) | weeklyReset($mw) // empty'
 }
 
 # The next poll for an entry just fetched: the plan from accounts.md.
@@ -341,9 +331,9 @@ fetch_entry() {
   recent429=false
   (( $(print -r -- "$entry" | jq -r '.recent429Until // 0') > $(now) )) && recent429=true
   if [[ "$(print -r -- "$result" | jq -r '.ok')" == true ]]; then
-    prev_pct="$(print -r -- "$entry" | jq -r --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"' headroom | .binding | if . == null then empty else (100 - .) end')"
+    prev_pct="$(print -r -- "$entry" | jq -r --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"' headroom | .binding | if . == null then empty else (100 - .) end')"
     entry="$(print -r -- "$entry" | jq -c --argjson r "$result" --argjson now "$(now)" '. + {windows: $r.windows, fetchedAt: $now, failures: 0, lastError: null, backoffUntil: 0}')"
-    new_pct="$(print -r -- "$entry" | jq -r --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"' headroom | .binding | if . == null then empty else (100 - .) end')"
+    new_pct="$(print -r -- "$entry" | jq -r --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"' headroom | .binding | if . == null then empty else (100 - .) end')"
     at_limit=false; [[ -n "$new_pct" ]] && (( ${new_pct%.*} >= 100 )) && at_limit=true
     next_reset="$(print -r -- "$entry" | jq -r --argjson now "$(now)" '[.windows[] | .resetsAtEpoch | numbers | select(. > $now)] | if length == 0 then empty else min end')"
     limiting="$(print -r -- "$entry" | jq -r '[.windows[] | select(.pct >= 100) | .resetsAtEpoch | numbers] | if length == 0 then empty else max end')"
@@ -366,7 +356,7 @@ fetch_entry() {
       else (( backoff < EDGE_BACKOFF_S )) && backoff=$EDGE_BACKOFF_S; fi
       entry="$(print -r -- "$entry" | jq -c --argjson u "$(( $(now) + RECENT_429_S ))" '. + {recent429Until: $u}')"
     fi
-    entry="$(print -r -- "$entry" | jq -c --argjson f "$fails" --arg e "$err" --argjson n "$(( $(now) + backoff ))" '. + {failures: $f, lastError: $e, nextPollAt: $n, lastErrorAt: '"$(now)"'}')"
+    entry="$(print -r -- "$entry" | jq -c --argjson f "$fails" --arg e "$err" --argjson n "$(( $(now) + backoff ))" '. + {failures: $f, lastError: $e, nextPollAt: $n, backoffUntil: $n, lastErrorAt: '"$(now)"'}')"
   fi
   cache="$(print -r -- "$cache" | jq --arg id "$id" --argjson e "$entry" '.entries[$id] = $e')"
   write_usage "$cache" || die "cannot write ${USAGE}"
@@ -412,7 +402,7 @@ lift_quarantine() {
 # The usage column of the listing.
 usage_text() {
   local id="$1"
-  print -r -- "$(read_usage)" | jq -r --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"'
+  print -r -- "$(read_usage)" | jq -r --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
     def age: if . == null then "" elif . < 60 then " (\(.)s)" elif . < 3600 then " (\(. / 60 | floor)m)" else " (\(. / 3600 | floor)h)" end;
     if .quarantine[$id] then "quarantined (\(.quarantine[$id].reason))"
     else (.entries[$id] // {}) as $e
@@ -489,7 +479,7 @@ do_switch() {
   roster="$(read_roster)"
   tool="$(print -r -- "$roster" | jq -r --arg id "$id" '.accounts[$id].tool')"
   need_adapter "$tool"
-  [[ -r "${STORE}/${id}/credentials.json" || -r "${STORE}/${id}/auth.json" || -r "${STORE}/${id}/token.json" ]] ||
+  [[ -r "${STORE}/${id}/$(acct_${tool}_files | head -n 1)" ]] ||
     die "entry ${id} has no stored login; add it again with: flakelab accounts add ${tool}"
   profile_live "$id" && refuse "entry ${id} is running in a profile session (flakelab accounts run); a login lives in one place at a time. Finish that session or pick another entry. Nothing changed."
   harvest_profile "$id"
@@ -498,10 +488,24 @@ do_switch() {
       print -r -- "Already on ${tool} $(entry_name "$id")"; return 0 }
   fi
   acct_${tool}_lock || refuse "${ACCT_LOCK_REASON:-${tool} cannot be switched right now. Nothing changed.}"
+  # A signal mid-transaction releases the tool's locks (their toucher would
+  # otherwise keep them fresh) before the exit; the live login is whatever
+  # step completed, each step atomic.
+  trap "acct_${tool}_unlock; exit 130" INT TERM HUP
   {
     acct_${tool}_snapshot_live || { acct_${tool}_unlock; die "cannot read the live ${tool} login" }
-    # Attribute the outgoing login: its own entry, or the unclaimed stash.
+    # Attribute the outgoing login: its own entry, or the unclaimed stash. A
+    # login that is there but cannot be identified (a config with no account
+    # block, a token that does not parse) is copied aside all the same: it
+    # is about to be overwritten, and it may hold the only current refresh
+    # token of that lineage.
     live="$(acct_${tool}_identity 2>/dev/null)"; rc=$?
+    if (( rc != 0 )) && ${ACCT_LIVE_CREDS_EXISTED:-false}; then
+      stash="${STORE}/unclaimed/$(date -u +%Y%m%dT%H%M%SZ)-${tool}-unidentified"
+      (umask 077; mkdir -p -- "$stash") && acct_${tool}_read_live "$stash" &&
+        note "warning: the live ${tool} login could not be identified (rc ${rc}); copied to ${stash} before the switch" ||
+        note "warning: the live ${tool} login could not be identified and could not be copied aside"
+    fi
     if (( rc == 0 )); then
       live_id="$(print -r -- "$live" | jq -r '.id')"
       out_id="$(print -r -- "$roster" | jq -r --arg tool "$tool" --arg lid "$live_id" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')"
@@ -528,6 +532,7 @@ do_switch() {
     fi
   }
   acct_${tool}_unlock
+  trap - INT TERM HUP
   print -r -- "Switched ${tool} to $(entry_name "$id")"
   n="$(pgrep -x "$(acct_${tool}_process)" 2>/dev/null | grep -c .)"
   acct_${tool}_after_switch "$n"
@@ -546,17 +551,20 @@ pick_by_usage() {
     [[ "$(print -r -- "$(read_usage)" | jq -r --arg id "$id" '.quarantine[$id] // empty')" == "" ]] || continue
     hr="$(entry_headroom "$id")"
     [[ "$(print -r -- "$hr" | jq -r '.known')" == true ]] || continue
+    # The figure to steer on: the weekly budget, else the binding window,
+    # else the month (a Kiro entry has nothing else); none is not known.
+    v="$(print -r -- "$hr" | jq -r '.weekly // .binding // .month // empty')"
+    [[ -n "$v" ]] || continue
     (( known++ ))
-    v="$(print -r -- "$hr" | jq -r '.weekly // .binding')"
     (( ${v%.*} <= 0 )) && { (( spent++ )); continue }
     case "$strategy" in
-      best)    v="$(print -r -- "$hr" | jq -r '.weekly // .binding')"; [[ -z "$bestv" ]] || (( ${v%.*} > ${bestv%.*} )) && { best="$id"; bestv="$v" } ;;
+      best)    [[ -z "$bestv" ]] || (( ${v%.*} > ${bestv%.*} )) && { best="$id"; bestv="$v" } ;;
       soonest) v="$(entry_weekly_reset "$id")"; [[ -n "$v" ]] || v=9999999999; [[ -z "$bestv" ]] || (( v < bestv )) && { best="$id"; bestv="$v" } ;;
     esac
   done
   if [[ -z "$best" ]]; then
     (( known == 0 )) && refuse "no ${tool} candidate has known usage; run: flakelab accounts --fetch"
-    (( spent == known )) && refuse "every ${tool} candidate with known usage has spent its weekly budget"
+    (( spent == known )) && refuse "every ${tool} candidate with known usage has spent its budget"
     refuse "no ${tool} candidate qualifies"
   fi
   print -r -- "$best"
@@ -587,6 +595,7 @@ cmd_switch() {
     roster="$(read_roster)"
     cur="$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool] // 0')"
     ids=("${(f)$(print -r -- "$roster" | jq -r --arg tool "$tool" '.accounts | to_entries[] | select(.value.tool == $tool and (.value.disabled // false | not)) | .key' | sort -n)}")
+    ids=("${ids[@]:#}")   # (f) on empty output is one empty element
     (( ${#ids[@]} > 0 )) || refuse "no enabled ${tool} entries to rotate through"
     id=""
     for c in "${ids[@]}"; do (( c > cur )) && { id="$c"; break }; done
@@ -716,7 +725,7 @@ run_engine() {
     --argjson roster "$(read_roster)" --argjson usage "$(read_usage)" --argjson state "$state" \
     --argjson live "$(live_profiles "$tool")" --argjson expired "$expired" --argjson unmanaged "$unmanaged" \
     '{pass: $pass, tool: $tool, now: $now, settings: $settings, roster: $roster, usage: $usage, state: $state, live: $live, activeTokenExpired: $expired, liveUnmanaged: $unmanaged}' \
-    | jq -f "$ENGINE"
+    | jq -L "${LIB}" -f "$ENGINE"
 }
 
 # Freshen a candidate before a switch: a token expiring within ten minutes is
@@ -733,10 +742,10 @@ freshen_entry() {
 # substitution would swallow them.)
 TICK_OUTCOME=none
 tick() {
-  local tool="$1" state doc fetch id expired=false unmanaged=false live decision action cand outcome="none" out result
+  local tool="$1" state doc fetch id expired=false unmanaged=false live decision action cand outcome="none" out result rc
   state="$(read_auto_state)"
   live="$(acct_${tool}_identity 2>/dev/null)" || {
-    [[ $? == 3 || -r "${ACCT_CLAUDE_CREDS:-/nonexistent}" ]] && unmanaged=true
+    rc=$?; (( rc == 3 )) || acct_${tool}_live_present && unmanaged=true
   }
   if [[ -n "$live" ]]; then
     [[ -z "$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$(print -r -- "$live" | jq -r .id)" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')" ]] && unmanaged=true
@@ -802,11 +811,16 @@ cmd_auto() {
       --dry-run) AUTO_DRY=true ;;
       --json) AUTO_JSON=true ;;
       --tool) [[ -n "${2:-}" ]] || refuse "--tool needs a tool"; tool="$2"; shift ;;
-      --session-threshold) SESSION_THRESHOLD="$2"; shift ;;
-      --week-threshold) WEEK_THRESHOLD="$2"; shift ;;
-      --model-threshold) MODEL_THRESHOLD="$2"; shift ;;
-      --interval) AUTO_INTERVAL="$2"; shift ;;
-      --cooldown) AUTO_COOLDOWN="$2"; shift ;;
+      --session-threshold|--week-threshold|--model-threshold|--interval|--cooldown)
+        [[ -n "${2:-}" ]] || refuse "$1 needs a value"
+        case $1 in
+          --session-threshold) SESSION_THRESHOLD="$2" ;;
+          --week-threshold) WEEK_THRESHOLD="$2" ;;
+          --model-threshold) MODEL_THRESHOLD="$2" ;;
+          --interval) AUTO_INTERVAL="$2" ;;
+          --cooldown) AUTO_COOLDOWN="$2" ;;
+        esac
+        shift ;;
       *) refuse "unknown option for auto: $1" ;;
     esac
     shift
@@ -904,7 +918,7 @@ ensure_profile() {
       die "cannot seed the profile of entry ${id} from its stored login; add it again with: flakelab accounts add ${tool}"
     seeded=true; at="$(date -u -d "@$(now)" +%Y-%m-%dT%H:%M:%SZ)"
   fi
-  wanted=("${(f)$(acct_${tool}_profile_shared "$share")}")
+  wanted=("${(f)$(acct_${tool}_profile_shared "$share")}"); wanted=("${wanted[@]:#}")
   # Links made earlier and no longer wanted (the history unshared): removed.
   for item in "${(f)$(print -r -- "$links" | jq -r '.[]')}"; do
     [[ -n "$item" ]] || continue
@@ -1085,7 +1099,7 @@ cmd_list() {
   done
   if $fetch; then take_lock; n="$(fetch_due)"; note "fetched ${n} entr$( (( n == 1 )) && print y || print ies)"; n=0; fi
   if $json; then
-    jq -n --argjson r "$(read_roster)" --argjson u "$(read_usage)" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"'
+    jq -n --argjson r "$(read_roster)" --argjson u "$(read_usage)" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
       {version: $r.version, active: $r.active,
        accounts: ($r.accounts | to_entries | sort_by(.key | tonumber)
         | map(.key as $k | {id: ($k | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org,

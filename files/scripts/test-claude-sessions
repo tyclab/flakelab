@@ -242,9 +242,11 @@ export FAKE_TMUX_HAS=1
 run_tmux --open
 check "--open with tmux exits 0" "${RC}" "0"
 check "--open with tmux opens a window per session" "$(grep -c '^new-window' "${TMUX_LOG}")" "4"
-contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -c ${WORK} claude --resume ${SID_A}"
+contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude --resume ${SID_A}"
+check "with the caller's PATH handed to it, whoever started the server" "$(grep -c '^new-window -d -P -F #{window_id} -t agents -n [a-z_-]* -e PATH=' "${TMUX_LOG}")" "4"
 check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "4"
-contains "the view is set to go away with its last client" "$(<"${TMUX_LOG}")" "set-option -t agents-10-"
+check "the view is set to go away with its client, by a hook" "$(grep -c -E '^set-hook -t agents-10-[0-9]+ client-detached kill-session -t agents-10-[0-9]+$' "${TMUX_LOG}")" "1"
+excludes "not by destroy-unattached, which tmux 3.4 applies before anything attaches" "$(<"${TMUX_LOG}")" "destroy-unattached"
 contains "the view's current window is the session's window" "$(<"${TMUX_LOG}")" "select-window -t agents-10-"
 contains "the tab attaches the view instead of running the tool" "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab -- tmux attach-session -t agents-10-"
 excludes "the tab does not resume the session itself" "$(<"${WT_LOG}")" "claude --resume"
@@ -278,7 +280,7 @@ check "--start with a missing directory exits 2" "${RC}" "2"
 export FAKE_TMUX_HAS=1
 run_tmux --start kiro "${WORK}" --detach -- --trust-all-tools
 check "--start --detach exits 0" "${RC}" "0"
-contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n kiro-work_dir -c ${WORK} kiro-cli chat --trust-all-tools"
+contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n kiro-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} kiro-cli chat --trust-all-tools"
 contains "--start reports the window" "${ERR}" "started kiro in ${WORK} as agents:kiro-work_dir (@10)"
 contains "--start --detach says how to attach" "${ERR}" "attach with: flakelab sessions --attach kiro-work_dir"
 excludes "--start --detach opens no view" "$(<"${TMUX_LOG}")" "attach-session"
@@ -290,7 +292,7 @@ contains "--start with no terminal still says how to attach" "${ERR}" "attach wi
 unset FAKE_TMUX_HAS
 : > "${TMUX_LOG}"
 run_tmux --start claude "${WORK}" --detach
-contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -c ${WORK} claude"
+contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude"
 
 # ---------------------------------------------------------------------------
 print -r -- ""

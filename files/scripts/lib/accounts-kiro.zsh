@@ -42,6 +42,8 @@ typeset -a ACCT_KIRO_AUTH_KEYS=("${ACCT_KIRO_TOKEN_KEYS[@]}" kirocli:odic:device
 typeset -a ACCT_KIRO_STATE_KEYS=(api.codewhisperer.profile auth.idc.start-url auth.idc.region)
 
 acct_kiro_files() { print -rl -- token.json }
+# A token row is present, identifiable or not.
+acct_kiro_live_present() { [[ -r "${ACCT_KIRO_DB}" ]] && [[ -n "$(acct_kiro_token_of "$(acct_kiro_export "${ACCT_KIRO_DB}")")" ]] }
 acct_kiro_process() { print -r -- kiro-cli }
 
 # A SQLite string literal.
@@ -101,8 +103,11 @@ acct_kiro_identity_of() {
     kirocli:external-idp:token*) type="external-idp" ;;
     *) type="identity-center" ;;
   esac
+  # The id is what the rows hold, the start URL and the region: the same
+  # login must map to the same id offline (a profile check, a tick without
+  # network), so the email, which only whoami knows, is the label.
   jq -cn --arg start "$start" --arg region "$region" --arg email "$email" --arg type "$type" '
-    {id: ([$start, $region, $email] | map(select(. != "")) | join("|")),
+    {id: ([$start, $region] | map(select(. != "")) | join("|")),
      label: (if $email != "" then $email else ($start | sub("^https?://"; "")) end),
      org: $type}'
 }
@@ -231,7 +236,7 @@ ACCT_KIRO_NORMALISE_JQ='
 '
 
 acct_kiro_usage() {
-  local dir="$1" active="$2" doc tok region arn body code url
+  local dir="$1" active="$2" doc tok region arn body code url exp
   doc="$(acct_kiro_creds_doc "$dir" "$active")"
   [[ -n "$doc" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
   tok="$(acct_kiro_token_of "$doc" | jq -r '.json.access_token // empty')"
@@ -240,6 +245,11 @@ acct_kiro_usage() {
   [[ -n "$region" ]] || region="$(acct_kiro_plain "$(print -r -- "$doc" | jq -r '.state["auth.idc.region"] // ""')")"
   arn="$(acct_kiro_plain "$(print -r -- "$doc" | jq -r '.state["api.codewhisperer.profile"] // ""')")"
   [[ -n "$region" && -n "$arn" ]] || { jq -cn '{ok: false, error: "no-profile"}'; return 0 }
+  # No refresh here: an access token past its expiry is reported as such,
+  # not sent to be refused (a 401 on a token that should work is
+  # `unauthorized`, an error with backoff; nothing here proves a seat gone).
+  exp="$(acct_kiro_expiry_of "$doc")"
+  if [[ "$exp" == <-> ]] && (( exp <= ${FLAKELAB_NOW:-$(date +%s)} )); then jq -cn '{ok: false, error: "expired"}'; return 0; fi
   url="${ACCT_KIRO_USAGE_URL//REGION/${region}}"
   body="$(mktemp)"
   code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -X POST \
@@ -248,7 +258,7 @@ acct_kiro_usage() {
     -d "$(jq -cn --arg arn "$arn" '{profileArn: $arn}')" "$url" 2>/dev/null)" || code=000
   case "$code" in
     200) jq -c "${ACCT_KIRO_NORMALISE_JQ}"' | {ok: true, windows: .}' "$body" 2>/dev/null || jq -cn '{ok: false, error: "unparseable"}' ;;
-    401|403) jq -cn '{ok: false, error: "seat-revoked"}' ;;
+    401|403) jq -cn '{ok: false, error: "unauthorized"}' ;;
     429) jq -cn '{ok: false, error: "http-429"}' ;;
     *) jq -cn --arg c "$code" '{ok: false, error: ("http-" + $c)}' ;;
   esac

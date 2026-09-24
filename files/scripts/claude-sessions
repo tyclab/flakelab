@@ -246,27 +246,33 @@ tool_command() {
 }
 
 # Create a window in the agents session (the session itself when it does not
-# exist yet) and print its window id. The server inherits this shell's
-# environment when this call starts it, which is what puts the secrets and
-# PATH of the starting shell into every later window.
+# exist yet) and print its window id. A window's command runs with the
+# server's environment, not the caller's, and the server is born by whoever
+# starts the first window (a terminal, the dashboard's service, ttyd), so the
+# caller's PATH is handed to the window explicitly: the tool resolves the
+# same way it did for the caller, whoever started the server.
 new_window() {
   local name="$1" dir="$2" cmd="$3"
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" -c "$dir" "$cmd"
+    tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" -e "PATH=${PATH}" -c "$dir" "$cmd"
   else
-    tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" -c "$dir" "$cmd"
+    tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" -e "PATH=${PATH}" -c "$dir" "$cmd"
   fi
 }
 
 # A view on the server: a session grouped with the agents session, so it shows
 # the same windows but keeps its own current window, and goes away with its
-# last client while the agents session stays (keep-last; a tmux before 3.4
-# leaves the view behind, harmlessly).
+# client while the agents session stays. Not `destroy-unattached`: the view
+# is made detached and attached by a later command (this process, a Windows
+# Terminal tab), and since tmux 3.4 a session with that option set is
+# destroyed the moment the command client that set it disconnects, before
+# anything attaches. A client-detached hook on the view kills it instead,
+# and fires for a closed terminal as well as an explicit detach.
 new_view() {
   local wid="$1" view
   view="${TMUX_SESSION}-${wid#@}-$$"
   tmux new-session -d -t "$TMUX_SESSION" -s "$view" >/dev/null 2>&1 || return 1
-  tmux set-option -t "$view" destroy-unattached keep-last >/dev/null 2>&1 || true
+  tmux set-hook -t "$view" client-detached "kill-session -t ${view}" >/dev/null 2>&1 || true
   tmux select-window -t "${view}:${wid}" >/dev/null 2>&1 || true
   print -r -- "$view"
 }

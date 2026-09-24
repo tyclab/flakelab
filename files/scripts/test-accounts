@@ -215,6 +215,18 @@ check "two entries exit 2" "${RC}" "2"
 run switch
 check "no entry exits 2" "${RC}" "2"
 
+# A live login that is there but cannot be identified (the account block
+# gone from ~/.claude.json) is copied aside before the switch overwrites it.
+jq 'del(.oauthAccount)' "${HOME}/.claude.json" > "${BASE}/t" && mv "${BASE}/t" "${HOME}/.claude.json"
+run switch home
+check "a switch away from an unidentifiable live login exits 0" "${RC}" "0"
+contains "and says the login was copied aside" "${ERR}" "could not be identified"
+check "into unclaimed/, credentials included" "$(ls "${STORE}"/unclaimed/*-claude-unidentified/credentials.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+check "holding the token that was live" "$(jq -r '.claudeAiOauth.accessToken' "${STORE}"/unclaimed/*-claude-unidentified/credentials.json)" "tok-b2"
+rm -rf "${STORE}/unclaimed"
+run switch work
+check "and the way back restores the account block from the entry" "$(live_email)" "bob@example.com"
+
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "switch --next: rotation in id order, disabled entries skipped"
@@ -499,6 +511,7 @@ export FAKE_CURL_DOWN=1
 export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
 run --fetch
 contains "a network failure shows as such" "${OUT}" "network"
+check "a failed read records its backoff, which the plan and the tick honour" "$(jq -r '[.entries[] | select(.lastError != null)] | (length > 0) and all(.backoffUntil == .nextPollAt and .backoffUntil > .lastErrorAt)' "${STORE}/usage.json")" "true"
 check "and backs off 30 seconds the first time" "$(jq -r '.entries["2"].nextPollAt' "${STORE}/usage.json")" "$(( FLAKELAB_NOW + 30 ))"
 unset FAKE_CURL_DOWN
 
@@ -531,7 +544,7 @@ usage_answer tok-a-fresh 0 100
 export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
 run switch --best claude
 check "every candidate spent refuses with exit 2" "${RC}" "2"
-contains "and says so" "${ERR}" "has spent its weekly budget"
+contains "and says so" "${ERR}" "has spent its budget"
 rm -f "${FAKE_CURL}"/usage.tok-a-fresh.* "${FAKE_CURL}"/usage.tok-c.*
 export FAKE_CURL_DOWN=1
 export FLAKELAB_NOW=$(( FLAKELAB_NOW + 86400 ))
@@ -558,7 +571,7 @@ BASE_DOC='{"pass": "decide", "tool": "claude", "now": 1000,
  "live": {}, "activeTokenExpired": false, "liveUnmanaged": false}'
 engine() {
   local doc
-  doc="$(print -r -- "$BASE_DOC" | jq "${1:-.}" | jq -f "${ENGINE}")" || { DEC="engine failed"; EVS=""; STATE=""; return 1 }
+  doc="$(print -r -- "$BASE_DOC" | jq "${1:-.}" | jq -L "${SCRIPT_DIR}/lib" -f "${ENGINE}")" || { DEC="engine failed"; EVS=""; STATE=""; return 1 }
   DEC="$(print -r -- "$doc" | jq -c '.decision')"
   EVS="$(print -r -- "$doc" | jq -c '.events')"
   STATE="$(print -r -- "$doc" | jq -c '.state')"
@@ -645,15 +658,19 @@ check "a model window not named does not count" "$(dec '.reason')" "below-thresh
 
 # The plan pass.
 engine '.pass = "plan" | .now = 1200'
-check "near a bar, every candidate is fetched with the active entry" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
-engine '.pass = "plan"'
-check "near a bar but the active entry not yet due: the candidates alone" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
+check "near a bar, the due active entry; a candidate known within five minutes is not asked again" "$(print -r -- "$FETCH" | jq -c .)" "[2]"
+engine '.pass = "plan" | .now = 1300'
+check "near a bar, a candidate whose figure went stale is fetched with the active entry" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
+engine '.pass = "plan" | .usage.entries["1"].fetchedAt = 600'
+check "near a bar but the active entry not yet due: the stale candidates alone" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
+engine '.pass = "plan" | .usage.entries["1"].fetchedAt = 600 | .usage.entries["1"].backoffUntil = 1500'
+check "a candidate in backoff is never in the plan, escalation or not" "$(print -r -- "$FETCH" | jq -c .)" "[]"
 engine '.pass = "plan" | .usage.entries["2"].windows[0].pct = 50 | .now = 1100'
 check "far from every bar, only the due active entry" "$(print -r -- "$FETCH" | jq -c .)" "[]"
 engine '.pass = "plan" | .usage.entries["2"].windows[0].pct = 50 | .now = 1300'
 check "and one due candidate" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
-engine '.pass = "plan" | .usage.entries["2"].fetchedAt = 100 | .now = 1100'
-check "an unknown active entry escalates to every candidate" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
+engine '.pass = "plan" | .usage.entries["2"].fetchedAt = 100 | .usage.entries["1"].fetchedAt = 100 | .now = 1100'
+check "an unknown active entry escalates to every stale candidate" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -725,6 +742,9 @@ run auto --once --tool gemini
 check "auto for an unknown tool exits 2" "${RC}" "2"
 run auto --once --session-threshold 40
 check "a threshold under 50 is refused" "${RC}" "2"
+run auto --once --interval
+check "a value option with no value refuses with exit 2" "${RC}" "2"
+contains "and names it" "${ERR}" "--interval needs a value"
 run auto --once --interval 5
 check "an interval under 15 seconds is refused" "${RC}" "2"
 unset FLAKELAB_NOW
@@ -877,6 +897,9 @@ unset FLAKELAB_NOW
 print -r -- ""
 print -r -- "the Codex adapter: auth.json whole, no lock, no refresh of ours, usage through the tool"
 FAKE_CODEX="${BASE}/codex"
+run switch --next codex
+check "--next with no entries of the tool refuses with exit 2" "${RC}" "2"
+contains "and says so" "${ERR}" "no enabled codex entries to rotate through"
 mkdir -p "${FAKE_CODEX}" "${HOME}/.codex"
 b64url() { print -rn -- "$1" | base64 -w0 | tr '+/' '-_' | tr -d '=' }
 # A JWT with the claims Codex's id_token carries, and an access token with an expiry.
@@ -1093,7 +1116,7 @@ export FAKE_KIRO_WHOAMI='{"accountType": "BuilderId", "email": "frank@example.co
 run add kiro --alias frank
 check "add kiro exits 0" "${RC}" "0"
 check "the entry carries whoami's email and account type" "${OUT}" "Added kiro 6: frank@example.com [BuilderId] as frank"
-check "the roster id is the start URL, the region and the email" "$(jq -r '.accounts["6"].id' "${STORE}/accounts.json")" "https://view.awsapps.com/start|us-east-1|frank@example.com"
+check "the roster id is the start URL and the region (the email is the label: whoami is not there offline)" "$(jq -r '.accounts["6"].id' "${STORE}/accounts.json")" "https://view.awsapps.com/start|us-east-1"
 check "the store holds the rows as JSON, private" "$(stat -c %a "${STORE}/6/token.json") $(jq -r '[(.auth_kv | keys | join(",")), (.state | keys | join(","))] | join(" / ")' "${STORE}/6/token.json")" "600 kirocli:odic:device-registration,kirocli:odic:token / api.codewhisperer.profile,auth.idc.region,auth.idc.start-url"
 check "values are the stored text, verbatim" "$(jq -r '.state["auth.idc.region"]' "${STORE}/6/token.json")" '"us-east-1"'
 kiro_login https://corp.awsapps.com/start eu-central-1 acc-g rt-g
@@ -1141,6 +1164,24 @@ contains "the call goes to the region's endpoint with the profile ARN" "$(<"${FA
 check "the window is a month, an ISO reset as an epoch" "$(jq -r '.entries["6"].windows[0] | [.class, .resetsAtEpoch] | join(" ")' "${STORE}/usage.json")" "month 1793491200"
 FLAKELAB_ACCOUNTS_TOOLS=kiro run auto --once --json
 check "a spent month is no reason to move" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | [.reason, .detail] | join(" ")')" "below-threshold no window reported"
+# Nothing refreshes a stored Kiro token: past its expiry it is reported as
+# such, not sent to be refused, and a refusal is an error with backoff, not
+# a quarantine (nothing here proves a seat gone).
+jq '.auth_kv["kirocli:odic:token"] |= (fromjson | .expires_at = "2020-01-01T00:00:00Z" | tojson) ' "${STORE}/6/token.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/6/token.json"
+jq '.entries["6"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+: > "${FAKE_CURL}/requests.log"
+run --fetch
+check "an expired stored kiro token is reported as expired" "$(jq -r '.entries["6"].lastError' "${STORE}/usage.json")" "expired"
+check "without a request" "$(grep -c acc-f "${FAKE_CURL}/requests.log")" "0"
+jq '.auth_kv["kirocli:odic:token"] |= (fromjson | .expires_at = "2030-01-01T00:00:00Z" | tojson) ' "${STORE}/6/token.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/6/token.json"
+jq '.entries["6"].nextPollAt = 0 | .entries["6"].backoffUntil = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+print -n 401 > "${FAKE_CURL}/usage.acc-f.status"
+run --fetch
+check "a 401 is unauthorized, an error with backoff" "$(jq -r '.entries["6"].lastError' "${STORE}/usage.json")" "unauthorized"
+check "and not a quarantine" "$(jq -r '.quarantine["6"] // "none"' "${STORE}/usage.json")" "none"
+print -n 200 > "${FAKE_CURL}/usage.acc-f.status"
+FAKE_KIRO_WHOAMI_RC=1 run status --json
+check "the live kiro login is recognised with whoami unavailable: the id needs no network" "$(print -r -- "$OUT" | jq -r '.kiro.matches')" "true"
 unset FLAKELAB_NOW
 
 # Profiles: two moves, the home and the secret store.

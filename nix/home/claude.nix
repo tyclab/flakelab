@@ -97,7 +97,7 @@ let
   accountsHookJq = ''
     | .hooks = ((.hooks // {})
         | .Notification = (((.Notification // [])
-            | map(select((.hooks // []) | any((.command // "") | contains("/bin/accounts auto")) | not)))
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-accounts/bin/accounts auto ")) | not)))
             + ${
               if accountsHook then
                 ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $accountsHook, timeout: 180}]}]''
@@ -110,14 +110,16 @@ let
 
   # The push when a session waits on you (remote-sessions.md, phase 3): a
   # Notification hook on the configured types runs `flakelab notify`, which
-  # reads the endpoint from secrets.env at use time. Owned by its command.
+  # reads the endpoint from secrets.env at use time. Owned by its command:
+  # the store path of this flake's `notify`, never a bare substring, so a
+  # hook of the user's that merely runs something called notify-send stays.
   notifyHook = cfg.notify.enable;
   notifyHookCmd = "${scripts.notify}/bin/notify >/dev/null 2>&1 || true";
   notifyHookArg = lib.optionalString notifyHook "--arg notifyHook ${lib.escapeShellArg notifyHookCmd} --arg notifyMatcher ${lib.escapeShellArg (lib.concatStringsSep "|" cfg.notify.events)}";
   notifyHookJq = ''
     | .hooks = ((.hooks // {})
         | .Notification = (((.Notification // [])
-            | map(select((.hooks // []) | any((.command // "") | contains("/bin/notify")) | not)))
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-notify/bin/notify( |$)")) | not)))
             + ${
               if notifyHook then
                 ''[{matcher: $notifyMatcher, hooks: [{type: "command", command: $notifyHook, timeout: 15}]}]''
@@ -128,12 +130,14 @@ let
     | if .hooks == {} then del(.hooks) else . end
   '';
 
-  # Written only when absent, so a local override survives; the sort -V glob
-  # resolves the newest cached plugin version at statusline time. The stdin
-  # Claude Code hands the statusline carries the live login's rate_limits with
-  # every refresh: teed into `accounts ingest` on the way, so the usage
-  # endpoint is never asked for the active entry (accounts.md, "Usage"). The
-  # tee never delays or fails the statusline.
+  # Written when absent or when it is flakelab's own (an earlier generation's
+  # tee script, or the plain plugin command every box before the tee had), so
+  # a local override survives while a provisioned box follows this flake; the
+  # sort -V glob resolves the newest cached plugin version at statusline time.
+  # The stdin Claude Code hands the statusline carries the live login's
+  # rate_limits with every refresh: teed into `accounts ingest` on the way, so
+  # the usage endpoint is never asked for the active entry (accounts.md,
+  # "Usage"). The tee never delays or fails the statusline.
   statuslineMarketplace = marketplaceOf "statusbar";
   claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
   claudeStatuslineCmd = pkgs.writeShellScript "flakelab-claude-statusline" ''
@@ -143,7 +147,10 @@ let
     statuslineMarketplace != null
   ) "--arg statusline ${lib.escapeShellArg "${claudeStatuslineCmd}"}";
   claudeStatuslineJq = lib.optionalString (statuslineMarketplace != null) ''
-    | .statusLine //= {type: "command", command: $statusline}
+    | .statusLine = (
+        if .statusLine == null
+           or ((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))
+        then {type: "command", command: $statusline} else .statusLine end)
   '';
 
   # Without these the Playwright server launches a local chrome instead of

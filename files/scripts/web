@@ -66,6 +66,7 @@ if $PRINT_TOKEN; then
 fi
 
 command -v python3 >/dev/null 2>&1 || { print -ru2 -- "web: python3 is not on PATH"; exit 1 }
+export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ beside lib/web.py
 export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_URL="$TERMINAL_URL"
 export FLAKELAB_WEB_STATIC="${FLAKELAB_WEB_STATIC:-${SCRIPT_DIR:h}/config/web}"
 export FLAKELAB_WEB_ACCOUNTS="${FLAKELAB_WEB_ACCOUNTS:-${SCRIPT_DIR}/accounts}"

@@ -88,11 +88,15 @@
     if (!r.ok) throw new Error(doc.error || (doc.call && doc.call.stderr) || ("HTTP " + r.status));
     return doc;
   };
+  // Everything from the API is text from the tools and the file system (a
+  // label, an error message, a directory name): escaped before it meets
+  // innerHTML, since this page holds the token.
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const pct = (w) => Math.max(0, Math.min(100, Math.round(w.pct || 0)));
   const barFor = (w) => {
     const p = pct(w);
     const cls = p >= 95 ? "bad" : p >= 85 ? "warn" : "";
-    return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${w.label} ${p}%`;
+    return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${esc(w.label)} ${p}%`;
   };
   const age = (s) => (s == null ? "" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`);
 
@@ -104,12 +108,12 @@
       const tags = [];
       if (active[a.tool] === a.id) tags.push('<span class="tag active">active</span>');
       if (a.disabled) tags.push('<span class="tag">disabled</span>');
-      if (a.quarantine) tags.push(`<span class="tag q">quarantined: ${a.quarantine.reason}</span>`);
+      if (a.quarantine) tags.push(`<span class="tag q">quarantined: ${esc(a.quarantine.reason)}</span>`);
       const u = a.usage || {};
-      const wins = (u.windows || []).map(barFor).join("<br>") || (u.lastError ? `<span class="err">${u.lastError}</span>` : "—");
+      const wins = (u.windows || []).map(barFor).join("<br>") || (u.lastError ? `<span class="err">${esc(u.lastError)}</span>` : "—");
       const fetched = u.fetchedAt ? `<span class="mut"> (${age(now - u.fetchedAt)})</span>` : "";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${a.tool}</td><td>${a.id}</td><td>${a.alias || ""}</td><td>${a.label}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;
+      tr.innerHTML = `<td>${esc(a.tool)}</td><td>${esc(a.id)}</td><td>${esc(a.alias)}</td><td>${esc(a.label)}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;
       const btn = document.createElement("button");
       btn.textContent = "switch";
       btn.disabled = active[a.tool] === a.id || !!a.disabled || !!a.quarantine;
@@ -128,7 +132,7 @@
     for (const s of (st.sessions || [])) {
       const host = s.host ? (s.host.window || s.host.session) : "—";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${s.tool}</td><td>${s.pid}</td><td>${s.age || ""}</td><td><code>${s.session || "—"}</code></td><td>${host}</td><td class="wrap">${s.dir || s.cwd || ""}</td>`;
+      tr.innerHTML = `<td>${esc(s.tool)}</td><td>${esc(s.pid)}</td><td>${esc(s.age)}</td><td><code>${esc(s.session || "—")}</code></td><td>${esc(host)}</td><td class="wrap">${esc(s.dir || s.cwd)}</td>`;
       sb.appendChild(tr);
     }
     if (st.terminal) { $("#terminal").href = st.terminal; $("#terminal").hidden = false; }

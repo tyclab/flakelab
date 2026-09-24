@@ -35,6 +35,8 @@ ACCT_CLAUDE_LOCK_TIMEOUT_S="${FLAKELAB_ACCOUNTS_LOCK_TIMEOUT:-9}"
 
 # The files an entry of this tool holds under <store>/<id>/.
 acct_claude_files() { print -rl -- credentials.json identity.json }
+# A live login is present, identifiable or not.
+acct_claude_live_present() { [[ -r "${ACCT_CLAUDE_CREDS}" ]] }
 
 # What the tool runs as, for the running-session count.
 acct_claude_process() { print -r -- claude }
@@ -131,7 +133,10 @@ acct_claude_restore_live() {
 # a directory whose mtime is older than the staleness is a dead holder's and
 # is removed and retaken; otherwise wait a jittered quarter to half second
 # and try again, for at most the timeout. Then keep it fresh from a toucher
-# in the background. Returns 1 on timeout with nothing taken.
+# in the background. Returns 1 on timeout with nothing taken. The toucher
+# stops on its own once the process that took the lock is gone (unlock kills
+# it in the normal case), so a switch killed mid-way leaves a lock that goes
+# stale within Claude Code's ten seconds instead of one kept fresh forever.
 typeset -a ACCT_CLAUDE_HELD=()
 acct_claude_lock_one() {
   local dir="$1" start now age
@@ -139,7 +144,7 @@ acct_claude_lock_one() {
   start=$EPOCHREALTIME
   while true; do
     if mkdir -- "$dir" 2>/dev/null; then
-      ( while sleep 3; do touch -- "$dir" 2>/dev/null || exit 0; done ) &
+      ( owner=$$; while sleep 3; do kill -0 "$owner" 2>/dev/null || exit 0; touch -- "$dir" 2>/dev/null || exit 0; done ) &
       ACCT_CLAUDE_HELD+=("${dir}${US}$!")
       return 0
     fi

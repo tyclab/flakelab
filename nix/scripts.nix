@@ -147,6 +147,9 @@ rec {
   # --save lands under FLAKELAB_STATE_ROOT, so the list replicates with the
   # transcripts it names. tmux is the session host --start / --attach / --open
   # use; the same package the user's shell has, so a view and the server agree.
+  # ~/.local/bin holds the tools a --start window runs (the native installs of
+  # Claude Code, Codex and Kiro); the window gets this PATH, so a caller with
+  # no login environment (the dashboard's service) still starts them.
   claude-sessions = pkgs.writeShellScriptBin "claude-sessions" ''
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
@@ -161,7 +164,7 @@ rec {
         pkgs.jq
         pkgs.tmux
       ]
-    }:$PATH
+    }:$HOME/.local/bin:$PATH
     exec ${zsh} ${s}/claude-sessions "$@"
   '';
 

@@ -77,7 +77,7 @@ print -r -- "the server"
 TOKEN_FILE="${BASE}/state/web/token"
 FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
   FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" FLAKELAB_WEB_TERMINAL_URL="http://10.66.0.2:7681/" \
-  python3 "${SERVER}" 2>"${BASE}/server.err" &
+  PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server.err" &
 SERVER_PID=$!
 PORT=""
 for i in {1..50}; do

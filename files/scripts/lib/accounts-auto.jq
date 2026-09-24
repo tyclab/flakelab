@@ -28,30 +28,9 @@
 # trigger (proactive, at-limit, failover, with the idle hold); the cooldown,
 # proactive only; the candidates and the two proactive gates; the order.
 
-def counted($mw): if $mw == "all" then . else ($mw | split(",") | map(ascii_downcase)) as $w | select((.label | ascii_downcase) as $l | $w | index($l)) end;
-def least(a; b): if a == null then b elif b == null then a elif b < a then b else a end;
-
-# The headroom of a usage entry on each axis, and whether it is trustworthy.
-def headroom($now; $mw):
-  (.fetchedAt // null) as $f
-  | ([.windows[]?] | length) as $nw
-  | { session: ([.windows[]? | select(.class == "session") | .pct] | if length == 0 then null else (100 - max) end),
-      week:    ([.windows[]? | select(.class == "week")    | .pct] | if length == 0 then null else (100 - max) end),
-      model:   ([.windows[]? | select(.class == "model") | counted($mw) | .pct] | if length == 0 then null else (100 - max) end) }
-  | .weekly = least(.week; .model)
-  | .binding = least(.session; .weekly)
-  | .age = (if $f == null then null else ($now - $f) end)
-  # Known: fetched recently with windows; a tool whose only window is a
-  # month (Kiro) is known and never steered, not unhealthy.
-  | .known = (.age != null and .age <= 300 and $nw > 0);
-
-# The earliest renewal among the weekly windows (week and counted model).
-def weeklyReset($mw):
-  [.windows[]? | select(.class == "week" or (.class == "model" and (counted($mw) | length > 0))) | .resetsAtEpoch | numbers] | if length == 0 then null else min end;
-
-# The latest reset among the windows at their limit: when the entry is usable again.
-def limitingReset:
-  [.windows[]? | select(.pct >= 100) | .resetsAtEpoch | numbers] | if length == 0 then null else max end;
+# headroom, weeklyReset, limitingReset, counted: one definition for the
+# engine and the script (jq -L on lib/).
+include "accounts-headroom";
 
 . as $in
 | $in.settings as $s
@@ -80,16 +59,21 @@ def limitingReset:
 | if $in.pass == "plan" then
     if $active == null then .
     else
-      # The active entry when due or never fetched; one due candidate; every
-      # candidate when the active entry is unknown or within 15 points of a
-      # bar on any axis (escalation), so a switch never rests on stale data.
+      # The active entry when due or never fetched; one due candidate; and
+      # when the active entry is unknown or within 15 points of a bar on any
+      # axis (escalation) every candidate whose figure is not known, so a
+      # switch never rests on stale data. A candidate in backoff (a 429, a
+      # failing read) is never in the plan, escalation or not: the backoff is
+      # the endpoint's budget and the plan honours it before the script does.
       (($activeUsage.nextPollAt // 0) <= $now) as $activeDue
       | ( [ ["session", $ah.session], ["week", $ah.week], ["model", $ah.model] ]
           | map(select(.[1] != null) | select((100 - .[1]) >= $bars[.[0]] - 15)) | length > 0 ) as $near
       | ($ah.known | not) as $unknown
-      | ($candidateIds | map(select((($in.usage.entries[(. | tostring)] // {}).nextPollAt // 0) <= $now))) as $dueCandidates
+      | ($candidateIds | map(select((($in.usage.entries[(. | tostring)] // {}).backoffUntil // 0) <= $now))) as $pollable
+      | ($pollable | map(select((($in.usage.entries[(. | tostring)] // {}).nextPollAt // 0) <= $now))) as $dueCandidates
+      | ($pollable | map(select(($in.usage.entries[(. | tostring)] // {}) | headroom($now; $s.modelWindows) | .known | not))) as $staleCandidates
       | .fetch = ((if $activeDue then [$active] else [] end)
-                  + (if ($unknown and ($in.activeTokenExpired | not)) or $near then $candidateIds else ($dueCandidates | .[0:1]) end))
+                  + (if ($unknown and ($in.activeTokenExpired | not)) or $near then $staleCandidates else ($dueCandidates | .[0:1]) end))
       | .decision.action = "fetch"
     end
 

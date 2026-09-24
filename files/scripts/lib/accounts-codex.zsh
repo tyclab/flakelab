@@ -36,6 +36,8 @@ ACCT_CODEX_UA="flakelab-accounts/1.0"
 
 # The files an entry of this tool holds under <store>/<id>/.
 acct_codex_files() { print -rl -- auth.json }
+# A live login (or an API key) is present, identifiable or not.
+acct_codex_live_present() { [[ -r "${ACCT_CODEX_AUTH}" ]] }
 
 # What the tool runs as, for the running-session count.
 acct_codex_process() { print -r -- codex }
@@ -225,7 +227,7 @@ RPC
 # auth.json, then copy a refreshed token back where it came from. Prints
 # {ok: true, windows} or {ok: false, error}.
 acct_codex_usage() {
-  local dir="$1" active="$2" file scratch resp err body code tok acct
+  local dir="$1" active="$2" file scratch resp err body code tok acct exp
   file="$(acct_codex_creds_path "$dir" "$active")"
   [[ -r "$file" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
   if command -v codex >/dev/null 2>&1; then
@@ -254,14 +256,20 @@ acct_codex_usage() {
     return 0
   fi
   # No codex on PATH: the endpoint codexctl uses, with the stored token as is.
+  # Nothing refreshes it on this path, so a token past its expiry is reported
+  # as such rather than sent to be refused; a 401 on one that should work is
+  # `unauthorized`, an error with backoff, since only the tool's own refresh
+  # (the app-server path) can tell a revoked seat from a stale token.
   tok="$(jq -r '.tokens.access_token // empty' "$file" 2>/dev/null)"
   acct="$(jq -r '.tokens.account_id // empty' "$file" 2>/dev/null)"
   [[ -n "$tok" ]] || { jq -cn '{ok: false, error: "no-access-token"}'; return 0 }
+  exp="$(acct_codex_expiry_of "$file")"
+  if [[ "$exp" == <-> ]] && (( exp <= ${FLAKELAB_NOW:-$(date +%s)} )); then jq -cn '{ok: false, error: "expired"}'; return 0; fi
   body="$(mktemp)"
   code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -H "Authorization: Bearer ${tok}" -H "chatgpt-account-id: ${acct}" -H "User-Agent: ${ACCT_CODEX_UA}" "${ACCT_CODEX_USAGE_URL}" 2>/dev/null)" || code=000
   case "$code" in
     200) jq -c "${ACCT_CODEX_NORMALISE_JQ}"' | {ok: true, windows: .}' "$body" 2>/dev/null || jq -cn '{ok: false, error: "unparseable"}' ;;
-    401|403) jq -cn '{ok: false, error: "seat-revoked"}' ;;
+    401|403) jq -cn '{ok: false, error: "unauthorized"}' ;;
     429) jq -cn '{ok: false, error: "http-429"}' ;;
     *) jq -cn --arg c "$code" '{ok: false, error: ("http-" + $c)}' ;;
   esac
