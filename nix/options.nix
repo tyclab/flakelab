@@ -271,7 +271,7 @@ in
     codexAutoReview = mkOption {
       type = types.bool;
       default = false;
-      description = "Enable native Codex Auto-review, workspace-write with sandbox networking disabled, command review rules and approval-by-default for all configured MCP servers. Retains Codex's built-in reviewer policy; does not copy Claude classifier prose.";
+      description = "Enable native Codex Auto-review, a flakelab permission profile extending :workspace with network access disabled by default, command review rules, and automatic review for MCP/app approval requests. Routine workspace edits and exact MCP read grants run without review. Customize the profile and reviewer policy through codexSettings; no Claude hooks, skills or agents are installed.";
     };
 
     codexReadOnlyTools = mkOption {
@@ -281,6 +281,12 @@ in
         grafana = [ "list_datasources" ];
       };
       description = "Server name -> exact read-only tool names allowed without review when codexAutoReview is enabled. Unlisted tools require review. No wildcard grants.";
+    };
+
+    codexEnforcePermissions = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enforce the flakelab profile, on-request approval, automatic reviewer, reviewer policy and sensitive command rules through native /etc/codex/requirements.toml. Requires codexAutoReview. User configuration remains writable; MCP/app per-tool approval modes remain defaults because Codex has no managed equivalent.";
     };
 
     claudeAutoUpdatesChannel = mkOption {

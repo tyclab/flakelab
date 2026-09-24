@@ -21,6 +21,7 @@ codexMcpSources = [
   (codex-mcp + "/plugins/mcp-grafana/.mcp.json")
 ];
 codexAutoReview = true;
+codexEnforcePermissions = true;
 codexReadOnlyTools.grafana = [ "list_datasources" "search_dashboards" ];
 codexSettings = {
   tui.status_line = [
@@ -38,8 +39,10 @@ rolling back the generation restores the prior configuration.
 `~/.codex/config.toml` stays writable: Codex saves trust decisions, model selections
 and UI changes there. User and trusted project settings override the system
 defaults. Put fleet defaults in `codexSettings` and remove conflicting user
-overrides when a fleet change should take effect. These defaults are not enforced
-`requirements.toml` constraints.
+overrides when a fleet change should take effect. `codexEnforcePermissions`
+separately installs native `requirements.toml` constraints for the profile,
+approval mode, reviewer, reviewer policy and command rules. It does not make
+the user file read-only.
 
 Activation migrates the earlier Home Manager `codex-config` symlink to an empty,
 mode-600 user file and saves its contents as `config.toml.before-system-defaults.*`.
@@ -52,18 +55,24 @@ secret source. `~/.config/flakelab/codex-mcp.env` contains only the configured
 WhatsApp checkout and, on WSL, Chrome settings. Claude files, skills, agents and
 hooks are independent and unchanged.
 
-`codexAutoReview` selects `on-request`, `auto_review`, and `workspace-write` with
-sandbox networking disabled. Every configured MCP server requires approval,
+`codexAutoReview` selects `on-request`, `auto_review`, and a native `flakelab`
+permission profile extending `:workspace`, with networking disabled. Legacy
+`sandbox_mode` / `sandbox_workspace_write` settings must be removed from loaded
+configs so they cannot override the profile. Every configured MCP server requires approval,
 except exact names in `codexReadOnlyTools`. Cloudflare execution, infrastructure
 mutations, browser actions and WhatsApp sends have no automatic grants.
-`files/config/codex.rules` routes sensitive command prefixes to review and rejects
-the listed mirror-push forms. Personal rule files remain separate.
+`nix/codex-rules.nix` generates sensitive command prefixes for review and rejects
+the listed mirror-push forms. Codex app tools default to automatic review too.
+Personal rule files remain separate.
 
 Codex reviews approval events, not every shell command. Prefix rules do not cover
 every possible argv spelling or indirect execution. The built-in reviewer policy
-is retained; Claude's prose classifier rules and CI-enrichment hooks are not
-copied. Service token scopes, forge branch protection and CI requirements remain
-independent enforcement.
+is retained unless the overlay supplies a replacement. A private supplement must
+preserve the complete upstream policy, then append environment-specific scope
+and authorization rules. Service token scopes, forge branch protection and CI
+requirements remain independent enforcement. See
+[`CODEX-PERMISSIONS.md`](CODEX-PERMISSIONS.md) for the layer-by-layer configuration
+and runtime verification guide.
 
 Verify with `nix flake check`, `codex mcp list`, and `/mcp` in a fresh thread.
 `checks.x86_64-linux.codex-config` checks opt-in defaults, generated settings,

@@ -12,17 +12,62 @@ let
   servers = lib.foldl' (acc: source: acc // source) { } sources;
   nativeServers = lib.mapAttrs (_: server: builtins.removeAttrs server [ "type" ]) servers;
   allServers = nativeServers // (cfg.codexSettings.mcp_servers or { });
+  commandRules = import ./codex-rules.nix;
+  localRules = lib.concatMapStringsSep "\n" (
+    rule:
+    "prefix_rule("
+    + lib.concatStringsSep ", " (
+      lib.mapAttrsToList (name: value: "${name}=${builtins.toJSON value}") rule
+    )
+    + ")"
+  ) commandRules;
+  managedRules = map (
+    rule:
+    builtins.removeAttrs rule [
+      "match"
+      "not_match"
+    ]
+    // {
+      pattern = map (
+        token: if builtins.isList token then { any_of = token; } else { inherit token; }
+      ) rule.pattern;
+    }
+  ) commandRules;
   reviewedServers = lib.mapAttrs (
     name: server:
     server
     // {
       default_tools_approval_mode = "prompt";
-      tools = lib.genAttrs (cfg.codexReadOnlyTools.${name} or [ ]) (_: {
-        approval_mode = "approve";
-      });
+      tools =
+        lib.genAttrs
+          (lib.unique (builtins.attrNames (server.tools or { }) ++ (cfg.codexReadOnlyTools.${name} or [ ])))
+          (
+            tool:
+            (server.tools.${tool} or { })
+            // {
+              approval_mode =
+                if builtins.elem tool (cfg.codexReadOnlyTools.${name} or [ ]) then "approve" else "prompt";
+            }
+          );
     }
   ) allServers;
-  managed = cfg.codexSettings != { } || cfg.codexMcpSources != [ ] || cfg.codexAutoReview;
+  managed =
+    cfg.codexSettings != { }
+    || cfg.codexMcpSources != [ ]
+    || cfg.codexAutoReview
+    || cfg.codexEnforcePermissions;
+  settings = lib.recursiveUpdate (lib.optionalAttrs cfg.codexAutoReview {
+    default_permissions = "flakelab";
+    permissions.flakelab = {
+      description = "Workspace edits with automatic review of sensitive actions.";
+      extends = ":workspace";
+      network.enabled = false;
+    };
+    apps._default = {
+      approvals_reviewer = "auto_review";
+      default_tools_approval_mode = "prompt";
+    };
+  }) cfg.codexSettings;
   environment =
     lib.optionalAttrs (cfg.whatsappMcpDir != null) { WHATSAPP_MCP_DIR = cfg.whatsappMcpDir; }
     // lib.optionalAttrs (cfg.target == "wsl") {
@@ -33,6 +78,16 @@ in
 {
   config = lib.mkIf (cfg.installCodex && managed) {
     assertions = [
+      {
+        assertion = !cfg.codexEnforcePermissions || cfg.codexAutoReview;
+        message = "codexEnforcePermissions requires codexAutoReview";
+      }
+      {
+        assertion =
+          !cfg.codexAutoReview
+          || !(cfg.codexSettings ? sandbox_mode || cfg.codexSettings ? sandbox_workspace_write);
+        message = "codexAutoReview uses native permission profiles; configure permissions.flakelab instead of legacy sandbox_mode/sandbox_workspace_write";
+      }
       {
         assertion = builtins.length names == builtins.length (lib.unique names);
         message = "codexMcpSources contains duplicate server names";
@@ -51,29 +106,51 @@ in
       }
     ];
 
-    environment.etc."codex/config.toml".source =
-      (pkgs.formats.toml { }).generate "flakelab-codex-defaults"
+    environment.etc = {
+      "codex/config.toml".source = (pkgs.formats.toml { }).generate "flakelab-codex-defaults" (
         (
-          cfg.codexSettings
-          // lib.optionalAttrs (allServers != { }) {
-            mcp_servers = if cfg.codexAutoReview then reviewedServers else allServers;
-          }
-          // lib.optionalAttrs cfg.codexAutoReview {
-            approval_policy = "on-request";
-            approvals_reviewer = "auto_review";
-            sandbox_mode = "workspace-write";
-            sandbox_workspace_write = (cfg.codexSettings.sandbox_workspace_write or { }) // {
-              network_access = false;
-            };
-          }
-        );
+          if cfg.codexEnforcePermissions then
+            builtins.removeAttrs settings [
+              "permissions"
+              "auto_review"
+            ]
+          else
+            settings
+        )
+        // lib.optionalAttrs (allServers != { }) {
+          mcp_servers = if cfg.codexAutoReview then reviewedServers else allServers;
+        }
+        // lib.optionalAttrs cfg.codexAutoReview {
+          approval_policy = "on-request";
+          approvals_reviewer = "auto_review";
+        }
+      );
+    }
+    // lib.optionalAttrs cfg.codexEnforcePermissions {
+      "codex/requirements.toml".source = (pkgs.formats.toml { }).generate "flakelab-codex-requirements" (
+        {
+          allowed_approval_policies = [ "on-request" ];
+          allowed_approvals_reviewers = [ "auto_review" ];
+          default_permissions = "flakelab";
+          allowed_permission_profiles = {
+            flakelab = true;
+            ":read-only" = true;
+          };
+          permissions.flakelab = settings.permissions.flakelab;
+          rules.prefix_rules = managedRules;
+        }
+        // lib.optionalAttrs ((settings.auto_review or { }) ? policy) {
+          guardian_policy_config = settings.auto_review.policy;
+        }
+      );
+    };
 
     home-manager.users.${cfg.username} = { lib, ... }: {
       programs.codex = {
         enable = true;
         # Empty settings leave config.toml writable; keep the official installer.
         package = null;
-        rules = lib.optionalAttrs cfg.codexAutoReview { flakelab = ../files/config/codex.rules; };
+        rules = lib.optionalAttrs cfg.codexAutoReview { flakelab = localRules; };
       };
 
       # Migrate only our old config symlink, before Home Manager removes it.

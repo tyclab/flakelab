@@ -344,6 +344,10 @@
                   local = {
                     command = "example-mcp";
                     env_vars = [ "XDG_RUNTIME_DIR" ];
+                    tools.inspect = {
+                      output_token_limit = 512;
+                      approval_mode = "approve";
+                    };
                   };
                 };
               }
@@ -358,6 +362,8 @@
                     codexSettings = {
                       model = "fixture-model";
                       tui.status_line = [ "git-branch" ];
+                      permissions.flakelab.filesystem."/fixture/credentials" = "deny";
+                      apps.fixture.tools.search.approval_mode = "approve";
                     };
                   };
                 }
@@ -365,6 +371,18 @@
             };
             hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
             settings = fixture.config.environment.etc."codex/config.toml".source;
+            enforced = fixture.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    codexEnforcePermissions = true;
+                    codexSettings.auto_review.policy = "fixture reviewer policy";
+                  };
+                }
+              ];
+            };
+            enforcedSettings = enforced.config.environment.etc."codex/config.toml".source;
+            requirements = enforced.config.environment.etc."codex/requirements.toml".source;
             oldConfig = pkgs.writeText "codex-config" ''model = "fixture-model"'';
             migrate = pkgs.writeText "codex-writable-config-activation" (
               nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ]
@@ -396,10 +414,37 @@
                 and .mcp_servers.local.env_vars == ["XDG_RUNTIME_DIR"]
                 and .mcp_servers.docs.tools.search.approval_mode == "approve"
                 and .mcp_servers.local.default_tools_approval_mode == "prompt"
+                and .mcp_servers.local.tools.inspect.output_token_limit == 512
+                and .mcp_servers.local.tools.inspect.approval_mode == "prompt"
                 and .approvals_reviewer == "auto_review"
-                and .sandbox_workspace_write.network_access == false
+                and .default_permissions == "flakelab"
+                and .permissions.flakelab.extends == ":workspace"
+                and .permissions.flakelab.network.enabled == false
+                and .permissions.flakelab.filesystem["/fixture/credentials"] == "deny"
+                and .apps._default.approvals_reviewer == "auto_review"
+                and .apps._default.default_tools_approval_mode == "prompt"
+                and .apps.fixture.tools.search.approval_mode == "approve"
+                and (has("sandbox_mode") | not)
+                and (has("sandbox_workspace_write") | not)
                 and (has("auto_review") | not)
               ' settings.json
+              toml2json ${enforcedSettings} | jq -e '
+                .default_permissions == "flakelab"
+                and (has("permissions") | not)
+                and (has("auto_review") | not)
+              '
+              toml2json ${requirements} | jq -e '
+                .allowed_approval_policies == ["on-request"]
+                and .allowed_approvals_reviewers == ["auto_review"]
+                and .default_permissions == "flakelab"
+                and .allowed_permission_profiles == {"flakelab":true, ":read-only":true}
+                and .permissions.flakelab.extends == ":workspace"
+                and .permissions.flakelab.filesystem["/fixture/credentials"] == "deny"
+                and .guardian_policy_config == "fixture reviewer policy"
+                and (.rules.prefix_rules | length) == 17
+                and (.rules.prefix_rules | all(.decision == "prompt" or .decision == "forbidden"))
+                and (.rules.prefix_rules | any(.pattern == [{"token":"git"},{"token":"push"},{"token":"--mirror"}] and .decision == "forbidden"))
+              '
               test -s ${hm.home.file.".codex/rules/flakelab.rules".source}
               export fixtureHome="$TMPDIR/codex-home" DRY_RUN_CMD=""
               mkdir -p "$fixtureHome/.codex"
