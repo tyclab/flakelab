@@ -3,9 +3,10 @@
 set -uo pipefail
 
 # Offline suite for claude-sessions (files/scripts/claude-sessions): a fake
-# /proc tree plus stub pgrep/ps on PATH stand in for running sessions, so the
-# id-from-open-transcript rule, the save shape and the --resume round trip are
-# checked without a single real claude process.
+# /proc tree plus stub pgrep/ps/tmux on PATH stand in for running sessions, so
+# the id-from-open-transcript rule, the tool column, the tmux host lookup, the
+# save shape and the --resume / --open / --start / --attach round trips are
+# checked without a single real claude, codex, kiro-cli or tmux process.
 #
 # Usage: files/scripts/test-claude-sessions
 
@@ -23,68 +24,134 @@ BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
 export HOME="${BASE}/home"
 mkdir -p "${HOME}"
+US=$'\x1f'
 
 # ---------------------------------------------------------------------------
-# Three "processes": two sessions sharing one directory (the case the
-# newest-transcript heuristic gets wrong), one still starting with neither a
-# registry entry nor a transcript open. Pid 100 is registered in
+# Five "processes". Claude Code: two sessions sharing one directory (the case
+# the newest-transcript heuristic gets wrong), one still starting with neither
+# a registry entry nor a transcript open. Pid 100 is registered in
 # ~/.claude/sessions the way Claude Code does it (and its registry id wins
 # over the transcript it holds open); pid 200 has no registry file and falls
 # back to its open transcript — the stray non-transcript uuid must not win
-# the vote. A registry file for a dead pid (999) is not a session.
+# the vote. A registry file for a dead pid (999) is not a session. Codex pid
+# 500 holds its rollout file open, whose name carries the id; Kiro pid 600 has
+# no id this command can read.
+#
+# Parents: pid 200's shell (pid 20) is the pane of tmux window @2, pid 500's
+# shell (pid 50) is the pane of window @5; the others descend from pid 1.
 PROC="${BASE}/proc"
 SID_A=11111111-2222-3333-4444-555555555555
 SID_B=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+SID_X=cafecafe-1234-5678-9abc-def012345678
 WORK="${BASE}/work dir"
-mkdir -p "${WORK}" "${BASE}/other"
+mkdir -p "${WORK}" "${BASE}/other" "${BASE}/codex proj"
 mk_proc() {
-  local pid="$1" cwd="$2"; shift 2
+  local pid="$1" cwd="$2" ppid="$3"; shift 3
   mkdir -p "${PROC}/${pid}/fd"
   ln -s "${cwd}" "${PROC}/${pid}/cwd"
+  # The comm holds a parenthesis and a space on purpose: the ppid must be read
+  # after the LAST ")", not the first.
+  print -r -- "${pid} (a (b) c) S ${ppid} ${pid} ${pid} 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 0 0 0" > "${PROC}/${pid}/stat"
   local -i i=3
   for t in "$@"; do ln -s "$t" "${PROC}/${pid}/fd/${i}"; (( i++ )); done
 }
 SID_OLD=99999999-0000-0000-0000-000000000000
-mk_proc 100 "${WORK}" "${HOME}/.claude/projects/-work/${SID_OLD}.jsonl" "${HOME}/.claude/projects/-work/${SID_OLD}.jsonl" /dev/null
-mk_proc 200 "${WORK}" "${HOME}/.claude/projects/-work/${SID_B}.jsonl" "${HOME}/.claude/projects/-work/${SID_B}.jsonl" "/tmp/claude/${SID_A}/scratch"
-mk_proc 300 "${BASE}/other" /dev/null
-mkdir -p "${HOME}/.claude/sessions"
+SID_K=deadbeef-0000-1111-2222-333333333333
+mk_proc 20 "${WORK}" 1
+mk_proc 50 "${BASE}/codex proj" 1
+mk_proc 100 "${WORK}" 1 "${HOME}/.claude/projects/-work/${SID_OLD}.jsonl" "${HOME}/.claude/projects/-work/${SID_OLD}.jsonl" /dev/null
+mk_proc 200 "${WORK}" 20 "${HOME}/.claude/projects/-work/${SID_B}.jsonl" "${HOME}/.claude/projects/-work/${SID_B}.jsonl" "/tmp/claude/${SID_A}/scratch"
+mk_proc 300 "${BASE}/other" 1 /dev/null
+mk_proc 500 "${BASE}/codex proj" 50 "${HOME}/.codex/sessions/2026/09/24/rollout-2026-09-24T10-00-00-${SID_X}.jsonl" /dev/null
+mk_proc 600 "${BASE}/other" 1 /dev/null
+mkdir -p "${HOME}/.claude/sessions" "${HOME}/.kiro/sessions/cli"
+# Kiro's registry: the active session in pid 600's directory holds its lock; a
+# closed one in the same directory, newer, must not be taken for it.
+print -r -- "{\"id\":\"${SID_K}\",\"cwd\":\"${BASE}/other\",\"state\":\"active\"}" > "${HOME}/.kiro/sessions/cli/${SID_K}.json"
+: > "${HOME}/.kiro/sessions/cli/${SID_K}.lock"
+SID_K2=deadbeef-0000-1111-2222-444444444444
+print -r -- "{\"id\":\"${SID_K2}\",\"cwd\":\"${BASE}/other\",\"state\":\"closed\"}" > "${HOME}/.kiro/sessions/cli/${SID_K2}.json"
 NOW_MS=$(( $(date +%s) * 1000 ))
 print -r -- "{\"pid\":100,\"sessionId\":\"${SID_A}\",\"cwd\":\"${WORK}\",\"startedAt\":$(( NOW_MS - 7261000 ))}" > "${HOME}/.claude/sessions/100.json"
 print -r -- "{\"pid\":999,\"sessionId\":\"${SID_OLD}\",\"cwd\":\"${WORK}\",\"startedAt\":${NOW_MS}}" > "${HOME}/.claude/sessions/999.json"
 # A second process on SID_A, in another directory: the same session, resumed
 # or reattached. Only --json and the table have a pid to tell them apart.
-mk_proc 400 "${BASE}/other" /dev/null
+mk_proc 400 "${BASE}/other" 1 /dev/null
 print -r -- "{\"pid\":400,\"sessionId\":\"${SID_A}\",\"cwd\":\"${BASE}/other\",\"startedAt\":${NOW_MS}}" > "${HOME}/.claude/sessions/400.json"
 
 STUBS="${BASE}/bin"
 mkdir -p "${STUBS}"
 cat > "${STUBS}/pgrep" <<'STUB'
 #!/usr/bin/env zsh
-[[ "$1" == "-x" && "$2" == "claude" ]] || exit 1
+[[ "$1" == "-x" ]] || exit 1
 # FAKE_PGREP_NONE: nothing running, the first minutes after a crash.
 [[ -n "${FAKE_PGREP_NONE:-}" ]] && exit 1
-# FAKE_PGREP_DUP: pid 400 is a second, YOUNGER process on pid 100's session,
-# listed first — pgrep order and start order disagree, as after a wraparound.
-[[ -n "${FAKE_PGREP_DUP:-}" ]] && { print -l 400 100 200 300; exit 0 }
-print -l 100 200 300
+case "$2" in
+  claude)
+    # FAKE_PGREP_DUP: pid 400 is a second, YOUNGER process on pid 100's
+    # session, listed first — pgrep order and start order disagree, as after
+    # a wraparound.
+    [[ -n "${FAKE_PGREP_DUP:-}" ]] && { print -l 400 100 200 300; exit 0 }
+    print -l 100 200 300 ;;
+  codex)    print 500 ;;
+  kiro-cli) print 600 ;;
+  *) exit 1 ;;
+esac
 STUB
 cat > "${STUBS}/ps" <<'STUB'
 #!/usr/bin/env zsh
-case "$4" in 100) print 1 ;; 200) print 90000 ;; *) print 5 ;; esac
+case "$4" in 100) print 1 ;; 200) print 90000 ;; 500) print 600 ;; *) print 5 ;; esac
 STUB
 # wt.exe stand-in: records its argv, one call per line
 cat > "${STUBS}/wt.exe" <<'STUB'
 #!/usr/bin/env zsh
 print -r -- "$*" >> "${WT_LOG}"
 STUB
+# tmux stand-in for ABSENCE: on the base PATH so a real tmux on the box never
+# reaches the script; it answers nothing, which the script reads as no tmux.
+print -rl -- '#!/usr/bin/env zsh' 'exit 1' > "${STUBS}/tmux"
 chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
+
+# tmux stand-in, on PATH only for the cases that want it: `list-panes -a`
+# answers from a canned file in the script's own field order, `has-session`
+# from FAKE_TMUX_HAS, `new-session`/`new-window` with -P print a window id,
+# and every call is logged.
+TMUXBIN="${BASE}/tmuxbin"
+mkdir -p "${TMUXBIN}"
+cat > "${TMUXBIN}/tmux" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${TMUX_LOG}"
+case "$1" in
+  -V)          print -r -- "tmux 3.4"; exit 0 ;;
+  list-panes)  [[ -r "${TMUX_PANES:-}" ]] && cat "${TMUX_PANES}"; exit 0 ;;
+  has-session) [[ -n "${FAKE_TMUX_HAS:-}" ]] ;;
+  new-session|new-window)
+    # Window ids count up from @10 per -P call, this one included.
+    if [[ " $* " == *" -P "* ]]; then
+      local -i n=$(( $(grep -c -- ' -P ' "${TMUX_LOG}") + 9 ))
+      print -r -- "@${n}"
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "${TMUXBIN}/tmux"
+export TMUX_LOG="${BASE}/tmux.log"
+export TMUX_PANES="${BASE}/panes"
+{
+  print -r -- "20${US}agents${US}@2${US}claude-work_dir"
+  print -r -- "50${US}agents${US}@5${US}codex-codex_proj"
+  print -r -- "70${US}other${US}@7${US}elsewhere"
+} > "${TMUX_PANES}"
+with_tmux() { PATH="${TMUXBIN}:${PATH}" "$@" }
+
 export FLAKELAB_PROC_ROOT="${PROC}"
-unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME
+unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME TMUX
 
 # stdout and stderr apart: --json's stdout must parse on its own.
 run() { OUT="$("${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+run_tmux() { OUT="$(with_tmux "${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
 typeset -i RC=0
 OUT=""
 ERR=""
@@ -93,17 +160,33 @@ ERR=""
 print -r -- "list"
 run
 check "list exits 0" "${RC}" "0"
-contains "pid 100 takes id and age from its registry file, not its open transcript" "${OUT}" "100      2h01m   ${SID_A}"
-contains "pid 200 falls back to its own transcript, not the shared directory's newest" "${OUT}" "200      1d01h   ${SID_B}"
+contains "the table starts with the tool and host columns" "${OUT}" "TOOL    PID      AGE     SESSION                              HOST               DIRECTORY"
+contains "pid 100 takes id and age from its registry file, not its open transcript" "${OUT}" "claude  100      2h01m   ${SID_A}"
+contains "pid 200 falls back to its own transcript, not the shared directory's newest" "${OUT}" "claude  200      1d01h   ${SID_B}"
+contains "a codex process is identified by the rollout file it holds open" "${OUT}" "codex   500      10m     ${SID_X}"
+contains "a kiro process takes the locked session of its directory from Kiro's registry" "${OUT}" "kiro    600      0m      ${SID_K}"
 excludes "a registry file for a dead pid is not a session" "${OUT}" "999"
-contains "a process with no id is noted on stderr" "${ERR}" "note: pid 300 in ${BASE}/other has no session id yet"
+contains "a claude process with no id is noted on stderr" "${ERR}" "note: claude pid 300 in ${BASE}/other has no session id yet"
+excludes "a kiro process with a registry match is not noted" "${ERR}" "kiro pid 600"
 contains "the directory with a space is printed intact" "${OUT}" "${WORK}"
+contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  ${WORK}"
+
+run_tmux
+check "list with tmux exits 0" "${RC}" "0"
+contains "a session whose shell is a tmux pane shows its window" "${OUT}" "${SID_B} claude-work_dir    ${WORK}"
+contains "the codex window is found through its pane too" "${OUT}" "${SID_X} codex-codex_proj   ${BASE}/codex proj"
+contains "a process not under a pane keeps the dash" "${OUT}" "${SID_A} -                  ${WORK}"
+check "the host lookup is one list-panes call" "$(grep -c '^list-panes' "${TMUX_LOG}")" "1"
 
 run --json
 check "--json exits 0" "${RC}" "0"
-check "--json carries three rows" "$(print -r -- "$OUT" | jq 'length')" "3"
+check "--json carries five rows" "$(print -r -- "$OUT" | jq 'length')" "5"
 check "--json session for pid 200" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 200) | .session')" "${SID_B}"
+check "--json tool for pid 500" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 500) | .tool')" "codex"
 check "--json null session for the starting process" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 300) | .session')" "null"
+check "--json null host without tmux" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 200) | .host')" "null"
+run_tmux --json
+check "--json host with tmux names session, window and id" "$(print -r -- "$OUT" | jq -c '.[] | select(.pid == 500) | .host')" '{"session":"agents","window":"codex-codex_proj","id":"@5"}'
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -113,18 +196,29 @@ check "--save exits 0" "${RC}" "0"
 SAVED="$(ls "${HOME}"/.local/state/flakelab/sessions/*.txt 2>/dev/null | head -1)"
 [[ -n "${SAVED}" ]] && ok "--save writes under ~/.local/state/flakelab/sessions without a state root" || bad "--save wrote nothing under ~/.local/state/flakelab/sessions"
 [[ -z "$(ls "${HOME}"/.claude/sessions/*.txt 2>/dev/null)" ]] && ok "--save leaves Claude's own ~/.claude/sessions alone" || bad "--save wrote into ~/.claude/sessions"
-contains "--save reports the count, transcript-less process excluded" "${ERR}" "saved 2 session(s) to"
-check "saved lines are '<dir>  <id>'" "$(grep -v '^#' "${SAVED}" | head -1)" "${WORK}  ${SID_A}"
+contains "--save reports the count, id-less processes excluded" "${ERR}" "saved 4 session(s) to"
+check "saved lines are '<tool>  <dir>  <id>'" "$(grep -v '^#' "${SAVED}" | head -1)" "claude  ${WORK}  ${SID_A}"
+contains "the codex session is saved with its tool" "$(<"${SAVED}")" "codex  ${BASE}/codex proj  ${SID_X}"
+contains "the kiro session is saved with its tool" "$(<"${SAVED}")" "kiro  ${BASE}/other  ${SID_K}"
 
 run --resume
 check "--resume exits 0" "${RC}" "0"
 contains "--resume names its source" "${OUT}" "# from ${SAVED}"
 contains "--resume quotes the directory" "${OUT}" "cd ${(q)WORK} && claude --resume ${SID_A}"
 contains "--resume prints the second session" "${OUT}" "claude --resume ${SID_B}"
-excludes "--resume never prints an id-less row" "${OUT}" "${BASE}/other"
+contains "--resume prints the codex session with the tool's own command" "${OUT}" "cd ${(q)BASE}/codex\\ proj && codex resume ${SID_X}"
+contains "--resume prints the kiro session with the tool's own command" "${OUT}" "cd ${(q)BASE}/other && kiro-cli chat --resume-id ${SID_K}"
+check "--resume prints two claude lines and no id-less row" "$(print -r -- "$OUT" | grep -c 'claude --resume')" "2"
 
 run --resume "${BASE}/missing.txt"
 check "--resume on a missing file exits 1" "${RC}" "1"
+
+# A save from before the tool column, and a hand-written kiro line.
+print -rl -- "# an older save" "${WORK}  ${SID_A}" "kiro  ${WORK}  ${SID_B}" > "${BASE}/old-shape.txt"
+run --resume "${BASE}/old-shape.txt"
+check "an old-shape save resumes" "${RC}" "0"
+contains "a line without a tool column is Claude Code" "${OUT}" "cd ${(q)WORK} && claude --resume ${SID_A}"
+contains "a kiro line resumes with kiro-cli chat --resume-id" "${OUT}" "cd ${(q)WORK} && kiro-cli chat --resume-id ${SID_B}"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -135,11 +229,31 @@ check "--open without a distro exits 2" "${RC}" "2"
 export WSL_DISTRO_NAME=flakelab
 run --open
 check "--open exits 0" "${RC}" "0"
-check "--open calls wt.exe once per session" "$(wc -l < "${WT_LOG}")" "2"
+check "--open calls wt.exe once per session" "$(wc -l < "${WT_LOG}")" "4"
 contains "--open targets the current window, the distro, the directory and the id" \
   "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab --cd ${WORK} -- claude --resume ${SID_A}"
-contains "--open reports the count" "${ERR}" "opened 2 tab(s)"
+contains "--open runs the codex tab with codex resume" "$(<"${WT_LOG}")" "-- codex resume ${SID_X}"
+contains "--open reports the count" "${ERR}" "opened 4 tab(s)"
 excludes "--open does not report a failure for the first tab" "${ERR}" "wt.exe failed"
+
+# With tmux: a window per session in the agents server, a view per tab.
+: > "${WT_LOG}"; : > "${TMUX_LOG}"
+export FAKE_TMUX_HAS=1
+run_tmux --open
+check "--open with tmux exits 0" "${RC}" "0"
+check "--open with tmux opens a window per session" "$(grep -c '^new-window' "${TMUX_LOG}")" "4"
+contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -c ${WORK} claude --resume ${SID_A}"
+check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "4"
+contains "the view is set to go away with its last client" "$(<"${TMUX_LOG}")" "set-option -t agents-10-"
+contains "the view's current window is the session's window" "$(<"${TMUX_LOG}")" "select-window -t agents-10-"
+contains "the tab attaches the view instead of running the tool" "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab -- tmux attach-session -t agents-10-"
+excludes "the tab does not resume the session itself" "$(<"${WT_LOG}")" "claude --resume"
+contains "--open with tmux reports the count" "${ERR}" "opened 4 tab(s)"
+unset FAKE_TMUX_HAS
+# No server yet: the first window creates the session, the rest join it.
+: > "${TMUX_LOG}"
+run_tmux --open
+check "--open creates the agents session for the first window" "$(grep -c '^new-session -d -P -F #{window_id} -s agents -n' "${TMUX_LOG}")" "4"
 unset WSL_DISTRO_NAME
 
 # state root wins over ~/.claude
@@ -147,6 +261,67 @@ export FLAKELAB_STATE_ROOT="${BASE}/state"
 run --save
 contains "--save under a state root lands in <root>/claude/sessions" "${ERR}" "${BASE}/state/claude/sessions/"
 unset FLAKELAB_STATE_ROOT
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "--start: a window in the agents session, then a view on it"
+: > "${TMUX_LOG}"
+run --start claude "${WORK}"
+check "--start without tmux exits 2" "${RC}" "2"
+contains "--start without tmux says what is missing" "${ERR}" "needs tmux on PATH"
+run_tmux --start
+check "--start without a tool exits 2" "${RC}" "2"
+run_tmux --start gemini
+check "--start with an unknown tool exits 2" "${RC}" "2"
+run_tmux --start claude "${BASE}/nowhere"
+check "--start with a missing directory exits 2" "${RC}" "2"
+export FAKE_TMUX_HAS=1
+run_tmux --start kiro "${WORK}" --detach -- --trust-all-tools
+check "--start --detach exits 0" "${RC}" "0"
+contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n kiro-work_dir -c ${WORK} kiro-cli chat --trust-all-tools"
+contains "--start reports the window" "${ERR}" "started kiro in ${WORK} as agents:kiro-work_dir (@10)"
+contains "--start --detach says how to attach" "${ERR}" "attach with: flakelab sessions --attach kiro-work_dir"
+excludes "--start --detach opens no view" "$(<"${TMUX_LOG}")" "attach-session"
+# Not at a terminal (the suite's stdin is not a tty): started, not attached.
+: > "${TMUX_LOG}"
+run_tmux --start codex "${WORK}"
+check "--start with no terminal exits 0" "${RC}" "0"
+contains "--start with no terminal still says how to attach" "${ERR}" "attach with: flakelab sessions --attach codex-work_dir"
+unset FAKE_TMUX_HAS
+: > "${TMUX_LOG}"
+run_tmux --start claude "${WORK}" --detach
+contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -c ${WORK} claude"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "--attach: by session id, by window name, or the whole server"
+: > "${TMUX_LOG}"
+run --attach
+check "--attach without tmux exits 2" "${RC}" "2"
+run_tmux --attach
+check "--attach without an agents session exits 2" "${RC}" "2"
+contains "--attach without a server points at --start" "${ERR}" "flakelab sessions --start <tool>"
+export FAKE_TMUX_HAS=1
+: > "${TMUX_LOG}"
+run_tmux --attach "${SID_B}"
+check "--attach by session id exits 0" "${RC}" "0"
+contains "--attach by id opens a view on the window holding the session" "$(<"${TMUX_LOG}")" "select-window -t agents-2-"
+contains "--attach by id attaches that view" "$(<"${TMUX_LOG}")" "attach-session -t agents-2-"
+: > "${TMUX_LOG}"
+run_tmux --attach codex-codex_proj
+contains "--attach by window name finds the window" "$(<"${TMUX_LOG}")" "select-window -t agents-5-"
+: > "${TMUX_LOG}"
+run_tmux --attach nothing-here
+check "--attach on an unknown target exits 2" "${RC}" "2"
+: > "${TMUX_LOG}"
+run_tmux --attach
+contains "--attach with no target attaches the whole server" "$(<"${TMUX_LOG}")" "attach-session -t agents"
+: > "${TMUX_LOG}"
+TMUX=/tmp/tmux-0/default,1,0 run_tmux --attach "${SID_X}"
+contains "inside tmux, --attach switches the client instead of nesting" "$(<"${TMUX_LOG}")" "switch-client -t agents"
+contains "inside tmux, --attach selects the window" "$(<"${TMUX_LOG}")" "select-window -t @5"
+excludes "inside tmux, --attach opens no view" "$(<"${TMUX_LOG}")" "attach-session"
+unset FAKE_TMUX_HAS
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -170,6 +345,9 @@ export WSL_DISTRO_NAME=flakelab
 : > "${WT_LOG}"
 run --open "${BASE}/elsewhere.txt"
 contains "--open starts that tab in the home directory" "$(head -1 "${WT_LOG}")" "--cd ~ -- claude --resume ${SID_A}"
+: > "${WT_LOG}"; : > "${TMUX_LOG}"
+run_tmux --open "${BASE}/elsewhere.txt"
+contains "--open with tmux starts that window in the home directory" "$(<"${TMUX_LOG}")" "-c ${HOME} claude --resume ${SID_A}"
 unset WSL_DISTRO_NAME
 
 # ---------------------------------------------------------------------------
@@ -183,8 +361,8 @@ AUTO_A="${SAVES}/${HOST}-autosave-aaaaaaaa1111.txt"
 run --autosave
 check "--autosave exits 0" "${RC}" "0"
 [[ -f "${AUTO_A}" ]] && ok "--autosave writes <host>-autosave-<boot>.txt" || bad "--autosave wrote no ${AUTO_A:t}"
-contains "--autosave reports the write" "${ERR}" "autosaved 2 session(s) to ${AUTO_A}"
-check "--autosave lines are the save shape, sorted" "$(grep -v '^#' "${AUTO_A}")" "${WORK}  ${SID_A}"$'\n'"${WORK}  ${SID_B}"
+contains "--autosave reports the write" "${ERR}" "autosaved 4 session(s) to ${AUTO_A}"
+check "--autosave lines are the save shape, sorted" "$(grep -v '^#' "${AUTO_A}")" "claude  ${WORK}  ${SID_A}"$'\n'"claude  ${WORK}  ${SID_B}"$'\n'"codex  ${BASE}/codex proj  ${SID_X}"$'\n'"kiro  ${BASE}/other  ${SID_K}"
 check "--autosave leaves no scratch file" "$(ls -A "${SAVES}" | grep -c flakelab-tmp)" "0"
 run --autosave
 check "an unchanged set is not rewritten" "${ERR}" ""
@@ -192,7 +370,7 @@ export FAKE_PGREP_NONE=1
 run --autosave
 unset FAKE_PGREP_NONE
 check "nothing running exits 0" "${RC}" "0"
-check "nothing running keeps the snapshot" "$(grep -vc '^#' "${AUTO_A}")" "2"
+check "nothing running keeps the snapshot" "$(grep -vc '^#' "${AUTO_A}")" "4"
 
 # A new boot: what --resume brings back is the file the last boot left, never
 # this boot's own snapshot and never another host's.
@@ -225,6 +403,7 @@ print -r -- "--recent: stopped sessions, newest first, the running ones left out
 PROJ="${HOME}/.claude/projects/-work"
 SID_C=cccccccc-dddd-eeee-ffff-000000000000
 SID_D=dddddddd-eeee-ffff-0000-111111111111
+SID_R=eeeeeeee-ffff-0000-1111-222222222222
 mkdir -p "${PROJ}/${SID_C}/subagents"
 # The last complete line's cwd wins; a half-written tail line is skipped.
 print -r -- "{\"type\":\"user\",\"cwd\":\"/somewhere/else\",\"sessionId\":\"${SID_C}\"}" > "${PROJ}/${SID_C}.jsonl"
@@ -234,12 +413,24 @@ print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\",\"sessionId\":\"${SID_D}\"}"
 touch -d '3 days ago' "${PROJ}/${SID_D}.jsonl"
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\",\"sessionId\":\"${SID_B}\"}" > "${PROJ}/${SID_B}.jsonl"
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${PROJ}/${SID_C}/subagents/agent-1.jsonl"
+# Codex: a stopped rollout with its cwd in the session_meta head line, and the
+# running one from the fake proc, which must stay out.
+ROLL="${HOME}/.codex/sessions/2026/09/23"
+mkdir -p "${ROLL}"
+print -r -- "{\"timestamp\":\"2026-09-23T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"${SID_R}\",\"cwd\":\"${WORK}\"}}" > "${ROLL}/rollout-2026-09-23T10-00-00-${SID_R}.jsonl"
+print -r -- "{\"timestamp\":\"2026-09-23T10:00:01Z\",\"type\":\"response_item\",\"payload\":{}}" >> "${ROLL}/rollout-2026-09-23T10-00-00-${SID_R}.jsonl"
+mkdir -p "${HOME}/.codex/sessions/2026/09/24"
+print -r -- "{\"timestamp\":\"2026-09-24T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"${SID_X}\",\"cwd\":\"${WORK}\"}}" > "${HOME}/.codex/sessions/2026/09/24/rollout-2026-09-24T10-00-00-${SID_X}.jsonl"
 run --recent
 check "--recent exits 0" "${RC}" "0"
 contains "--recent resumes a stopped session from the last directory it recorded" "${OUT}" "cd ${(q)WORK} && claude --resume ${SID_C}  # "
 excludes "--recent leaves a running session out" "${OUT}" "${SID_B}"
 excludes "--recent leaves a session older than the window out" "${OUT}" "${SID_D}"
 excludes "--recent lists session files, never subagent transcripts" "${OUT}" "agent-1"
+contains "--recent lists a stopped codex rollout with the tool's command" "${OUT}" "cd ${(q)WORK} && codex resume ${SID_R}  # "
+excludes "--recent leaves the running codex session out" "${OUT}" "${SID_X}"
+contains "--recent lists a closed kiro session from its registry" "${OUT}" "cd ${(q)BASE}/other && kiro-cli chat --resume-id ${SID_K2}  # "
+excludes "--recent leaves a locked kiro session out" "${OUT}" "${SID_K}  #"
 run --recent 96
 contains "--recent <hours> widens the window" "${OUT}" "claude --resume ${SID_D}"
 
@@ -250,22 +441,22 @@ export FAKE_PGREP_DUP=1
 DUP_SAVE="${BASE}/dup-save.txt"
 run --save "${DUP_SAVE}"
 check "--save with a doubled session exits 0" "${RC}" "0"
-contains "--save counts sessions, not processes" "${ERR}" "saved 2 session(s) to"
+contains "--save counts sessions, not processes" "${ERR}" "saved 4 session(s) to"
 check "the doubled session is written once, from its OLDEST process" \
-  "$(grep -v '^#' "${DUP_SAVE}")" "${WORK}  ${SID_A}"$'\n'"${WORK}  ${SID_B}"
+  "$(grep -v '^#' "${DUP_SAVE}" | head -2)" "claude  ${WORK}  ${SID_A}"$'\n'"claude  ${WORK}  ${SID_B}"
 
 run --json
-check "--json still reports every process" "$(print -r -- "$OUT" | jq 'length')" "4"
+check "--json still reports every process" "$(print -r -- "$OUT" | jq 'length')" "6"
 check "--json keeps both pids of the doubled session" \
   "$(print -r -- "$OUT" | jq -r --arg s "${SID_A}" '[.[] | select(.session == $s) | .pid] | sort | join(",")')" "100,400"
 
 run --resume "${DUP_SAVE}"
-check "--resume prints one line per session" "$(print -r -- "$OUT" | grep -c 'claude --resume')" "2"
+check "--resume prints one line per session" "$(print -r -- "$OUT" | grep -c 'resume')" "4"
 
 export FLAKELAB_BOOT_ID_FILE="${BASE}/boot_id_dup"
 print -r -- "dddddddd-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
 run --autosave
-contains "--autosave counts sessions, not processes" "${ERR}" "autosaved 2 session(s) to"
+contains "--autosave counts sessions, not processes" "${ERR}" "autosaved 4 session(s) to"
 unset FLAKELAB_BOOT_ID_FILE FAKE_PGREP_DUP
 
 # A file written before the dedupe, or merged from two boxes, carries the

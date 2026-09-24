@@ -106,12 +106,12 @@ Claude adapter) is usable on its own.
 
 ## Remote sessions
 
-`enhancement` · designed, not started
+`enhancement` · phase 1 done, the rest designed
 
-Sessions that outlive their terminal and can be reached from another device:
-tmux as the session host behind `flakelab sessions start|attach`, Codex and
-Kiro in the sessions registry beside Claude Code, Remote Control on its own
-option, a push when a session waits on a prompt, and sshd, mosh and Tailscale
-behind options for the phone. [remote-sessions.md](remote-sessions.md) has the
-design and what to verify first; phase 1 (tmux and the two verbs) is usable on
-its own.
+Sessions that outlive their terminal and can be reached from another device.
+Done: tmux as the session host behind `flakelab sessions --start` /
+`--attach`, Codex and Kiro in the sessions registry beside Claude Code. Open:
+Remote Control on its own option, a push when a session waits on a prompt,
+mosh and Tailscale on the VM, and the Windows-host SSH route into a WSL
+distro. [remote-sessions.md](remote-sessions.md) has the design and what to
+verify first.

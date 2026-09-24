@@ -145,7 +145,8 @@ rec {
   '';
 
   # --save lands under FLAKELAB_STATE_ROOT, so the list replicates with the
-  # transcripts it names.
+  # transcripts it names. tmux is the session host --start / --attach / --open
+  # use; the same package the user's shell has, so a view and the server agree.
   claude-sessions = pkgs.writeShellScriptBin "claude-sessions" ''
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
@@ -158,6 +159,7 @@ rec {
         pkgs.gnugrep
         pkgs.gawk
         pkgs.jq
+        pkgs.tmux
       ]
     }:$PATH
     exec ${zsh} ${s}/claude-sessions "$@"

@@ -70,7 +70,13 @@ token per rolling hour, not a refilling bucket; a burst blocks the token for up
 to an hour; `Retry-After: 0` means the trailing hour is spent, `Retry-After: N`
 is a burst rule that counts down. `CLAUDE_CONFIG_DIR` moves the whole config
 dir, and the docs name it as the way to hold a second login. The public docs
-document no usage endpoint and no account switch.
+document no usage endpoint and no account switch, but the statusline command
+receives, with every refresh, a `rate_limits` object for the live login
+(`five_hour` and `seven_day`, each with `used_percentage` and `resets_at`),
+so the active account's figures cost no request at all; only the inactive
+accounts need the endpoint. Two hook events also name the wall as it lands:
+a `Notification` of type `quota_auto_resume_fired` (Claude Code has decided
+to wait for the window) and, in the transcript, the rate-limit error itself.
 
 **Codex.** `~/.codex` is the home and `CODEX_HOME` moves it whole. The login
 is `$CODEX_HOME/auth.json` when `cli_auth_credentials_store` is `file`, which
@@ -86,27 +92,43 @@ back on every response as a `RateLimitSnapshot`: `primary` and `secondary`
 windows (`used_percent`, `window_minutes`, `resets_at` in epoch seconds), named
 per-model buckets (`limit_id`, `limit_name`), `credits`, `plan_type`, and they
 are readable on demand through the CLI's own JSON-RPC server,
-`codex app-server`, method `account/rateLimits/read`. `codex login status`
+`codex app-server`, method `account/rateLimits/read`, or with one HTTPS call
+to `https://chatgpt.com/backend-api/wham/usage` with the bearer and a
+`chatgpt-account-id` header, which is what codexctl does. `codex login status`
 exits 0 when a credential is present. Sessions live under
 `$CODEX_HOME/sessions/` and `codex resume <id>` reopens one.
 
 **Kiro CLI.** `~/.kiro` holds agents, skills, steering, settings and sessions
-and `KIRO_HOME` moves it. The login is elsewhere: under
-`~/.local/share/kiro-cli/`, in the SQLite secret store the CLI inherited from
-the Amazon Q Developer CLI, two rows: `codewhisperer:odic:token`, a JSON
+and `KIRO_HOME` moves it. The login is elsewhere:
+`~/.local/share/kiro-cli/data.sqlite3`, the SQLite store the CLI inherited
+from the Amazon Q Developer CLI, table `auth_kv` (`key`, `value`): the row
+`kirocli:odic:token` for a Builder ID or IAM Identity Center login (a JSON
 `{access_token, expires_at, refresh_token, region, start_url, oauth_flow,
-scopes}`, and `codewhisperer:odic:device-registration`, the SSO-OIDC client
-registration (`client_id`, `client_secret`, region, expiry) that a refresh
-needs. `start_url` is what tells a Builder ID login
-(`https://view.awsapps.com/start`) from an IAM Identity Center one (the
-organisation's start URL). The CLI refreshes through SSO-OIDC `CreateToken`
-at `https://oidc.<region>.amazonaws.com` itself. `kiro-cli login` takes
-`--license`, `--identity-provider <start url>` and `--region`; `kiro-cli
-logout` clears the rows; `KIRO_API_KEY` authenticates a non-interactive run.
-The allowance is monthly credits, shown by the CLI's own status line
-(`chat.statusLine.tui.credits` in this repo's `cli.json`); no endpoint for it
-is documented. Sessions are saved every turn and reopened with `kiro-cli chat
---resume`, `--resume-id <id>` or `--resume-picker`.
+scopes}`; `kirocli:social:token` and `kirocli:external-idp:token` for the
+other sign-in methods) and `kirocli:odic:device-registration`, the SSO-OIDC
+client registration a refresh needs; beside them the `state` table holds
+`api.codewhisperer.profile` (the profile ARN), `auth.idc.start-url` and
+`auth.idc.region`. `start_url` tells a Builder ID login
+(`https://view.awsapps.com/start`) from an IAM Identity Center one. The CLI
+refreshes through SSO-OIDC `CreateToken` at
+`https://oidc.<region>.amazonaws.com` itself; one open report says it keeps a
+refreshed token in memory without writing it back, which a stored copy would
+inherit as staleness. No variable moves the store (`KIRO_HOME` moves only
+`~/.kiro`; `XDG_DATA_HOME` may, by inheritance from the Amazon Q code, and is
+unverified). `kiro-cli login` takes `--license pro|free`,
+`--identity-provider <start url>`, `--region`, `--use-device-flow` and
+`--social google|github`; `kiro-cli logout` clears the rows;
+`kiro-cli whoami --format json` prints the account type, email, region and
+start URL (followed by a plain-text profile trailer, so the JSON has to be cut
+out); `KIRO_API_KEY` authenticates a non-interactive run. The allowance is
+monthly credits, and it is readable: the same `GetUsageLimits` call the CLI's
+own `/usage` makes, `POST https://codewhisperer.<region>.amazonaws.com/` with
+`X-Amz-Target: AmazonCodeWhispererService.GetUsageLimits`, the bearer from
+the token row and `{"profileArn": …}` from the profile row, answering the
+current usage, the cap, overage settings and `nextDateReset`; the call spends
+no credits. Sessions are `~/.kiro/sessions/cli/<id>.json` (id, cwd, state)
+with a `.lock` while a process owns one, reopened with `kiro-cli chat
+--resume-id <id>`, `--resume` or `--resume-picker`.
 
 The conclusions, each learned the hard way upstream:
 
@@ -192,7 +214,7 @@ and stops rather than improvising.
 | the credential to store                  | `.credentials.json` + the `oauthAccount` block                                          | `auth.json`, whole                                                                                                            | the two secret rows, exported as JSON                                              |
 | a lock to hold while swapping            | the two `mkdir` locks                                                                   | none known: swap only while no `codex` runs, else refuse                                                                      | none known: swap only while no `kiro-cli` runs, else refuse                        |
 | does a running session follow a switch   | yes on Linux, on its next message (verify 1)                                            | no: a new process; running ones keep their token (verify 6)                                                                   | no: a new process (verify 9)                                                       |
-| usage, and how it is read                | the usage endpoint, per stored token, under its budget                                  | `codex app-server` → `account/rateLimits/read` in the account's profile                                                       | none readable; the CLI's status line only (verify 10)                              |
+| usage, and how it is read                | the statusline's `rate_limits` for the live login; the endpoint for the rest            | `codex app-server` → `account/rateLimits/read` in the account's profile                                                       | `GetUsageLimits` with the stored token and profile ARN: one monthly window         |
 | may we refresh an inactive stored token  | yes, and must persist first                                                             | no: the tool refreshes on first use after a switch                                                                            | no: same                                                                           |
 | profile: the env var that moves the home | `CLAUDE_CONFIG_DIR`                                                                     | `CODEX_HOME`                                                                                                                  | `KIRO_HOME` for `~/.kiro`; the secret store needs its own move (verify 8)          |
 | profile: what is shared by symlink       | settings, keybindings, `CLAUDE.md`, skills, commands, agents, projects, `history.jsonl` | `config.toml`, `*.config.toml`, `AGENTS*.md`, `hooks.json`, `hooks/`, `rules/`, `memories/`, `sessions/`, `.credentials.json` | agents, skills, steering, settings, sessions                                       |
@@ -376,10 +398,19 @@ as above with no 429 rule until one is observed. The active account's figure
 is read the same way from a scratch profile seeded from `~/.codex/auth.json`,
 never from `~/.codex` itself (verify 7).
 
-**Kiro** has no usage adapter until a readable source exists (verify 10); its
-listing shows the account and `usage: not readable`, and the engine never
-runs for it. Its allowance is monthly, so there is also less to gain: an
-account that is out is out until the first of the month.
+**Kiro** asks `GetUsageLimits` with the stored token and the profile ARN
+from the same store, one call per stored account, cached like the others.
+The answer is one window of class `month` (the credits used against the cap,
+resetting on `nextDateReset`); it never steers a switch, because a monthly
+allowance that is out is out until the first of the month and a burst cannot
+change that between two polls, but the listing shows it, which is what a
+switch by hand needs.
+
+For **Claude Code** the live login's figures do not come from the endpoint
+at all: the statusline command gets `rate_limits` with every refresh, and
+the statusline plugin writes them into the cache (phase 7). The endpoint,
+with its budget, is for the inactive accounts only, which halves the requests
+and removes the active token from the count entirely.
 
 Normalised per account into `usage.json`, whatever the tool:
 
@@ -479,7 +510,11 @@ Claude Code has since grown a related feature of its own: a session that hits
 its quota can wait and resume itself when the window resets (the
 `quota_auto_resume_*` notification events). That is the right answer when
 there is one account and time to spare; this engine is the answer when there
-is a second account and the work should not wait.
+is a second account and the work should not wait. The two meet in a hook:
+a `Notification` hook on `quota_auto_resume_fired` runs
+`flakelab accounts auto --once --tool claude` at the moment the wall lands,
+so the reactive case does not wait for the timer, and the timer keeps the
+proactive case. Both go through the same engine and the same transaction.
 
 The timer is `flakelab-accounts-autoswitch` in `nix/home/backup.nix`'s style:
 `flakelab.accounts.autoSwitchInterval`, default `null` (off), runs
@@ -621,13 +656,15 @@ Items 1 to 5 are Claude Code, 6 and 7 Codex, 8 to 10 Kiro.
    `RateLimitSnapshot`, which would make the call unnecessary for the active
    account.
 
-8. **What moves the secret store.** `KIRO_HOME` moves `~/.kiro`; the store
-   under `~/.local/share/kiro-cli/` may follow `XDG_DATA_HOME` or a variable
-   of its own. Without a way to move it, `run`/`env` for Kiro is a swap, not a
-   profile.
-9. **The store's file name, table and row shape** on the installed version,
-   and whether a running `kiro-cli` re-reads it. The names above are the
-   Amazon Q lineage's; the CLI has been renamed since.
-10. **A readable usage figure.** The status line shows credits, so the CLI
-    has a call for them; find whether `kiro-cli` exposes it (a `usage` verb, a
-    `--json` on `whoami`) before anything scrapes a TUI.
+8. **What moves the secret store.** `KIRO_HOME` moves only `~/.kiro`; test
+   whether `XDG_DATA_HOME` moves `~/.local/share/kiro-cli/` (the Amazon Q
+   code resolves it through `dirs::data_local_dir`, which honours it). Without
+   a way to move it, `run`/`env` for Kiro is a swap, not a profile.
+9. **Whether a running `kiro-cli` re-reads the token row** after a swap, and
+   whether it writes a refreshed token back (one report says it does not,
+   the inherited code says it does). A stored copy that never receives the
+   refreshed generation dies at the next expiry.
+10. **`GetUsageLimits` from outside the CLI**: the request shape above is
+    what two monitoring tools use; confirm the region routing for an EU
+    profile (`q.eu-central-1.amazonaws.com` in one of them) and that the
+    profile ARN in the `state` table is the one the token is entitled to.

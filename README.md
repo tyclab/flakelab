@@ -232,16 +232,16 @@ place to **generate** from, not to run this system: the flake's outputs are
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
 all fifteen.
 
-| Command                   | Action                                                             |
-| ------------------------- | ------------------------------------------------------------------ |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`    |
-| `flakelab update-all`     | rebuild + clone                                                    |
-| `flakelab clone`          | clone / fetch GitLab group repos                                   |
-| `flakelab doctor`         | diagnose a provisioned distro                                      |
-| `flakelab backup`         | payload + optional shared state root                               |
-| `flakelab sessions`       | running Claude Code sessions; `--open` after a restart, `--recent` |
-| `flakelab overlay-gen`    | write the private overlay from a config                            |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                       |
+| Command                   | Action                                                          |
+| ------------------------- | --------------------------------------------------------------- |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>` |
+| `flakelab update-all`     | rebuild + clone                                                 |
+| `flakelab clone`          | clone / fetch GitLab group repos                                |
+| `flakelab doctor`         | diagnose a provisioned distro                                   |
+| `flakelab backup`         | payload + optional shared state root                            |
+| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
+| `flakelab overlay-gen`    | write the private overlay from a config                         |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean
@@ -449,10 +449,18 @@ run the daily payload pass still converges its state, and while it is scheduled
 a closing Claude Code session is pushed at once.
 
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
-snapshots the running Claude Code sessions every `sessionsAutosaveInterval`
-(default 5 min), one file per boot. After a crash, `flakelab sessions --resume`
-prints — and on WSL `--open` reopens — every session that was open;
-`flakelab sessions --recent` lists the ones closed in the last day.
+snapshots the running agent sessions (Claude Code, Codex, Kiro) every
+`sessionsAutosaveInterval` (default 5 min), one file per boot. After a crash,
+`flakelab sessions --resume` prints — and on WSL `--open` reopens — every
+session that was open; `flakelab sessions --recent` lists the ones closed in
+the last day.
+
+A session need not die with its terminal either: `flakelab sessions --start
+claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session
+and attaches; close the tab, drop the SSH connection, and
+`flakelab sessions --attach` from any terminal joins it again. The table's
+`HOST` column names the window. [`remote-sessions.md`](remote-sessions.md) has
+the whole picture, the phone included.
 
 ## Proxmox VM
 

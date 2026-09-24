@@ -135,6 +135,15 @@ in
   }
   // cfg.sessionVariables;
 
+  # The session host for `flakelab sessions --start`: an agent session runs in
+  # a window of the `agents` tmux session and outlives the terminal, the SSH
+  # connection or the Windows Terminal tab it was started from. The config is
+  # the shipped file, defaults a guest already knows.
+  programs.tmux = {
+    enable = true;
+    extraConfig = builtins.readFile ../../files/config/tmux/tmux.conf;
+  };
+
   # Do not add ~/.kiro/settings/mcp.json here: a plugin repo's `make install-global`
   # copies over that path, which fails on a read-only store symlink and silently
   # drops every server it ships. kiro.nix merges onto it instead.

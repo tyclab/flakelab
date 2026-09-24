@@ -2,192 +2,186 @@
 
 How to reach, keep and continue the agent sessions on this box (Claude Code,
 Codex, Kiro CLI) from somewhere else: another window, another machine, a
-phone. A design proposal; the backlog entry points here.
+phone. The first phase is implemented (`flakelab sessions --start` /
+`--attach`); the rest is the plan, with what to verify before each step.
 
-## What is there today
+## The question underneath
 
-- `flakelab sessions` lists the running Claude Code sessions with their ids,
-  `--save` / `--autosave` record them, `--resume` prints the `claude --resume`
-  lines after a restart, `--open` puts each in its own Windows Terminal tab,
-  `--recent` finds the window closed by mistake. Claude Code only.
-- The state root syncs transcripts and memory between machines, forks parked,
-  so `claude --resume <id>` on the other box continues a session started here
-  (`stateTranscripts`). Codex sessions ride the same sync.
-- `remoteControlAtStartup` is written into Claude Code's settings, but only
-  inside the `claudeAgentDefaults` bundle, beside the trust-related keys.
-- The `proxmox-vm` target runs sshd; the `wsl` target does not, and neither has
-  a terminal multiplexer, `mosh` or `tailscale` in its package set.
+"Can a remote shell stay open when SSH disconnects, or is SSH even the right
+thing?" Two answers, because those are two problems.
 
-So a session lives exactly as long as the terminal that started it. Close the
-tab, drop the SSH connection, let the laptop sleep, and the agent is gone
-mid-task; the transcript survives, the work in flight does not.
+A shell dies with its SSH connection because its controlling terminal went
+away, not because SSH is the wrong protocol. Keeping a process alive without a
+terminal is a multiplexer's job: a tmux server owns the pane, the agent keeps
+running, any terminal reattaches later. Claude Code's own documentation says
+the same for Remote Control: to keep a session running on a remote machine
+after you disconnect from SSH, start it inside tmux or screen.
 
-## What "remote" needs
+SSH is the right transport: every tool, every device, key auth, nothing in the
+path you do not own. What SSH lacks is roaming (a phone that changes networks
+or sleeps) and reachability across NAT. Those are mosh and Tailscale. So the
+stack is three separate answers to three separate problems, plus the vendor
+layer on top where one exists:
 
-Five separate things, and each tool covers a different subset of them:
+| problem                              | answer                                       | why not the alternatives                                                                                     |
+| ------------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| a session outlives its terminal      | tmux, one `agents` session per box           | zellij looks nicer, but every SSH app, Windows Terminal and the vendor tools know tmux, and it is scriptable |
+| a flaky link, a changing IP, sleep   | mosh over SSH                                | Eternal Terminal does the same over TCP; mosh is in nixpkgs and in every mobile SSH client                   |
+| a box with no public address         | Tailscale                                    | port-forwarding through a home router is fragile; a self-hosted relay is one more daemon to own              |
+| steer a Claude session, review diffs | Claude's Remote Control, in addition         | needs the process alive, which tmux gives it; covers Claude only                                             |
+| know a session is waiting on you     | the Claude app's push, else a hook into ntfy | from a phone the question is usually "is it stuck", not "let me type"                                        |
 
-| need                                 | Claude Code                                          | Codex                       | Kiro CLI                         |
-| ------------------------------------ | ---------------------------------------------------- | --------------------------- | -------------------------------- |
-| a session that outlives its terminal | not the tool's job                                   | not the tool's job          | not the tool's job               |
-| reach the box from elsewhere         | Remote Control relays through the vendor             | no                          | no                               |
-| attach to a running session          | Remote Control, from claude.ai/code or the app       | no                          | no                               |
-| continue a session later, elsewhere  | `--resume`, `--fork-session`, `--teleport`/`--cloud` | `codex resume <id>`         | `kiro-cli chat --resume-id <id>` |
-| know when a session needs you        | `Notification` hook events                           | `hooks.json`, a notify hook | agent hooks (verify 4)           |
+The third-party phone apps (Termote, MobileCLI, MuxCLI, ServerCC, happy,
+omnara) all reduce to tmux or a PTY plus somebody's relay; the relay is the
+part not worth depending on when Tailscale gives the same reach from any SSH
+client. A browser terminal (ttyd behind `tailscale serve`) is the one
+alternative worth keeping as a later option: no SSH app on the phone, at the
+price of a shell in a browser tab behind a long-lived token.
 
-The vendor-native pieces are worth having where they exist, and they exist
-only for Claude Code: Remote Control keeps a local session steerable from
-the Claude app and the web as long as the `claude` process stays alive, and a
-`claude remote-control` in a directory makes the machine a device card in the
-app's Code tab from which a new session can be started there; `--teleport`
-pulls a cloud session into a terminal and `--cloud` pushes one out. What none
-of the three tools does is keep the process alive without a terminal, reach a
-box that has no public address, or tell you a session is waiting on a permission
-prompt while your phone is in your pocket. Those three are generic, and one
-answer covers all three tools.
+## What is implemented
 
-## Design
-
-### The session host: tmux
-
-Every agent session that should survive its terminal runs inside a tmux
-server owned by the user, one session named `agents`, one window per agent
-session, titled after the tool and the directory. A terminal, local or
-remote, is a view on that window and can close at will. This is the one
-mechanism that gives Codex and Kiro what Remote Control gives Claude Code,
-and it is what Remote Control itself depends on: the process has to stay up.
-
-`flakelab sessions` grows the verbs for it and drops its Claude-only scope:
+`flakelab sessions` hosts sessions in tmux and knows all three tools:
 
 ```
-flakelab sessions start <tool> [DIR] [-- ARGS]   a new window running the tool in DIR, attached unless --detach
-flakelab sessions attach [ID|WINDOW]              attach this terminal to the window that holds a session
-flakelab sessions                                 the table gains a `host` column: the tmux window, or `tty` for a bare session
-flakelab sessions --open [file]                   each Windows Terminal tab now runs `tmux attach -t agents:<window>`
-flakelab sessions --resume [file]                 recreates the windows: one per saved session, running the tool's resume command
+flakelab sessions --start <tool> [dir] [--detach] [-- args...]   claude|codex|kiro in dir, in its own window of the `agents` session, attached
+flakelab sessions --attach [id|window]                           join the window holding a session id, or a window by name; none: the server
+flakelab sessions                                                the table, with TOOL and HOST columns
+flakelab sessions --open [file]                                  WSL: each tab attaches a window that outlives it (tmux on PATH), else as before
 ```
 
-The registry becomes tool-aware. Claude Code's `~/.claude/sessions/<pid>.json`
-stays the source for Claude; a Codex session is the `codex` process and the
-rollout file it holds open under `~/.codex/sessions/`; a Kiro session is the
-`kiro-cli` process and the id its store records for that pid (verify 3). The
-saved line is `<tool>  <dir>  <id>`, and `--resume` prints `claude --resume`,
-`codex resume` or `kiro-cli chat --resume-id` accordingly. The autosave timer
-records the tmux window beside each session, so a reboot brings back the
-layout and not just the list.
+Mechanics worth knowing:
 
-The aliases `c`, `cc`, `codex`, `k`, `kk` stay bare. Wrapping every launch in
-tmux would change the daily feel of a Windows Terminal tab for no gain on the
-sessions that finish in a minute; `flakelab sessions start` is the deliberate
-form for the ones that should outlive a tab, and `attach` is what a second
-device does.
+- **Windows and views.** Every `--start` window lives in the one `agents`
+  session, named `<tool>-<directory>`. A terminal never attaches `agents`
+  itself: `--attach` and `--open` create a grouped session (a "view",
+  `agents-<window>-<pid>`) that shares the windows but has its own current
+  window, so two terminals can look at two windows. A view is set to go away
+  with its last client (`destroy-unattached keep-last`; a tmux before 3.4
+  leaves it behind, harmlessly). Inside tmux already, `--attach` switches the
+  client instead of nesting.
+- **The host column.** A process is placed by walking its parents until one
+  is the pane process of an `agents` window (`tmux list-panes -a`), so a
+  session started by hand inside a window is found too, not only `--start`'s.
+- **The environment.** The tmux server inherits the environment of the shell
+  that starts it, which is what carries `secrets.env`, `PATH` and the agent
+  socket into every later window. A server started from a shell without them
+  keeps lacking them until it is restarted.
+- **Codex and Kiro.** A `codex` process is identified by the rollout file it
+  holds open under `~/.codex/sessions/`; a `kiro-cli` process by the locked
+  entry in Kiro's registry, `~/.kiro/sessions/cli/<id>.json` with its `.lock`,
+  in the process's directory. Saves carry a tool column and `--resume` prints
+  `codex resume <id>` and `kiro-cli chat --resume-id <id>`; `--recent` reads
+  both tools' stores.
+- **Nothing forces tmux.** The aliases `c`, `cc`, `codex`, `k`, `kk` stay
+  bare; a session that finishes in a minute does not need a host.
+  `--start` is the deliberate form for the ones that should outlive a tab.
 
-`tmux` joins the package set on both targets, with a minimal config shipped as
-a static dotfile: a large scrollback, mouse on, the window title set by the
-starter, and no key rebinding a guest would have to learn.
+The tmux config (`files/config/tmux/tmux.conf`, via `programs.tmux`) keeps
+the defaults a guest already knows: a large scrollback, mouse on, window
+titles set by the starter, no key rebinding.
 
-### Reaching the box
+## What the vendors give
 
-The `proxmox-vm` target already runs sshd. The `wsl` target gains
-`services.openssh` on a non-default port, key-only, bound to the distro's own
-address, so that the Windows host and anything that can reach it can attach;
-the WSL2 NAT means "anything" is the host itself unless something forwards.
+**Claude Code, Remote Control.** `claude remote-control` in a project
+directory runs a server that shows up in the session list at claude.ai/code
+and in the app's Code tab (a computer icon with a green dot); from there new
+sessions start on the machine, in that directory (`--spawn same-dir`, the
+default) or in a worktree, up to `--capacity` (32). `claude --remote-control`
+makes one interactive session steerable, `/remote-control` does it
+mid-session, and `remoteControlAtStartup: true` in the user settings does it
+for every session. It reconnects by itself after sleep or a network drop,
+queueing prompts and permission dialogs meanwhile; server mode gives up after
+about ten minutes of outage, and a stopped server's sessions can be re-served
+for about four hours (`--continue`, `--session-id`). Outbound HTTPS only, no
+inbound port. It needs a full claude.ai login (not a setup token), a plan that
+allows it, and the four telemetry variables unset. Push notifications
+("push when actions required") come with it in the app. Channels (Telegram,
+Discord into a running session) are the other vendor route for steering.
 
-That something is Tailscale, behind `flakelab.tailscale.enable`, default off:
-`services.tailscale` on the box, and the box then has one stable name from any
-device on the tailnet, phone included, with Tailscale SSH doing the key
-management. On WSL2 the client runs in userspace networking mode; the Windows
-host's own Tailscale must not also claim the distro's traffic, which is the
-one sharp edge (verify 1). `mosh` rides along for the flaky-link case; it
-holds the terminal, tmux holds the session, and the two together are what
-makes a phone's SSH app usable on a train.
+**Codex** has `codex resume <id>`, cloud tasks, and a `notify` hook in
+`config.toml` that runs a command when a turn completes. No remote control of
+a local session.
 
-From the phone, then: any SSH client to the tailnet name, `flakelab sessions`
-to see what is running, `flakelab sessions attach <id>` to join it. For Claude
-Code the vendor route is the better one for steering and reviewing diffs, and
-it needs nothing above beyond the session being alive; the SSH route is what
-covers Codex, Kiro, and the shell itself.
+**Kiro** has `kiro-cli chat --resume-id <id>`, `--resume-picker` and
+`--list-sessions`; its hooks (`SessionStart`, `Stop`, `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse`, and the file and task events) fire on turns,
+never on a permission prompt or a wait for input, which is visible only in
+its TUI.
 
-### Remote Control on its own switch
+## The plan
 
-`remoteControlAtStartup` moves out of `claudeAgentDefaults` into its own
-option, `flakelab.claudeRemoteControl`, default off, so that an operator can
-have every session steerable from the app without adopting the auto-mode
-trust bundle, and the reverse. The four telemetry-gating variables that
-Remote Control's feature flags need are cleared by whichever of the two
-options is on. Nothing else changes in `claude.nix`; the docs say Remote
-Control is on server-side for Pro and Max and needs no flag.
+Phases, each shippable on its own. Phase 1 is on this branch.
 
-### Knowing when a session needs you
+1. **tmux as the session host** — done: `--start`, `--attach`, the host
+   column, `--open` attaching, Codex and Kiro in the registry, saves with a
+   tool column.
+2. **Remote Control on its own switch.** `remoteControlAtStartup` moves out
+   of `claudeAgentDefaults` into `flakelab.claudeRemoteControl`, default
+   off, so a box can have every session steerable from the app without
+   adopting the auto-mode trust bundle, and the reverse; whichever of the two
+   is on clears the four variables Remote Control's feature flags need.
+3. **A push when a session waits on you.** A Claude Code `Notification` hook
+   (`permission_prompt`, `idle_prompt`, `agent_needs_input`, the
+   `quota_auto_resume_*` events; the hook input carries `session_id`, `cwd`,
+   `notification_type`) and Codex's `notify` command call `flakelab notify`,
+   which posts to an ntfy topic (URL and token from `secrets.env` at use
+   time) the session's name, the directory, the event and the one line
+   `flakelab sessions --attach <id>` that answers it. Written into
+   `settings.json` the way the `SessionEnd` state-sync hook is, owned by its
+   command, only while `flakelab.notify.enable` is on. Redundant with the
+   Claude app's push where Remote Control is on; it is for Codex and for
+   anyone without the app. Kiro has no such event.
+4. **Reaching the box.** Different on the two targets, and the WSL side is
+   where the research changed the plan:
+   - `proxmox-vm` already runs sshd. It gains `programs.mosh` (UDP 60000 to
+     61000, opened by the option) and `services.tailscale` with Tailscale SSH
+     (`tailscale set --ssh`, port 22, sshd untouched), both behind options,
+     default off.
+   - `wsl` does not get sshd, mosh or Tailscale inside the distro. Tailscale
+     documents that running it inside WSL2 beside the Windows client breaks
+     (encapsulation inside encapsulation) and recommends the host only;
+     NixOS-WSL forces the firewall unit off, so nothing here can open a port
+     anyway; and under NAT the host reaches the distro's ports through
+     `localhost` while the LAN needs `netsh portproxy` (TCP only, so no mosh)
+     or mirrored networking (Windows 11 22H2+). The clean route is the one
+     that needs nothing in the distro: Tailscale and OpenSSH Server on the
+     Windows host, and the login lands in `wsl.exe -d <distro>`, one
+     `flakelab sessions --attach` away. A `files/config/windows/` note with
+     the three PowerShell lines is the deliverable, plus a `setup-wsl-nix.ps1`
+     switch if it is wanted unattended.
+5. **Handoff between machines.** Already there for Claude Code and Codex
+   through the state root and `--resume`; the last mile is
+   `flakelab sessions --recent` reading the synced transcripts so "continue
+   what I was doing on the desktop" is one printed command on the laptop,
+   forked (`--fork-session`) when both boxes may carry on.
 
-A Claude Code `Notification` hook fires for `permission_prompt`,
-`idle_prompt`, `agent_needs_input` and the `quota_auto_resume_*` events, with
-`session_id`, `cwd` and the event name in its input. `flakelab notify`, one
-small script, turns that into a push: an `ntfy` topic (self-hosted or
-ntfy.sh, the URL and token from `secrets.env` at use time, never in the
-flake) with the session's name, the directory, the event, and the one-line
-`flakelab sessions attach <id>` that answers it. The hook is written into
-`settings.json` by `claude.nix` the way the `SessionEnd` state-sync hook
-already is, owned by its command so a hand-added hook is left alone, and only
-while `flakelab.notify.enable` is on. Codex's `hooks.json` gets the same
-command on its notify event; Kiro's agent hooks are verify 4.
-
-This is the cheapest of the four pieces and the one that changes the most:
-most of the time the question from the other device is not "let me type" but
-"is it waiting on me".
-
-### Handoff between machines
-
-Already there for Claude Code through the state root and `--resume`, and for
-Codex through the same sync. What is missing is the last mile: `flakelab
-sessions --resume` on the other box lists only sessions that box saw running.
-`--recent` already reads the transcripts; it learns the tool column and the
-state root's synced sessions, so "continue what I was doing on the desktop"
-is `flakelab sessions --recent` on the laptop followed by the printed command,
-forked (`--fork-session`) when both boxes may carry on.
-
-### Options
+### Options (phases 2 to 4)
 
 ```nix
 flakelab = {
   claudeRemoteControl = false;   # remoteControlAtStartup on its own
-  tailscale.enable    = false;   # services.tailscale; Tailscale SSH on
   notify.enable       = false;   # the Notification hook into ntfy; endpoint from secrets.env
-  sshdWsl             = false;   # sshd on the wsl target, key-only, non-default port
+  mosh.enable         = false;   # proxmox-vm only
+  tailscale.enable    = false;   # proxmox-vm only; Tailscale SSH on
 };
 ```
 
-### Implementation and phases
+## Verify before the next phases
 
-zsh for the two scripts, as every sibling; `tmux`, `mosh` and `tailscale`
-from nixpkgs; the sshd and tailscale services in `nix/targets/`. The sessions
-suite gains fixtures for the Codex and Kiro registries and a `tmux` stub that
-records what was started and attached; `notify` gets a suite with a `curl`
-stub. Phases:
-
-1. `tmux` in the package set, `flakelab sessions start|attach`, the `host`
-   column, `--open` attaching instead of resuming, autosave recording the
-   window. Usable the day it lands, on WSL from a Windows Terminal tab.
-2. Codex and Kiro sessions in the registry, the saved-line tool column, the
-   per-tool resume commands.
-3. `flakelab.claudeRemoteControl`; `flakelab notify` and the hooks.
-4. sshd on WSL, `mosh`, `flakelab.tailscale.enable`; the README's "from the
-   phone" walk-through.
-5. `--recent` over the state root, the cross-machine handoff.
-
-## Verify before building
-
-1. **Tailscale under WSL2** on the operator's setup: userspace networking, the
-   host's own Tailscale client, and whether Tailscale SSH or plain sshd is the
-   less surprising of the two there.
-2. **Remote Control's behaviour when the host sleeps or the network drops**:
-   the docs say the terminal must stay running and nothing about sleep; a
-   session inside tmux on a box that stays up sidesteps the question, a
-   laptop does not.
-3. **How Kiro CLI records a running session** (where the id lives for a
-   `kiro-cli chat` process) and whether Codex's rollout file is held open for
-   the life of the process, which is what lets `/proc` attribute it.
-4. **Kiro's hook events**: whether an agent hook fires when the CLI waits on a
-   permission or on input, with enough in its input to name the session.
-5. **Whether a session started inside tmux still shows up for Remote
-   Control** and in the app's device card; there is no reason it would not,
-   and it is the whole premise, so it is the first thing to try.
+1. **A session started inside tmux shows up for Remote Control** and in the
+   app's session list. The docs say tmux is the way to keep one alive over
+   SSH, so there is no reason it would not, and it is the premise of the
+   whole stack: the first thing to try on the box.
+2. **Windows OpenSSH Server plus Tailscale on the host** as the WSL entry:
+   that `ssh host` from the phone lands in a shell from which
+   `wsl.exe -d <distro> -- tmux attach` works, and whether the login shell
+   should be that command outright.
+3. **mosh on the VM** from a phone client across a network change, and how it
+   behaves with a tmux view (it should be invisible).
+4. **`claude agents --json`** as a second source for the registry: the docs
+   list running sessions from it with `pid`, `sessionId`, `cwd` and `name`,
+   but say interactive sessions in other terminals may not appear until
+   backgrounded; if they do appear, the `/proc` walk becomes a fallback.
+5. **Kiro's lock file contents** (a pid would let two chats in one directory
+   be told apart without an open file) and whether a headless
+   `kiro-cli chat --no-interactive` writes a registry entry at all.

@@ -23,17 +23,26 @@ the private overlay `flakelab-config`, which imports this flake via
     (was `build-dev-wsl-nix`), `test-provision`, `distro-name`
     (was `get_current_wsl_distro_name`), `clone-repos`, `activate-hooks`,
     `stale-repos` (was `report-stale-repos`), `glab-projects`.
-  - `sessions` (new, `claude-sessions`): the running Claude Code sessions with
-    their session ids, from Claude Code's own registry
-    `~/.claude/sessions/<pid>.json` (open transcript in `/proc` as fallback).
-    `--save` before a `wsl --shutdown` or reboot, `--resume` prints the
-    `claude --resume` commands after, `--open` puts each in its own Windows
-    Terminal tab. `--autosave` (the `flakelab-sessions-autosave` timer,
-    `sessionsAutosaveInterval`) keeps one snapshot per boot, so a crash needs no
-    `--save` beforehand; `--recent` lists stopped sessions changed in the last
-    day. Never `pgrep -f`: that matches helpers. Saves go to the state root's
-    `claude/sessions/` when one is set, else `~/.local/state/flakelab/sessions/`,
-    never into `~/.claude/sessions`.
+  - `sessions` (`claude-sessions`, the script name kept): the running agent
+    sessions — Claude Code, Codex, Kiro CLI — with their session ids: Claude
+    Code's from its own registry `~/.claude/sessions/<pid>.json` (open
+    transcript in `/proc` as fallback), Codex's from the rollout file the
+    process holds open, Kiro's from `~/.kiro/sessions/cli/<id>.json` (the
+    locked entry in the process's directory). `--start <tool> [dir] [-- args]`
+    runs one in a window of the `agents` tmux session so it outlives its
+    terminal; `--attach [id|window]` joins it (a grouped view session per
+    terminal); the table's HOST column names the window. `--save` before a
+    `wsl --shutdown` or reboot, `--resume` prints each tool's resume command
+    after (`claude --resume`, `codex resume`, `kiro-cli chat --resume-id`),
+    `--open` puts each in its own Windows Terminal tab — attached to a tmux
+    window when tmux is on PATH, so the tab can close. `--autosave` (the
+    `flakelab-sessions-autosave` timer, `sessionsAutosaveInterval`) keeps one
+    snapshot per boot, so a crash needs no `--save` beforehand; `--recent`
+    lists stopped sessions changed in the last day. Never `pgrep -f`: that
+    matches helpers. Saved lines are `<tool>  <dir>  <id>`; a line without the
+    tool column is Claude Code. Saves go to the state root's `claude/sessions/`
+    when one is set, else `~/.local/state/flakelab/sessions/`, never into
+    `~/.claude/sessions`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,
