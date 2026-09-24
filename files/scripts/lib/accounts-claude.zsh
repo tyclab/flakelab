@@ -181,3 +181,136 @@ acct_claude_after_switch() {
     print -r -- "${n} running claude session(s) continue on the new account with their next message; no restart needed."
   fi
 }
+
+# --- usage ---------------------------------------------------------------------
+#
+# The endpoints Claude Code itself uses (accounts.md, "Prior art"): the token
+# refresh on platform.claude.com with the CLI's public client id, and the
+# usage report on api.anthropic.com. Both are variables so the suite can point
+# them at canned answers through a curl stand-in; nothing else about them is
+# configurable. The usage endpoint's rate limit on non-first-party clients is
+# about 28 to 30 requests per token per rolling hour, which the poll plan in
+# the main script keeps under with a margin; this adapter only fetches when
+# asked.
+
+ACCT_CLAUDE_TOKEN_URL="${FLAKELAB_ACCOUNTS_CLAUDE_TOKEN_URL:-https://platform.claude.com/v1/oauth/token}"
+ACCT_CLAUDE_USAGE_URL="${FLAKELAB_ACCOUNTS_CLAUDE_USAGE_URL:-https://api.anthropic.com/api/oauth/usage}"
+ACCT_CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+ACCT_CLAUDE_BETA="oauth-2025-04-20"
+ACCT_CLAUDE_UA="flakelab-accounts/1.0"
+# Refresh an inactive token this close to its expiry (ms): twice Claude Code's
+# own five-minute buffer, so a token handed to a session outlives its check.
+ACCT_CLAUDE_REFRESH_BUFFER_MS=600000
+
+# The credential file an entry's usage is read with: the live file for the
+# active entry (its token belongs to Claude Code and is never refreshed here),
+# the stored one otherwise.
+acct_claude_creds_path() {
+  local dir="$1" active="$2"
+  if [[ "$active" == true ]]; then print -r -- "${ACCT_CLAUDE_CREDS}"; else print -r -- "${dir}/credentials.json"; fi
+}
+
+# A lineage fingerprint: the refresh token's hash survives access-token
+# rotation; a credential without one hashes whole.
+acct_claude_fingerprint() {
+  local file="$1" rt
+  [[ -r "$file" ]] || return 1
+  rt="$(jq -r '.claudeAiOauth.refreshToken // empty' "$file" 2>/dev/null)"
+  if [[ -n "$rt" ]]; then
+    print -r -- "sha256:$(print -rn -- "$rt" | sha256sum | cut -d' ' -f1)"
+  else
+    print -r -- "sha256-full:$(sha256sum < "$file" | cut -d' ' -f1)"
+  fi
+}
+
+# Refresh the token in FILE in place (temp beside it, rename). Prints ok,
+# invalid_grant (the lineage is dead: quarantine it) or transient.
+acct_claude_refresh() {
+  local file="$1" rt body code tmp now_ms
+  rt="$(jq -r '.claudeAiOauth.refreshToken // empty' "$file" 2>/dev/null)"
+  [[ -n "$rt" ]] || { print -r -- invalid_grant; return 2 }
+  body="$(mktemp)"
+  code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' -H "User-Agent: ${ACCT_CLAUDE_UA}" \
+    -d "$(jq -cn --arg rt "$rt" --arg cid "${ACCT_CLAUDE_CLIENT_ID}" '{grant_type: "refresh_token", refresh_token: $rt, client_id: $cid}')" \
+    "${ACCT_CLAUDE_TOKEN_URL}" 2>/dev/null)" || code=000
+  if [[ "$code" == 200 ]] && jq -e '.access_token? // empty | length > 0' "$body" >/dev/null 2>&1; then
+    now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
+    tmp="${file}.flakelab-tmp.$$"
+    if (umask 077; jq --slurpfile r "$body" --argjson now "$now_ms" '
+          .claudeAiOauth.accessToken = $r[0].access_token
+          | .claudeAiOauth.expiresAt = ($now + (($r[0].expires_in // 3600) * 1000))
+          | (if ($r[0].refresh_token // "") != "" then .claudeAiOauth.refreshToken = $r[0].refresh_token else . end)
+          | (if ($r[0].scope // "") != "" then .claudeAiOauth.scopes = ($r[0].scope | split(" ")) else . end)
+        ' "$file" > "$tmp") && mv -f -- "$tmp" "$file"; then
+      rm -f "$body"; print -r -- ok; return 0
+    fi
+    rm -f "$tmp" "$body"; print -r -- transient; return 1
+  fi
+  if [[ "$code" == 400 || "$code" == 401 || "$code" == 403 ]] && grep -qE 'invalid_grant|invalid_client' "$body" 2>/dev/null; then
+    rm -f "$body"; print -r -- invalid_grant; return 2
+  fi
+  rm -f "$body"; print -r -- transient; return 1
+}
+
+# Normalise the usage report into the cache's window list: the two
+# account-wide windows and every model-scoped entry of limits[]. resets_at
+# fractions are dropped so jq can parse the stamp.
+acct_claude_normalise() {
+  jq -c '
+    def stamp: if . == null or . == "" then null else (. | sub("\\.[0-9]+"; "")) end;
+    def epoch: if . == null then null else (try (. | fromdateiso8601) catch null) end;
+    [ (if (.five_hour.utilization? | numbers) != null then
+        {label: "5h", class: "session", pct: .five_hour.utilization, resetsAt: (.five_hour.resets_at | stamp)} else empty end),
+      (if (.seven_day.utilization? | numbers) != null then
+        {label: "7d", class: "week", pct: .seven_day.utilization, resetsAt: (.seven_day.resets_at | stamp)} else empty end),
+      ((.limits // []) | .[] | select(type == "object") | select((.scope.model.display_name? // "") != "" and (.percent? | numbers) != null)
+        | {label: .scope.model.display_name, class: "model", pct: .percent, resetsAt: (.resets_at | stamp)})
+    ] | map(. + {resetsAtEpoch: (.resetsAt | epoch)})'
+}
+
+# Usage for one entry: {ok: true, windows: [...]} or {ok: false, error, retryAfter}.
+# An inactive entry's expired token is refreshed first and persisted before
+# use; a 401 on an inactive entry with a refresh token is retried once after a
+# refresh; the active entry's token is read as Claude Code left it.
+acct_claude_usage() {
+  local dir="$1" active="$2" file tok now_ms expires body hdr code retry outcome
+  file="$(acct_claude_creds_path "$dir" "$active")"
+  [[ -r "$file" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
+  now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
+  expires="$(jq -r '.claudeAiOauth.expiresAt // empty' "$file" 2>/dev/null)"
+  if [[ "$active" != true && "$expires" == <-> ]] && (( now_ms + ACCT_CLAUDE_REFRESH_BUFFER_MS >= expires )); then
+    outcome="$(acct_claude_refresh "$file")"
+    [[ "$outcome" == invalid_grant ]] && { jq -cn '{ok: false, error: "invalid_grant"}'; return 0 }
+  fi
+  tok="$(jq -r '.claudeAiOauth.accessToken // empty' "$file" 2>/dev/null)"
+  [[ -n "$tok" ]] || { jq -cn '{ok: false, error: "no-access-token"}'; return 0 }
+  body="$(mktemp)"; hdr="$(mktemp)"
+  code="$(curl -sS -m 10 -o "$body" -D "$hdr" -w '%{http_code}' \
+    -H "Authorization: Bearer ${tok}" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
+    "${ACCT_CLAUDE_USAGE_URL}" 2>/dev/null)" || code=000
+  if [[ "$code" == 401 && "$active" != true ]]; then
+    outcome="$(acct_claude_refresh "$file")"
+    case "$outcome" in
+      ok)
+        tok="$(jq -r '.claudeAiOauth.accessToken // empty' "$file" 2>/dev/null)"
+        code="$(curl -sS -m 10 -o "$body" -D "$hdr" -w '%{http_code}' \
+          -H "Authorization: Bearer ${tok}" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
+          "${ACCT_CLAUDE_USAGE_URL}" 2>/dev/null)" || code=000 ;;
+      invalid_grant) rm -f "$body" "$hdr"; jq -cn '{ok: false, error: "invalid_grant"}'; return 0 ;;
+      *) rm -f "$body" "$hdr"; jq -cn '{ok: false, error: "refresh-failed"}'; return 0 ;;
+    esac
+  fi
+  case "$code" in
+    200)
+      if acct_claude_normalise < "$body" | jq -c '{ok: true, windows: .}' 2>/dev/null; then :; else jq -cn '{ok: false, error: "bad-response"}'; fi ;;
+    000) jq -cn '{ok: false, error: "network"}' ;;
+    429)
+      retry="$(grep -i '^retry-after:' "$hdr" 2>/dev/null | tail -1 | tr -d '\r' | awk '{print $2}')"
+      [[ "$retry" == <-> ]] || retry=-1
+      jq -cn --argjson r "$retry" '{ok: false, error: "http-429", retryAfter: (if $r < 0 then null else $r end)}' ;;
+    *) jq -cn --arg c "$code" '{ok: false, error: ("http-" + $c)}' ;;
+  esac
+  rm -f "$body" "$hdr"
+  return 0
+}

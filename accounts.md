@@ -311,10 +311,10 @@ Exit codes follow the sibling scripts: 0, 1 for a failure, 2 for a refusal or
 usage error. `--json` prints one document on stdout and every notice on
 stderr, so a caller parses stdout alone.
 
-Implemented so far: the bare listing, `add`, `switch <entry>`,
-`switch --next`, `alias`, `disable`, `enable`, `remove` and `status`, with
-the Claude Code adapter. `--soonest` and `--best`, `run`, `env`, `auto` and
-the usage columns come with their phases below.
+Implemented so far: the listing with its usage column and `--fetch`, `add`,
+`switch <entry>`, `switch --next`, `--soonest` and `--best`, `alias`,
+`disable`, `enable`, `remove` and `status` with the cached windows, with the
+Claude Code adapter. `run`, `env` and `auto` come with their phases below.
 
 ### Adding a login
 
@@ -621,7 +621,9 @@ Phases, each shippable on its own:
    Usable the day it lands. **Done**: `files/scripts/accounts`,
    `files/scripts/lib/accounts-claude.zsh`, `test-accounts`.
 2. Claude usage: fetch, refresh, cache, the poll budget; headroom in the
-   listing; `status --json`; the strategy switches.
+   listing; `status --json`; the strategy switches. **Done**: the usage
+   functions in the adapter, `usage.json`, the plan in `plan_after_fetch`,
+   quarantine, `--fetch`, `--soonest`, `--best`.
 3. The engine, `auto --once`, the timer, quarantine.
 4. Profiles: `run`, `env`.
 5. The Codex adapter: `add`, `switch` with the running-process refusal,

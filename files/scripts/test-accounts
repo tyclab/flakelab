@@ -36,8 +36,43 @@ cat > "${STUBS}/pgrep" <<'STUB'
 [[ -n "${FAKE_CLAUDE_RUNNING:-}" ]] || exit 1
 print -l 100 200
 STUB
+# curl stand-in: answers the token and usage URLs from canned files under
+# FAKE_CURL, records every request (URL, the bearer, the body), writes the
+# response body and headers where -o and -D point, prints the status like
+# -w '%{http_code}' would. The usage answer is picked by the bearer token so
+# each entry gets its own figures: usage.<token>.json / .status / .headers.
+cat > "${STUBS}/curl" <<'STUB'
+#!/usr/bin/env zsh
+typeset out="" hdr="" url="" data="" auth=""
+while (( $# > 0 )); do
+  case $1 in
+    -o) out="$2"; shift ;;
+    -D) hdr="$2"; shift ;;
+    -w|-m|-X) shift ;;
+    -d) data="$2"; shift ;;
+    -H) [[ "$2" == Authorization:* ]] && auth="${2#Authorization: Bearer }"; shift ;;
+    -sS) ;;
+    *) url="$1" ;;
+  esac
+  shift
+done
+print -r -- "${url} ${auth} ${data}" >> "${FAKE_CURL}/requests.log"
+[[ -n "${FAKE_CURL_DOWN:-}" ]] && exit 7
+if [[ "$url" == */oauth/token ]]; then
+  key="token"
+else
+  key="usage.${auth}"
+  [[ -f "${FAKE_CURL}/${key}.status" ]] || key="usage"
+fi
+[[ -n "$out" ]] && cat "${FAKE_CURL}/${key}.json" > "$out" 2>/dev/null
+[[ -n "$hdr" ]] && { cat "${FAKE_CURL}/${key}.headers" > "$hdr" 2>/dev/null || : > "$hdr" }
+cat "${FAKE_CURL}/${key}.status" 2>/dev/null || print -n 200
+STUB
+export FAKE_CURL="${BASE}/curl"
+mkdir -p "${FAKE_CURL}"
 chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
+export FLAKELAB_ACCOUNTS_NO_JITTER=1
 
 # Claude Code's files for a login: the identity block beside keys the switch
 # must leave alone, and the OAuth blob.
@@ -129,9 +164,10 @@ print -r -- ""
 print -r -- "the listing"
 run
 check "the listing exits 0" "${RC}" "0"
-contains "the header" "${OUT}" "TOOL    ID   ALIAS        LABEL                            ORG                STATE"
-contains "entry 1" "${OUT}" "claude  1    home         alice@example.com                personal"
-contains "entry 2 is active" "${OUT}" "claude  2    work         bob@example.com                  Example GmbH       active"
+row() { printf '%-7s %-4s %-12s %-32s %-16s %s' "$@" }
+contains "the header" "${OUT}" "$(row TOOL ID ALIAS LABEL STATE USAGE)"
+contains "entry 1, never fetched" "${OUT}" "$(row claude 1 home alice@example.com '' -)"
+contains "entry 2 is active" "${OUT}" "$(row claude 2 work bob@example.com active -)"
 run --json
 check "--json exits 0" "${RC}" "0"
 check "--json lists both entries" "$(print -r -- "$OUT" | jq '.accounts | length')" "2"
@@ -302,6 +338,203 @@ run --help
 check "--help exits 0" "${RC}" "0"
 run bogus
 check "an unknown verb exits 2" "${RC}" "2"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "usage: fetch, the cache, the poll plan"
+# A fresh store: alice (1, home) and bob (2, work), bob live.
+rm -rf "${STORE}"
+login alice@example.com "${UUID_A}" personal tok-a
+run add claude --alias home
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run add claude --alias work
+export FLAKELAB_NOW=1758700000
+usage_answer() {
+  # usage_answer <token> <5h pct> <7d pct> [<model pct>] [<status>]
+  local tok="$1" five="$2" seven="$3" model="${4:-}" code="${5:-200}" mentry=""
+  [[ -n "$model" ]] && mentry="{\"kind\": \"weekly_scoped\", \"group\": \"weekly\", \"percent\": ${model}, \"resets_at\": \"2026-09-26T00:00:00Z\", \"scope\": {\"model\": {\"id\": null, \"display_name\": \"Fable\"}, \"surface\": null}},"
+  cat > "${FAKE_CURL}/usage.${tok}.json" <<USAGEJSON
+{"five_hour": {"utilization": ${five}, "resets_at": "2026-09-24T09:00:00.123456Z"},
+ "seven_day": {"utilization": ${seven}, "resets_at": "2026-09-27T12:00:00Z"},
+ "extra_usage": {"is_enabled": false},
+ "limits": [{"kind": "session", "group": "session", "percent": ${five}, "scope": null},
+            ${mentry}
+            {"kind": "weekly_all", "group": "weekly", "percent": ${seven}, "scope": null}]}
+USAGEJSON
+  print -n -- "${code}" > "${FAKE_CURL}/usage.${tok}.status"
+  : > "${FAKE_CURL}/usage.${tok}.headers"
+}
+usage_answer tok-a 62 91 40
+usage_answer tok-b 10 20
+: > "${FAKE_CURL}/requests.log"
+run --fetch
+check "--fetch exits 0" "${RC}" "0"
+contains "--fetch reports the count" "${ERR}" "fetched 2 entries"
+check "both entries were asked, the active one first" "$(cut -d' ' -f2 "${FAKE_CURL}/requests.log" | tr '\n' ' ')" "tok-b tok-a "
+check "only the usage URL was called" "$(grep -c 'oauth/usage' "${FAKE_CURL}/requests.log")" "2"
+check "the active entry's token is the live one" "$(head -1 "${FAKE_CURL}/requests.log" | cut -d' ' -f2)" "tok-b"
+contains "the listing shows alice's windows" "${OUT}" "5h 62% · 7d 91% · Fable 40% (0s)"
+contains "the listing shows bob's windows" "${OUT}" "5h 10% · 7d 20% (0s)"
+check "the cache holds the windows with epoch resets" "$(jq -r '.entries["1"].windows[] | select(.label == "7d") | .resetsAtEpoch' "${STORE}/usage.json")" "$(date -u -d 2026-09-27T12:00:00Z +%s)"
+check "a fractional reset stamp still parses" "$(jq -r '.entries["1"].windows[] | select(.label == "5h") | .resetsAtEpoch' "${STORE}/usage.json")" "$(date -u -d 2026-09-24T09:00:00Z +%s)"
+check "the cache is 0600" "$(stat -c %a "${STORE}/usage.json")" "600"
+check "a first fetch plans the active entry 3 minutes out" "$(jq -r '.entries["2"].intervalS' "${STORE}/usage.json")" "180"
+check "and a candidate 5 minutes out" "$(jq -r '.entries["1"].intervalS' "${STORE}/usage.json")" "300"
+check "the next poll is now plus the interval" "$(jq -r '.entries["2"].nextPollAt' "${STORE}/usage.json")" "$(( FLAKELAB_NOW + 180 ))"
+
+run --json
+check "--json carries the windows" "$(print -r -- "$OUT" | jq -r '.accounts[0].usage.windows | length')" "3"
+check "--json carries the headroom by axis" "$(print -r -- "$OUT" | jq -c '.accounts[0].headroom | {session, week, model, weekly, binding, known}')" '{"session":38,"week":9,"model":60,"weekly":9,"binding":9,"known":true}'
+run status --json
+check "status --json carries the active entry's windows" "$(print -r -- "$OUT" | jq -r '.claude.windows | length')" "2"
+check "status --json carries when they were fetched" "$(print -r -- "$OUT" | jq -r '.claude.fetchedAt')" "${FLAKELAB_NOW}"
+
+# Not due: nothing is fetched again a minute later.
+: > "${FAKE_CURL}/requests.log"
+export FLAKELAB_NOW=$(( 1758700000 + 60 ))
+run --fetch
+check "an entry inside its plan is not fetched" "$(wc -l < "${FAKE_CURL}/requests.log" | tr -d ' ')" "0"
+contains "the listing ages the figure" "${OUT}" "5h 10% · 7d 20% (1m)"
+# Due, unmoved: the interval stretches by half toward the ceiling.
+export FLAKELAB_NOW=$(( 1758700000 + 181 ))
+run --fetch
+check "the due active entry is fetched" "$(wc -l < "${FAKE_CURL}/requests.log" | tr -d ' ')" "1"
+check "unmoved, the interval stretches" "$(jq -r '.entries["2"].intervalS' "${STORE}/usage.json")" "270"
+# Moved a lot and close to the bar: urgent.
+usage_answer tok-b 75 20
+export FLAKELAB_NOW=$(( 1758700000 + 181 + 270 ))
+run --fetch
+check "moving into the escalation band, the active entry goes urgent" "$(jq -r '.entries["2"].intervalS' "${STORE}/usage.json")" "60"
+# At its limit: parked at the reset that frees it.
+usage_answer tok-b 100 20
+export FLAKELAB_NOW=$(( 1758700000 + 181 + 270 + 60 ))
+run --fetch
+check "at the limit, the next poll is the reset that frees it" "$(jq -r '.entries["2"].nextPollAt' "${STORE}/usage.json")" "$(date -u -d 2026-09-24T09:00:00Z +%s)"
+contains "and the listing says 100%" "${OUT}" "5h 100% · 7d 20%"
+
+# Model windows: narrowed to a name that matches nothing, the model axis is null.
+FLAKELAB_ACCOUNTS_MODEL_WINDOWS=Opus run --json
+check "a model filter that matches nothing leaves the model axis null" "$(print -r -- "$OUT" | jq -r '.accounts[0].headroom.model')" "null"
+FLAKELAB_ACCOUNTS_MODEL_WINDOWS=fable run --json
+check "the model filter is case-insensitive" "$(print -r -- "$OUT" | jq -r '.accounts[0].headroom.model')" "60"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "usage: a 429 backs off, a dead refresh token quarantines, a refresh persists first"
+export FLAKELAB_NOW=$(( 1758700000 + 7200 ))
+usage_answer tok-a 62 91 40 429
+print -r -- $'Retry-After: 120\r' > "${FAKE_CURL}/usage.tok-a.headers"
+run --fetch
+contains "a 429 shows in the listing, the figure aged" "${OUT}" "5h 62% · 7d 91% · Fable 40% (1h) · http-429"
+check "Retry-After is honoured" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "$(( FLAKELAB_NOW + 120 ))"
+check "and the hour after a 429 is remembered" "$(jq -r '.entries["1"].recent429Until' "${STORE}/usage.json")" "$(( FLAKELAB_NOW + 3600 ))"
+print -r -- $'Retry-After: 0\r' > "${FAKE_CURL}/usage.tok-a.headers"
+export FLAKELAB_NOW=$(( 1758700000 + 7200 + 121 ))
+run --fetch
+check "Retry-After: 0 is the saturated edge, 5 minutes" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "$(( FLAKELAB_NOW + 300 ))"
+# The binding window (7d, at 91%) moves four points, so the cadence would
+# halve to 225 s; the hour after a 429 floors it at 6 minutes.
+usage_answer tok-a 70 95 40
+export FLAKELAB_NOW=$(( 1758700000 + 7200 + 121 + 300 ))
+run --fetch
+check "after the 429s the cadence floors at 6 minutes for the hour" "$(jq -r '.entries["1"].intervalS' "${STORE}/usage.json")" "360"
+check "a success clears the failure count" "$(jq -r '.entries["1"].failures' "${STORE}/usage.json")" "0"
+
+# Alice's stored token is expired: the fetch refreshes it first, persists the
+# rotated refresh token, then asks with the new access token.
+jq '.claudeAiOauth.expiresAt = 1' "${STORE}/1/credentials.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/1/credentials.json"
+print -r -- '{"access_token": "tok-a-new", "expires_in": 3600, "refresh_token": "rt-a-new", "scope": "user:inference user:profile"}' > "${FAKE_CURL}/token.json"
+print -n 200 > "${FAKE_CURL}/token.status"
+usage_answer tok-a-new 63 91 40
+: > "${FAKE_CURL}/requests.log"
+export FLAKELAB_NOW=$(( 1758700000 + 7200 + 121 + 300 + 361 ))
+run --fetch
+check "an expired inactive token is refreshed before the fetch" "$(head -1 "${FAKE_CURL}/requests.log" | cut -d' ' -f1)" "https://platform.claude.com/v1/oauth/token"
+contains "the refresh sends the stored refresh token and the client id" "$(head -1 "${FAKE_CURL}/requests.log")" '"refresh_token":"rt-tok-a","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"'
+check "the fetch then uses the new access token" "$(sed -n 2p "${FAKE_CURL}/requests.log" | cut -d' ' -f2)" "tok-a-new"
+check "the rotated refresh token is persisted" "$(jq -r '.claudeAiOauth.refreshToken' "${STORE}/1/credentials.json")" "rt-a-new"
+check "with its new expiry" "$(jq -r '.claudeAiOauth.expiresAt' "${STORE}/1/credentials.json")" "$(( (FLAKELAB_NOW + 3600) * 1000 ))"
+check "and the scopes" "$(jq -c '.claudeAiOauth.scopes' "${STORE}/1/credentials.json")" '["user:inference","user:profile"]'
+contains "and the listing moved" "${OUT}" "5h 63% · 7d 91%"
+
+# The active entry's token is never refreshed, expired or not.
+jq '.claudeAiOauth.expiresAt = 1' "${HOME}/.claude/.credentials.json" > "${BASE}/t" && mv "${BASE}/t" "${HOME}/.claude/.credentials.json"
+: > "${FAKE_CURL}/requests.log"
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+run --fetch
+excludes "the active entry's expired token is left to Claude Code" "$(<"${FAKE_CURL}/requests.log")" "rt-tok-b"
+
+# A dead lineage: the refresh answers invalid_grant, the entry is quarantined
+# and left alone until its credential changes.
+jq '.claudeAiOauth.expiresAt = 1' "${STORE}/1/credentials.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/1/credentials.json"
+print -r -- '{"error": "invalid_grant", "error_description": "refresh token revoked"}' > "${FAKE_CURL}/token.json"
+print -n 400 > "${FAKE_CURL}/token.status"
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+run --fetch
+contains "invalid_grant quarantines the entry" "${ERR}" "entry 1 is quarantined: its refresh token was refused (invalid_grant)"
+contains "and the listing says so" "${OUT}" "quarantined (invalid_grant)"
+check "the quarantine remembers the lineage" "$(jq -r '.quarantine["1"].fingerprint' "${STORE}/usage.json")" "sha256:$(print -rn rt-a-new | sha256sum | cut -d' ' -f1)"
+: > "${FAKE_CURL}/requests.log"
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+run --fetch
+excludes "a quarantined entry is not polled" "$(<"${FAKE_CURL}/requests.log")" "tok-a"
+# A fresh login lifts it.
+login alice@example.com "${UUID_A}" personal tok-a-fresh
+run add claude
+contains "a refreshed credential lifts the quarantine" "${ERR}" "entry 1 left quarantine"
+check "and the quarantine is gone" "$(jq -r '.quarantine["1"] // "none"' "${STORE}/usage.json")" "none"
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run switch work
+check "bob is live again" "$(live_email)" "bob@example.com"
+
+# The network down: a transient error, backed off, nothing quarantined. Bob
+# is parked at the reset that frees his 5h window; the clock is moved past it
+# by hand, the way the reset would.
+jq '.entries["2"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+export FAKE_CURL_DOWN=1
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+run --fetch
+contains "a network failure shows as such" "${OUT}" "network"
+check "and backs off 30 seconds the first time" "$(jq -r '.entries["2"].nextPollAt' "${STORE}/usage.json")" "$(( FLAKELAB_NOW + 30 ))"
+unset FAKE_CURL_DOWN
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "switch --soonest and --best"
+login carol@example.com "${UUID_C}" personal tok-c
+run add claude --alias spare
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run switch work
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+usage_answer tok-a-fresh 62 91 40
+usage_answer tok-c 5 50
+# carol's week resets later than alice's: alice is soonest, carol is best.
+sed -i 's/2026-09-27T12:00:00Z/2026-09-28T12:00:00Z/' "${FAKE_CURL}/usage.tok-c.json"
+run switch --soonest claude
+check "--soonest exits 0" "${RC}" "0"
+check "--soonest picks the entry whose week renews first" "$(active_id)" "1"
+run switch work
+run switch --best claude
+check "--best picks the most weekly headroom" "$(active_id)" "3"
+run switch work
+# A spent week is never a target, whatever its session window says.
+usage_answer tok-c 0 100
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+run switch --best claude
+check "--best skips a spent week" "$(active_id)" "1"
+run switch work
+usage_answer tok-a-fresh 0 100
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 7200 ))
+run switch --best claude
+check "every candidate spent refuses with exit 2" "${RC}" "2"
+contains "and says so" "${ERR}" "has spent its weekly budget"
+rm -f "${FAKE_CURL}"/usage.tok-a-fresh.* "${FAKE_CURL}"/usage.tok-c.*
+export FAKE_CURL_DOWN=1
+export FLAKELAB_NOW=$(( FLAKELAB_NOW + 86400 ))
+run switch --soonest claude
+check "no known usage refuses with exit 2" "${RC}" "2"
+contains "and points at --fetch" "${ERR}" "no claude candidate has known usage"
+unset FAKE_CURL_DOWN FLAKELAB_NOW
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

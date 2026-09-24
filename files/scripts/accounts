@@ -11,21 +11,36 @@ set -uo pipefail
 # branches on the tool name. Phase 1 ships the Claude Code adapter.
 #
 # Usage:
-#   accounts [--json]                        the roster, grouped by tool
+#   accounts [--json] [--fetch]              the roster with cached usage; --fetch polls what is due
 #   accounts add <tool> [--alias NAME]       snapshot the tool's live login into the store
 #   accounts switch <ID|ALIAS|LABEL>         make a stored account its tool's live login
 #   accounts switch --next <tool>            rotate in id order, skipping disabled entries
+#   accounts switch --soonest <tool>         the entry whose weekly windows renew first
+#   accounts switch --best <tool>            the entry with the most weekly headroom
 #   accounts alias <ID|ALIAS|LABEL> NAME     name an entry; --unset drops the name
 #   accounts disable|enable <ID|ALIAS|LABEL> hold an entry out of rotation, or return it
 #   accounts remove <ID|ALIAS|LABEL> [--yes] delete an entry and its stored login
-#   accounts status [--json]                 per tool: the active entry and whether the
-#                                            live login still matches it; cache only
+#   accounts status [--json]                 per tool: the active entry, whether the
+#                                            live login still matches it, its cached
+#                                            windows; reads no network
 #
 # The store:
 #   accounts.json        the roster: version, active per tool, next id, entries
 #   <id>/                the stored login, files named by the adapter, 0600
-#   unclaimed/<ts>.json  a live credential a switch could not attribute
+#   usage.json           per entry: windows, when fetched, the poll plan, the
+#                        failure backoff; the quarantine of dead lineages
+#   unclaimed/<ts>/      a live credential a switch could not attribute
 #   lock                 flock; every writer takes it first
+#
+# Usage: each window has a class — session (Claude's 5h), week (7d), model (a
+# per-model week), month (Kiro's credits) — and the poll plan keeps every
+# token under the endpoint's budget: 3 minutes for the active entry and 5 for
+# a candidate, halved when the binding window moved a point, stretched by half
+# when it did not, never past the next reset, and backed off on a 429
+# (Retry-After honoured up to 15 minutes, a 6-minute floor for the hour that
+# follows). A figure older than 5 minutes is unknown for decisions. A refresh
+# that answers invalid_grant quarantines the entry until its credential
+# changes.
 #
 # Ids are handed out once and never reused; the alias is the name and is
 # unique across tools; the label is what the tool calls the account (the
@@ -45,7 +60,18 @@ set -uo pipefail
 SCRIPT_DIR="${0:A:h}"
 STORE="${FLAKELAB_ACCOUNTS_ROOT:-${HOME}/.local/state/flakelab/accounts}"
 ROSTER="${STORE}/accounts.json"
+USAGE="${STORE}/usage.json"
 US=$'\x1f'
+# Which per-model windows count: a comma list of display names, or all.
+MODEL_WINDOWS="${FLAKELAB_ACCOUNTS_MODEL_WINDOWS:-all}"
+# The poll plan (seconds and percent); FLAKELAB_NOW pins the clock for the suite.
+STALE_OK_S=300
+ACTIVE_MIN_S=180; ACTIVE_MAX_S=300; CAND_MIN_S=300; CAND_MAX_S=600; FLOOR_S=180; URGENT_S=60
+ESCALATION_PCT=15; MOVEMENT_PCT=1; RESET_SLACK_S=60
+EDGE_BACKOFF_S=300; RETRY_AFTER_CAP_S=900; POST_429_MIN_S=360; RECENT_429_S=3600
+BACKOFF_BASE_S=30; BACKOFF_CAP_S=600
+SESSION_THRESHOLD="${FLAKELAB_ACCOUNTS_SESSION_THRESHOLD:-85}"
+now() { print -r -- "${FLAKELAB_NOW:-$(date +%s)}" }
 typeset -a TOOLS=(claude codex kiro)
 typeset -a ADAPTERS=()
 
@@ -57,25 +83,28 @@ unset _t
 
 usage() {
   cat <<'USAGE'
-Usage: accounts [--json]
+Usage: accounts [--json] [--fetch]
        accounts add <tool> [--alias NAME]
        accounts switch <ID|ALIAS|LABEL>
-       accounts switch --next <tool>
+       accounts switch --next|--soonest|--best <tool>
        accounts alias <ID|ALIAS|LABEL> NAME|--unset
        accounts disable|enable <ID|ALIAS|LABEL>
        accounts remove <ID|ALIAS|LABEL> [--yes]
        accounts status [--json]
 
-  (no verb)   the roster, grouped by tool; --json for one document
+  (no verb)   the roster with cached usage; --fetch polls the entries whose
+              plan is due first; --json for one document
   add         snapshot <tool>'s live login (claude|codex|kiro) into the store;
               a login already stored is refreshed in place
   switch      make a stored account the live login of its tool; --next <tool>
-              rotates to the next enabled entry in id order
+              rotates to the next enabled entry in id order; --soonest picks
+              the one whose weekly windows renew first, --best the most weekly
+              headroom (both poll what is due first)
   alias       name an entry (letters, digits, . _ -; unique; not all digits)
   disable     hold an entry out of rotation; enable returns it
   remove      delete an entry and its stored login (--yes, or a terminal to ask)
-  status      per tool: the active entry, and whether the live login is still
-              the one the roster thinks; reads no network
+  status      per tool: the active entry, whether the live login is still the
+              one the roster thinks, and its cached windows; reads no network
 
 Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
 with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
@@ -161,6 +190,170 @@ valid_alias() {
   [[ "$1" =~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$' && "$1" != <-> ]]
 }
 
+# --- usage ---------------------------------------------------------------------
+
+read_usage() {
+  [[ -f "$USAGE" ]] && jq -e 'type == "object"' "$USAGE" >/dev/null 2>&1 && { cat -- "$USAGE"; return 0 }
+  print -r -- '{"version": 1, "entries": {}, "quarantine": {}}'
+}
+
+write_usage() {
+  local tmp="${USAGE}.flakelab-tmp.$$"
+  print -r -- "$1" | jq -e . > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1 }
+  chmod 600 "$tmp" && mv -f -- "$tmp" "$USAGE"
+}
+
+# jq: the headroom of an entry's cached windows on the three axes, and whether
+# the figure is trustworthy. $mw is the model-window filter, $now the clock.
+HEADROOM_JQ='
+  def counted: if $mw == "all" then . else ($mw | split(",") | map(ascii_downcase)) as $w | select((.label | ascii_downcase) as $l | $w | index($l)) end;
+  def axis(c): [.windows[]? | select(.class == c) | .pct] | if length == 0 then null else (100 - max) end;
+  def modelaxis: [.windows[]? | select(.class == "model") | counted | .pct] | if length == 0 then null else (100 - max) end;
+  def least(a; b): if a == null then b elif b == null then a elif b < a then b else a end;
+  def headroom:
+    (.fetchedAt // null) as $f
+    | {session: axis("session"), week: axis("week"), month: axis("month"), model: modelaxis}
+    | .weekly = least(.week; .model)
+    | .binding = least(.session; .weekly)
+    | .age = (if $f == null then null else ($now - $f) end)
+    | .known = (.binding != null and .age != null and .age <= 300);
+'
+
+# The headroom of entry $1 as one JSON object (empty windows when unfetched).
+entry_headroom() {
+  print -r -- "$(read_usage)" | jq -c --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"'
+    (.entries[$id] // {}) | headroom'
+}
+
+# The earliest reset among an entry's weekly windows (week and counted model),
+# as an epoch, or empty.
+entry_weekly_reset() {
+  print -r -- "$(read_usage)" | jq -r --arg id "$1" --arg mw "$MODEL_WINDOWS" "${HEADROOM_JQ}"'
+    [ (.entries[$id].windows // [])[] | select(.class == "week" or (.class == "model" and (counted | length > 0))) | .resetsAtEpoch | numbers ]
+    | if length == 0 then empty else min end'
+}
+
+# The next poll for an entry just fetched: the plan from accounts.md.
+# plan_after_fetch prev_interval prev_pct new_pct active recent429 next_reset limiting_reset at_limit
+# prints "<next poll epoch> <interval>". Percentages are of the binding
+# window (utilisation); empty means unknown.
+plan_after_fetch() {
+  local prev_i="$1" prev_pct="$2" new_pct="$3" active="$4" recent429="$5" next_reset="$6" limiting_reset="$7" at_limit="$8"
+  local -i default ceiling base interval moving=0 t
+  if [[ "$active" == true ]]; then default=$ACTIVE_MIN_S; ceiling=$ACTIVE_MAX_S; else default=$CAND_MIN_S; ceiling=$CAND_MAX_S; fi
+  base=${prev_i:-$default}; (( base > 0 )) || base=$default
+  if [[ -z "$prev_pct" || -z "$new_pct" ]]; then
+    interval=$default
+  elif (( ${new_pct%.*} - ${prev_pct%.*} >= MOVEMENT_PCT || ${prev_pct%.*} - ${new_pct%.*} >= MOVEMENT_PCT )); then
+    moving=1; interval=$(( base / 2 )); (( interval < FLOOR_S )) && interval=$FLOOR_S
+  else
+    interval=$(( base * 3 / 2 )); (( interval < FLOOR_S )) && interval=$FLOOR_S; (( interval > ceiling )) && interval=$ceiling
+  fi
+  if [[ "$active" == true && "$recent429" != true && -n "$new_pct" ]] && (( moving )) && (( ${new_pct%.*} >= SESSION_THRESHOLD - ESCALATION_PCT )); then
+    interval=$URGENT_S
+  fi
+  [[ "$recent429" == true ]] && (( interval < POST_429_MIN_S )) && interval=$POST_429_MIN_S
+  local -i next=$(( $(now) + interval ))
+  if [[ -z "${FLAKELAB_ACCOUNTS_NO_JITTER:-}" ]]; then
+    next=$(( $(now) + interval * (90 + RANDOM % 21) / 100 ))
+  fi
+  if [[ "$at_limit" == true && "$limiting_reset" == <-> ]] && (( limiting_reset > next )); then
+    next=$limiting_reset
+  elif [[ "$next_reset" == <-> ]] && (( next_reset + RESET_SLACK_S < next )); then
+    next=$(( next_reset + RESET_SLACK_S ))
+  fi
+  print -r -- "$next $interval"
+}
+
+# Fetch one entry's usage through its adapter and record the outcome.
+fetch_entry() {
+  local id="$1" tool active result cache entry prev_pct new_pct prev_i recent429 next_reset limiting at_limit plan fails backoff retry
+  tool="$(entry_field "$id" tool)"
+  has_adapter "$tool" || return 0
+  cache="$(read_usage)"
+  [[ "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id] // empty')" == "" ]] || return 0
+  active=false
+  [[ "$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" '.active[$tool] // empty')" == "$id" ]] && active=true
+  result="$(acct_${tool}_usage "${STORE}/${id}" "$active")"
+  entry="$(print -r -- "$cache" | jq -c --arg id "$id" '.entries[$id] // {}')"
+  prev_i="$(print -r -- "$entry" | jq -r '.intervalS // empty')"
+  recent429=false
+  (( $(print -r -- "$entry" | jq -r '.recent429Until // 0') > $(now) )) && recent429=true
+  if [[ "$(print -r -- "$result" | jq -r '.ok')" == true ]]; then
+    prev_pct="$(print -r -- "$entry" | jq -r --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"' headroom | .binding | if . == null then empty else (100 - .) end')"
+    entry="$(print -r -- "$entry" | jq -c --argjson r "$result" --argjson now "$(now)" '. + {windows: $r.windows, fetchedAt: $now, failures: 0, lastError: null, backoffUntil: 0}')"
+    new_pct="$(print -r -- "$entry" | jq -r --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"' headroom | .binding | if . == null then empty else (100 - .) end')"
+    at_limit=false; [[ -n "$new_pct" ]] && (( ${new_pct%.*} >= 100 )) && at_limit=true
+    next_reset="$(print -r -- "$entry" | jq -r --argjson now "$(now)" '[.windows[] | .resetsAtEpoch | numbers | select(. > $now)] | if length == 0 then empty else min end')"
+    limiting="$(print -r -- "$entry" | jq -r '[.windows[] | select(.pct >= 100) | .resetsAtEpoch | numbers] | if length == 0 then empty else max end')"
+    plan="$(plan_after_fetch "$prev_i" "$prev_pct" "$new_pct" "$active" "$recent429" "$next_reset" "$limiting" "$at_limit")"
+    entry="$(print -r -- "$entry" | jq -c --argjson n "${plan%% *}" --argjson i "${plan##* }" '. + {nextPollAt: $n, intervalS: $i}')"
+  else
+    local err
+    err="$(print -r -- "$result" | jq -r '.error')"
+    if [[ "$err" == invalid_grant ]]; then
+      cache="$(print -r -- "$cache" | jq --arg id "$id" --arg fp "$(acct_${tool}_fingerprint "${STORE}/${id}/credentials.json" 2>/dev/null || print -r -- "")" --argjson now "$(now)" '
+        .quarantine[$id] = {reason: "invalid_grant", fingerprint: $fp, at: $now}')"
+      note "entry ${id} is quarantined: its refresh token was refused (invalid_grant); log in again and run: flakelab accounts add ${tool}"
+    fi
+    fails=$(( $(print -r -- "$entry" | jq -r '.failures // 0') + 1 ))
+    backoff=$(( BACKOFF_BASE_S << (fails - 1) )); (( backoff > BACKOFF_CAP_S )) && backoff=$BACKOFF_CAP_S
+    if [[ "$err" == http-429 ]]; then
+      retry="$(print -r -- "$result" | jq -r '.retryAfter // empty')"
+      if [[ "$retry" == <-> ]] && (( retry > 0 )); then backoff=$retry; (( backoff > RETRY_AFTER_CAP_S )) && backoff=$RETRY_AFTER_CAP_S
+      else (( backoff < EDGE_BACKOFF_S )) && backoff=$EDGE_BACKOFF_S; fi
+      entry="$(print -r -- "$entry" | jq -c --argjson u "$(( $(now) + RECENT_429_S ))" '. + {recent429Until: $u}')"
+    fi
+    entry="$(print -r -- "$entry" | jq -c --argjson f "$fails" --arg e "$err" --argjson n "$(( $(now) + backoff ))" '. + {failures: $f, lastError: $e, nextPollAt: $n, lastErrorAt: '"$(now)"'}')"
+  fi
+  cache="$(print -r -- "$cache" | jq --arg id "$id" --argjson e "$entry" '.entries[$id] = $e')"
+  write_usage "$cache" || die "cannot write ${USAGE}"
+}
+
+# Poll every entry of a tool (every tool when none named) whose plan is due,
+# the active one first, quarantined and disabled ones never. Prints the count.
+fetch_due() {
+  local tool="${1:-}" roster cache id n=0
+  roster="$(read_roster)"; cache="$(read_usage)"
+  for id in $(print -r -- "$roster" | jq -r --arg tool "$tool" '
+      .active as $a | .accounts | to_entries
+      | map(select($tool == "" or .value.tool == $tool) | select(.value.disabled // false | not))
+      | sort_by((if ($a[.value.tool] // null) == (.key | tonumber) then 0 else 1 end), (.key | tonumber)) | .[].key'); do
+    [[ "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id] // empty')" == "" ]] || continue
+    (( $(print -r -- "$cache" | jq -r --arg id "$id" '.entries[$id].nextPollAt // 0') <= $(now) )) || continue
+    fetch_entry "$id"; (( n++ ))
+  done
+  print -r -- "$n"
+}
+
+# Drop an entry's quarantine when its credential is no longer the one that
+# was refused.
+lift_quarantine() {
+  local id="$1" tool cache fp
+  cache="$(read_usage)"
+  [[ "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id].fingerprint // empty')" != "" ]] || return 0
+  tool="$(entry_field "$id" tool)"
+  fp="$(acct_${tool}_fingerprint "${STORE}/${id}/credentials.json" 2>/dev/null || print -r -- "")"
+  [[ "$fp" != "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id].fingerprint')" ]] || return 0
+  write_usage "$(print -r -- "$cache" | jq --arg id "$id" 'del(.quarantine[$id])')" && note "entry ${id} left quarantine: its credential changed"
+}
+
+# The usage column of the listing.
+usage_text() {
+  local id="$1"
+  print -r -- "$(read_usage)" | jq -r --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"'
+    def age: if . == null then "" elif . < 60 then " (\(.)s)" elif . < 3600 then " (\(. / 60 | floor)m)" else " (\(. / 3600 | floor)h)" end;
+    if .quarantine[$id] then "quarantined (\(.quarantine[$id].reason))"
+    else (.entries[$id] // {}) as $e
+      | if ($e.windows // []) | length > 0 then
+          ([$e.windows[] | select(.class != "model" or (counted | length > 0)) | "\(.label) \(.pct | floor)%"] | join(" · "))
+          + (($now - ($e.fetchedAt // $now)) | age)
+          + (if $e.lastError then " · \($e.lastError)" else "" end)
+        elif $e.lastError then "unknown (\($e.lastError))"
+        else "-" end
+    end'
+}
+
 # --- verbs ---------------------------------------------------------------------
 
 # add <tool>: the live login into the store; a known id refreshes in place.
@@ -201,6 +394,7 @@ cmd_add() {
       | (if $alias != "" then .accounts[$k].alias = $alias else . end)
       | .active[$tool] = ($k | tonumber)')"
     write_roster "$roster" || die "cannot write ${ROSTER}"
+    lift_quarantine "$existing"
     print -r -- "Refreshed ${tool} ${existing}: ${label} [${org}]"
     return 0
   fi
@@ -241,7 +435,7 @@ do_switch() {
       out_id="$(print -r -- "$roster" | jq -r --arg tool "$tool" --arg lid "$live_id" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')"
       if [[ -n "$out_id" ]]; then
         (umask 077; mkdir -p -- "${STORE}/${out_id}")
-        acct_${tool}_read_live "${STORE}/${out_id}" || note "warning: could not refresh the stored login of entry ${out_id} from the live one"
+        acct_${tool}_read_live "${STORE}/${out_id}" && lift_quarantine "$out_id" || note "warning: could not refresh the stored login of entry ${out_id} from the live one"
       else
         stash="${STORE}/unclaimed/$(date -u +%Y%m%dT%H%M%SZ)-${tool}-${live_id}"
         (umask 077; mkdir -p -- "$stash") && acct_${tool}_read_live "$stash" &&
@@ -268,11 +462,40 @@ do_switch() {
   return 0
 }
 
+# --soonest / --best: the candidates of a tool with known usage and a weekly
+# budget left, ordered by earliest weekly renewal or most weekly headroom.
+pick_by_usage() {
+  local tool="$1" strategy="$2" roster cur id hr known=0 spent=0 best="" bestv="" v
+  roster="$(read_roster)"
+  cur="$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool] // 0')"
+  fetch_due "$tool" >/dev/null
+  for id in $(print -r -- "$roster" | jq -r --arg tool "$tool" '.accounts | to_entries[] | select(.value.tool == $tool and (.value.disabled // false | not)) | .key' | sort -n); do
+    [[ "$id" == "$cur" ]] && continue
+    [[ "$(print -r -- "$(read_usage)" | jq -r --arg id "$id" '.quarantine[$id] // empty')" == "" ]] || continue
+    hr="$(entry_headroom "$id")"
+    [[ "$(print -r -- "$hr" | jq -r '.known')" == true ]] || continue
+    (( known++ ))
+    v="$(print -r -- "$hr" | jq -r '.weekly // .binding')"
+    (( ${v%.*} <= 0 )) && { (( spent++ )); continue }
+    case "$strategy" in
+      best)    v="$(print -r -- "$hr" | jq -r '.weekly // .binding')"; [[ -z "$bestv" ]] || (( ${v%.*} > ${bestv%.*} )) && { best="$id"; bestv="$v" } ;;
+      soonest) v="$(entry_weekly_reset "$id")"; [[ -n "$v" ]] || v=9999999999; [[ -z "$bestv" ]] || (( v < bestv )) && { best="$id"; bestv="$v" } ;;
+    esac
+  done
+  if [[ -z "$best" ]]; then
+    (( known == 0 )) && refuse "no ${tool} candidate has known usage; run: flakelab accounts --fetch"
+    (( spent == known )) && refuse "every ${tool} candidate with known usage has spent its weekly budget"
+    refuse "no ${tool} candidate qualifies"
+  fi
+  print -r -- "$best"
+}
+
 cmd_switch() {
-  local target="" tool="" next=false id roster ids cur
+  local target="" tool="" next=false strategy="" id roster ids cur
   while (( $# > 0 )); do
     case $1 in
       --next) next=true; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "--next needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
+      --soonest|--best) strategy="${1#--}"; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "$1 needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
       -*) refuse "unknown option for switch: $1" ;;
       *) [[ -z "$target" ]] || refuse "switch takes one entry"; target="$1" ;;
     esac
@@ -280,6 +503,12 @@ cmd_switch() {
   done
   [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
   take_lock
+  if [[ -n "$strategy" ]]; then
+    need_adapter "$tool"
+    id="$(pick_by_usage "$tool" "$strategy")" || exit $?
+    do_switch "$id"
+    return $?
+  fi
   if $next; then
     need_adapter "$tool"
     roster="$(read_roster)"
@@ -377,17 +606,30 @@ rows() {
 }
 
 cmd_list() {
-  local row tool id alias label org act dis n=0
-  if [[ "${1:-}" == --json ]]; then
-    print -r -- "$(read_roster)" | jq '{version, active,
-      accounts: (.accounts | to_entries | sort_by(.key | tonumber)
-        | map({id: (.key | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org,
-               alias: (.value.alias // null), disabled: (.value.disabled // false), added: .value.added}))}'
+  local row tool id alias label org act dis n=0 json=false fetch=false
+  while (( $# > 0 )); do
+    case $1 in
+      --json) json=true ;;
+      --fetch) fetch=true ;;
+      *) refuse "unknown option: $1" ;;
+    esac
+    shift
+  done
+  if $fetch; then take_lock; n="$(fetch_due)"; note "fetched ${n} entr$( (( n == 1 )) && print y || print ies)"; n=0; fi
+  if $json; then
+    jq -n --argjson r "$(read_roster)" --argjson u "$(read_usage)" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" "${HEADROOM_JQ}"'
+      {version: $r.version, active: $r.active,
+       accounts: ($r.accounts | to_entries | sort_by(.key | tonumber)
+        | map(.key as $k | {id: ($k | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org,
+               alias: (.value.alias // null), disabled: (.value.disabled // false), added: .value.added,
+               usage: (($u.entries[$k] // {}) | {windows: (.windows // []), fetchedAt: (.fetchedAt // null), nextPollAt: (.nextPollAt // null), lastError: (.lastError // null)}),
+               headroom: (($u.entries[$k] // {}) | headroom),
+               quarantine: ($u.quarantine[$k] // null)}))}'
     return 0
   fi
-  printf '%-7s %-4s %-12s %-32s %-18s %s\n' TOOL ID ALIAS LABEL ORG STATE
+  printf '%-7s %-4s %-12s %-32s %-16s %s\n' TOOL ID ALIAS LABEL STATE USAGE
   while IFS="$US" read -r tool id alias label org act dis; do
-    printf '%-7s %-4s %-12s %-32s %-18s %s\n' "$tool" "$id" "${alias:--}" "$label" "$org" "${act:-}${act:+ }${dis:-}"
+    printf '%-7s %-4s %-12s %-32s %-16s %s\n' "$tool" "$id" "${alias:--}" "$label" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")"
     (( n++ ))
   done < <(rows)
   (( n > 0 )) || note "no stored logins; start with: flakelab accounts add <tool>"
@@ -405,10 +647,12 @@ cmd_status() {
     lid="$(print -r -- "$live" | jq -r '.id // empty')"
     id="$(print -r -- "$active" | jq -r '.id // empty')"
     if [[ -n "$lid" && -n "$id" ]]; then matches=$([[ "$lid" == "$id" ]] && print true || print false); else matches=null; fi
-    out="$(print -r -- "$out" | jq --arg tool "$tool" --argjson a "$active" --argjson l "$live" --argjson m "$matches" '
+    local ue='{}'
+    [[ -n "$id" ]] && ue="$(print -r -- "$(read_usage)" | jq -c --arg id "$(print -r -- "$active" | jq -r '.entry')" '.entries[$id] // {}')"
+    out="$(print -r -- "$out" | jq --arg tool "$tool" --argjson a "$active" --argjson l "$live" --argjson m "$matches" --argjson u "$ue" '
       .[$tool] = {active: (if $a == null then null else {id: $a.entry, alias: ($a.alias // null), label: $a.label, org: $a.org} end),
                   live: (if $l == null then null else {account: $l.id, label: $l.label} end),
-                  matches: $m, windows: []}')"
+                  matches: $m, windows: ($u.windows // []), fetchedAt: ($u.fetchedAt // null)}')"
     if ! $json; then
       if [[ "$active" == null ]]; then
         print -r -- "${tool}: no active entry${lid:+ (live login $(print -r -- "$live" | jq -r .label) is not in the roster: flakelab accounts add ${tool})}"
@@ -430,7 +674,7 @@ case "${1:-}" in
 esac
 check_roster
 case "${1:-}" in
-  ""|--json)  cmd_list "${1:-}" ;;
+  ""|--json|--fetch)  cmd_list "$@" ;;
   add)        shift; cmd_add "$@" ;;
   switch)     shift; cmd_switch "$@" ;;
   alias)      shift; cmd_alias "$@" ;;
