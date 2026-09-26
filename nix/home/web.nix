@@ -1,10 +1,14 @@
 # The browser front end (remote-sessions.md): `flakelab web`, the dashboard
 # over the accounts and the sessions, and ttyd, a terminal in a browser tab
-# attached to the `agents` tmux session. Both are user services, bound to the
-# address flakelab.web.bind names (127.0.0.1 unless it is the box's WireGuard
-# address), and both are behind the same token: the dashboard as a bearer,
-# ttyd as basic auth (user `flakelab`, the token as the password). Off unless
-# flakelab.web.enable; the terminal off unless flakelab.web.terminal too.
+# attached to the `agents` tmux session. Both are user services. The
+# dashboard binds the address flakelab.web.bind names (127.0.0.1 unless it
+# is the box's WireGuard address) and holds the one token; ttyd listens on a
+# Unix socket in the runtime directory with no credential of its own, and
+# the dashboard is its only door: /terminal/ is tunnelled to it for a browser
+# holding a session the API issued against the token. Nothing carries the
+# token on a command line, and `flakelab web --rotate-token` replaces it
+# with no restart. Off unless flakelab.web.enable; the terminal off unless
+# flakelab.web.terminal too.
 {
   lib,
   pkgs,
@@ -16,23 +20,38 @@ let
   scripts = import ../scripts.nix { inherit pkgs cfg; };
   web = cfg.web.enable;
   terminal = cfg.web.enable && cfg.web.terminal;
-  tokenFile = "%h/.local/state/flakelab/web/token";
-  terminalUrl = "http://${cfg.web.bind}:${toString cfg.web.terminalPort}/";
+  # %t is the user's runtime directory; the socket sits in a 0700 directory
+  # of its own there.
+  socketDir = "%t/flakelab";
+  socket = "${socketDir}/ttyd.sock";
   neverRestartedByActivation = {
     Unit."X-RestartIfChanged" = false;
     Service."X-RestartIfChanged" = false;
   };
-  # ttyd takes its credential on the command line only; the token file is
-  # read at start, so the same token opens both. The entrypoint attaches the
-  # agents session (creating it when absent), never a bare shell.
+  # The entrypoint attaches the agents session (creating it when absent),
+  # never a bare shell. -b puts ttyd's page and its WebSocket under
+  # /terminal, where the dashboard tunnels; -W makes the terminal writable.
   ttydStart = pkgs.writeShellScript "flakelab-ttyd" ''
-    tok="$(cat "$1")" || exit 1
-    exec ${pkgs.ttyd}/bin/ttyd -i ${lib.escapeShellArg cfg.web.bind} -p ${toString cfg.web.terminalPort} \
-      -W -c "flakelab:$tok" -t titleFixed=agents \
+    exec ${pkgs.ttyd}/bin/ttyd -i "$1" -b /terminal -W -t titleFixed=agents \
       ${pkgs.tmux}/bin/tmux new-session -A -s ${lib.escapeShellArg cfg.web.tmuxSession}
   '';
 in
 {
+  assertions = [
+    {
+      assertion =
+        !web
+        || !(builtins.elem cfg.web.bind [
+          "0.0.0.0"
+          "::"
+          "*"
+          "0"
+          ""
+        ]);
+      message = "flakelab.web.bind must name one address (127.0.0.1 or the box's WireGuard address), never every interface";
+    }
+  ];
+
   systemd.user.services =
     lib.optionalAttrs web {
       flakelab-web = lib.recursiveUpdate neverRestartedByActivation {
@@ -40,7 +59,7 @@ in
         Service = {
           ExecStart =
             "${scripts.web}/bin/web --bind ${lib.escapeShellArg cfg.web.bind} --port ${toString cfg.web.port}"
-            + lib.optionalString terminal " --terminal-url ${lib.escapeShellArg terminalUrl}";
+            + lib.optionalString terminal " --terminal-socket ${socket}";
           Restart = "on-failure";
           RestartSec = "5s";
         };
@@ -50,13 +69,16 @@ in
     // lib.optionalAttrs terminal {
       flakelab-ttyd = lib.recursiveUpdate neverRestartedByActivation {
         Unit = {
-          Description = "flakelab: a browser terminal on the agents tmux session, ${cfg.web.bind}:${toString cfg.web.terminalPort}";
-          # The dashboard makes the token on its first start.
+          Description = "flakelab: a browser terminal on the agents tmux session, behind the dashboard";
           After = [ "flakelab-web.service" ];
           Wants = [ "flakelab-web.service" ];
         };
         Service = {
-          ExecStart = "${ttydStart} ${tokenFile}";
+          ExecStart = "${ttydStart} ${socket}";
+          RuntimeDirectory = "flakelab";
+          RuntimeDirectoryMode = "0700";
+          RuntimeDirectoryPreserve = true;
+          UMask = "0077";
           Restart = "on-failure";
           RestartSec = "5s";
         };

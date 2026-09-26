@@ -135,7 +135,7 @@
       tr.innerHTML = `<td>${esc(s.tool)}</td><td>${esc(s.pid)}</td><td>${esc(s.age)}</td><td><code>${esc(s.session || "—")}</code></td><td>${esc(host)}</td><td class="wrap">${esc(s.dir || s.cwd)}</td>`;
       sb.appendChild(tr);
     }
-    if (st.terminal) { $("#terminal").href = st.terminal; $("#terminal").hidden = false; }
+    $("#terminal").hidden = !st.terminal;
     $("#clock").textContent = new Date().toLocaleTimeString();
   };
 
@@ -149,6 +149,13 @@
     token = $("#token").value.trim();
     try { localStorage.setItem("flakelab.token", token); } catch (e) {}
     refresh();
+  };
+  // The terminal tab cannot carry the bearer: the server issues it a
+  // session cookie, scoped to /terminal, against the token first.
+  $("#terminal").onclick = async (ev) => {
+    ev.preventDefault();
+    try { await api("/api/terminal", {}); window.open("/terminal/", "_blank"); }
+    catch (e) { log(`terminal: ${e.message}`, true); }
   };
   $("#fetch").onclick = async () => {
     $("#fetch").disabled = true;

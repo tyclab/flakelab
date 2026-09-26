@@ -124,6 +124,10 @@ include "accounts-headroom";
                     .known and (.spent | not)
                     and (if $trigger == "proactive" then
                            ($h[$axis] != null) and ((100 - $h[$axis]) < $bars[$axis]) and (($ah[$axis] != null) and ($h[$axis] - $ah[$axis] >= $s.hysteresisPct))
+                         # At the limit, a candidate at its own limit on that
+                         # axis is no move: two spent entries would trade
+                         # places every tick.
+                         elif $trigger == "at-limit" then ($h[$axis] == null or $h[$axis] > 0)
                          else true end)))) as $cands
           | ($cands | map(select(.qualifies))) as $qualifying
           | if ($candidateIds | length) == 0 then

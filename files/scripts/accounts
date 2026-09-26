@@ -320,9 +320,16 @@ fetch_entry() {
   [[ "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id] // empty')" == "" ]] || return 0
   active=false
   [[ "$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" '.active[$tool] // empty')" == "$id" ]] && active=true
+  # A profile's refresh reaches the store before the store's token is used,
+  # session running or not: a token the profile rotated and left behind
+  # would otherwise be refreshed from the store's consumed one and refused.
+  [[ "$active" == false ]] && harvest_profile "$id"
   if [[ "$active" == false ]] && profile_live "$id"; then
-    harvest_profile "$id"
     result="$(acct_${tool}_usage "$(profile_dir "$id")" profile)"
+  elif [[ "$active" == true ]] && ! entry_is_live "$id"; then
+    # The roster says active, the tool's file says another login: someone
+    # logged in by hand. Its figures are not this entry's.
+    result='{"ok": false, "error": "drifted"}'
   else
     result="$(acct_${tool}_usage "${STORE}/${id}" "$active")"
   fi
@@ -390,6 +397,54 @@ entry_fingerprint() {
   acct_${tool}_fingerprint "${STORE}/${id}/${file}" 2>/dev/null || print -r -- ""
 }
 
+# The lineage fingerprint of the live login of tool $1: its adapter's copy
+# into a scratch directory, fingerprinted and removed. Empty when there is
+# no live login.
+live_fingerprint() {
+  local tool="$1" tmp file fp=""
+  tmp="$(mktemp -d)" || { print -r -- ""; return 0 }
+  chmod 700 -- "$tmp"
+  file="$(acct_${tool}_files | head -n 1)"
+  acct_${tool}_read_live "$tmp" 2>/dev/null && fp="$(acct_${tool}_fingerprint "${tmp}/${file}" 2>/dev/null)"
+  rm -rf -- "${tmp:?}"
+  print -r -- "$fp"
+}
+
+# The entry the live login of tool $1 (its identity, $2) belongs to. The id
+# settles it when the tool's ids are one per account; when the adapter says
+# they are shared (Kiro: every Builder ID login carries the same start URL
+# and region) the entries with that id are told apart by lineage fingerprint,
+# then by label. Prints the key; nothing when no entry carries the id or
+# every entry with it is another account; "?" when the id is shared and
+# neither the fingerprint nor the label settles it (offline, whoami silent).
+entry_of_live() {
+  local tool="$1" live="$2" lid llabel fp k label
+  local -a keys
+  lid="$(print -r -- "$live" | jq -r '.id // empty')"
+  [[ -n "$lid" ]] || return 0
+  keys=("${(@f)$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$lid" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')}")
+  keys=("${(@)keys:#}")
+  (( ${#keys} )) || return 0
+  if ! typeset -f "acct_${tool}_id_shared" >/dev/null; then print -r -- "${keys[1]}"; return 0; fi
+  fp="$(live_fingerprint "$tool")"
+  for k in "${keys[@]}"; do
+    [[ -n "$fp" && "$fp" == "$(entry_fingerprint "$k")" ]] && { print -r -- "$k"; return 0 }
+  done
+  # A label the adapter derived from the id (no whoami offline) names no
+  # account.
+  llabel="$(print -r -- "$live" | jq -r '.label // empty')"
+  [[ -n "$llabel" && "$lid" == *"$llabel"* ]] && llabel=""
+  for k in "${keys[@]}"; do
+    label="$(entry_field "$k" label)"
+    [[ -n "$llabel" && "$llabel" == "$label" ]] && { print -r -- "$k"; return 0 }
+  done
+  for k in "${keys[@]}"; do
+    label="$(entry_field "$k" label)"
+    [[ -z "$llabel" || -z "$label" || "$label" == "$lid" ]] && { print -r -- "?"; return 0 }
+  done
+  return 0
+}
+
 lift_quarantine() {
   local id="$1" cache fp
   cache="$(read_usage)"
@@ -440,7 +495,8 @@ cmd_add() {
   esac
   id="$(print -r -- "$ident" | jq -r '.id')"; label="$(print -r -- "$ident" | jq -r '.label')"; org="$(print -r -- "$ident" | jq -r '.org')"
   roster="$(read_roster)"
-  existing="$(print -r -- "$roster" | jq -r --arg tool "$tool" --arg id "$id" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $id) | .key')"
+  existing="$(entry_of_live "$tool" "$ident")"
+  [[ "$existing" != "?" ]] || refuse "the live ${tool} login shares its id (${id}) with a stored entry and cannot be told apart from it offline: run this online, so the tool names the account, then retry"
   if [[ -n "$alias" ]]; then
     local taken
     taken="$(print -r -- "$roster" | jq -r --arg a "$alias" --arg me "${existing:-}" '.accounts | to_entries[] | select(.value.alias == $a and .key != $me) | .key')"
@@ -508,8 +564,13 @@ do_switch() {
     fi
     if (( rc == 0 )); then
       live_id="$(print -r -- "$live" | jq -r '.id')"
-      out_id="$(print -r -- "$roster" | jq -r --arg tool "$tool" --arg lid "$live_id" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')"
-      if [[ -n "$out_id" ]]; then
+      out_id="$(entry_of_live "$tool" "$live")"
+      if [[ "$out_id" == "?" ]]; then
+        stash="${STORE}/unclaimed/$(date -u +%Y%m%dT%H%M%SZ)-${tool}-${live_id//\//_}"
+        (umask 077; mkdir -p -- "$stash") && acct_${tool}_read_live "$stash" &&
+          note "warning: the live ${tool} login shares its id with more than one entry and could not be told apart offline; copied to ${stash}. Online, run: flakelab accounts add ${tool}" ||
+          note "warning: the live ${tool} login could not be told apart from the entries sharing its id and could not be copied aside"
+      elif [[ -n "$out_id" ]]; then
         (umask 077; mkdir -p -- "${STORE}/${out_id}")
         acct_${tool}_read_live "${STORE}/${out_id}" && lift_quarantine "$out_id" || note "warning: could not refresh the stored login of entry ${out_id} from the live one"
       else
@@ -748,7 +809,7 @@ tick() {
     rc=$?; (( rc == 3 )) || acct_${tool}_live_present && unmanaged=true
   }
   if [[ -n "$live" ]]; then
-    [[ -z "$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$(print -r -- "$live" | jq -r .id)" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')" ]] && unmanaged=true
+    [[ -z "$(entry_of_live "$tool" "$live")" ]] && unmanaged=true
     acct_${tool}_active_expired && (( $(pgrep -x "$(acct_${tool}_process)" 2>/dev/null | grep -c .) == 0 )) && expired=true
   fi
   # Pass 1: fetch what the engine wants, the plan and the backoff respected.
@@ -893,7 +954,7 @@ entry_is_live() {
   local id="$1" tool live
   tool="$(entry_field "$id" tool)"
   live="$(acct_${tool}_identity 2>/dev/null)" || return 1
-  [[ "$(print -r -- "$live" | jq -r '.id')" == "$(entry_field "$id" id)" ]]
+  [[ "$(entry_of_live "$tool" "$live")" == "$id" ]]
 }
 
 # Give entry $1 a private home: create it, validate or reseed it (share the
@@ -1057,10 +1118,19 @@ cmd_ingest() {
   doc="$(cat 2>/dev/null)"; [[ -n "$doc" ]] || return 0
   windows="$(print -r -- "$doc" | jq -c "${INGEST_JQ}" 2>/dev/null)" || return 0
   [[ -n "$windows" && "$windows" != "[]" ]] || return 0
-  live="$(acct_${tool}_identity 2>/dev/null)" || return 0
-  lid="$(print -r -- "$live" | jq -r '.id')"
-  id="$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$lid" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key' | head -n 1)"
-  [[ -n "$id" ]] || return 0
+  # A session in a profile reports for the profile's entry, named by the
+  # manifest; the live identity is the live login's, never the profile's. A
+  # config dir that is no profile of ours is some other instance: nothing to
+  # file.
+  if [[ -n "${CLAUDE_CONFIG_DIR:-}" && "$tool" == claude ]]; then
+    [[ -r "${CLAUDE_CONFIG_DIR}/.flakelab-profile.json" ]] || return 0
+    id="$(jq -r 'select(.tool == "claude") | .entry // empty' "${CLAUDE_CONFIG_DIR}/.flakelab-profile.json" 2>/dev/null)"
+    [[ -n "$id" && -n "$(entry_field "$id" tool)" ]] || return 0
+  else
+    live="$(acct_${tool}_identity 2>/dev/null)" || return 0
+    id="$(entry_of_live "$tool" "$live")"
+    [[ -n "$id" && "$id" != "?" ]] || return 0
+  fi
   exec 9>"${STORE}/lock" 2>/dev/null || return 0
   flock -w 2 9 || return 0
   # The session and week windows replaced, a per-model window from the
@@ -1129,7 +1199,7 @@ cmd_status() {
     live="$(acct_${tool}_identity 2>/dev/null)" || live="null"
     lid="$(print -r -- "$live" | jq -r '.id // empty')"
     id="$(print -r -- "$active" | jq -r '.id // empty')"
-    if [[ -n "$lid" && -n "$id" ]]; then matches=$([[ "$lid" == "$id" ]] && print true || print false); else matches=null; fi
+    if [[ -n "$lid" && -n "$id" ]]; then matches=$([[ "$(entry_of_live "$tool" "$live")" == "$(print -r -- "$active" | jq -r '.entry')" ]] && print true || print false); else matches=null; fi
     local ue='{}'
     [[ -n "$id" ]] && ue="$(print -r -- "$(read_usage)" | jq -c --arg id "$(print -r -- "$active" | jq -r '.entry')" '.entries[$id] // {}')"
     out="$(print -r -- "$out" | jq --arg tool "$tool" --argjson a "$active" --argjson l "$live" --argjson m "$matches" --argjson u "$ue" '

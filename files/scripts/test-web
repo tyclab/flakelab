@@ -75,8 +75,33 @@ check "--print-token before a first start exits 1" "${RC}" "1"
 print -r -- ""
 print -r -- "the server"
 TOKEN_FILE="${BASE}/state/web/token"
+# A ttyd stand-in on a Unix socket: answers every request with its request
+# line and whether a Cookie header reached it.
+TTYD_SOCK="${BASE}/ttyd.sock"
+cat > "${BASE}/ttyd.py" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(sys.argv[1]); s.listen(5)
+while True:
+    c, _ = s.accept()
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = c.recv(4096)
+        if not chunk: break
+        data += chunk
+    text = data.decode(errors="replace")
+    body = ("ttyd " + text.split("\r\n")[0] + "\ncookie=" + str("\r\nCookie:" in text) + "\n").encode()
+    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body)
+    c.close()
+PY
+python3 "${BASE}/ttyd.py" "${TTYD_SOCK}" &
+TTYD_PID=$!
+trap '[[ -n "${SERVER_PID}" ]] && kill "${SERVER_PID}" 2>/dev/null; kill "${TTYD_PID}" 2>/dev/null; rm -rf "${BASE}"' EXIT
+FLAKELAB_WEB_BIND=0 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" PYTHONDONTWRITEBYTECODE=1 timeout 10 python3 "${SERVER}" 2>"${BASE}/bind0.err"
+check "the server itself refuses the unspecified address in any spelling" "$?" "2"
+contains "and says which address to name" "$(<"${BASE}/bind0.err")" "name the WireGuard address"
 FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
-  FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" FLAKELAB_WEB_TERMINAL_URL="http://10.66.0.2:7681/" \
+  FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" FLAKELAB_WEB_TERMINAL_SOCKET="${TTYD_SOCK}" \
   PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server.err" &
 SERVER_PID=$!
 PORT=""
@@ -120,7 +145,7 @@ check "state with the token is 200" "${CODE}" "200"
 check "and carries the roster" "$(print -r -- "$BODY" | jq -r '.accounts.accounts[1].alias')" "work"
 check "the status" "$(print -r -- "$BODY" | jq -r '.status.claude.matches')" "false"
 check "the sessions" "$(print -r -- "$BODY" | jq -r '.sessions[0].host.window')" "claude-work"
-check "and the terminal link" "$(print -r -- "$BODY" | jq -r '.terminal')" "http://10.66.0.2:7681/"
+check "and that a terminal is on" "$(print -r -- "$BODY" | jq -r '.terminal')" "true"
 contains "each read was one CLI call" "$(calls)" "accounts --json"
 get /nope "${TOKEN}"
 check "an unknown path is 404" "${CODE}" "404"
@@ -173,8 +198,51 @@ check "an unknown tool is 400" "${CODE}" "400"
 post /api/sessions/start "{\"tool\":\"claude\",\"dir\":\"${BASE}\",\"args\":\"x\"}" "${TOKEN}"
 check "args that are not a list are 400" "${CODE}" "400"
 
+print -r -- ""
+print -r -- "the terminal: ttyd behind the dashboard's own session"
+get /terminal/
+check "the terminal without a session is 401" "${CODE}" "401"
+post /api/terminal '{}'
+check "a session without the token is 401" "${CODE}" "401"
+SETCOOKIE="$(curl -s -o /dev/null -D - -X POST -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' --data '{}' "${URL}/api/terminal" | grep -i '^set-cookie:' | tr -d '\r')"
+contains "with the token, a session cookie scoped to /terminal" "${SETCOOKIE}" "; Path=/terminal; HttpOnly; SameSite=Strict"
+SID="${${SETCOOKIE#*flakelab_terminal=}%%;*}"
+BODY="$(curl -s -b "flakelab_terminal=${SID}" "${URL}/terminal/")"
+contains "with the cookie, the request reaches ttyd as it came" "${BODY}" "ttyd GET /terminal/ HTTP/1.1"
+contains "without the cookie" "${BODY}" "cookie=False"
+BODY="$(curl -s -b "flakelab_terminal=${SID}" "${URL}/terminal/ws?x=1")"
+contains "and so does everything under /terminal" "${BODY}" "ttyd GET /terminal/ws?x=1 HTTP/1.1"
+BODY="$(curl -s -o - -w '\n%{http_code}' -b "flakelab_terminal=not-a-session" "${URL}/terminal/")"
+check "a made-up cookie is 401" "${BODY##*$'\n'}" "401"
+get /api/health
+check "the dashboard still answers" "${CODE}" "200"
+
+print -r -- ""
+print -r -- "Host: only this server's address"
+BODY="$(curl -s -o - -w '\n%{http_code}' -H 'Host: evil.example' "${URL}/api/health")"
+check "a request for another name is 421" "${BODY##*$'\n'}" "421"
+BODY="$(curl -s -o - -w '\n%{http_code}' -H "Host: localhost:${PORT}" "${URL}/api/health")"
+check "localhost names a loopback server" "${BODY##*$'\n'}" "200"
+
+print -r -- ""
+print -r -- "--rotate-token: the running server follows, every terminal session ends"
+run --rotate-token --token-file "${TOKEN_FILE}"
+check "--rotate-token exits 0" "${RC}" "0"
+contains "and says so" "${ERR}" "token rotated"
+NEW_TOKEN="$(<"${TOKEN_FILE}")"
+[[ "${NEW_TOKEN}" != "${TOKEN}" && ${#NEW_TOKEN} -ge 40 ]] && ok "the file holds a new token" || bad "the token did not change"
+check "still private" "$(stat -c %a "${TOKEN_FILE}")" "600"
+get /api/state "${TOKEN}"
+check "the old token is refused at once" "${CODE}" "401"
+get /api/state "${NEW_TOKEN}"
+check "the new one works with no restart" "${CODE}" "200"
+BODY="$(curl -s -o - -w '\n%{http_code}' -b "flakelab_terminal=${SID}" "${URL}/terminal/")"
+check "the terminal session issued against the old token is over" "${BODY##*$'\n'}" "401"
+TOKEN="${NEW_TOKEN}"
+
 kill "${SERVER_PID}" 2>/dev/null; wait "${SERVER_PID}" 2>/dev/null; SERVER_PID=""
 excludes "the server never printed the token" "$(<"${BASE}/server.err")" "${TOKEN}"
+excludes "nor the terminal session" "$(<"${BASE}/server.err")" "${SID}"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

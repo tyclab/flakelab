@@ -93,7 +93,15 @@ acct_claude_write_live() {
   [[ -r "${dir}/credentials.json" && -r "${dir}/identity.json" ]] || { print -ru2 -- "Error: entry has no stored login (${dir})"; return 1 }
   mkdir -p -- "${ACCT_CLAUDE_HOME}" || return 1
   tmp="${ACCT_CLAUDE_CREDS}.flakelab-tmp.$$"
-  (umask 077; cp -- "${dir}/credentials.json" "$tmp") || { rm -f "$tmp"; return 1 }
+  # The stored login replaces the claudeAiOauth block only: the same file
+  # holds mcpOAuth, the MCP servers' logins, which belong to this instance
+  # and its authorisations, not to the account. A live file that is not a
+  # JSON object is replaced whole.
+  if jq -e 'type == "object"' "${ACCT_CLAUDE_CREDS}" >/dev/null 2>&1; then
+    (umask 077; jq --slurpfile s "${dir}/credentials.json" '.claudeAiOauth = $s[0].claudeAiOauth' "${ACCT_CLAUDE_CREDS}" > "$tmp") || { rm -f "$tmp"; return 1 }
+  else
+    (umask 077; cp -- "${dir}/credentials.json" "$tmp") || { rm -f "$tmp"; return 1 }
+  fi
   [[ "${FLAKELAB_ACCOUNTS_FAIL_AT:-}" == credentials ]] && { rm -f "$tmp"; return 1 }
   mv -f -- "$tmp" "${ACCT_CLAUDE_CREDS}" || { rm -f "$tmp"; return 1 }
   tmp="${ACCT_CLAUDE_CONFIG}.flakelab-tmp.$$"
@@ -240,10 +248,12 @@ acct_claude_refresh() {
   rt="$(jq -r '.claudeAiOauth.refreshToken // empty' "$file" 2>/dev/null)"
   [[ -n "$rt" ]] || { print -r -- invalid_grant; return 2 }
   body="$(mktemp)"
-  code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -X POST \
+  # The refresh token travels on stdin, never on a command line: /proc makes
+  # every process's arguments readable to every user on the box.
+  code="$(rt="$rt" jq -cn --arg cid "${ACCT_CLAUDE_CLIENT_ID}" '{grant_type: "refresh_token", refresh_token: $ENV.rt, client_id: $cid}' |
+    curl -sS -m 10 -o "$body" -w '%{http_code}' -X POST \
     -H 'Content-Type: application/json' -H "User-Agent: ${ACCT_CLAUDE_UA}" \
-    -d "$(jq -cn --arg rt "$rt" --arg cid "${ACCT_CLAUDE_CLIENT_ID}" '{grant_type: "refresh_token", refresh_token: $rt, client_id: $cid}')" \
-    "${ACCT_CLAUDE_TOKEN_URL}" 2>/dev/null)" || code=000
+    -d @- "${ACCT_CLAUDE_TOKEN_URL}" 2>/dev/null)" || code=000
   if [[ "$code" == 200 ]] && jq -e '.access_token? // empty | length > 0' "$body" >/dev/null 2>&1; then
     now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
     tmp="${file}.flakelab-tmp.$$"
@@ -284,7 +294,7 @@ acct_claude_normalise() {
 # use; a 401 on an inactive entry with a refresh token is retried once after a
 # refresh; the active entry's token is read as Claude Code left it.
 acct_claude_usage() {
-  local dir="$1" active="$2" file tok now_ms expires body hdr code retry outcome
+  local dir="$1" active="$2" file tok now_ms expires body hdr auth code retry outcome
   file="$(acct_claude_creds_path "$dir" "$active")"
   [[ -r "$file" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
   now_ms=$(( ${FLAKELAB_NOW:-$(date +%s)} * 1000 ))
@@ -295,22 +305,28 @@ acct_claude_usage() {
   fi
   tok="$(jq -r '.claudeAiOauth.accessToken // empty' "$file" 2>/dev/null)"
   [[ -n "$tok" ]] || { jq -cn '{ok: false, error: "no-access-token"}'; return 0 }
-  body="$(mktemp)"; hdr="$(mktemp)"
+  body="$(mktemp)"; hdr="$(mktemp)"; auth="$(mktemp)"
+  # The bearer goes to curl in a private file (mktemp makes it 0600), never
+  # on the command line: /proc shows every process's arguments to every
+  # user on the box.
+  print -r -- "Authorization: Bearer ${tok}" > "$auth"
   code="$(curl -sS -m 10 -o "$body" -D "$hdr" -w '%{http_code}' \
-    -H "Authorization: Bearer ${tok}" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
+    -H @"$auth" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
     "${ACCT_CLAUDE_USAGE_URL}" 2>/dev/null)" || code=000
   if [[ "$code" == 401 && "$active" == false ]]; then
     outcome="$(acct_claude_refresh "$file")"
     case "$outcome" in
       ok)
         tok="$(jq -r '.claudeAiOauth.accessToken // empty' "$file" 2>/dev/null)"
+        print -r -- "Authorization: Bearer ${tok}" > "$auth"
         code="$(curl -sS -m 10 -o "$body" -D "$hdr" -w '%{http_code}' \
-          -H "Authorization: Bearer ${tok}" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
+          -H @"$auth" -H "anthropic-beta: ${ACCT_CLAUDE_BETA}" -H "User-Agent: ${ACCT_CLAUDE_UA}" \
           "${ACCT_CLAUDE_USAGE_URL}" 2>/dev/null)" || code=000 ;;
-      invalid_grant) rm -f "$body" "$hdr"; jq -cn '{ok: false, error: "invalid_grant"}'; return 0 ;;
-      *) rm -f "$body" "$hdr"; jq -cn '{ok: false, error: "refresh-failed"}'; return 0 ;;
+      invalid_grant) rm -f "$body" "$hdr" "$auth"; jq -cn '{ok: false, error: "invalid_grant"}'; return 0 ;;
+      *) rm -f "$body" "$hdr" "$auth"; jq -cn '{ok: false, error: "refresh-failed"}'; return 0 ;;
     esac
   fi
+  rm -f "$auth"
   case "$code" in
     200)
       if acct_claude_normalise < "$body" | jq -c '{ok: true, windows: .}' 2>/dev/null; then :; else jq -cn '{ok: false, error: "bad-response"}'; fi ;;
@@ -397,8 +413,11 @@ acct_claude_profile_seed() {
   mv -f -- "${dir}/.credentials.json.tmp" "${dir}/.credentials.json" || return 1
   [[ -r "${ACCT_CLAUDE_CONFIG}" ]] && live="$(jq -c '{theme: (.theme // null), mcpServers: (.mcpServers // {})}' "${ACCT_CLAUDE_CONFIG}" 2>/dev/null)" || live='{}'
   [[ -s "${dir}/.claude.json" ]] && base="$(jq -c . "${dir}/.claude.json" 2>/dev/null)" || base='{}'
-  (umask 077; jq --argjson live "$live" --argjson base "$base" '
-      . as $ident
+  # Both documents can carry MCP server secrets: they reach jq through its
+  # environment, not its arguments.
+  (umask 077; live="$live" base="$base" jq '
+      ($ENV.live | fromjson) as $live | ($ENV.base | fromjson) as $base
+      | . as $ident
       | $base
       | .oauthAccount = $ident.oauthAccount
       | .hasCompletedOnboarding = true

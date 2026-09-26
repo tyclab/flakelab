@@ -8,7 +8,8 @@ set -uo pipefail
 # button, the running sessions with their tmux window, a start form, the
 # engine's dry run, and a link to the browser terminal when one is on.
 #
-# Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-url URL] [--print-token]
+# Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH]
+#        flakelab web --print-token | --rotate-token
 #
 # One python3 process (lib/web.py, the standard library only), bound to
 # 127.0.0.1:8321 unless told otherwise, every API call behind a bearer token
@@ -16,7 +17,12 @@ set -uo pipefail
 # start). It shells out to `accounts` and `claude-sessions` for everything,
 # so their locks, refusals and exit codes hold; it never touches a token file
 # of a tool. Bind it to the box's WireGuard address to reach it from a phone;
-# never to a public interface. --print-token prints the token and exits.
+# never to a public interface. With --terminal-socket it also fronts ttyd,
+# listening on that Unix socket with no credential of its own: /terminal/ is
+# tunnelled to it for a browser that holds a session cookie the API issued
+# against the token. --print-token prints the token; --rotate-token replaces
+# it (the server reads the file on every check, so a running one follows
+# and every terminal session ends).
 #
 # The two commands: from the dispatch dir when the wrapper set it
 # (FLAKELAB_WEB_ACCOUNTS, FLAKELAB_WEB_SESSIONS), else the siblings of this
@@ -27,17 +33,22 @@ SCRIPT_DIR="${0:A:h}"
 BIND="${FLAKELAB_WEB_BIND:-127.0.0.1}"
 PORT="${FLAKELAB_WEB_PORT:-8321}"
 TOKEN_FILE="${FLAKELAB_WEB_TOKEN_FILE:-${HOME}/.local/state/flakelab/web/token}"
-TERMINAL_URL="${FLAKELAB_WEB_TERMINAL_URL:-}"
+TERMINAL_SOCKET="${FLAKELAB_WEB_TERMINAL_SOCKET:-}"
 PRINT_TOKEN=false
+ROTATE_TOKEN=false
 
 usage() {
   cat <<'USAGE'
-Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-url URL]
+Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH]
        flakelab web --print-token
+       flakelab web --rotate-token
 
 Serves the dashboard on ADDR:N (127.0.0.1:8321), every API call behind the
-bearer token in FILE (~/.local/state/flakelab/web/token, made on first start).
-Bind to the WireGuard address for a phone; never to a public interface.
+bearer token in FILE (~/.local/state/flakelab/web/token, made on first start),
+and with --terminal-socket the ttyd terminal listening there, behind a session
+the API issues against the token. Bind to the WireGuard address for a phone;
+never to a public interface. --rotate-token writes a new token: a running
+server follows at once and every terminal session ends.
 USAGE
 }
 
@@ -46,8 +57,9 @@ while (( $# > 0 )); do
     --bind) BIND="${2:-}"; shift ;;
     --port) PORT="${2:-}"; shift ;;
     --token-file) TOKEN_FILE="${2:-}"; shift ;;
-    --terminal-url) TERMINAL_URL="${2:-}"; shift ;;
+    --terminal-socket) TERMINAL_SOCKET="${2:-}"; shift ;;
     --print-token) PRINT_TOKEN=true ;;
+    --rotate-token) ROTATE_TOKEN=true ;;
     --help|-h) usage; exit 0 ;;
     *) print -ru2 -- "web: unknown option: $1"; usage >&2; exit 2 ;;
   esac
@@ -55,8 +67,10 @@ while (( $# > 0 )); do
 done
 [[ "$PORT" == <1-65535> ]] || { print -ru2 -- "web: --port takes 1 to 65535"; exit 2 }
 [[ -n "$BIND" ]] || { print -ru2 -- "web: --bind needs an address"; exit 2 }
+# The server checks the resolved address too ("0", a name); this is the
+# early word for the spellings that need no lookup.
 case "$BIND" in
-  0.0.0.0|::|'*') print -ru2 -- "web: refusing to bind every interface; name the WireGuard address"; exit 2 ;;
+  0.0.0.0|::|'*'|0) print -ru2 -- "web: refusing to bind every interface; name the WireGuard address"; exit 2 ;;
 esac
 
 if $PRINT_TOKEN; then
@@ -67,7 +81,19 @@ fi
 
 command -v python3 >/dev/null 2>&1 || { print -ru2 -- "web: python3 is not on PATH"; exit 1 }
 export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ beside lib/web.py
-export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_URL="$TERMINAL_URL"
+
+if $ROTATE_TOKEN; then
+  # A fresh token in place of the old (0700 directory, 0600 file, temp and
+  # rename): the server compares against the file on every check.
+  (umask 077; mkdir -p -- "${TOKEN_FILE:h}") || { print -ru2 -- "web: cannot make ${TOKEN_FILE:h}"; exit 1 }
+  chmod 700 -- "${TOKEN_FILE:h}" 2>/dev/null
+  (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "${TOKEN_FILE}.tmp.$$") &&
+    mv -f -- "${TOKEN_FILE}.tmp.$$" "$TOKEN_FILE" || { rm -f -- "${TOKEN_FILE}.tmp.$$"; print -ru2 -- "web: cannot write ${TOKEN_FILE}"; exit 1 }
+  print -ru2 -- "web: token rotated (${TOKEN_FILE}); the page needs the new one, every terminal session is over"
+  exit 0
+fi
+
+export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_SOCKET="$TERMINAL_SOCKET"
 export FLAKELAB_WEB_STATIC="${FLAKELAB_WEB_STATIC:-${SCRIPT_DIR:h}/config/web}"
 export FLAKELAB_WEB_ACCOUNTS="${FLAKELAB_WEB_ACCOUNTS:-${SCRIPT_DIR}/accounts}"
 export FLAKELAB_WEB_SESSIONS="${FLAKELAB_WEB_SESSIONS:-${SCRIPT_DIR}/claude-sessions}"

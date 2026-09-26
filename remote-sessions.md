@@ -138,19 +138,30 @@ keeps in the browser. `flakelab.web.enable` runs it as the user service
 one to name for a phone.
 
 The terminal beside it is ttyd, `flakelab.web.terminal`: a browser tab
-attached to the `agents` tmux session (created when absent), on the same
-address, basic auth with user `flakelab` and the same token as the password.
-That is the "no SSH app on the phone" option from the table above, at the
-price it names: a shell in a browser tab behind a long-lived token. Keep it
-on the tunnel.
+attached to the `agents` tmux session (created when absent). ttyd listens on
+a Unix socket in the user's runtime directory with no credential of its own
+(ttyd takes one only on its command line, where `/proc` shows it to every
+user, and logs it at start); the dashboard is its only door. "terminal ↗"
+asks `POST /api/terminal` with the bearer for a session cookie scoped to
+`/terminal` (HttpOnly, SameSite=Strict, 12 hours), and `/terminal/` with
+that cookie is tunnelled to the socket as it came, WebSocket included.
+`flakelab web --rotate-token` replaces the token in the file; the server
+compares against the file on every check, so it follows at once and every
+terminal session ends with the old token. That is the "no SSH app on the
+phone" option from the table above, at the price it names: a shell in a
+browser tab behind a long-lived token. Keep it on the tunnel.
+
+The server also refuses a request whose `Host` is not its own address
+(421), so a page elsewhere that rebinds a name to it gets nothing, and drops
+a connection idle for 30 s before its request, so idle connections cannot
+hold its threads.
 
 ```nix
 flakelab.web = {
-  enable       = true;
-  bind         = "10.66.0.2";   # this box's WireGuard address
-  port         = 8321;
-  terminal     = true;
-  terminalPort = 7681;
+  enable   = true;
+  bind     = "10.66.0.2";   # this box's WireGuard address
+  port     = 8321;
+  terminal = true;
 };
 ```
 
@@ -259,5 +270,5 @@ flakelab = {
    to the type alone if neither is there.
 8. **The dashboard from a phone** on the tunnel: that the page renders at
    phone width, that a switch from it lands (the CLI's transaction, the
-   engine's refusals), and that ttyd's basic auth prompt and tmux under it
-   are usable on a touch keyboard.
+   engine's refusals), that "terminal ↗" opens ttyd through the dashboard's
+   session cookie, and that tmux under it is usable on a touch keyboard.

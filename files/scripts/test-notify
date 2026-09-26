@@ -32,7 +32,7 @@ cat > "${BASE}/bin/curl" <<'STUB'
 typeset url="" hdrs="" body=""
 while (( $# > 0 )); do
   case $1 in
-    -H) hdrs+="$2"$'\n'; shift ;;
+    -H) if [[ "$2" == @* ]]; then hdrs+="$(<"${2#@}")"$'\n'; else hdrs+="$2"$'\n'; fi; shift ;;
     -o|-w|-m|-X) shift ;;
     --data-binary) [[ "$2" == @- ]] && body="$(cat)"; shift ;;
     -sS) ;;
@@ -95,6 +95,8 @@ NTFY_URL="https://other.example.com/t" NTFY_TOKEN="" run_in "${CLAUDE_HOOK}"
 REQ="$(logged)"
 contains "the URL from the environment is used" "${REQ}" "URL https://other.example.com/t"
 excludes "and no token is sent when it is empty" "${REQ}" "Authorization"
+contains "an unprotected topic gets the tool and the event alone" "${REQ}" $'Title: claude\n'
+check "no directory, no session id, no message" "$(print -r -- "$REQ" | sed -n '/^BODY/,$p')" "BODY permission_prompt"
 
 print -r -- ""
 print -r -- "Codex's notify hook"

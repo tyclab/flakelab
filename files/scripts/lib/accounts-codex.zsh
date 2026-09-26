@@ -66,8 +66,10 @@ acct_codex_identity_of() {
   idt="$(print -r -- "$tokens" | jq -r '.id_token // empty')"
   claims="$(acct_codex_jwt_claims "$idt")" || claims='{}'
   [[ -n "$claims" ]] || claims='{}'
-  id="$(jq -cn --argjson t "$tokens" --argjson c "$claims" '
-    ($c["https://api.openai.com/auth"] // {}) as $a
+  # The tokens reach jq through its environment, never its arguments.
+  id="$(t="$tokens" jq -cn --argjson c "$claims" '
+    ($ENV.t | fromjson) as $t
+    | ($c["https://api.openai.com/auth"] // {}) as $a
     | {id: ($t.account_id // $a.chatgpt_account_id // $c.chatgpt_account_id // ""),
        label: ($c.email // $a.email // ""),
        org: ($a.chatgpt_plan_type // $c.chatgpt_plan_type // "chatgpt")}')"
@@ -205,46 +207,69 @@ ACCT_CODEX_NORMALISE_JQ='
       (.secondary | win((if $name == "" then "7d" else "\($name) 7d" end); (if $name == "" then "week" else "model" end))) ];
   snapshot as $s
   | ( ($s | one("")) )
-    + ( [ ($s.rateLimitsByLimitId // $s.rate_limits_by_limit_id // {}) | to_entries[]
+    # The per-limit map sits beside rateLimits in the app-server response
+    # (GetAccountRateLimitsResponse), inside the snapshot in older shapes; the
+    # entry for the default limit repeats the two windows above and is skipped.
+    + ( [ (.rateLimitsByLimitId // .rate_limits_by_limit_id // $s.rateLimitsByLimitId // $s.rate_limits_by_limit_id // {}) | to_entries[]
+          | select(.key != ($s.limitId // $s.limit_id // "codex"))
           | .key as $k | .value | one((.limitName // .limit_name // $k)) | .[] ] )
   | map(select(.pct != null))
 '
 
 # The JSON-RPC exchange with codex app-server: initialize, initialized, one
-# rateLimits read; the tool exits on EOF. Prints the raw response line.
+# rateLimits read. The server answers the read after its own round trip and
+# exits as soon as stdin closes, so it runs as a coprocess whose input stays
+# open until the answer arrives or timeout ends it; fed from a heredoc
+# (codex-cli 0.156) it exited on the EOF with only the initialize reply sent.
+# Prints the raw response line.
 acct_codex_app_server() {
-  local home="$1" out
-  out="$(cd / && CODEX_HOME="$home" timeout 30 codex app-server 2>/dev/null <<'RPC'
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"flakelab-accounts","title":"flakelab accounts","version":"1.0"}}}
-{"jsonrpc":"2.0","method":"initialized"}
-{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}
-RPC
-)"
-  print -r -- "$out" | jq -c 'select((.id // null) == 2)' 2>/dev/null | head -n 1
+  local home="$1" line
+  coproc { cd / && CODEX_HOME="$home" exec timeout 30 codex app-server 2>/dev/null }
+  print -rp -- '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"flakelab-accounts","title":"flakelab accounts","version":"1.0"}}}'
+  print -rp -- '{"jsonrpc":"2.0","method":"initialized"}'
+  print -rp -- '{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}'
+  while IFS= read -rp line; do
+    print -r -- "$line" | jq -e '(.id // null) == 2' >/dev/null 2>&1 || continue
+    print -r -- "$line" | jq -c . 2>/dev/null
+    break
+  done
+  # A new coprocess closes the shell's ends of the old one: the EOF it exits on.
+  coproc :
 }
 
 # Read an entry's usage through the tool in a scratch home seeded with its
 # auth.json, then copy a refreshed token back where it came from. Prints
 # {ok: true, windows} or {ok: false, error}.
 acct_codex_usage() {
-  local dir="$1" active="$2" file scratch resp err body code tok acct exp
+  local dir="$1" active="$2" file scratch resp err body auth code tok acct exp
   file="$(acct_codex_creds_path "$dir" "$active")"
   [[ -r "$file" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
   if command -v codex >/dev/null 2>&1; then
-    scratch="$(mktemp -d)" || { jq -cn '{ok: false, error: "no-scratch"}'; return 0 }
-    chmod 700 "$scratch"
-    (umask 077; cp -- "$file" "${scratch}/auth.json") || { rm -rf -- "${scratch:?}"; jq -cn '{ok: false, error: "no-scratch"}'; return 0 }
-    resp="$(acct_codex_app_server "$scratch")"
-    # The tool refreshed on the way: that generation is the one to keep.
-    if [[ -s "${scratch}/auth.json" ]] && ! cmp -s -- "${scratch}/auth.json" "$file" &&
-       [[ -n "$(jq -r '.tokens.access_token // empty' "${scratch}/auth.json" 2>/dev/null)" ]]; then
-      (umask 077; cp -- "${scratch}/auth.json" "${file}.flakelab-tmp.$$") && mv -f -- "${file}.flakelab-tmp.$$" "$file"
-    fi
-    rm -rf -- "${scratch:?}"
+    case "$active" in
+      true|profile)
+        # The live login and a running profile's are read where they are:
+        # the tool refreshes its own file under its own lock, as any codex
+        # process would. A copy refreshed elsewhere and written back would
+        # leave the running process holding a consumed refresh token.
+        resp="$(acct_codex_app_server "${file:h}")" ;;
+      *)
+        scratch="$(mktemp -d)" || { jq -cn '{ok: false, error: "no-scratch"}'; return 0 }
+        chmod 700 "$scratch"
+        (umask 077; cp -- "$file" "${scratch}/auth.json") || { rm -rf -- "${scratch:?}"; jq -cn '{ok: false, error: "no-scratch"}'; return 0 }
+        resp="$(acct_codex_app_server "$scratch")"
+        # The tool refreshed on the way: that generation is the one to keep.
+        if [[ -s "${scratch}/auth.json" ]] && ! cmp -s -- "${scratch}/auth.json" "$file" &&
+           [[ -n "$(jq -r '.tokens.access_token // empty' "${scratch}/auth.json" 2>/dev/null)" ]]; then
+          (umask 077; cp -- "${scratch}/auth.json" "${file}.flakelab-tmp.$$") && mv -f -- "${file}.flakelab-tmp.$$" "$file"
+        fi
+        rm -rf -- "${scratch:?}" ;;
+    esac
     [[ -n "$resp" ]] || { jq -cn '{ok: false, error: "app-server-silent"}'; return 0 }
     err="$(print -r -- "$resp" | jq -r '.error.message // empty')"
     if [[ -n "$err" ]]; then
-      if print -r -- "$err" | grep -qiE 'unauthori|401|not logged in|invalid.*token|token.*(invalid|expired|revoked)|refresh'; then
+      # A refusal of the login itself. "refresh" alone is not one: the tool
+      # says "could not refresh" for a network failure too.
+      if print -r -- "$err" | grep -qiE 'unauthori|401|not logged in|authentication required|invalid.*token|token.*(invalid|expired|revoked)'; then
         jq -cn '{ok: false, error: "seat-revoked"}'
       else
         jq -cn --arg e "$err" '{ok: false, error: ("app-server: " + $e)}'
@@ -265,8 +290,11 @@ acct_codex_usage() {
   [[ -n "$tok" ]] || { jq -cn '{ok: false, error: "no-access-token"}'; return 0 }
   exp="$(acct_codex_expiry_of "$file")"
   if [[ "$exp" == <-> ]] && (( exp <= ${FLAKELAB_NOW:-$(date +%s)} )); then jq -cn '{ok: false, error: "expired"}'; return 0; fi
-  body="$(mktemp)"
-  code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -H "Authorization: Bearer ${tok}" -H "chatgpt-account-id: ${acct}" -H "User-Agent: ${ACCT_CODEX_UA}" "${ACCT_CODEX_USAGE_URL}" 2>/dev/null)" || code=000
+  body="$(mktemp)"; auth="$(mktemp)"
+  # The bearer goes to curl in a private file, never on the command line.
+  print -r -- "Authorization: Bearer ${tok}" > "$auth"
+  code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -H @"$auth" -H "chatgpt-account-id: ${acct}" -H "User-Agent: ${ACCT_CODEX_UA}" "${ACCT_CODEX_USAGE_URL}" 2>/dev/null)" || code=000
+  rm -f "$auth"
   case "$code" in
     200) jq -c "${ACCT_CODEX_NORMALISE_JQ}"' | {ok: true, windows: .}' "$body" 2>/dev/null || jq -cn '{ok: false, error: "unparseable"}' ;;
     401|403) jq -cn '{ok: false, error: "unauthorized"}' ;;

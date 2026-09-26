@@ -47,14 +47,17 @@ STUB
 # each entry gets its own figures: usage.<token>.json / .status / .headers.
 cat > "${STUBS}/curl" <<'STUB'
 #!/usr/bin/env zsh
-typeset out="" hdr="" url="" data="" auth=""
+typeset out="" hdr="" url="" data="" auth="" h
+print -r -- "curl $*" >> "${FAKE_ARGS}"
 while (( $# > 0 )); do
   case $1 in
     -o) out="$2"; shift ;;
     -D) hdr="$2"; shift ;;
     -w|-m|-X) shift ;;
-    -d) data="$2"; shift ;;
-    -H) [[ "$2" == Authorization:* ]] && auth="${2#Authorization: Bearer }"; shift ;;
+    -d) if [[ "$2" == @- ]]; then data="$(cat)"; else data="$2"; fi; shift ;;
+    -H) if [[ "$2" == @* ]]; then
+          while IFS= read -r h; do [[ "$h" == Authorization:* ]] && auth="${h#Authorization: Bearer }"; done < "${2#@}"
+        else [[ "$2" == Authorization:* ]] && auth="${2#Authorization: Bearer }"; fi; shift ;;
     -sS) ;;
     *) url="$1" ;;
   esac
@@ -74,6 +77,16 @@ cat "${FAKE_CURL}/${key}.status" 2>/dev/null || print -n 200
 STUB
 export FAKE_CURL="${BASE}/curl"
 mkdir -p "${FAKE_CURL}"
+# Every curl and jq command line is recorded: the suite ends by checking
+# that no token was ever on one (/proc shows arguments to every user).
+export FAKE_ARGS="${BASE}/args.log"
+: > "${FAKE_ARGS}"
+REAL_JQ="$(command -v jq)"
+cat > "${STUBS}/jq" <<STUB
+#!/usr/bin/env zsh
+print -r -- "jq \$*" >> "\${FAKE_ARGS}"
+exec ${REAL_JQ} "\$@"
+STUB
 chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
 export FLAKELAB_ACCOUNTS_NO_JITTER=1
@@ -224,8 +237,11 @@ contains "and says the login was copied aside" "${ERR}" "could not be identified
 check "into unclaimed/, credentials included" "$(ls "${STORE}"/unclaimed/*-claude-unidentified/credentials.json 2>/dev/null | wc -l | tr -d ' ')" "1"
 check "holding the token that was live" "$(jq -r '.claudeAiOauth.accessToken' "${STORE}"/unclaimed/*-claude-unidentified/credentials.json)" "tok-b2"
 rm -rf "${STORE}/unclaimed"
+"${REAL_JQ}" '.mcpOAuth = {"srv": {"accessToken": "mcp-live-1"}}' "${HOME}/.claude/.credentials.json" > "${BASE}/t" && mv "${BASE}/t" "${HOME}/.claude/.credentials.json"
 run switch work
 check "and the way back restores the account block from the entry" "$(live_email)" "bob@example.com"
+check "the MCP servers' logins stay with the instance across a switch" "$(jq -r '.mcpOAuth.srv.accessToken' "${HOME}/.claude/.credentials.json")" "mcp-live-1"
+check "while the login block is the entry's" "$(live_token)" "$(jq -r '.claudeAiOauth.accessToken' "${STORE}/2/credentials.json")"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -603,6 +619,8 @@ engine '.usage.entries["1"].windows[0].pct = 86'
 check "landing: a candidate over the bar is no target" "$(dec '.action')" "blocked"
 engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[0].pct = 86'
 check "at the limit both gates are off: any room beats a wall" "$(dec '[.trigger, (.candidates | join(","))] | join(" ")')" "at-limit 1"
+engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[0].pct = 100'
+check "at the limit, a candidate at its own limit on that axis is no target: no trading places" "$(dec '.action')" "blocked"
 engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[1].pct = 100'
 check "a spent week is never a target, even from a wall" "$(dec '[.action, .reason] | join(" ")')" "blocked all-exhausted"
 check "and the earliest weekly renewal is named" "$(dec '.earliestResetAt')" "80000"
@@ -839,10 +857,24 @@ run env work
 # store's refresh reaches the profile.
 print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-rotated", "refreshToken": "rt-tok-b2", "expiresAt": 1900000000000}}' > "${PROFILE}/.credentials.json"
 touch -d @1800000100 "${PROFILE}/.credentials.json"; touch -d @1800000000 "${STORE}/2/credentials.json"
+print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-rotated", "refreshToken": "rt-tok-b2", "expiresAt": 1900000000000}}' > "${PROFILE}/.credentials.json"
+touch -d @1800000100 "${PROFILE}/.credentials.json"; touch -d @1800000000 "${STORE}/2/credentials.json"
 run env work
 check "a token the profile refreshed is harvested into the store" "$(jq -r .claudeAiOauth.accessToken "${STORE}/2/credentials.json")" "tok-b-rotated"
 contains "and said so" "${ERR}" "entry 2: stored the login its profile refreshed"
 excludes "without reseeding" "${ERR}" "seeded"
+# The same with no session running and nothing but a poll: the harvest
+# comes before the store's token is used, or its consumed refresh token
+# would be sent and refused.
+print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-again", "refreshToken": "rt-tok-b2b", "expiresAt": 1900000000000}}' > "${PROFILE}/.credentials.json"
+touch -d @1800000150 "${PROFILE}/.credentials.json"
+: > "${FAKE_CURL}/requests.log"
+jq '.entries["2"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+usage_answer tok-b-again 30 30
+run --fetch
+check "a poll with no session running harvests the profile's refresh first" "$(jq -r .claudeAiOauth.accessToken "${STORE}/2/credentials.json")" "tok-b-again"
+contains "and reads usage with the harvested token" "$(cut -d' ' -f2 "${FAKE_CURL}/requests.log" | tr '\n' ' ')" "tok-b-again"
+excludes "never refreshing the store's consumed one" "$(<"${FAKE_CURL}/requests.log")" "oauth/token"
 print -r -- '{"claudeAiOauth": {"accessToken": "tok-b-3", "refreshToken": "rt-tok-b3", "expiresAt": 1900000000000}}' > "${STORE}/2/credentials.json"
 touch -d @1800000200 "${STORE}/2/credentials.json"
 run env work
@@ -925,15 +957,21 @@ if [[ "$1" == app-server ]]; then
   rt="$(jq -r '.tokens.refresh_token // empty' "${CODEX_HOME}/auth.json" 2>/dev/null)"
   print -r -- "CODEX_HOME=${CODEX_HOME} rt=${rt}" >> "${FAKE_CODEX}/calls.log"
   [[ -f "${FAKE_CODEX}/refresh.${rt}.json" ]] && cp "${FAKE_CODEX}/refresh.${rt}.json" "${CODEX_HOME}/auth.json"
+  # The real server answers the rateLimits read after its own round trip and
+  # exits as soon as stdin closes, so the answer comes from a helper that the
+  # EOF kills: a caller that closes its end after writing never sees it.
+  answer="" helper=""
   while IFS= read -r line; do
     case "$line" in
       *'"id":1'*) print -r -- '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex/0.0"}}' ;;
       *'account/rateLimits/read'*)
-        if [[ -f "${FAKE_CODEX}/error.${rt}.txt" ]]; then print -r -- "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,\"message\":\"$(<"${FAKE_CODEX}/error.${rt}.txt")\"}}"
-        elif [[ -f "${FAKE_CODEX}/limits.${rt}.json" ]]; then cat "${FAKE_CODEX}/limits.${rt}.json"
-        fi ;;
+        if [[ -f "${FAKE_CODEX}/error.${rt}.txt" ]]; then answer="{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32000,\"message\":\"$(<"${FAKE_CODEX}/error.${rt}.txt")\"}}"
+        elif [[ -f "${FAKE_CODEX}/limits.${rt}.json" ]]; then answer="$(<"${FAKE_CODEX}/limits.${rt}.json")"
+        fi
+        [[ -n "$answer" ]] && { ( sleep 0.3; print -r -- "$answer" ) & helper=$! } ;;
     esac
   done
+  [[ -n "$helper" ]] && { kill "$helper" 2>/dev/null; wait "$helper" 2>/dev/null }
   exit 0
 fi
 print -r -- "codex ran: CODEX_HOME=${CODEX_HOME-unset} OPENAI_API_KEY=${OPENAI_API_KEY-unset} args=$*"
@@ -996,20 +1034,32 @@ run --fetch
 check "--fetch exits 0" "${RC}" "0"
 contains "the active codex entry's windows come from the tool, camelCase" "${OUT}" "$(row codex 5 erin erin@example.com active '5h 42% · 7d 7% (0s)')"
 contains "a stored entry's too, snake_case and an ISO reset" "${OUT}" "$(row codex 4 dana dana@example.com '' '5h 90% · 7d 50% (0s)')"
-check "each read ran in a scratch home seeded with that entry's auth.json" "$(grep -c 'rt=' "${FAKE_CODEX}/calls.log")" "2"
-excludes "never in ~/.codex itself" "$(<"${FAKE_CODEX}/calls.log")" "CODEX_HOME=${HOME}/.codex "
+check "one read per entry" "$(grep -c 'rt=' "${FAKE_CODEX}/calls.log")" "2"
+contains "the active entry is read in the tool's own home, its refresh the tool's" "$(<"${FAKE_CODEX}/calls.log")" "CODEX_HOME=${HOME}/.codex rt=rt-tok-e"
+check "a stored entry's in a scratch home seeded with its auth.json" "$(grep -c "CODEX_HOME=${HOME}" "${FAKE_CODEX}/calls.log")" "1"
 check "the reset is an epoch" "$(jq -r '.entries["4"].windows[0].resetsAtEpoch' "${STORE}/usage.json")" "1790510400"
 run --json
 check "--json carries the window classes" "$(print -r -- "$OUT" | jq -r '.accounts[] | select(.id == 4) | [.usage.windows[].class] | join(",")')" "session,week"
 
-jq '.tokens.access_token = "refreshed" | .tokens.refresh_token = "rt-tok-d2"' "${STORE}/4/auth.json" > "${FAKE_CODEX}/refresh.rt-tok-d.json"
+# The per-limit map sits beside rateLimits in the app-server's answer; its
+# entry for the default limit repeats the two windows and is skipped.
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":42,"resetsAt":1900000000},"secondary":{"usedPercent":7,"resetsAt":1900500000}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":42,"resetsAt":1900000000}},"gpt-5":{"limitId":"gpt-5","limitName":"GPT-5","primary":{"usedPercent":66,"resetsAt":1900000000}}}}}' > "${FAKE_CODEX}/limits.rt-tok-e.json"
+jq '.entries["5"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "a per-model limit beside rateLimits is a model window, the default limit not repeated" "$(jq -r '.entries["5"].windows | map(.label) | join(",")' "${STORE}/usage.json")" "5h,7d,GPT-5 5h"
+
+"${REAL_JQ}" '.tokens.access_token = "refreshed" | .tokens.refresh_token = "rt-tok-d2"' "${STORE}/4/auth.json" > "${FAKE_CODEX}/refresh.rt-tok-d.json"
 jq '.entries["4"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 cp "${FAKE_CODEX}/limits.rt-tok-d.json" "${FAKE_CODEX}/limits.rt-tok-d2.json"
 run --fetch
 check "a token the tool refreshed during the read is kept in the store" "$(jq -r '.tokens.refresh_token' "${STORE}/4/auth.json")" "rt-tok-d2"
 
-print -r -- "401 Unauthorized" > "${FAKE_CODEX}/error.rt-tok-d2.txt"
+print -r -- "could not refresh the token: connection reset" > "${FAKE_CODEX}/error.rt-tok-d2.txt"
 jq '.entries["4"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "a failed refresh is an error with backoff, not a quarantine" "$(jq -r '[.quarantine["4"] // "none", .entries["4"].lastError] | join(" ")' "${STORE}/usage.json")" "none app-server: could not refresh the token: connection reset"
+print -r -- "401 Unauthorized" > "${FAKE_CODEX}/error.rt-tok-d2.txt"
+jq '.entries["4"].nextPollAt = 0 | .entries["4"].backoffUntil = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 run --fetch
 contains "a seat the server no longer accepts is quarantined" "${ERR}" "entry 4 is quarantined: its seat was revoked"
 check "with its own reason" "$(jq -r '.quarantine["4"].reason' "${STORE}/usage.json")" "seat-revoked"
@@ -1086,7 +1136,7 @@ kiro_login() {
   sqlite3 "${KIRO_DB}" "DELETE FROM auth_kv WHERE key LIKE 'kirocli:%:token';
 INSERT OR REPLACE INTO auth_kv VALUES ('${key}', '${json}');
 INSERT OR REPLACE INTO auth_kv VALUES ('kirocli:odic:device-registration', '{\"client_id\": \"c-${region}\", \"client_secret\": \"s\"}');
-INSERT OR REPLACE INTO state VALUES ('api.codewhisperer.profile', '{\"arn\": \"arn:aws:codewhisperer:${region}:123:profile/${rt}\", \"profileName\": \"p\"}');
+INSERT OR REPLACE INTO state VALUES ('api.codewhisperer.profile', '{\"arn\": \"arn:aws:codewhisperer:${region}:123:profile/p-${rt#rt-}\", \"profileName\": \"p\"}');
 INSERT OR REPLACE INTO state VALUES ('auth.idc.start-url', '\"${start}\"');
 INSERT OR REPLACE INTO state VALUES ('auth.idc.region', '\"${region}\"');"
 }
@@ -1136,7 +1186,7 @@ run switch frank
 check "a switch with none running exits 0" "${RC}" "0"
 check "the token row is frank's" "$(kiro_live_refresh)" "rt-f"
 check "and the only token row" "$(sqlite3 "${KIRO_DB}" "SELECT count(*) FROM auth_kv WHERE key LIKE 'kirocli:%:token'")" "1"
-check "the profile row followed" "$(kiro_live_arn)" "arn:aws:codewhisperer:us-east-1:123:profile/rt-f"
+check "the profile row followed" "$(kiro_live_arn)" "arn:aws:codewhisperer:us-east-1:123:profile/p-f"
 check "a row that is not the login was left alone" "$(sqlite3 "${KIRO_DB}" "SELECT value FROM state WHERE key = 'other.key'")" '"kept"'
 check "the outgoing social login was written back into its entry" "$(jq -r '.auth_kv["kirocli:social:token"] | fromjson | .refresh_token' "${STORE}/8/token.json")" "rt-s"
 mkdir -p "${HOME}/.kiro/sessions/cli"
@@ -1148,7 +1198,7 @@ contains "and prints the resume line for the locked session" "${OUT}" "kiro-cli 
 check "the token row is grace's" "$(kiro_live_refresh)" "rt-g"
 FLAKELAB_ACCOUNTS_FAIL_AT=credentials run switch frank
 check "a failed transaction exits 1" "${RC}" "1"
-check "and the rows are as they were" "$(kiro_live_refresh) $(kiro_live_arn)" "rt-g arn:aws:codewhisperer:eu-central-1:123:profile/rt-g"
+check "and the rows are as they were" "$(kiro_live_refresh) $(kiro_live_arn)" "rt-g arn:aws:codewhisperer:eu-central-1:123:profile/p-g"
 
 # Usage: one monthly window from GetUsageLimits, never a reason to switch.
 export FLAKELAB_NOW=1758900000
@@ -1160,7 +1210,7 @@ print -n 200 > "${FAKE_CURL}/usage.acc-f.status"
 run --fetch
 contains "the live kiro entry's credits, from the live rows" "${OUT}" "$(row kiro 7 grace grace@example.com active 'credit 25% (0s)')"
 contains "a stored entry's, from its stored rows" "${OUT}" "$(row kiro 6 frank frank@example.com '' 'credit 100% (0s)')"
-contains "the call goes to the region's endpoint with the profile ARN" "$(<"${FAKE_CURL}/requests.log")" 'https://codewhisperer.eu-central-1.amazonaws.com/ acc-g {"profileArn":"arn:aws:codewhisperer:eu-central-1:123:profile/rt-g"}'
+contains "the call goes to the region's endpoint with the profile ARN" "$(<"${FAKE_CURL}/requests.log")" 'https://codewhisperer.eu-central-1.amazonaws.com/ acc-g {"profileArn":"arn:aws:codewhisperer:eu-central-1:123:profile/p-g"}'
 check "the window is a month, an ISO reset as an epoch" "$(jq -r '.entries["6"].windows[0] | [.class, .resetsAtEpoch] | join(" ")' "${STORE}/usage.json")" "month 1793491200"
 FLAKELAB_ACCOUNTS_TOOLS=kiro run auto --once --json
 check "a spent month is no reason to move" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | [.reason, .detail] | join(" ")')" "below-threshold no window reported"
@@ -1183,6 +1233,28 @@ print -n 200 > "${FAKE_CURL}/usage.acc-f.status"
 FAKE_KIRO_WHOAMI_RC=1 run status --json
 check "the live kiro login is recognised with whoami unavailable: the id needs no network" "$(print -r -- "$OUT" | jq -r '.kiro.matches')" "true"
 unset FLAKELAB_NOW
+
+# Two Builder ID logins carry one id (the same start URL and region): told
+# apart by lineage, then by whoami's email; offline and unknown, refused
+# rather than filed over the other.
+kiro_login https://view.awsapps.com/start us-east-1 acc-h rt-h
+export FAKE_KIRO_WHOAMI='{"accountType": "BuilderId", "email": "henry@example.com"}'
+run add kiro --alias henry
+check "a second Builder ID login is a second entry" "${OUT}" "Added kiro 9: henry@example.com [BuilderId] as henry"
+check "and frank's stored login is untouched" "$(jq -r '.auth_kv["kirocli:odic:token"] | fromjson | .refresh_token' "${STORE}/6/token.json")" "rt-f"
+unset FAKE_KIRO_WHOAMI
+kiro_login https://view.awsapps.com/start us-east-1 acc-i rt-i
+FAKE_KIRO_WHOAMI_RC=1 run add kiro
+check "a third one offline, with no email to tell it apart, is refused" "${RC}" "2"
+contains "and told to retry online" "${ERR}" "cannot be told apart from it offline"
+kiro_login https://view.awsapps.com/start us-east-1 acc-h rt-h
+FAKE_KIRO_WHOAMI_RC=1 run status --json
+check "offline, henry's live rows are matched to his entry by lineage" "$(print -r -- "$OUT" | jq -r '.kiro.matches')" "true"
+FAKE_KIRO_WHOAMI_RC=1 run switch frank
+check "a switch away offline exits 0" "${RC}" "0"
+check "and wrote the outgoing login into henry's entry, not frank's" "$(jq -r '.auth_kv["kirocli:odic:token"] | fromjson | .refresh_token' "${STORE}/9/token.json") $(jq -r '.auth_kv["kirocli:odic:token"] | fromjson | .refresh_token' "${STORE}/6/token.json")" "rt-h rt-f"
+run switch grace
+check "grace is live again" "$(kiro_live_refresh)" "rt-g"
 
 # Profiles: two moves, the home and the secret store.
 mkdir -p "${HOME}/.kiro/agents"
@@ -1225,10 +1297,28 @@ check "garbage exits 0" "${RC}" "0"
 login zed@example.com zzzzzzzz-0000-0000-0000-000000000026 personal tok-z
 run_in '{"rate_limits": {"five_hour": {"used_percentage": 99}}}' ingest
 check "a live login not in the roster is ignored" "$(jq -r '[.entries[] | select(.source == "statusline")] | length' "${STORE}/usage.json") ${RC}" "1 0"
+# A session in a profile reports for the profile's entry, whoever is live.
+mkdir -p "${BASE}/prof" "${BASE}/notours"
+print -r -- '{"tool": "claude", "entry": "1"}' > "${BASE}/prof/.flakelab-profile.json"
+CLAUDE_CONFIG_DIR="${BASE}/prof" run_in '{"rate_limits": {"five_hour": {"used_percentage": 77}}}' ingest
+check "a profile session's figures are filed under the profile's entry" "$(jq -r '.entries["1"].windows[] | select(.class == "session") | .pct' "${STORE}/usage.json") ${RC}" "77 0"
+CLAUDE_CONFIG_DIR="${BASE}/notours" run_in '{"rate_limits": {"five_hour": {"used_percentage": 88}}}' ingest
+check "an instance that is no profile of ours files nothing" "$(jq -r '.entries["1"].windows[] | select(.class == "session") | .pct' "${STORE}/usage.json") ${RC}" "77 0"
+# The roster's active entry is polled only while its login is the live one.
+jq '.entries["1"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+: > "${FAKE_CURL}/requests.log"
+run --fetch
+check "with another login live by hand, the active entry's poll is a drift error, not the stranger's figures" "$(jq -r '.entries["1"].lastError' "${STORE}/usage.json")" "drifted"
+check "and no request went out for it" "$(grep -c oauth/usage "${FAKE_CURL}/requests.log")" "0"
 login alice@example.com "${UUID_A}" personal tok-a
 FLAKELAB_ACCOUNTS_ROOT="${BASE}/nostore" run_in '{"rate_limits": {"five_hour": {"used_percentage": 99}}}' ingest
 check "without a store, nothing happens" "${RC} $(ls "${BASE}/nostore" 2>/dev/null | wc -l | tr -d ' ')" "0 0"
 unset FLAKELAB_NOW
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "no token ever on a command line (/proc shows arguments to every user)"
+check "no access, refresh or MCP token reached a curl or jq argument in the whole suite" "$(grep -E '(^|[^a-z])(tok|rt|acc|mcp-live)-[a-z0-9]' "${FAKE_ARGS}" | cut -c1-200 | head -3)" ""
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

@@ -405,9 +405,13 @@ That is the tool's own call with the tool's own token, so it needs no
 endpoint, no client id and no refresh of ours; the tool refreshes if it must
 and rewrites the profile's `auth.json`, which the adapter copies back into the
 store (conclusion 4 again, by way of the tool). The cadence is the same plan
-as above with no 429 rule until one is observed. The active account's figure
-is read the same way from a scratch profile seeded from `~/.codex/auth.json`,
-never from `~/.codex` itself (verify 7).
+as above with no 429 rule until one is observed. The active account's figure,
+and a running profile's, is read where the login lives (`~/.codex`, the
+profile), as any codex process would: the tool refreshes its own file under
+its own lock, and a copy refreshed elsewhere and written back would leave the
+running process holding a consumed refresh token. The server answers the read
+after its own round trip and exits as soon as stdin closes, so the adapter
+holds its end open until the answer arrives (verify 7).
 
 **Kiro** asks `GetUsageLimits` with the stored token and the profile ARN
 from the same store, one call per stored account, cached like the others.
@@ -713,9 +717,18 @@ Items 1 to 5 are Claude Code, 6 and 7 Codex, 8 to 10 Kiro.
    `anthropic-beta` value and the per-token budget were measured mid-2026 and
    are undocumented; a week of `auto.log` with zero 429s is the health check,
    and a 429 episode outlasting an hour means the budget needs revisiting.
+   _Checked 2026-09-26:_ one GET with the live token, the beta header and
+   the adapter's user agent answers 200 with `five_hour` and `seven_day`
+   (`utilization`, `resets_at`) as the normaliser expects; the model-scoped
+   keys were null for this account.
 3. **`claude auth status --json` fields** on the installed version:
    `loggedIn`, the auth-method key and its value for a claude.ai login, the
-   email and org keys.
+   email and org keys. _Checked 2026-09-26 on 2.1.283:_ `loggedIn`,
+   `authMethod` (`claude.ai`), `apiProvider`, `email`, `orgId`, `orgName`,
+   `subscriptionType`; `~/.claude.json`'s `oauthAccount` carries
+   `accountUuid`, `emailAddress` and `organizationName` as the adapter reads
+   them, and `.credentials.json` holds `mcpOAuth` beside `claudeAiOauth`,
+   which is why a switch replaces the login block alone.
 4. **The VS Code extension** shares `~/.claude`; confirm it follows a switch
    the way the CLI does, or say in the listing that it does not.
 5. **Whether Claude Code has grown a native account switch** since this was
@@ -731,7 +744,12 @@ Items 1 to 5 are Claude Code, 6 and 7 Codex, 8 to 10 Kiro.
    time, since the listing calls it per stored account. And whether a plain
    `codex login status --json` or the session log already carries the last
    `RateLimitSnapshot`, which would make the call unnecessary for the active
-   account.
+   account. _Checked 2026-09-26 on codex-cli 0.156.1:_ it answers from a
+   scratch home holding only `auth.json`, in two to three seconds, without
+   rewriting a token that is not due; `rateLimitsByLimitId` sits beside
+   `rateLimits` in the result; the server exits on stdin's EOF before
+   answering, so the request's end must stay open. `codex login status` has
+   no `--json`.
 
 8. **What moves the secret store.** `KIRO_HOME` moves only `~/.kiro`; test
    whether `XDG_DATA_HOME` moves `~/.local/share/kiro-cli/` (the Amazon Q

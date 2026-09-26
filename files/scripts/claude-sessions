@@ -641,9 +641,11 @@ print_recent() {
     [[ -n "$sid" ]] && live[${tool}${US}${sid}]=1
   done
   print -r -- "# not running, changed in the last ${RECENT_HOURS}h — newest first"
+  # A profile that shares the history links projects/ to ~/.claude's, so the
+  # same transcript is globbed twice: the first sighting lists it.
   for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${ACCOUNTS_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
-    [[ -n "${live[claude${US}${sid}]:-}" ]] && continue
+    [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
     seen[claude${US}${sid}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
     when="$(date -r "$f" '+%Y-%m-%d %H:%M')"

@@ -457,12 +457,7 @@ in
       terminal = mkOption {
         type = types.bool;
         default = false;
-        description = "Also run ttyd as the user service flakelab-ttyd: a terminal in a browser tab attached to the agents tmux session (created when absent), on the same address, basic auth with user `flakelab` and the dashboard's token as the password. The dashboard links to it. A shell in a browser tab behind a long-lived token is the price of no SSH app on the phone; keep it on the tunnel.";
-      };
-      terminalPort = mkOption {
-        type = types.port;
-        default = 7681;
-        description = "ttyd's port.";
+        description = "Also run ttyd as the user service flakelab-ttyd: a terminal in a browser tab attached to the agents tmux session (created when absent). It listens on a Unix socket in the runtime directory with no credential of its own; the dashboard is its only door, tunnelling /terminal/ for a browser that holds a session the API issued against the token, and `flakelab web --rotate-token` ends every such session. A shell in a browser tab behind a long-lived token is the price of no SSH app on the phone; keep it on the tunnel.";
       };
       tmuxSession = mkOption {
         type = types.str;

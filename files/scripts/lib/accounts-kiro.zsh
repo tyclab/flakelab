@@ -61,7 +61,8 @@ acct_kiro_export() {
     for k in "${keys[@]}"; do
       v="$(sqlite3 -json "$db" "SELECT CAST(value AS TEXT) AS v FROM ${table} WHERE key = $(acct_kiro_q "$k")" 2>/dev/null | jq -r '.[0].v // empty')"
       [[ -n "$v" ]] || continue
-      out="$(print -r -- "$out" | jq --arg t "$table" --arg k "$k" --arg v "$v" '.[$t][$k] = $v')"
+      # The token row reaches jq through its environment, never its arguments.
+      out="$(print -r -- "$out" | v="$v" jq --arg t "$table" --arg k "$k" '.[$t][$k] = $ENV.v')"
     done
   done
   print -r -- "$out"
@@ -113,6 +114,11 @@ acct_kiro_identity_of() {
 }
 
 acct_kiro_identity() { acct_kiro_identity_of "$(acct_kiro_export "${ACCT_KIRO_DB}")" true }
+
+# Ids are shared between accounts: every Builder ID login carries the same
+# start URL and region, and whoami's email is not there offline. The script
+# tells entries with one id apart by lineage fingerprint, then by label.
+acct_kiro_id_shared() { return 0 }
 
 # Copy the live login into DIR as token.json, 0600.
 acct_kiro_read_live() {
@@ -236,7 +242,7 @@ ACCT_KIRO_NORMALISE_JQ='
 '
 
 acct_kiro_usage() {
-  local dir="$1" active="$2" doc tok region arn body code url exp
+  local dir="$1" active="$2" doc tok region arn body auth code url exp
   doc="$(acct_kiro_creds_doc "$dir" "$active")"
   [[ -n "$doc" ]] || { jq -cn '{ok: false, error: "no-credentials"}'; return 0 }
   tok="$(acct_kiro_token_of "$doc" | jq -r '.json.access_token // empty')"
@@ -251,11 +257,15 @@ acct_kiro_usage() {
   exp="$(acct_kiro_expiry_of "$doc")"
   if [[ "$exp" == <-> ]] && (( exp <= ${FLAKELAB_NOW:-$(date +%s)} )); then jq -cn '{ok: false, error: "expired"}'; return 0; fi
   url="${ACCT_KIRO_USAGE_URL//REGION/${region}}"
-  body="$(mktemp)"
-  code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -X POST \
-    -H "Authorization: Bearer ${tok}" -H "X-Amz-Target: AmazonCodeWhispererService.GetUsageLimits" \
+  body="$(mktemp)"; auth="$(mktemp)"
+  # The bearer goes to curl in a private file and the body on stdin, never
+  # on the command line.
+  print -r -- "Authorization: Bearer ${tok}" > "$auth"
+  code="$(jq -cn --arg arn "$arn" '{profileArn: $arn}' | curl -sS -m 10 -o "$body" -w '%{http_code}' -X POST \
+    -H @"$auth" -H "X-Amz-Target: AmazonCodeWhispererService.GetUsageLimits" \
     -H "Content-Type: application/x-amz-json-1.0" -H "User-Agent: ${ACCT_KIRO_UA}" \
-    -d "$(jq -cn --arg arn "$arn" '{profileArn: $arn}')" "$url" 2>/dev/null)" || code=000
+    -d @- "$url" 2>/dev/null)" || code=000
+  rm -f "$auth"
   case "$code" in
     200) jq -c "${ACCT_KIRO_NORMALISE_JQ}"' | {ok: true, windows: .}' "$body" 2>/dev/null || jq -cn '{ok: false, error: "unparseable"}' ;;
     401|403) jq -cn '{ok: false, error: "unauthorized"}' ;;

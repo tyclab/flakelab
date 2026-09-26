@@ -130,6 +130,14 @@ case "$MODE" in
     ;;
 esac
 
+# A topic with no token is one anyone who guesses its name can read: a hook
+# tells it the tool and the event, never a path, a session id or what the
+# model said.
+if $HOOK && [[ -z "$NTFY_TOKEN" ]]; then
+  TITLE="${TITLE%% - *}"
+  MESSAGE="${MESSAGE%%$'\n'*}"; MESSAGE="${MESSAGE%%: *}"
+fi
+
 # --- the post -----------------------------------------------------------------
 
 if [[ -z "$NTFY_URL" ]]; then
@@ -148,11 +156,17 @@ if $DRY_RUN; then
   exit 0
 fi
 
-typeset -a hdr
-hdr=(-H "Title: ${TITLE}" -H "Priority: ${PRIORITY}")
-[[ -n "$TAGS" ]] && hdr+=(-H "Tags: ${TAGS}")
-[[ -n "$NTFY_TOKEN" ]] && hdr+=(-H "Authorization: Bearer ${NTFY_TOKEN}")
-code="$(print -rn -- "$MESSAGE" | curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST "${hdr[@]}" --data-binary @- "$NTFY_URL" 2>/dev/null)" || code=000
+# Every header goes to curl in a private file (mktemp makes it 0600): the
+# token never sits on a command line, where /proc shows it to every user.
+HDRF="$(mktemp)" || { note "cannot make a temp file"; $HOOK && exit 0 || exit 1 }
+{
+  print -r -- "Title: ${TITLE}"
+  print -r -- "Priority: ${PRIORITY}"
+  [[ -n "$TAGS" ]] && print -r -- "Tags: ${TAGS}"
+  [[ -n "$NTFY_TOKEN" ]] && print -r -- "Authorization: Bearer ${NTFY_TOKEN}"
+} > "$HDRF"
+code="$(print -rn -- "$MESSAGE" | curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST -H @"$HDRF" --data-binary @- "$NTFY_URL" 2>/dev/null)" || code=000
+rm -f -- "$HDRF"
 if [[ "$code" == 2* ]]; then
   exit 0
 fi
