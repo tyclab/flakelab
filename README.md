@@ -230,7 +230,7 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all sixteen.
+all eighteen.
 
 | Command                   | Action                                                          |
 | ------------------------- | --------------------------------------------------------------- |
