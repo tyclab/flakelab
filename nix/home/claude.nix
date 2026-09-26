@@ -12,6 +12,7 @@
 }:
 let
   cfg = osConfig.flakelab;
+  scripts = import ../scripts.nix { inherit pkgs cfg; };
   inherit (flakelab)
     installClaude
     isWsl
@@ -48,11 +49,17 @@ let
   ];
 
   # defaultMode and skipAutoPermissionPrompt travel together: Claude clears the
-  # consent flag whenever the mode is not auto. The four vars are deleted, not set
-  # to "0": they gate the feature-flag evaluation Remote Control needs.
+  # consent flag whenever the mode is not auto.
   claudeAgentDefaultsJq = lib.optionalString cfg.claudeAgentDefaults ''
     | .permissions.defaultMode = "auto"
     | .skipAutoPermissionPrompt = true
+  '';
+
+  # Remote Control on its own switch, which the agent bundle implies. The four
+  # vars are deleted, not set to "0": they gate the feature-flag evaluation
+  # Remote Control needs. Off, both the key and the vars are left as the user
+  # has them.
+  claudeRemoteControlJq = lib.optionalString (cfg.claudeAgentDefaults || cfg.claudeRemoteControl) ''
     | .remoteControlAtStartup = true
     | .env |= del(
         .DISABLE_TELEMETRY,
@@ -79,15 +86,71 @@ let
     | if .hooks == {} then del(.hooks) else . end
   '';
 
-  # Written only when absent, so a local override survives; the sort -V glob
-  # resolves the newest cached plugin version at statusline time.
+  # The reactive half of auto-switch: when Claude Code decides to wait for its
+  # quota window (a Notification of type quota_auto_resume_fired), the engine
+  # ticks at once instead of at the next timer. Owned by its command, like the
+  # SessionEnd hook: a box without the engine drops it again.
+  accountsHook =
+    cfg.accounts.autoSwitchInterval != null && lib.elem "claude" cfg.accounts.autoSwitchTools;
+  accountsHookCmd = "${scripts.accounts}/bin/accounts auto --once --tool claude --json >/dev/null 2>&1 || true";
+  accountsHookArg = lib.optionalString accountsHook "--arg accountsHook ${lib.escapeShellArg accountsHookCmd}";
+  accountsHookJq = ''
+    | .hooks = ((.hooks // {})
+        | .Notification = (((.Notification // [])
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-accounts/bin/accounts auto ")) | not)))
+            + ${
+              if accountsHook then
+                ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $accountsHook, timeout: 180}]}]''
+              else
+                "[]"
+            })
+        | if .Notification == [] then del(.Notification) else . end)
+    | if .hooks == {} then del(.hooks) else . end
+  '';
+
+  # The push when a session waits on you (remote-sessions.md, phase 3): a
+  # Notification hook on the configured types runs `flakelab notify`, which
+  # reads the endpoint from secrets.env at use time. Owned by its command:
+  # the store path of this flake's `notify`, never a bare substring, so a
+  # hook of the user's that merely runs something called notify-send stays.
+  notifyHook = cfg.notify.enable;
+  notifyHookCmd = "${scripts.notify}/bin/notify >/dev/null 2>&1 || true";
+  notifyHookArg = lib.optionalString notifyHook "--arg notifyHook ${lib.escapeShellArg notifyHookCmd} --arg notifyMatcher ${lib.escapeShellArg (lib.concatStringsSep "|" cfg.notify.events)}";
+  notifyHookJq = ''
+    | .hooks = ((.hooks // {})
+        | .Notification = (((.Notification // [])
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-notify/bin/notify( |$)")) | not)))
+            + ${
+              if notifyHook then
+                ''[{matcher: $notifyMatcher, hooks: [{type: "command", command: $notifyHook, timeout: 15}]}]''
+              else
+                "[]"
+            })
+        | if .Notification == [] then del(.Notification) else . end)
+    | if .hooks == {} then del(.hooks) else . end
+  '';
+
+  # Written when absent or when it is flakelab's own (an earlier generation's
+  # tee script, or the plain plugin command every box before the tee had), so
+  # a local override survives while a provisioned box follows this flake; the
+  # sort -V glob resolves the newest cached plugin version at statusline time.
+  # The stdin Claude Code hands the statusline carries the live login's
+  # rate_limits with every refresh: teed into `accounts ingest` on the way, so
+  # the usage endpoint is never asked for the active entry (accounts.md,
+  # "Usage"). The tee never delays or fails the statusline.
   statuslineMarketplace = marketplaceOf "statusbar";
-  claudeStatuslineCmd = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
+  claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
+  claudeStatuslineCmd = pkgs.writeShellScript "flakelab-claude-statusline" ''
+    tee >(${scripts.accounts}/bin/accounts ingest --tool claude > /dev/null 2>&1 || true) | ${claudeStatuslinePlugin}
+  '';
   claudeStatuslineArg = lib.optionalString (
     statuslineMarketplace != null
-  ) "--arg statusline ${lib.escapeShellArg claudeStatuslineCmd}";
+  ) "--arg statusline ${lib.escapeShellArg "${claudeStatuslineCmd}"}";
   claudeStatuslineJq = lib.optionalString (statuslineMarketplace != null) ''
-    | .statusLine //= {type: "command", command: $statusline}
+    | .statusLine = (
+        if .statusLine == null
+           or ((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))
+        then {type: "command", command: $statusline} else .statusLine end)
   '';
 
   # Without these the Playwright server launches a local chrome instead of
@@ -298,7 +361,7 @@ in
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${claudeStatuslineArg} '
+          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -308,7 +371,10 @@ in
             | .permissions.deny = $d
             ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
+            ${claudeRemoteControlJq}
             ${claudeStatePushJq}
+            ${accountsHookJq}
+            ${notifyHookJq}
             ${claudeStatuslineJq}
             ${claudePlaywrightJq}
             ${claudeWhatsappJq}

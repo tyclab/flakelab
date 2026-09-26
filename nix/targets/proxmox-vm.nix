@@ -47,6 +47,10 @@ in
   systemd.services.qemu-guest-agent.serviceConfig.ExecStart =
     lib.mkForce "${config.services.qemuGuest.package}/bin/qemu-ga --statedir /run/qemu-ga -b guest-fsfreeze-freeze,guest-fsfreeze-freeze-list,guest-fsfreeze-thaw,guest-fsfreeze-status";
 
+  # mosh over the same keys, for a client that roams or sleeps (a phone on
+  # the WireGuard tunnel); the module opens its UDP range. Off by default.
+  programs.mosh.enable = cfg.mosh.enable;
+
   # Keys only; cloud-init seeds the operator key at first boot.
   services.openssh = {
     enable = true;

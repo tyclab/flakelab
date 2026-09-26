@@ -230,18 +230,21 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all fifteen.
+all sixteen.
 
-| Command                   | Action                                                             |
-| ------------------------- | ------------------------------------------------------------------ |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`    |
-| `flakelab update-all`     | rebuild + clone                                                    |
-| `flakelab clone`          | clone / fetch GitLab group repos                                   |
-| `flakelab doctor`         | diagnose a provisioned distro                                      |
-| `flakelab backup`         | payload + optional shared state root                               |
-| `flakelab sessions`       | running Claude Code sessions; `--open` after a restart, `--recent` |
-| `flakelab overlay-gen`    | write the private overlay from a config                            |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                       |
+| Command                   | Action                                                          |
+| ------------------------- | --------------------------------------------------------------- |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>` |
+| `flakelab update-all`     | rebuild + clone                                                 |
+| `flakelab clone`          | clone / fetch GitLab group repos                                |
+| `flakelab doctor`         | diagnose a provisioned distro                                   |
+| `flakelab backup`         | payload + optional shared state root                            |
+| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
+| `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
+| `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
+| `flakelab web`            | the dashboard in a browser: accounts, sessions, switch, start   |
+| `flakelab overlay-gen`    | write the private overlay from a config                         |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean
@@ -453,10 +456,42 @@ run the daily payload pass still converges its state, and while it is scheduled
 a closing Claude Code session is pushed at once.
 
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
-snapshots the running Claude Code sessions every `sessionsAutosaveInterval`
-(default 5 min), one file per boot. After a crash, `flakelab sessions --resume`
-prints — and on WSL `--open` reopens — every session that was open;
-`flakelab sessions --recent` lists the ones closed in the last day.
+snapshots the running agent sessions (Claude Code, Codex, Kiro) every
+`sessionsAutosaveInterval` (default 5 min), one file per boot. After a crash,
+`flakelab sessions --resume` prints — and on WSL `--open` reopens — every
+session that was open; `flakelab sessions --recent` lists the ones closed in
+the last day.
+
+More than one claude.ai login on the box: `flakelab accounts add claude`
+stores the live one, `flakelab accounts switch <alias>` makes another one the
+live login under Claude Code's own lock protocol, and running sessions carry
+on with their next message. The listing shows each login's cached windows,
+`switch --soonest claude` takes the one whose week renews first, and
+`accounts.autoSwitchInterval = "2min";` runs `flakelab accounts auto` on a
+timer that moves the live login before it hits a limit (`--dry-run` shows
+what it would do). `flakelab accounts run work` runs a second account in a
+second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
+pins a shell to it. Codex and Kiro logins work the same way (`add codex`,
+`add kiro`; a switch waits for the tool's running sessions or goes past them
+with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
+`flakelab backup` and checked by `flakelab doctor`; the design and what is
+still to verify on a box are in [`accounts.md`](accounts.md).
+
+A session need not die with its terminal either: `flakelab sessions --start
+claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session
+and attaches; close the tab, drop the SSH connection, and
+`flakelab sessions --attach` from any terminal joins it again. The table's
+`HOST` column names the window. `notify.enable = true;` sends a push (ntfy,
+endpoint in `secrets.env`) when a session waits on a permission or a prompt,
+with the line that answers it; `mosh.enable = true;` puts mosh beside the
+VM's sshd, and `files/config/windows/enable-openssh-host.ps1` opens a WSL
+distro's Windows host on the WireGuard subnet. `web.enable = true;` with
+`web.bind` set to the box's WireGuard address serves a dashboard (the logins
+with their windows and a switch button, the sessions, a start form) behind a
+token, and `web.terminal = true;` a browser terminal on the `agents` tmux
+session beside it.
+[`remote-sessions.md`](remote-sessions.md) has
+the whole picture, the phone included.
 
 ## Proxmox VM
 

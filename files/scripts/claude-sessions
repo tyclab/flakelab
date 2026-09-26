@@ -3,37 +3,61 @@
 set -uo pipefail
 
 #
-# claude-sessions — the Claude Code sessions running in this distro: list them,
-# save the list, print what brings each one back after a restart.
+# claude-sessions — the agent sessions running in this distro (Claude Code,
+# Codex, Kiro CLI): list them, host them in tmux so they outlive their
+# terminal, save the list, print what brings each one back after a restart.
 #
-# A `wsl --shutdown` or a reboot kills every shell, and Claude Code keeps each
-# conversation on disk under ~/.claude/projects/<slug>/<session>.jsonl — so the
-# sessions survive, but only if the session ids are known. That is what this
-# command records before the restart.
+# A `wsl --shutdown` or a reboot kills every shell, and each tool keeps its
+# conversation on disk — Claude Code under ~/.claude/projects/<slug>/<id>.jsonl,
+# Codex under ~/.codex/sessions/<date>/rollout-<stamp>-<id>.jsonl, Kiro in its
+# own store — so the sessions survive, but only if the session ids are known.
+# That is what this command records before the restart.
 #
-# A session is the `claude` process itself: pgrep -x, because -f would also
-# match its helper shells, tails and subagents. Claude Code registers each one
-# in ~/.claude/sessions/<pid>.json (pid, sessionId, cwd, startedAt) — that is
-# the id, and it is there before the first message is sent. The registry is
-# not pruned on exit, so a pid is only a session while it is a live `claude`
+# A session is the tool's process itself: pgrep -x, because -f would also match
+# its helper shells, tails and subagents. Claude Code registers each one in
+# ~/.claude/sessions/<pid>.json (pid, sessionId, cwd, startedAt) — that is the
+# id, and it is there before the first message is sent. The registry is not
+# pruned on exit, so a pid is only a session while it is a live `claude`
 # process. A live process with no registry file (an older Claude Code) falls
-# back to the transcript it holds open in /proc/<pid>/fd. The newest
-# transcript in the project directory is never the answer — two sessions in
-# one directory share it.
+# back to the transcript it holds open in /proc/<pid>/fd; a Codex process is
+# identified the same way, by the rollout file it holds open, whose name
+# carries the id. The newest transcript in the project directory is never the
+# answer — two sessions in one directory share it. Kiro keeps a registry of
+# its own, ~/.kiro/sessions/cli/<id>.json (id, cwd, state) beside the
+# transcript and a <id>.lock held while a process owns the session: a live
+# kiro-cli process is matched to the locked session in its directory, newest
+# first, when it holds no session file open itself.
+#
+# The host: a session started with --start runs in a window of the `agents`
+# tmux session, and the table says so. A terminal — local, a Windows Terminal
+# tab, an SSH client on a phone — is then a view on that window and can close
+# at will: the process belongs to the tmux server, not to the terminal.
+# --attach joins a window; a second terminal joining the same server gets a
+# view session of its own (a grouped session, sharing the windows but with its
+# own current window), so two tabs need not show the same thing.
 #
 # Usage:
-#   claude-sessions                  table: pid, age, session id, directory
-#   claude-sessions --save [file]    also write "<dir>  <id>" lines to file
-#   claude-sessions --resume [file]  print `cd <dir> && claude --resume <id>`
-#                                    from a saved file (default: the newest
-#                                    save), or from the live sessions if none
-#   claude-sessions --open [file]    the same sessions, each in its own new
-#                                    Windows Terminal tab (WSL only)
-#   claude-sessions --autosave       the crash-recovery snapshot (below)
-#   claude-sessions --recent [hours] sessions NOT running whose transcript
-#                                    changed in the last <hours> (default 24),
-#                                    newest first: the window closed by mistake
-#   claude-sessions --json           the live sessions as a JSON array
+#   claude-sessions                    table: tool, pid, age, session id, host, directory
+#   claude-sessions --start <tool> [dir] [--detach] [-- args...]
+#                                      a new session of claude|codex|kiro in dir
+#                                      (default: here) in its own tmux window,
+#                                      attached unless --detach or no terminal
+#   claude-sessions --attach [id|window]
+#                                      join the window holding that session, or
+#                                      that window by name; none: the whole server
+#   claude-sessions --save [file]      also write "<tool>  <dir>  <id>" lines to file
+#   claude-sessions --resume [file]    print the resume command per session,
+#                                      from a saved file (default: the newest
+#                                      save), or from the live sessions if none
+#   claude-sessions --open [file]      the same sessions, each in its own new
+#                                      Windows Terminal tab (WSL only); with tmux
+#                                      on PATH each tab is a view on a window that
+#                                      outlives it
+#   claude-sessions --autosave         the crash-recovery snapshot (below)
+#   claude-sessions --recent [hours]   sessions NOT running whose transcript
+#                                      changed in the last <hours> (default 24),
+#                                      newest first: the window closed by mistake
+#   claude-sessions --json             the live sessions as a JSON array
 #
 # The --resume lines are one per terminal: pasted into one shell they run in
 # sequence, the second only after the first session exits. --open is the
@@ -56,45 +80,83 @@ set -uo pipefail
 # ~/.local/state/flakelab/sessions/. Never ~/.claude/sessions: that directory
 # is Claude Code's own registry.
 #
+# Saved lines: "<tool>  <dir>  <id>", two spaces between fields. A file from
+# before the tool column ("<dir>  <id>") reads as Claude Code.
+#
 
 PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
 # The kernel's id for this boot: a crash, a reboot or a `wsl --shutdown` starts
 # a new one. FLAKELAB_BOOT_ID_FILE is a test seam.
 BOOT_ID_FILE="${FLAKELAB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 REGISTRY="${HOME}/.claude/sessions"
+# A session on an accounts profile (flakelab accounts run) keeps its registry
+# entry, and with the history unshared its transcript, under that profile.
+ACCOUNTS_PROFILES="${FLAKELAB_ACCOUNTS_ROOT:-${HOME}/.local/state/flakelab/accounts}/profiles"
+KIRO_SESSIONS="${HOME}/.kiro/sessions/cli"
+# The tmux session every --start window lands in, and the prefix of the view
+# sessions --attach and --open create on it.
+TMUX_SESSION="${FLAKELAB_TMUX_SESSION:-agents}"
 MODE=list
 FILE=""
 RECENT_HOURS=24
 # This host's autosaves kept; the newest is the current boot's.
 AUTOSAVE_KEEP=5
+START_TOOL=""
+START_DIR=""
+START_DETACH=false
+typeset -a START_ARGS=()
+ATTACH_TARGET=""
+
+typeset -a TOOLS=(claude codex kiro)
+# The process name each tool runs as, and the command that starts a session.
+typeset -A TOOL_PROC=(claude claude codex codex kiro kiro-cli)
+typeset -A TOOL_CMD=(claude claude codex codex kiro 'kiro-cli chat')
 
 usage() {
   cat <<'USAGE'
-Usage: claude-sessions [--save [file]] [--resume [file]] [--open [file]]
-                       [--autosave] [--recent [hours]] [--json]
+Usage: claude-sessions [--start <tool> [dir] [--detach] [-- args...]]
+                       [--attach [id|window]] [--save [file]] [--resume [file]]
+                       [--open [file]] [--autosave] [--recent [hours]] [--json]
 
-  (no flag)        list the running Claude Code sessions
-  --save [file]    list, and write "<dir>  <session-id>" lines to file
-  --resume [file]  print the resume commands, one per terminal, from file
-                   (default: newest save, else the live sessions)
-  --open [file]    open each of those sessions in its own Windows Terminal
-                   tab (WSL only)
-  --autosave       snapshot the running sessions for crash recovery: one
-                   file per boot, only when the set changed, never empty
-  --recent [hours] sessions not running whose transcript changed in the
-                   last <hours> (default 24), with the command to resume each
-  --json           the live sessions as a JSON array
+  (no flag)         list the running agent sessions (Claude Code, Codex, Kiro)
+  --start <tool> [dir] [--detach] [-- args...]
+                    start claude|codex|kiro in dir (default: here) in its own
+                    window of the `agents` tmux session, and attach to it —
+                    unless --detach, or there is no terminal
+  --attach [id|window]
+                    attach this terminal to the window holding session id, or
+                    to the window named; with neither, to the whole server
+  --save [file]     list, and write "<tool>  <dir>  <session-id>" lines to file
+  --resume [file]   print the resume commands, one per terminal, from file
+                    (default: newest save, else the live sessions)
+  --open [file]     open each of those sessions in its own Windows Terminal
+                    tab (WSL only); with tmux on PATH, as a view on a window
+                    that outlives the tab
+  --autosave        snapshot the running sessions for crash recovery: one
+                    file per boot, only when the set changed, never empty
+  --recent [hours]  sessions not running whose transcript changed in the
+                    last <hours> (default 24), with the command to resume each
+  --json            the live sessions as a JSON array
 USAGE
 }
 
 while (( $# > 0 )); do
   case $1 in
+    --start)
+      MODE=start
+      [[ -n "${2:-}" && "${2}" != -* ]] || { print -ru2 -- "Error: --start needs a tool: ${(j:|:)TOOLS}"; exit 2 }
+      START_TOOL="$2"; shift
+      if [[ -n "${2:-}" && "${2}" != -* ]]; then START_DIR="$2"; shift; fi
+      ;;
+    --detach) START_DETACH=true ;;
+    --attach) MODE=attach; [[ "${2:-}" == -* || -z "${2:-}" ]] || { ATTACH_TARGET="$2"; shift } ;;
     --save)   MODE=save;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --resume) MODE=resume; [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --open)   MODE=open;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --autosave) MODE=autosave ;;
     --recent) MODE=recent; [[ "${2:-}" == <1-> ]] && { RECENT_HOURS="$2"; shift } ;;
     --json)   MODE=json ;;
+    --) shift; START_ARGS=("$@"); break ;;
     --help|-h) usage; exit 0 ;;
     *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 1 ;;
   esac
@@ -122,35 +184,185 @@ boot_id() {
 
 autosave_name() { print -r -- "${HOST}-autosave-$1.txt" }
 
+is_tool() { (( ${TOOLS[(Ie)$1]} )) }
+
+# ---------------------------------------------------------------------------
+# tmux: where a process lives, and the windows --start / --open create.
+
+# A tmux that is on PATH but cannot answer -V (broken, or the suite's stand-in
+# for absence) counts as no tmux.
+have_tmux() { command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1 }
+
+# pane pid -> "<window id> US <window name>", for every pane of the agents
+# session. Empty when tmux is absent or no server runs; never an error.
+typeset -A PANE_WINDOW=()
+load_panes() {
+  local line pid sess wid wname
+  PANE_WINDOW=()
+  have_tmux || return 0
+  while IFS="$US" read -r pid sess wid wname; do
+    [[ "$sess" == "$TMUX_SESSION" ]] || continue
+    PANE_WINDOW[$pid]="${wid}${US}${wname}"
+  done < <(tmux list-panes -a -F "#{pane_pid}${US}#{session_name}${US}#{window_id}${US}#{window_name}" 2>/dev/null)
+  return 0
+}
+
+# The parent pid from /proc/<pid>/stat: field 4, after the ")" that closes the
+# comm, which may itself hold spaces and parentheses.
+ppid_of() {
+  local stat
+  stat="$(<"${PROC_ROOT}/$1/stat")" 2>/dev/null || return 1
+  stat="${stat##*) }"
+  print -r -- "${${(s: :)stat}[2]}"
+}
+
+# The agents window whose pane is an ancestor of pid: "<window id> US <name>",
+# or empty. Bounded: a /proc that lies about ppid must not loop.
+host_of() {
+  local p="$1" hop
+  (( ${#PANE_WINDOW} > 0 )) || return 0
+  for hop in {1..64}; do
+    [[ -n "$p" && "$p" != 0 && "$p" != 1 ]] || return 0
+    if (( ${+PANE_WINDOW[$p]} )); then print -r -- "${PANE_WINDOW[$p]}"; return 0; fi
+    p="$(ppid_of "$p")" || return 0
+  done
+  return 0
+}
+
+# A window name tmux targets take unambiguously: no ":" or ".", which are
+# target separators, and no spaces.
+window_name() {
+  local n="$1-${2:t}"
+  n="${n//[:. ]/_}"
+  print -r -- "${n[1,40]}"
+}
+
+# The command a window runs, one shell word per argument.
+tool_command() {
+  local tool="$1"; shift
+  local cmd="${TOOL_CMD[$tool]}"
+  (( $# > 0 )) && cmd+=" ${(j: :)${(q)@}}"
+  print -r -- "$cmd"
+}
+
+# Create a window in the agents session (the session itself when it does not
+# exist yet) and print its window id. A window's command runs with the
+# server's environment, not the caller's, and the server is born by whoever
+# starts the first window (a terminal, the dashboard's service, ttyd), so the
+# caller's PATH is handed to the window explicitly: the tool resolves the
+# same way it did for the caller, whoever started the server.
+new_window() {
+  local name="$1" dir="$2" cmd="$3"
+  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" -e "PATH=${PATH}" -c "$dir" "$cmd"
+  else
+    tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" -e "PATH=${PATH}" -c "$dir" "$cmd"
+  fi
+}
+
+# A view on the server: a session grouped with the agents session, so it shows
+# the same windows but keeps its own current window, and goes away with its
+# client while the agents session stays. Not `destroy-unattached`: the view
+# is made detached and attached by a later command (this process, a Windows
+# Terminal tab), and since tmux 3.4 a session with that option set is
+# destroyed the moment the command client that set it disconnects, before
+# anything attaches. A client-detached hook on the view kills it instead,
+# and fires for a closed terminal as well as an explicit detach.
+new_view() {
+  local wid="$1" view
+  view="${TMUX_SESSION}-${wid#@}-$$"
+  tmux new-session -d -t "$TMUX_SESSION" -s "$view" >/dev/null 2>&1 || return 1
+  tmux set-hook -t "$view" client-detached "kill-session -t ${view}" >/dev/null 2>&1 || true
+  tmux select-window -t "${view}:${wid}" >/dev/null 2>&1 || true
+  print -r -- "$view"
+}
+
+# Attach this terminal to window wid — a switch when it is already inside
+# tmux, a fresh view otherwise. An empty wid attaches to the whole server.
+attach_window() {
+  local wid="$1" view
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "$TMUX_SESSION" || return 1
+    [[ -n "$wid" ]] && tmux select-window -t "$wid"
+    return 0
+  fi
+  if [[ -z "$wid" ]]; then
+    exec tmux attach-session -t "$TMUX_SESSION"
+  fi
+  view="$(new_view "$wid")" || { print -ru2 -- "Error: could not open a view on ${wid}"; return 1 }
+  exec tmux attach-session -t "$view"
+}
+
+# ---------------------------------------------------------------------------
+# The live sessions.
+
 # One record per running session, unit-separator delimited (a tab is IFS
 # whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
-# into its place): <pid> US <age-seconds> US <session-id> US <cwd>.
-# A process with no id from either source (still starting, on an older Claude
-# Code) gets an empty id and a stderr note — it has nothing to resume.
+# into its place): <tool> US <pid> US <age-seconds> US <session-id> US <cwd>
+# US <window id> US <window name>. A process with no id from any source
+# (still starting, on an older Claude Code, a Kiro chat whose registry entry
+# is not written yet) gets an empty id and a stderr note — it has nothing to
+# resume by id.
 typeset -a ROWS=()
 US=$'\x1f'
+
+# The uuid the process holds open: for Claude Code a transcript, for Codex a
+# rollout file whose name ends in the id. The most-opened uuid wins, so a
+# stray path that merely contains one cannot outvote the transcript.
+open_uuid() {
+  local p="$1" pattern="$2"
+  for f in "${PROC_ROOT}/${p}"/fd/*(@N); do readlink "$f"; done 2>/dev/null |
+    grep -E "$pattern" |
+    grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
+    sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
+}
+
+# The Kiro session a process in cwd owns: the newest locked registry entry
+# whose cwd is that directory. Two chats in one directory are told apart only
+# by an open file, which the caller tries first.
+kiro_locked_session() {
+  local cwd="$1" lock id
+  for lock in "${KIRO_SESSIONS}"/*.lock(N.om); do
+    id="${lock:t:r}"
+    [[ -r "${KIRO_SESSIONS}/${id}.json" ]] || continue
+    [[ "$(jq -r '.cwd // empty' "${KIRO_SESSIONS}/${id}.json" 2>/dev/null)" == "$cwd" ]] || continue
+    print -r -- "$id"
+    return 0
+  done
+  return 0
+}
+
 gather() {
-  local p cwd sid age reg started now
+  local tool p cwd sid age reg started now host wid wname
   now="$(date +%s)"
-  for p in $(pgrep -x claude 2>/dev/null); do
-    cwd="$(readlink "${PROC_ROOT}/${p}/cwd" 2>/dev/null)" || continue
-    sid=""; age=""
-    reg="${REGISTRY}/${p}.json"
-    if [[ -r "$reg" ]]; then
-      sid="$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)"
-      started="$(jq -r '.startedAt // empty' "$reg" 2>/dev/null)"
-      [[ "$started" == <-> ]] && age=$(( now - started / 1000 ))
-    fi
-    if [[ -z "$sid" ]]; then
-      sid="$(
-        for f in "${PROC_ROOT}/${p}"/fd/*(@N); do readlink "$f"; done 2>/dev/null |
-          grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
-          sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
-      )"
-    fi
-    [[ -n "$age" ]] || age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
-    [[ -z "$sid" ]] && print -ru2 -- "note: pid ${p} in ${cwd} has no session id yet, skipped"
-    ROWS+=("${p}${US}${age:-0}${US}${sid}${US}${cwd}")
+  load_panes
+  for tool in "${TOOLS[@]}"; do
+    for p in $(pgrep -x "${TOOL_PROC[$tool]}" 2>/dev/null); do
+      cwd="$(readlink "${PROC_ROOT}/${p}/cwd" 2>/dev/null)" || continue
+      sid=""; age=""
+      case "$tool" in
+        claude)
+          reg="${REGISTRY}/${p}.json"
+          [[ -r "$reg" ]] || for reg in "${ACCOUNTS_PROFILES}"/*/sessions/${p}.json(N); do break; done
+          if [[ -r "$reg" ]]; then
+            sid="$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)"
+            started="$(jq -r '.startedAt // empty' "$reg" 2>/dev/null)"
+            [[ "$started" == <-> ]] && age=$(( now - started / 1000 ))
+          fi
+          [[ -n "$sid" ]] || sid="$(open_uuid "$p" '\.jsonl$')"
+          ;;
+        codex) sid="$(open_uuid "$p" '/rollout-[^/]*\.jsonl$')" ;;
+        kiro)
+          sid="$(open_uuid "$p" '/sessions/cli/[^/]*\.(jsonl|lock|json)$')"
+          [[ -n "$sid" ]] || sid="$(kiro_locked_session "$cwd")"
+          ;;
+      esac
+      [[ -n "$age" ]] || age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
+      [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no session id yet, skipped"
+      host="$(host_of "$p")"
+      IFS="$US" read -r wid wname <<<"$host"
+      ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}")
+    done
   done
 }
 
@@ -167,22 +379,23 @@ gather() {
 # which is the thing that differs.
 typeset -a SESSION_ROWS=()
 dedupe_sessions() {
-  local row p age sid cwd
+  local row tool p age sid cwd wid wname key
   local -A best=() best_age=()
   local -a order=()
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r p age sid cwd <<<"$row"
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
     [[ -n "$sid" ]] || continue
-    if (( ${+best[$sid]} )); then
-      (( age > best_age[$sid] )) || continue
+    key="${tool}${US}${sid}"
+    if (( ${+best[$key]} )); then
+      (( age > best_age[$key] )) || continue
     else
-      order+=("$sid")
+      order+=("$key")
     fi
-    best[$sid]="$row"
-    best_age[$sid]=$age
+    best[$key]="$row"
+    best_age[$key]=$age
   done
   SESSION_ROWS=()
-  for sid in "${order[@]}"; do SESSION_ROWS+=("${best[$sid]}"); done
+  for key in "${order[@]}"; do SESSION_ROWS+=("${best[$key]}"); done
 }
 
 fmt_age() {
@@ -194,32 +407,36 @@ fmt_age() {
 }
 
 print_table() {
-  local row p age sid cwd
+  local row tool p age sid cwd wid wname
   if (( ${#ROWS[@]} == 0 )); then
-    print -ru2 -- "no running Claude Code sessions"
+    print -ru2 -- "no running agent sessions"
     return 0
   fi
-  printf '%-8s %-7s %-36s %s\n' PID AGE SESSION DIRECTORY
+  printf '%-7s %-8s %-7s %-36s %-18s %s\n' TOOL PID AGE SESSION HOST DIRECTORY
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r p age sid cwd <<<"$row"
-    printf '%-8s %-7s %-36s %s\n' "$p" "$(fmt_age "$age")" "${sid:--}" "$cwd"
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    printf '%-7s %-8s %-7s %-36s %-18s %s\n' "$tool" "$p" "$(fmt_age "$age")" "${sid:--}" "${wname:--}" "$cwd"
   done
 }
 
 print_json() {
-  local row p age sid cwd
+  local row tool p age sid cwd wid wname
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r p age sid cwd <<<"$row"
-    jq -n --argjson pid "$p" --argjson age "$age" --arg session "$sid" --arg cwd "$cwd" \
-      --arg distro "${WSL_DISTRO_NAME:-}" \
-      '{pid: $pid, age_seconds: $age, session: (if $session == "" then null else $session end), cwd: $cwd, distro: (if $distro == "" then null else $distro end)}'
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    jq -n --arg tool "$tool" --argjson pid "$p" --argjson age "$age" --arg session "$sid" --arg cwd "$cwd" \
+      --arg distro "${WSL_DISTRO_NAME:-}" --arg tmux "$TMUX_SESSION" --arg wid "$wid" --arg wname "$wname" \
+      '{tool: $tool, pid: $pid, age_seconds: $age, session: (if $session == "" then null else $session end), cwd: $cwd,
+        host: (if $wid == "" then null else {session: $tmux, window: $wname, id: $wid} end),
+        distro: (if $distro == "" then null else $distro end)}'
   done | jq -s .
 }
 
-# Saved lines are "<dir>  <id>" — two spaces, the same shape --resume reads
-# back; comment lines carry host, distro and time.
+# Saved lines are "<tool>  <dir>  <id>" — two spaces, the same shape --resume
+# reads back; comment lines carry host, distro and time.
+save_line() { print -r -- "$1  $2  $3" }
+
 write_save() {
-  local dir row p age sid cwd n=0
+  local dir row tool p age sid cwd wid wname n=0
   if [[ -z "$FILE" ]]; then
     dir="$(save_dir)"
     mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
@@ -229,8 +446,8 @@ write_save() {
   {
     print -r -- "# claude-sessions ${HOST}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)"
     for row in "${SESSION_ROWS[@]}"; do
-      IFS="$US" read -r p age sid cwd <<<"$row"
-      print -r -- "${cwd}  ${sid}"
+      IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+      save_line "$tool" "$cwd" "$sid"
       (( n++ ))
     done
   } > "$FILE" || { print -ru2 -- "Error: cannot write ${FILE}"; return 1 }
@@ -242,14 +459,14 @@ write_save() {
 # save directory may be a synced folder. The temp name is one the state sync
 # already treats as scratch.
 write_autosave() {
-  local boot dir file tmp row p age sid cwd
+  local boot dir file tmp row tool p age sid cwd wid wname
   local -a lines=() old=()
   boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
   gather 2>/dev/null
   dedupe_sessions
   for row in "${SESSION_ROWS[@]}"; do
-    IFS="$US" read -r p age sid cwd <<<"$row"
-    lines+=("${cwd}  ${sid}")
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    lines+=("$(save_line "$tool" "$cwd" "$sid")")
   done
   # Nothing running keeps the last snapshot: after a crash that is the record.
   (( ${#lines[@]} > 0 )) || return 0
@@ -275,11 +492,27 @@ write_autosave() {
   return 0
 }
 
-# PAIRS: "<cwd> US <sid>" per session to bring back — from FILE, else the
-# newest save, else the live sessions. Prints the source as a comment.
+# A saved line into tool, cwd and sid. The tool column is new; a line without
+# one (a file from before it, or written by hand) is Claude Code. Split at
+# the LAST double space for the id and the FIRST for the tool, so a directory
+# with two spaces in its name still parses.
+parse_line() {
+  local line="$1" rest
+  PL_TOOL=claude
+  if [[ "$line" == *"  "*"  "* ]] && is_tool "${line%%  *}"; then
+    PL_TOOL="${line%%  *}"
+    line="${line#*  }"
+  fi
+  PL_SID="${line##*  }"
+  PL_CWD="${line%  *}"
+}
+PL_TOOL=""; PL_SID=""; PL_CWD=""
+
+# PAIRS: "<tool> US <cwd> US <sid>" per session to bring back — from FILE,
+# else the newest save, else the live sessions. Prints the source as a comment.
 typeset -a PAIRS=()
 collect_pairs() {
-  local src="$FILE" line cwd sid row p age f cur=""
+  local src="$FILE" line row tool p age sid cwd wid wname f cur=""
   if [[ -z "$src" ]]; then
     # Newest save first; (N) keeps an empty directory from being a glob error.
     # This boot's own autosave is the live set, and another host's autosave
@@ -299,17 +532,16 @@ collect_pairs() {
     print -r -- "# from ${src}"
     while IFS= read -r line; do
       [[ "$line" == \#* || -z "$line" ]] && continue
-      sid="${line##*  }"
-      cwd="${line%  *}"
-      PAIRS+=("${cwd}${US}${sid}")
+      parse_line "$line"
+      PAIRS+=("${PL_TOOL}${US}${PL_CWD}${US}${PL_SID}")
     done < "$src"
   else
     gather
     print -r -- "# from the live sessions (no saved file)"
     for row in "${ROWS[@]}"; do
-      IFS="$US" read -r p age sid cwd <<<"$row"
+      IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
       [[ -n "$sid" ]] || continue
-      PAIRS+=("${cwd}${US}${sid}")
+      PAIRS+=("${tool}${US}${cwd}${US}${sid}")
     done
   fi
   # A saved file can carry the same session twice as well — one written
@@ -318,34 +550,44 @@ collect_pairs() {
   local -A seen=()
   local -a uniq=()
   for row in "${PAIRS[@]}"; do
-    IFS="$US" read -r cwd sid <<<"$row"
-    (( ${+seen[$sid]} )) && continue
-    seen[$sid]=1
+    IFS="$US" read -r tool cwd sid <<<"$row"
+    (( ${+seen[${tool}${US}${sid}]} )) && continue
+    seen[${tool}${US}${sid}]=1
     uniq+=("$row")
   done
   PAIRS=("${uniq[@]}")
   (( ${#PAIRS[@]} > 0 )) || { print -ru2 -- "nothing to resume"; return 1 }
 }
 
+# The tool's own resume command for a session id.
+resume_cmd() {
+  case "$1" in
+    claude) print -r -- "claude --resume $2" ;;
+    codex)  print -r -- "codex resume $2" ;;
+    kiro)   print -r -- "kiro-cli chat --resume-id $2" ;;
+  esac
+}
+
 # One resume line: the cd only where this box has the directory.
 resume_line() {
-  local cwd="$1" sid="$2" note="${3:-}"
+  local tool="$1" cwd="$2" sid="$3" note="${4:-}" cmd
+  cmd="$(resume_cmd "$tool" "$sid")"
   if [[ -n "$cwd" && -d "$cwd" ]]; then
-    print -r -- "cd ${(q)cwd} && claude --resume ${sid}${note:+  # ${note}}"
+    print -r -- "cd ${(q)cwd} && ${cmd}${note:+  # ${note}}"
   elif [[ -n "$cwd" ]]; then
-    print -r -- "claude --resume ${sid}  # ${note:+${note}, }${cwd} is not on this box"
+    print -r -- "${cmd}  # ${note:+${note}, }${cwd} is not on this box"
   else
-    print -r -- "claude --resume ${sid}${note:+  # ${note}}"
+    print -r -- "${cmd}${note:+  # ${note}}"
   fi
 }
 
 print_resume() {
-  local pair cwd sid
+  local pair tool cwd sid
   collect_pairs || return 1
   print -r -- "# one line per terminal — in one shell they run in sequence"
   for pair in "${PAIRS[@]}"; do
-    IFS="$US" read -r cwd sid <<<"$pair"
-    resume_line "$cwd" "$sid"
+    IFS="$US" read -r tool cwd sid <<<"$pair"
+    resume_line "$tool" "$cwd" "$sid"
   done
 }
 
@@ -354,44 +596,151 @@ print_resume() {
 # has none). wt.exe reaches WSL through the interop PATH; when interop is off
 # there is no Windows to open tabs in, and --resume is the answer. A directory
 # this box does not have opens the tab in the home directory instead.
+#
+# With tmux on PATH the session is resumed in a window of the agents server
+# and the tab attaches a view on it, so closing the tab leaves the session
+# running and --attach brings it back; without tmux the tab runs the resume
+# command itself, as before.
 open_tabs() {
-  local pair cwd sid tab_cwd n=0
+  local pair tool cwd sid tab_cwd wid view n=0 use_tmux=false
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
+  have_tmux && use_tmux=true
   collect_pairs || return 1
   for pair in "${PAIRS[@]}"; do
-    IFS="$US" read -r cwd sid <<<"$pair"
+    IFS="$US" read -r tool cwd sid <<<"$pair"
     tab_cwd="$cwd"
-    [[ -d "$tab_cwd" ]] || tab_cwd="~"
-    wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- claude --resume "${sid}" </dev/null >/dev/null 2>&1 &&
-      (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+    [[ -d "$tab_cwd" ]] || tab_cwd="$HOME"
+    if $use_tmux; then
+      wid="$(new_window "$(window_name "$tool" "$cwd")" "$tab_cwd" "$(resume_cmd "$tool" "$sid")")" || { print -ru2 -- "tmux could not start a window for ${cwd} ${sid}"; continue }
+      view="$(new_view "$wid")" || { print -ru2 -- "tmux could not open a view on ${wid}"; continue }
+      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" -- tmux attach-session -t "$view" </dev/null >/dev/null 2>&1 &&
+        (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+    else
+      [[ "$tab_cwd" == "$HOME" ]] && tab_cwd="~"
+      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- ${=$(resume_cmd "$tool" "$sid")} </dev/null >/dev/null 2>&1 &&
+        (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+    fi
   done
   print -ru2 -- "opened ${n} tab(s)"
 }
 
 # Session files only (<slug>/<id>.jsonl): subagent transcripts sit a level
 # deeper. The cwd is the last one the session recorded — where it was working
-# when it stopped — read from the tail, never the whole transcript.
+# when it stopped — read from the tail, never the whole transcript. A Codex
+# rollout names its id in the file name and its cwd in the session_meta line
+# at its head. A Kiro session is its registry entry, skipped while its lock
+# exists.
 print_recent() {
-  local -A live=()
-  local row p age sid cwd f when
+  local -A live=() seen=()
+  local row tool p age sid cwd wid wname f when
   local -i n=0
   gather 2>/dev/null
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r p age sid cwd <<<"$row"
-    [[ -n "$sid" ]] && live[$sid]=1
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    [[ -n "$sid" ]] && live[${tool}${US}${sid}]=1
   done
   print -r -- "# not running, changed in the last ${RECENT_HOURS}h — newest first"
-  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${ACCOUNTS_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
-    [[ -n "${live[$sid]:-}" ]] && continue
+    [[ -n "${live[claude${US}${sid}]:-}" ]] && continue
+    seen[claude${US}${sid}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
     when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
-    resume_line "$cwd" "$sid" "$when"
+    resume_line claude "$cwd" "$sid" "$when"
+    (( ++n ))
+  done
+  for f in "${HOME}"/.codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
+    sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
+    [[ -n "$sid" ]] || continue
+    [[ -n "${live[codex${US}${sid}]:-}" ]] && continue
+    seen[codex${US}${sid}]=1
+    cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
+    when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+    resume_line codex "$cwd" "$sid" "$when"
+    (( ++n ))
+  done
+  # The state root's synced transcripts (remote-sessions.md, phase 5): what
+  # another box left there and this one has not pulled yet. Resuming one
+  # needs the pull first; the line says so. A session already listed from
+  # this box's own copy is not repeated.
+  if [[ -n "${FLAKELAB_STATE_ROOT:-}" && -d "${FLAKELAB_STATE_ROOT}" ]]; then
+    local pull="synced, not yet pulled here: flakelab backup --state-only first"
+    for f in "${FLAKELAB_STATE_ROOT}"/claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+      sid="${f:t:r}"
+      [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
+      [[ -f "${HOME}/.claude/projects/${f:h:t}/${f:t}" ]] && continue
+      cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
+      when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+      resume_line claude "$cwd" "$sid" "${when}, ${pull}"
+      (( ++n ))
+    done
+    for f in "${FLAKELAB_STATE_ROOT}"/codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
+      sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
+      [[ -n "$sid" ]] || continue
+      [[ -n "${live[codex${US}${sid}]:-}" || -n "${seen[codex${US}${sid}]:-}" ]] && continue
+      cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
+      when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+      resume_line codex "$cwd" "$sid" "${when}, ${pull}"
+      (( ++n ))
+    done
+  fi
+  for f in "${KIRO_SESSIONS}"/*.json(N.mh-${RECENT_HOURS}om); do
+    sid="${f:t:r}"
+    [[ -n "${live[kiro${US}${sid}]:-}" ]] && continue
+    [[ -e "${KIRO_SESSIONS}/${sid}.lock" ]] && continue
+    cwd="$(jq -r '.cwd // empty' "$f" 2>/dev/null)"
+    when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
+    resume_line kiro "$cwd" "$sid" "$when"
     (( ++n ))
   done
   (( n > 0 )) || print -ru2 -- "no stopped session changed in the last ${RECENT_HOURS}h"
   return 0
+}
+
+# --start: a window in the agents session running the tool, then a view on it.
+start_session() {
+  local dir="${START_DIR:-$PWD}" name cmd wid
+  is_tool "$START_TOOL" || { print -ru2 -- "Error: unknown tool '${START_TOOL}' (${(j:|:)TOOLS})"; return 2 }
+  have_tmux || { print -ru2 -- "Error: --start needs tmux on PATH"; return 2 }
+  [[ -d "$dir" ]] || { print -ru2 -- "Error: no such directory: ${dir}"; return 2 }
+  dir="${dir:A}"
+  name="$(window_name "$START_TOOL" "$dir")"
+  cmd="$(tool_command "$START_TOOL" "${START_ARGS[@]}")"
+  wid="$(new_window "$name" "$dir" "$cmd")" || { print -ru2 -- "Error: tmux could not start the window"; return 1 }
+  print -ru2 -- "started ${START_TOOL} in ${dir} as ${TMUX_SESSION}:${name} (${wid})"
+  if $START_DETACH || [[ ! -t 0 || ! -t 1 ]]; then
+    print -ru2 -- "attach with: flakelab sessions --attach ${name}"
+    return 0
+  fi
+  attach_window "$wid"
+}
+
+# --attach: by session id (the window its process runs in), by window name, or
+# the whole server.
+attach_session() {
+  local target="$ATTACH_TARGET" row tool p age sid cwd wid wname found=""
+  have_tmux || { print -ru2 -- "Error: --attach needs tmux on PATH"; return 2 }
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null || { print -ru2 -- "Error: no '${TMUX_SESSION}' tmux session — start one with: flakelab sessions --start <tool>"; return 2 }
+  if [[ -z "$target" ]]; then
+    attach_window ""
+    return $?
+  fi
+  gather 2>/dev/null
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    [[ -n "$wid" ]] || continue
+    if [[ "$sid" == "$target" || "$wname" == "$target" || "$wid" == "$target" ]]; then found="$wid"; break; fi
+  done
+  if [[ -z "$found" ]]; then
+    load_panes
+    for row in "${(v)PANE_WINDOW[@]}"; do
+      IFS="$US" read -r wid wname <<<"$row"
+      [[ "$wname" == "$target" || "$wid" == "$target" ]] && { found="$wid"; break }
+    done
+  fi
+  [[ -n "$found" ]] || { print -ru2 -- "Error: no window holds '${target}' — flakelab sessions lists the hosts"; return 2 }
+  attach_window "$found"
 }
 
 case "$MODE" in
@@ -402,4 +751,6 @@ case "$MODE" in
   open)     open_tabs ;;
   autosave) write_autosave ;;
   recent)   print_recent ;;
+  start)    start_session ;;
+  attach)   attach_session ;;
 esac

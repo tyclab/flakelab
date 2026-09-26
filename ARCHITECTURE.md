@@ -57,6 +57,32 @@ that defaults to off, because every activation here runs on every adopter's box:
   them. Everything else `claudeSettings` asserts — attribution, the classifier
   rules, `installMethod`, `autoUpdatesChannel`, the deny floor — is
   unconditional, and the whole activation is gated on `installClaude`.
+- `claudeRemoteControl` (bool, default `false`) — `remoteControlAtStartup`
+  on its own, with the same four env vars removed, so every interactive
+  session is steerable from the Claude app without the trust bundle above;
+  `claudeAgentDefaults` implies it. Off, the key and the vars are left as the
+  user has them.
+- `accounts.*` — the account switcher's knobs (`accounts.md`):
+  `autoSwitchInterval` (nullable string, default `null`) schedules the
+  `flakelab-accounts-autoswitch` user timer running
+  `flakelab accounts auto --once`; `autoSwitchTools` (default `[ "claude" ]`)
+  names the tools it decides for; `sessionThreshold` (85), `weekThreshold`
+  (97) and `modelThreshold` (95) are the bars, `modelWindows` (`[ "all" ]`)
+  which per-model weeks count, `strategy` (`soonest-reset` or `best`) the
+  target order. The wrapper exports them as `FLAKELAB_ACCOUNTS_*`; with the
+  timer on for Claude Code, a `Notification` hook on
+  `quota_auto_resume_fired` runs one tick at once.
+- `notify.enable` (bool, default `false`) and `notify.events` (list) — the
+  Claude Code `Notification` hook that runs `flakelab notify`, a push to an
+  ntfy topic named in `secrets.env` (`remote-sessions.md`); owned by its
+  command, removed again when off.
+- `mosh.enable` (bool, default `false`) — proxmox-vm only: `programs.mosh`
+  beside sshd, its UDP range opened by the module.
+- `web.*` — `enable` (default `false`) runs `flakelab web` as the user
+  service `flakelab-web` on `bind` (default `127.0.0.1`) and `port` (8321),
+  the dashboard behind the token in `~/.local/state/flakelab/web/token`;
+  `terminal` (default `false`) adds ttyd on `terminalPort` (7681) attached to
+  the `tmuxSession` (`agents`), same token as its basic-auth password.
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow

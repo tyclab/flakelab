@@ -145,7 +145,11 @@ rec {
   '';
 
   # --save lands under FLAKELAB_STATE_ROOT, so the list replicates with the
-  # transcripts it names.
+  # transcripts it names. tmux is the session host --start / --attach / --open
+  # use; the same package the user's shell has, so a view and the server agree.
+  # ~/.local/bin holds the tools a --start window runs (the native installs of
+  # Claude Code, Codex and Kiro); the window gets this PATH, so a caller with
+  # no login environment (the dashboard's service) still starts them.
   claude-sessions = pkgs.writeShellScriptBin "claude-sessions" ''
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
@@ -158,9 +162,67 @@ rec {
         pkgs.gnugrep
         pkgs.gawk
         pkgs.jq
+        pkgs.tmux
+      ]
+    }:$HOME/.local/bin:$PATH
+    exec ${zsh} ${s}/claude-sessions "$@"
+  '';
+
+  # The store is the script's own; flock serialises writers, pgrep counts the
+  # tool's running sessions for the post-switch line. Sourced from `s`, so the
+  # adapters under lib/ sit beside it in the store. The user's PATH stays
+  # behind the pinned set: the Codex adapter runs the installed `codex`
+  # (~/.local/bin) for its usage read and profile check.
+  accounts = pkgs.writeShellScriptBin "accounts" ''
+    export FLAKELAB_ACCOUNTS_TOOLS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.autoSwitchTools)}
+    export FLAKELAB_ACCOUNTS_SESSION_THRESHOLD=${toString cfg.accounts.sessionThreshold}
+    export FLAKELAB_ACCOUNTS_WEEK_THRESHOLD=${toString cfg.accounts.weekThreshold}
+    export FLAKELAB_ACCOUNTS_MODEL_THRESHOLD=${toString cfg.accounts.modelThreshold}
+    export FLAKELAB_ACCOUNTS_MODEL_WINDOWS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.modelWindows)}
+    export FLAKELAB_ACCOUNTS_STRATEGY=${cfg.accounts.strategy}
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.util-linux
+        pkgs.procps
+        pkgs.gnugrep
+        pkgs.gawk
+        pkgs.curl
+        pkgs.sqlite
+        pkgs.jq
       ]
     }:$PATH
-    exec ${zsh} ${s}/claude-sessions "$@"
+    exec ${zsh} ${s}/accounts "$@"
+  '';
+
+  # The endpoint is read from secrets.env at use time; nothing is baked in.
+  notify = pkgs.writeShellScriptBin "notify" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.jq
+        pkgs.curl
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/notify "$@"
+  '';
+
+  # The dashboard: python3 from the store, the page from the store, the two
+  # commands it shells out to by their wrappers so their pinned PATHs hold.
+  web = pkgs.writeShellScriptBin "web" ''
+    export FLAKELAB_WEB_STATIC=${../files/config/web}
+    export FLAKELAB_WEB_ACCOUNTS=${accounts}/bin/accounts
+    export FLAKELAB_WEB_SESSIONS=${claude-sessions}/bin/claude-sessions
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.python3
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/web "$@"
   '';
 
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''

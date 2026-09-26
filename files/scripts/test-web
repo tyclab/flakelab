@@ -1,0 +1,181 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for `flakelab web` (files/scripts/web, files/scripts/lib/web.py):
+# the server on 127.0.0.1 with a free port, stand-ins for `accounts` and
+# `claude-sessions` that answer canned JSON and record what they were asked,
+# and curl as the client. No real tool, no network beyond loopback.
+#
+# Usage: files/scripts/test-web
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/web"
+SERVER="${SCRIPT_DIR}/lib/web.py"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+SERVER_PID=""
+trap '[[ -n "${SERVER_PID}" ]] && kill "${SERVER_PID}" 2>/dev/null; rm -rf "${BASE}"' EXIT
+export HOME="${BASE}/home"
+mkdir -p "${HOME}" "${BASE}/bin" "${BASE}/static"
+LOG="${BASE}/calls.log"
+export FAKE_LOG="${LOG}"
+
+# The accounts stand-in.
+cat > "${BASE}/bin/accounts" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "accounts $*" >> "${FAKE_LOG}"
+ROSTER='{"version":1,"active":{"claude":2},"accounts":[{"id":1,"tool":"claude","alias":"home","label":"a@example.com","usage":{"windows":[{"label":"5h","class":"session","pct":20}],"fetchedAt":1}},{"id":2,"tool":"claude","alias":"work","label":"b@example.com","usage":{"windows":[]}}]}'
+case "$1" in
+  --json) print -r -- "$ROSTER" ;;
+  --fetch) print -r -- "$ROSTER" ;;
+  status) print -r -- '{"claude":{"active":{"id":2,"alias":"work"},"live":{"account":"x"},"matches":false}}' ;;
+  switch) [[ "$2" == 9 ]] && { print -ru2 -- "Error: entry 9 is running in a profile session"; exit 2 }; print -r -- "Switched claude to $2" ;;
+  auto) print -r -- '{"event":"poll","tool":"claude"}'; print -r -- '{"event":"switch","tool":"claude","from":2,"to":1,"trigger":"proactive","dryRun":true}' ;;
+  *) exit 2 ;;
+esac
+STUB
+# The sessions stand-in.
+cat > "${BASE}/bin/claude-sessions" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "claude-sessions $*" >> "${FAKE_LOG}"
+case "$1" in
+  --json) print -r -- '[{"tool":"claude","pid":100,"age":"2h01m","session":"11111111-2222-3333-4444-555555555555","host":{"session":"agents","window":"claude-work","id":"@1"},"dir":"/w"}]' ;;
+  --start) print -r -- "started $2 in $3" ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "${BASE}/bin/"*
+print -r -- '<!doctype html><title>flakelab</title><p>dashboard' > "${BASE}/static/index.html"
+
+typeset -i RC=0
+OUT=""; ERR=""
+run() { OUT="$("${CMD}" "$@" 2>"${BASE}/err" </dev/null)"; RC=$?; ERR="$(<"${BASE}/err")"; }
+
+print -r -- "the wrapper"
+run --help
+check "--help exits 0" "${RC}" "0"
+run --bogus
+check "an unknown option exits 2" "${RC}" "2"
+run --port 0
+check "a port outside 1-65535 is refused" "${RC}" "2"
+run --bind 0.0.0.0
+check "binding every interface is refused" "${RC}" "2"
+contains "with the address to name instead" "${ERR}" "WireGuard"
+run --print-token --token-file "${BASE}/none"
+check "--print-token before a first start exits 1" "${RC}" "1"
+
+print -r -- ""
+print -r -- "the server"
+TOKEN_FILE="${BASE}/state/web/token"
+FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
+  FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" FLAKELAB_WEB_TERMINAL_URL="http://10.66.0.2:7681/" \
+  PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server.err" &
+SERVER_PID=$!
+PORT=""
+for i in {1..50}; do
+  PORT="$(grep -oE 'http://127\.0\.0\.1:[0-9]+/' "${BASE}/server.err" 2>/dev/null | head -1 | grep -oE '[0-9]+/' | tr -d /)"
+  [[ -n "$PORT" ]] && break
+  sleep 0.1
+done
+[[ -n "$PORT" ]] && ok "the server starts and names its port" || { bad "the server did not start"; cat "${BASE}/server.err" >&2; print -r -- "${PASS} passed, ${FAIL} failed"; exit 1 }
+URL="http://127.0.0.1:${PORT}"
+check "the token file is made on the first start, private" "$(stat -c %a "${TOKEN_FILE}") $(stat -c %a "${TOKEN_FILE:h}")" "600 700"
+TOKEN="$(<"${TOKEN_FILE}")"
+run --print-token --token-file "${TOKEN_FILE}"
+check "--print-token prints it" "${OUT}" "${TOKEN}"
+
+# get <path> [token]; post <path> <body> [token]: BODY and CODE.
+BODY=""; CODE=""
+get() {
+  local -a auth=()
+  [[ -n "${2:-}" ]] && auth=(-H "Authorization: Bearer $2")
+  BODY="$(curl -s -o - -w '\n%{http_code}' "${auth[@]}" "${URL}$1")"; CODE="${BODY##*$'\n'}"; BODY="${BODY%$'\n'*}"
+}
+post() {
+  local -a auth=()
+  [[ -n "${3:-}" ]] && auth=(-H "Authorization: Bearer $3")
+  BODY="$(curl -s -o - -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' "${auth[@]}" --data "$2" "${URL}$1")"; CODE="${BODY##*$'\n'}"; BODY="${BODY%$'\n'*}"
+}
+calls() { cat "${LOG}" 2>/dev/null; : > "${LOG}" }
+
+get /
+check "the page is served" "${CODE}" "200"
+contains "and is the dashboard" "${BODY}" "<title>flakelab</title>"
+get /api/health
+check "health needs no token" "${CODE}" "200"
+get /api/state
+check "state without a token is 401" "${CODE}" "401"
+get /api/state wrong-token
+check "state with the wrong token is 401" "${CODE}" "401"
+get /api/state "${TOKEN}"
+check "state with the token is 200" "${CODE}" "200"
+check "and carries the roster" "$(print -r -- "$BODY" | jq -r '.accounts.accounts[1].alias')" "work"
+check "the status" "$(print -r -- "$BODY" | jq -r '.status.claude.matches')" "false"
+check "the sessions" "$(print -r -- "$BODY" | jq -r '.sessions[0].host.window')" "claude-work"
+check "and the terminal link" "$(print -r -- "$BODY" | jq -r '.terminal')" "http://10.66.0.2:7681/"
+contains "each read was one CLI call" "$(calls)" "accounts --json"
+get /nope "${TOKEN}"
+check "an unknown path is 404" "${CODE}" "404"
+get /api/nope "${TOKEN}"
+check "an unknown API path is 404" "${CODE}" "404"
+
+post /api/switch '{"entry":"2"}'
+check "a write without a token is 401" "${CODE}" "401"
+check "and nothing ran" "$(calls)" ""
+post /api/switch '{"entry":"2"}' "${TOKEN}"
+check "switch runs the CLI" "${CODE}" "200"
+contains "with the entry" "$(calls)" "accounts switch 2"
+check "and returns its output" "$(print -r -- "$BODY" | jq -r '.call.stdout')" "Switched claude to 2"
+post /api/switch '{"entry":"2","force":true}' "${TOKEN}"
+contains "force adds --force" "$(calls)" "accounts switch 2 --force"
+post /api/switch '{"entry":"9"}' "${TOKEN}"
+check "a CLI refusal is 409" "${CODE}" "409"
+contains "with the reason" "$(print -r -- "$BODY" | jq -r '.call.stderr')" "running in a profile session"
+post /api/switch '{"entry":""}' "${TOKEN}"
+check "an empty entry is 400" "${CODE}" "400"
+post /api/switch '{"entry":"--next"}' "${TOKEN}"
+check "an option as the entry is 400" "${CODE}" "400"
+post /api/switch 'not json' "${TOKEN}"
+check "a body that is not JSON is 400" "${CODE}" "400"
+post /api/switch '[1]' "${TOKEN}"
+check "a body that is not an object is 400" "${CODE}" "400"
+: > "${LOG}"
+
+post /api/fetch '{}' "${TOKEN}"
+check "fetch runs the poll" "${CODE}" "200"
+contains "as --fetch --json" "$(calls)" "accounts --fetch --json"
+post /api/auto '{}' "${TOKEN}"
+check "auto is a dry run by default" "${CODE}" "200"
+contains "with --dry-run" "$(calls)" "accounts auto --once --json --dry-run"
+check "and the events parsed" "$(print -r -- "$BODY" | jq -r '.events[1] | [.event, .to] | join(" ")')" "switch 1"
+post /api/auto '{"dryRun":false,"tool":"claude"}' "${TOKEN}"
+contains "a real tick drops --dry-run and names the tool" "$(calls)" "accounts auto --once --json --tool claude"
+post /api/auto '{"tool":"gemini"}' "${TOKEN}"
+check "an unknown tool is 400" "${CODE}" "400"
+
+post /api/sessions/start "{\"tool\":\"codex\",\"dir\":\"${BASE}\"}" "${TOKEN}"
+check "start runs the sessions command" "${CODE}" "200"
+contains "detached, in the directory" "$(calls)" "claude-sessions --start codex ${BASE} --detach"
+post /api/sessions/start "{\"tool\":\"claude\",\"dir\":\"${BASE}\",\"args\":[\"--model\",\"x\"]}" "${TOKEN}"
+contains "arguments go after --" "$(calls)" "claude-sessions --start claude ${BASE} --detach -- --model x"
+post /api/sessions/start '{"tool":"claude","dir":"/no/such/dir"}' "${TOKEN}"
+check "a missing directory is 400" "${CODE}" "400"
+post /api/sessions/start "{\"tool\":\"vim\",\"dir\":\"${BASE}\"}" "${TOKEN}"
+check "an unknown tool is 400" "${CODE}" "400"
+post /api/sessions/start "{\"tool\":\"claude\",\"dir\":\"${BASE}\",\"args\":\"x\"}" "${TOKEN}"
+check "args that are not a list are 400" "${CODE}" "400"
+
+kill "${SERVER_PID}" 2>/dev/null; wait "${SERVER_PID}" 2>/dev/null; SERVER_PID=""
+excludes "the server never printed the token" "$(<"${BASE}/server.err")" "${TOKEN}"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

@@ -2899,6 +2899,63 @@ run_backup --force
 check    "the backup exits clean"                "${RC}" "0"
 absent   "no codex payload dir is made"          "${FIX_ROOT}/instances/TestDistro/codex"
 
+# ---------------------------------------------------------------------------
+# Accounts: the stored logins of `flakelab accounts` ride the payload
+# ---------------------------------------------------------------------------
+print -r -- "the accounts store's roster and entries round-trip; the cache, the profiles and the stash stay on the box"
+fixture accounts-payload
+AC="${FIX_HOME}/.local/state/flakelab/accounts"
+AC_BAK="${FIX_ROOT}/instances/TestDistro/accounts"
+mkdir -p "${AC}/1" "${AC}/2" "${AC}/profiles/2" "${AC}/unclaimed/x"
+chmod 700 "${AC}"
+print -r -- '{"version":1,"active":{"claude":1},"next":3,"accounts":{"1":{"tool":"claude","id":"a"},"2":{"tool":"codex","id":"b"}}}' > "${AC}/accounts.json"
+print -r -- '{"claudeAiOauth":{"accessToken":"t"}}' > "${AC}/1/credentials.json"
+print -r -- '{"oauthAccount":{"emailAddress":"a@example.com"}}' > "${AC}/1/identity.json"
+print -r -- '{"tokens":{"refresh_token":"r"}}'  > "${AC}/2/auth.json"
+print -r -- '{"version":1,"entries":{}}'         > "${AC}/usage.json"
+print -r -- '{"lastSwitchAt":null}'              > "${AC}/auto.json"
+print -r -- '{"event":"poll"}'                   > "${AC}/auto.log"
+print -r -- '{"tokens":{}}'                      > "${AC}/profiles/2/auth.json"
+print -r -- '{"tokens":{}}'                      > "${AC}/unclaimed/x/auth.json"
+run_backup --force
+check   "the backup exits clean"                   "${RC}" "0"
+same    "the roster is archived"                   "${AC}/accounts.json"      "${AC_BAK}/accounts.json"
+same    "an entry's credential is archived"        "${AC}/1/credentials.json" "${AC_BAK}/1/credentials.json"
+same    "and its identity"                         "${AC}/1/identity.json"    "${AC_BAK}/1/identity.json"
+same    "a Codex entry's auth.json too"            "${AC}/2/auth.json"        "${AC_BAK}/2/auth.json"
+check   "the archived credential is owner-only"    "$(stat -c '%a' "${AC_BAK}/1/credentials.json")" "600"
+check   "and so are the payload's directories"     "$(stat -c '%a' "${AC_BAK}") $(stat -c '%a' "${AC_BAK}/1")" "700 700"
+absent  "the usage cache stays on the box"         "${AC_BAK}/usage.json"
+absent  "the engine's state too"                   "${AC_BAK}/auto.json"
+absent  "and its log"                              "${AC_BAK}/auto.log"
+absent  "profiles never enter the payload"         "${AC_BAK}/profiles"
+absent  "nor does the unclaimed stash"             "${AC_BAK}/unclaimed"
+
+print -r -- "an entry gone from the store leaves the payload"
+mv "${AC}/2" "${FIX_HOME}/entry-2-aside"
+run_backup --force
+check   "the backup exits clean"                   "${RC}" "0"
+absent  "the archived entry is removed"            "${AC_BAK}/2"
+exists  "the other stays"                          "${AC_BAK}/1/credentials.json"
+
+print -r -- "a restore brings the store back, owner-only, and keeps a login refreshed here"
+mv "${AC}" "${FIX_HOME}/store-aside"
+run_restore
+check   "the restore exits clean"                  "${RC}" "0"
+same    "the roster comes back"                    "${AC_BAK}/accounts.json"      "${AC}/accounts.json"
+same    "the entry comes back"                     "${AC_BAK}/1/credentials.json" "${AC}/1/credentials.json"
+check   "the restored store, entry and file are owner-only" "$(stat -c '%a' "${AC}") $(stat -c '%a' "${AC}/1") $(stat -c '%a' "${AC}/1/credentials.json")" "700 700 600"
+print -r -- '{"claudeAiOauth":{"accessToken":"refreshed here"}}' > "${AC}/1/credentials.json"
+run_restore
+check    "the second restore exits clean"          "${RC}" "0"
+contains "a login refreshed on this box is kept"   "$(< "${AC}/1/credentials.json")" "refreshed here"
+
+print -r -- "without a store nothing is archived"
+fixture accounts-none
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+absent   "no accounts payload dir is made"         "${FIX_ROOT}/instances/TestDistro/accounts"
+
 print -r -- "Codex memories go to the state root whole, with no index merge"
 state_fixture codex-memory
 codex_home

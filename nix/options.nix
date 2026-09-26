@@ -346,6 +346,131 @@ in
       description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\", skipAutoPermissionPrompt, remoteControlAtStartup, and removal of the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would otherwise defeat the feature-flag evaluation Remote Control depends on. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the force-push deny floor) is written regardless.";
     };
 
+    # Its own switch, apart from the trust bundle above: steering a session from
+    # the Claude app is a different decision from auto-approving its tools.
+    claudeRemoteControl = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Connect Claude Code's Remote Control at the start of every interactive session (settings.remoteControlAtStartup = true), so each one is steerable from claude.ai/code and the Claude app, and remove the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would defeat the feature-flag evaluation Remote Control depends on. Off by default: the session transcript is stored on Anthropic's servers while a session is connected, which an adopter must choose. claudeAgentDefaults implies it. Needs a full claude.ai login on the box and, on Team and Enterprise, the admin toggle.";
+    };
+
+    # The account switcher's knobs (accounts.md). Flat options rather than a
+    # submodule, so mkSystem's attrset form and the overlay template can set
+    # them like every other key.
+    accounts = {
+      autoSwitchInterval = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "2min";
+        description = "systemd time span (OnUnitActiveSec syntax) between ticks of `flakelab accounts auto --once`, the engine that switches a tool's live login to another stored one before the live one hits a rate limit. null (the default) schedules no timer; the engine can still be run by hand. The poll plan, not the timer, decides how often the usage endpoint is asked, so a short interval costs nothing against its budget.";
+      };
+      autoSwitchTools = mkOption {
+        type = types.listOf (
+          types.enum [
+            "claude"
+            "codex"
+            "kiro"
+          ]
+        );
+        default = [ "claude" ];
+        description = "The tools the engine decides for. Only a tool whose adapter reads usage can be listed; Kiro's monthly allowance never steers a switch.";
+      };
+      sessionThreshold = mkOption {
+        type = types.ints.between 50 100;
+        default = 85;
+        description = "Switch when the live entry's session window (Claude's rolling 5h, Codex's primary) reaches this percent. The LOWEST bar on purpose: a fan-out of subagents can fill that window from 85 to 100 between two polls, and an overshoot is a hard stop mid-task. 100 means never move proactively on this window; only an actual limit does.";
+      };
+      weekThreshold = mkOption {
+        type = types.ints.between 50 100;
+        default = 97;
+        description = "Switch when the live entry's weekly window reaches this percent. It creeps rather than bursts, so the week can be squeezed close to full before moving.";
+      };
+      modelThreshold = mkOption {
+        type = types.ints.between 50 100;
+        default = 95;
+        description = "Switch when a counted per-model weekly window reaches this percent; weekly too, so also high.";
+      };
+      modelWindows = mkOption {
+        type = types.listOf types.str;
+        default = [ "all" ];
+        description = "Which per-model weekly windows count, by display name as the account reports them (case-insensitive), or [\"all\"] for every one. Narrow it when a plan reports windows that should not steer switching.";
+      };
+      strategy = mkOption {
+        type = types.enum [
+          "soonest-reset"
+          "best"
+        ];
+        default = "soonest-reset";
+        description = "How qualifying targets are ordered: soonest-reset tries the entry whose weekly windows renew first (quota spent where it returns soonest), best the one with the most weekly headroom.";
+      };
+    };
+
+    # A push when a session waits on you (remote-sessions.md, phase 3).
+    notify = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Write a Claude Code Notification hook that runs `flakelab notify`, which posts the event, the directory and the `flakelab sessions --attach <id>` line to an ntfy topic. The topic URL and token come from ~/.config/tyc/secrets.env (NTFY_URL, NTFY_TOKEN) at use time, never from the store. Redundant with the Claude app's own push where Remote Control is on; it is for Codex (whose `notify` hook in ~/.codex/config.toml calls `flakelab notify --codex`) and for anyone without the app. Off, a hook this option wrote is removed again; a hand-added one is left alone.";
+      };
+      events = mkOption {
+        type = types.listOf types.str;
+        default = [
+          "permission_prompt"
+          "idle_prompt"
+          "agent_needs_input"
+          "quota_auto_resume_pending"
+          "quota_auto_resume_fired"
+        ];
+        description = "The Notification types the hook fires on (its matcher is these joined with |).";
+      };
+    };
+
+    # mosh beside sshd on the VM (remote-sessions.md, phase 4): roaming and a
+    # sleeping phone survive; the UDP range 60000-61000 is opened by the
+    # NixOS module. Nothing for wsl, where no port can be opened from inside.
+    mosh.enable = mkOption {
+      type = types.bool;
+      default = false;
+      description = "proxmox-vm only: programs.mosh, a mosh-server beside sshd for clients on a flaky link or a changing address (a phone over WireGuard). The NixOS module opens UDP 60000-61000; sshd itself is unchanged. Ignored on wsl.";
+    };
+
+    # The browser front end (remote-sessions.md): the dashboard and, on top,
+    # a terminal in a browser tab. Both user services, both behind the one
+    # token `flakelab web --print-token` shows.
+    web = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Run `flakelab web` as the user service flakelab-web: the dashboard over the stored logins (windows, switch) and the running sessions (host window, start in tmux), every API call behind the bearer token in ~/.local/state/flakelab/web/token, made on the first start. Bind it to the box's WireGuard address to reach it from a phone; it refuses every-interface binds.";
+      };
+      bind = mkOption {
+        type = types.str;
+        default = "127.0.0.1";
+        example = "10.66.0.2";
+        description = "The address the dashboard and the terminal listen on: loopback, or the box's WireGuard address. Never a public interface.";
+      };
+      port = mkOption {
+        type = types.port;
+        default = 8321;
+        description = "The dashboard's port.";
+      };
+      terminal = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Also run ttyd as the user service flakelab-ttyd: a terminal in a browser tab attached to the agents tmux session (created when absent), on the same address, basic auth with user `flakelab` and the dashboard's token as the password. The dashboard links to it. A shell in a browser tab behind a long-lived token is the price of no SSH app on the phone; keep it on the tunnel.";
+      };
+      terminalPort = mkOption {
+        type = types.port;
+        default = 7681;
+        description = "ttyd's port.";
+      };
+      tmuxSession = mkOption {
+        type = types.str;
+        default = "agents";
+        description = "The tmux session the browser terminal attaches: the one `flakelab sessions --start` hosts windows in.";
+      };
+    };
+
     claudeMdExtra = mkOption {
       type = types.lines;
       default = "";
