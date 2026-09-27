@@ -46,7 +46,9 @@ the private overlay `flakelab-config`, which imports this flake via
   - `accounts` (new, `accounts`): several logins per agent CLI, one live
     per tool. `add <tool>` snapshots the live login into
     `~/.local/state/flakelab/accounts/<id>/` (never reused ids; alias, label
-    or id name an entry), `switch <entry>` makes it the live login inside one
+    or id name an entry), `add <tool> --login` runs the tool's own login in
+    a scratch profile and stores that beside the live one (`--switch` makes
+    it live), `switch <entry>` makes it the live login inside one
     transaction under our flock and the tool's own locks (Claude Code: the
     `~/.claude.lock` / `~/.claude.json.lock` mkdir protocol; a held lock
     refuses with exit 2 and changes nothing), writing the outgoing login back

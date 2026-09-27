@@ -206,7 +206,7 @@ which are facts about the tools and their APIs rather than anyone's code.
 
 ### The adapter contract
 
-Each tool answers the same eight questions; the roster and the commands never
+Each tool answers the same nine questions; the roster and the commands never
 ask anything else. Where the answer is "no", the command that needs it says so
 and stops rather than improvising.
 
@@ -220,6 +220,7 @@ and stops rather than improvising.
 | may we refresh an inactive stored token  | yes, and must persist first                                                             | no: the tool refreshes on first use after a switch                                                                            | no: same                                                                                                                      |
 | profile: the env var that moves the home | `CLAUDE_CONFIG_DIR`                                                                     | `CODEX_HOME`                                                                                                                  | `KIRO_HOME` for `~/.kiro`; the secret store needs its own move (verify 8)                                                     |
 | profile: what is shared by symlink       | settings, keybindings, `CLAUDE.md`, skills, commands, agents, projects, `history.jsonl` | `config.toml`, `*.config.toml`, `AGENTS*.md`, `hooks.json`, `hooks/`, `rules/`, `memories/`, `sessions/`, `.credentials.json` | agents, skills, steering, settings, sessions                                                                                  |
+| a login into a profile (`add --login`)   | `claude auth login` under `CLAUDE_CONFIG_DIR`, onboarding marked done first             | `codex login` under `CODEX_HOME`                                                                                              | `kiro-cli login` under `KIRO_HOME` and `XDG_DATA_HOME`; whoami asked there for the label                                      |
 
 Never shared, per tool: what carries the identity or is instance-scoped,
 `.claude.json`, `.credentials.json`, `plugins/`, `sessions/`, `ide/` for
@@ -294,6 +295,8 @@ argument list through unchanged, so a verb costs the router nothing.
 ```
 flakelab accounts                          the roster, grouped by tool, with cached headroom; --fetch refreshes, --json
 flakelab accounts add <tool> [--alias N]   snapshot the tool's live login into the store
+flakelab accounts add <tool> --login [--switch] [-- ARGS]
+                                           the tool's own login in a scratch profile, stored beside the live one
 flakelab accounts switch ID                make a stored account its tool's live login
 flakelab accounts switch --next <tool>     rotate in id order, skipping disabled and at-limit
 flakelab accounts switch --soonest <tool>  the account whose weekly windows renew first (auto's order)
@@ -311,8 +314,8 @@ Exit codes follow the sibling scripts: 0, 1 for a failure, 2 for a refusal or
 usage error. `--json` prints one document on stdout and every notice on
 stderr, so a caller parses stdout alone.
 
-Implemented so far: the listing with its usage column and `--fetch`, `add`,
-`switch <entry>`, `switch --next`, `--soonest` and `--best`, `alias`,
+Implemented so far: the listing with its usage column and `--fetch`, `add`
+and `add --login`, `switch <entry>`, `switch --next`, `--soonest` and `--best`, `alias`,
 `disable`, `enable`, `remove` and `status` with the cached windows, with the
 Claude Code adapter. `run`, `env` and `auto` come with their phases below.
 
@@ -326,11 +329,24 @@ place: the credential is rewritten, a quarantine on it is lifted, the roster id
 stays. Anything else takes `next`. Either way the entry becomes that tool's
 `active`, since it is the live login.
 
-For Codex this is also the only supported way to get a second account in: log
-in with the tool, `add codex`, log out, log in as the next, `add codex`. A
-second `codex login` on an account that is already stored invalidates the
-stored seat, so the listing marks a Codex token that has stopped working as
-`seat revoked` rather than retrying it.
+`add <tool> --login` gets a second account in without touching the first:
+the tool's own login (`claude auth login`, `codex login`, `kiro-cli login`;
+the arguments after `--` are the tool's, `--email` and the like) runs pinned
+to a scratch profile, a 0700 directory under the store named by the tool's home
+variable, with the override variables scrubbed, outside our lock (it waits on
+a browser, and the engine's tick must not wait with it). What it made is read
+with the adapter's `login_identity` and `login_snapshot` and stored exactly as
+a live login would be, the scratch removed; the entry is not `active`, since
+the live login is still the live login, unless `--switch`, which then runs
+the switch transaction. An abandoned login stores nothing; a Kiro login that
+shares its id with a stored entry and cannot be told apart offline is kept
+under `unclaimed/` and refused; an alias already taken refuses after the
+login, the store as it was. Nothing is ever logged out: the one-account
+sequence (log in with the tool, `add`, log out, log in as the next) is no
+longer needed for any tool. A second `codex login` on an account that is
+already stored invalidates the stored seat, so that account's entry is
+refreshed in place and the listing marks a Codex token that has stopped
+working as `seat revoked` rather than retrying it.
 
 ### Switching
 

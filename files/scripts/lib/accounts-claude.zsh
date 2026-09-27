@@ -45,29 +45,36 @@ acct_claude_process() { print -r -- claude }
 #   exit 1  no login (no oauthAccount, or no credential file)
 #   exit 3  an API-key login (primaryApiKey, or a credential that is not the
 #           OAuth blob): a different auth axis, never an entry
-acct_claude_identity() {
-  local cfg
-  [[ -r "${ACCT_CLAUDE_CONFIG}" ]] || return 1
+acct_claude_identity() { acct_claude_identity_of "${ACCT_CLAUDE_CONFIG}" "${ACCT_CLAUDE_CREDS}" }
+
+# The identity a config file ($1) and a credential file ($2) carry together.
+acct_claude_identity_of() {
+  local config="$1" creds="$2" cfg
+  [[ -r "$config" ]] || return 1
   cfg="$(jq -c '{
       id: (.oauthAccount.accountUuid // ""),
       label: (.oauthAccount.emailAddress // ""),
       org: (.oauthAccount.organizationName // "personal"),
       apiKey: ((.primaryApiKey // "") != "")
-    }' "${ACCT_CLAUDE_CONFIG}" 2>/dev/null)" || return 1
+    }' "$config" 2>/dev/null)" || return 1
   [[ "$(print -r -- "$cfg" | jq -r '.apiKey')" == true ]] && return 3
   [[ -n "$(print -r -- "$cfg" | jq -r '.id')" ]] || return 1
-  [[ -r "${ACCT_CLAUDE_CREDS}" ]] || return 1
-  jq -e '.claudeAiOauth.accessToken? // empty | length > 0' "${ACCT_CLAUDE_CREDS}" >/dev/null 2>&1 || return 3
+  [[ -r "$creds" ]] || return 1
+  jq -e '.claudeAiOauth.accessToken? // empty | length > 0' "$creds" >/dev/null 2>&1 || return 3
   print -r -- "$cfg" | jq -c 'del(.apiKey)'
 }
 
 # Copy the live login into DIR: the credential verbatim, the identity block
 # plus the theme (a profile seeded from it must not start on onboarding).
-acct_claude_read_live() {
-  local dir="$1"
-  [[ -r "${ACCT_CLAUDE_CREDS}" && -r "${ACCT_CLAUDE_CONFIG}" ]] || return 1
-  (umask 077; cp -- "${ACCT_CLAUDE_CREDS}" "${dir}/credentials.json.tmp") || return 1
-  (umask 077; jq '{oauthAccount: .oauthAccount, theme: (.theme // null)}' "${ACCT_CLAUDE_CONFIG}" > "${dir}/identity.json.tmp") || { rm -f "${dir}/credentials.json.tmp"; return 1 }
+acct_claude_read_live() { acct_claude_read_from "${ACCT_CLAUDE_CREDS}" "${ACCT_CLAUDE_CONFIG}" "$1" }
+
+# The login in credential file $1 and config file $2 into DIR $3, in the
+# store's layout.
+acct_claude_read_from() {
+  local creds="$1" config="$2" dir="$3"
+  [[ -r "$creds" && -r "$config" ]] || return 1
+  (umask 077; cp -- "$creds" "${dir}/credentials.json.tmp") || return 1
+  (umask 077; jq '{oauthAccount: .oauthAccount, theme: (.theme // null)}' "$config" > "${dir}/identity.json.tmp") || { rm -f "${dir}/credentials.json.tmp"; return 1 }
   mv -f -- "${dir}/credentials.json.tmp" "${dir}/credentials.json" || return 1
   mv -f -- "${dir}/identity.json.tmp" "${dir}/identity.json" || return 1
 }
@@ -466,6 +473,28 @@ acct_claude_profile_stale() {
   [[ "${src}/credentials.json" -nt "${dir}/.credentials.json" ]] || return 1
   ! cmp -s -- "${src}/credentials.json" "${dir}/.credentials.json"
 }
+
+# --- a login beside the live one ---------------------------------------------
+
+# `claude auth login` pinned to the scratch profile DIR ($1; the rest are the
+# tool's own arguments, --email and the like), with the override variables
+# scrubbed so the browser flow logs in the account, not a key in the shell.
+# Onboarding is marked done first, so the login is the only prompt.
+acct_claude_login() {
+  local dir="$1" theme=""
+  local -a unsets
+  shift
+  [[ -r "${ACCT_CLAUDE_CONFIG}" ]] && theme="$(jq -r '.theme // empty' "${ACCT_CLAUDE_CONFIG}" 2>/dev/null)"
+  [[ -s "${dir}/.claude.json" ]] || (umask 077; jq -n --arg theme "$theme" '{hasCompletedOnboarding: true} + (if $theme != "" then {theme: $theme} else {} end)' > "${dir}/.claude.json") || return 1
+  for v in $(acct_claude_scrub_vars); do unsets+=(-u "$v"); done
+  env "${unsets[@]}" CLAUDE_CONFIG_DIR="$dir" claude auth login "$@"
+}
+
+# The identity of the login in profile DIR, as acct_claude_identity.
+acct_claude_login_identity() { acct_claude_identity_of "$1/.claude.json" "$1/.credentials.json" }
+
+# The login in profile DIR ($1) into store directory $2.
+acct_claude_login_snapshot() { acct_claude_read_from "$1/.credentials.json" "$1/.claude.json" "$2" }
 
 # Whether a session runs on the profile: its own registry, sessions/<pid>.json,
 # names a live pid.
