@@ -69,7 +69,8 @@ in
         Service = {
           ExecStart =
             "${scripts.web}/bin/web --bind ${lib.escapeShellArg cfg.web.bind} --port ${toString cfg.web.port}"
-            + lib.optionalString terminal " --terminal-socket ${socket}";
+            + lib.optionalString terminal " --terminal-socket ${socket}"
+            + lib.optionalString (cfg.web.logo != null) " --logo ${lib.escapeShellArg "${cfg.web.logo}"}";
           Restart = "on-failure";
           RestartSec = "5s";
         };

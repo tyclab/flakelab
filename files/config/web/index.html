@@ -18,6 +18,9 @@
   h1 { font-size: 20px; margin: 0 0 12px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
   h1::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--accent); align-self: center; }
   h1 small { color: var(--mut); font-weight: normal; font-size: 13px; }
+  /* A configured logo (web.logo) stands where the accent square would. */
+  h1 img.logo { width: 24px; height: 24px; border-radius: 6px; align-self: center; }
+  h1.logo::before { display: none; }
   h2 { font-size: 13px; margin: 20px 0 8px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
   a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-ring); }
   a:hover { border-bottom-color: var(--accent); }
@@ -48,7 +51,7 @@
 </style>
 </head>
 <body>
-<h1>flakelab <small id="clock"></small> <small><a id="terminal" href="#" hidden>terminal ↗</a></small></h1>
+<h1><img id="logo" class="logo" alt="" hidden>flakelab <small id="clock"></small> <small><a id="terminal" href="#" hidden>terminal ↗</a></small></h1>
 
 <div class="card" id="auth" hidden>
   <form class="row" id="tokenform">
@@ -164,6 +167,17 @@
     try { render(await api("/api/state")); $("#auth").hidden = true; }
     catch (e) { if (e.message !== "token needed") log(`state: ${e.message}`, true); }
   };
+
+  // The logo needs no token, like the page: shown, and made the tab icon,
+  // when the server has one.
+  fetch("/api/health").then((r) => r.json()).then((h) => {
+    if (!h.logo) return;
+    $("#logo").src = "/logo"; $("#logo").hidden = false;
+    document.querySelector("h1").classList.add("logo");
+    const link = document.createElement("link");
+    link.rel = "icon"; link.href = "/logo";
+    document.head.appendChild(link);
+  }).catch(() => {});
 
   $("#tokenform").onsubmit = (ev) => {
     ev.preventDefault();

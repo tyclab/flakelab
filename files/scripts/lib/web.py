@@ -29,6 +29,8 @@ Environment (set by the zsh wrapper):
   FLAKELAB_WEB_STATIC                       the directory holding index.html
   FLAKELAB_WEB_ACCOUNTS, FLAKELAB_WEB_SESSIONS   the two commands
   FLAKELAB_WEB_TERMINAL_SOCKET              optional: ttyd's Unix socket
+  FLAKELAB_WEB_LOGO                         optional: an image served at /logo, the
+                                            page's heading mark and tab icon
   FLAKELAB_WEB_TIMEOUT                      seconds per CLI call (default 60)
 
 API (all JSON):
@@ -72,6 +74,17 @@ STATIC = Path(
 ACCOUNTS = os.environ.get("FLAKELAB_WEB_ACCOUNTS", "accounts")
 SESSIONS = os.environ.get("FLAKELAB_WEB_SESSIONS", "claude-sessions")
 TERMINAL_SOCKET = os.environ.get("FLAKELAB_WEB_TERMINAL_SOCKET", "")
+LOGO = os.environ.get("FLAKELAB_WEB_LOGO", "")
+# The image types a logo file may be, by suffix; anything else is refused at
+# start so a stray path never serves as the page's mark.
+LOGO_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 TIMEOUT = int(os.environ.get("FLAKELAB_WEB_TIMEOUT", "60"))
 TOOLS = ("claude", "codex", "kiro")
 # A connection that sends nothing for this long is dropped: an idle
@@ -383,7 +396,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if path == "/api/health":
-            self.send_json(200, {"ok": True})
+            self.send_json(200, {"ok": True, "logo": bool(LOGO)})
+            return
+        if path == "/logo":
+            # Static like the page: no token, cacheable, only when configured.
+            logo = Path(LOGO) if LOGO else None
+            if logo is None or not logo.is_file():
+                self.send_json(404, {"error": "no logo is configured"})
+                return
+            data = logo.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", LOGO_TYPES[logo.suffix.lower()])
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
             return
         if not path.startswith("/api/"):
             self.send_json(404, {"error": "not found"})
@@ -490,6 +517,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    if LOGO and Path(LOGO).suffix.lower() not in LOGO_TYPES:
+        sys.stderr.write(
+            f"web: refusing FLAKELAB_WEB_LOGO {LOGO}: not an image type ({', '.join(sorted(LOGO_TYPES))})\n"
+        )
+        sys.exit(2)
     refusal = bind_refusal(BIND)
     if refusal:
         sys.stderr.write(f"flakelab web: {refusal}\n")

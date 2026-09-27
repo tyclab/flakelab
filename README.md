@@ -490,8 +490,9 @@ VM's sshd, and `files/config/windows/enable-openssh-host.ps1` opens a WSL
 distro's Windows host on the WireGuard subnet. `web.enable = true;` with
 `web.bind` set to the box's WireGuard address serves a dashboard (the logins
 with their windows and a switch button, the sessions, a start form) behind a
-token, and `web.terminal = true;` a browser terminal on the `agents` tmux
-session beside it.
+token, `web.terminal = true;` a browser terminal on the `agents` tmux
+session beside it, and `web.logo` an image of the overlay's choosing as the
+page's mark and tab icon.
 [`remote-sessions.md`](remote-sessions.md) has
 the whole picture, the phone included.
 

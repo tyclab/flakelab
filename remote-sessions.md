@@ -162,6 +162,7 @@ flakelab.web = {
   bind     = "10.66.0.2";   # this box's WireGuard address
   port     = 8321;
   terminal = true;
+  logo     = ./web-logo.svg; # the heading mark and tab icon, served at /logo
 };
 ```
 

@@ -464,6 +464,12 @@ in
         default = "agents";
         description = "The tmux session the browser terminal attaches: the one `flakelab sessions --start` hosts windows in.";
       };
+      logo = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        example = "./web-logo.svg";
+        description = "An image (svg, png, ico, jpg or webp) the dashboard shows as its heading mark and tab icon, served at /logo without the token like the page itself. null shows an accent square. The file is copied into the store, so an overlay keeps it beside its flake.";
+      };
     };
 
     claudeMdExtra = mkOption {
