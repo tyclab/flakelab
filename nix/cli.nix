@@ -18,6 +18,9 @@ let
       scripts.nix-doctor
       scripts.nix-backup
       scripts.claude-sessions
+      scripts.accounts
+      scripts.notify
+      scripts.web
       scripts.nix-clone-repos
       scripts.nix-provision
       scripts.nix-overlay-generate

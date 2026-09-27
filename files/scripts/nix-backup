@@ -118,7 +118,7 @@ INSTANCE_ROOT="${BACKUP_ROOT}/instances/${DISTRO_NAME}"
 SHARED_CATEGORIES=(ssh gitconfig secrets)
 # Everything else is per-instance: .gitignore names the shared/ categories one by
 # one, so a new shared category stays committable until .gitignore learns about it.
-INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude codex helm)
+INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude codex helm accounts)
 
 resolve_backup_path() {
   local category="$1"
@@ -142,6 +142,7 @@ recompute_backup_paths() {
   BACKUP_CLAUDE="$(resolve_backup_path claude)"
   BACKUP_CODEX="$(resolve_backup_path codex)"
   BACKUP_HELM="$(resolve_backup_path helm)"
+  BACKUP_ACCOUNTS="$(resolve_backup_path accounts)"
 }
 
 recompute_backup_paths
@@ -1140,6 +1141,23 @@ do_restore() {
     fix_script_permissions "${HOME_DIR}/.claude"
   fi
 
+  log_info "--- Accounts ---"
+  if [[ -d "${BACKUP_ACCOUNTS}" ]]; then
+    # The stored logins of `flakelab accounts`: the roster and one directory
+    # per entry. local wins: a login refreshed on this box is newer than the
+    # archived copy (the tools rotate tokens in use).
+    local acct_store="${HOME_DIR}/.local/state/flakelab/accounts" acct_entry acct_file
+    mkdir -p "${acct_store:h}" 2> /dev/null
+    ensure_private_dir "${acct_store}"
+    restore_private_file "${BACKUP_ACCOUNTS}/accounts.json" "${acct_store}/accounts.json" true
+    for acct_entry in "${BACKUP_ACCOUNTS}"/<->(N/); do
+      ensure_private_dir "${acct_store}/${acct_entry:t}"
+      for acct_file in "${acct_entry}"/*(N.); do
+        restore_private_file "${acct_file}" "${acct_store}/${acct_entry:t}/${acct_file:t}" true
+      done
+    done
+  fi
+
   log_info "--- Codex ---"
   if [[ -d "${BACKUP_CODEX}" ]] || ${STATE_CONFIGURED}; then
     ensure_private_dir "${HOME_DIR}/.codex"
@@ -1300,6 +1318,29 @@ do_backup() {
   backup_file "${HOME_DIR}/.claude/plugins/blocklist.json"          "${BACKUP_CLAUDE}/plugins/blocklist.json"
   backup_file "${HOME_DIR}/.claude/CLAUDE.md"             "${BACKUP_CLAUDE}/CLAUDE.md"
   backup_file "${HOME_DIR}/.claude/statusline-command.sh" "${BACKUP_CLAUDE}/statusline-command.sh"
+
+  log_info "--- Accounts ---"
+  if [[ -d "${HOME_DIR}/.local/state/flakelab/accounts" ]]; then
+    # The stored logins of `flakelab accounts` (accounts.md, "Carried by
+    # backup, never in the state root"): the roster and one directory per
+    # entry, 0700 and 0600 like ~/.codex/auth.json. The usage cache, the
+    # engine's state and log, the profiles and the unclaimed stash are this
+    # box's own and stay here; an entry gone from the store leaves the payload.
+    local acct_store="${HOME_DIR}/.local/state/flakelab/accounts" acct_entry acct_file
+    ensure_private_dir "${BACKUP_ACCOUNTS}"
+    backup_private_file "${acct_store}/accounts.json" "${BACKUP_ACCOUNTS}/accounts.json"
+    for acct_entry in "${acct_store}"/<->(N/); do
+      ensure_private_dir "${BACKUP_ACCOUNTS}/${acct_entry:t}"
+      for acct_file in "${acct_entry}"/*(N.); do
+        backup_private_file "${acct_file}" "${BACKUP_ACCOUNTS}/${acct_entry:t}/${acct_file:t}"
+      done
+    done
+    for acct_entry in "${BACKUP_ACCOUNTS}"/<->(N/); do
+      [[ -d "${acct_store}/${acct_entry:t}" ]] && continue
+      if ${DRY_RUN}; then log_dry "Would remove archived entry ${acct_entry:t} (gone from the store)"
+      else rm -rf -- "${BACKUP_ACCOUNTS:?}/${acct_entry:t}" && log_info "Removed archived entry ${acct_entry:t} (gone from the store)"; fi
+    done
+  fi
 
   log_info "--- Codex ---"
   if [[ -d "${HOME_DIR}/.codex" || -d "${HOME_DIR}/.agents/skills" ]]; then

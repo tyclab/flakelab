@@ -282,6 +282,58 @@ if installs codex; then
   fi
 fi
 
+# Accounts — the stored logins of `flakelab accounts`: the store's modes, the
+# quarantined entries, drift between the roster and the live logins, the timer.
+log_head "Accounts"
+ACCT_STORE="${HOME}/.local/state/flakelab/accounts"
+if [[ ! -d "${ACCT_STORE}" ]]; then
+  log_ok "no stored logins (flakelab accounts add <tool> starts the store)"
+else
+  _acct_mode="$(stat -c %a "${ACCT_STORE}" 2> /dev/null)"
+  if [[ "${_acct_mode}" == 700 ]]; then
+    log_ok "store is owner-only (${ACCT_STORE})"
+  else
+    log_warn "store is mode ${_acct_mode}, expected 700: ${ACCT_STORE}"
+    log_hint "chmod 700 ${ACCT_STORE}"
+  fi
+  _acct_loose=()
+  for _acct_f in "${ACCT_STORE}"/accounts.json(N.) "${ACCT_STORE}"/<->/*(N.) "${ACCT_STORE}"/profiles/*/.credentials.json(N.) "${ACCT_STORE}"/profiles/*/auth.json(N.); do
+    [[ "$(stat -c %a "${_acct_f}" 2> /dev/null)" == 600 ]] || _acct_loose+=("${_acct_f}")
+  done
+  if (( ${#_acct_loose} == 0 )); then
+    log_ok "stored logins are owner-only (0600)"
+  else
+    log_warn "${#_acct_loose} stored login file(s) are not 0600"
+    for _acct_f in "${_acct_loose[@]}"; do log_hint "chmod 600 ${_acct_f}"; done
+  fi
+  if [[ -f "${ACCT_STORE}/usage.json" ]]; then
+    _acct_q="$(jq -r '.quarantine // {} | to_entries[] | "\(.key) (\(.value.reason))"' "${ACCT_STORE}/usage.json" 2> /dev/null | tr '\n' ' ')"
+    if [[ -n "${_acct_q}" ]]; then
+      log_warn "quarantined entries: ${_acct_q}"
+      log_hint "log in with the tool again, then: flakelab accounts add <tool>"
+    fi
+  fi
+  if command -v flakelab > /dev/null 2>&1; then
+    _acct_st="$(flakelab accounts status --json 2> /dev/null)"
+    if [[ -n "${_acct_st}" ]]; then
+      for _acct_t in $(print -r -- "${_acct_st}" | jq -r 'to_entries[] | select(.value.matches == false) | .key' 2> /dev/null); do
+        log_warn "${_acct_t}: the live login is not the entry the roster calls active (a login by hand)"
+        log_hint "flakelab accounts add ${_acct_t}"
+      done
+      log_ok "$(print -r -- "${_acct_st}" | jq -r '[to_entries[] | select(.value.active != null)] | length' 2> /dev/null || print 0) tool(s) with an active entry; drift checked"
+    else
+      log_warn "flakelab accounts status --json failed"
+    fi
+  else
+    log_ok "note: flakelab not on PATH; drift not checked"
+  fi
+  if command -v systemctl > /dev/null 2>&1 && systemctl --user list-timers --all 2> /dev/null | grep -q 'flakelab-accounts-autoswitch'; then
+    log_ok "auto-switch timer scheduled (flakelab-accounts-autoswitch.timer)"
+  else
+    log_ok "note: no auto-switch timer (flakelab.accounts.autoSwitchInterval)"
+  fi
+fi
+
 # Kiro plugins — agents / skills / steering / hooks / mcp.json
 log_head "Kiro plugins"
 if [[ -z "${KIRO_PLUGIN_DIR}" ]]; then

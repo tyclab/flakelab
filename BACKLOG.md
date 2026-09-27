@@ -90,3 +90,39 @@ evaluated in place: `nix flake check` and `nix fmt` fail with
 rejects the extension. `nix flake check path:.` works around it; converting the
 clone with `git fetch --refetch --no-filter <remote>` and dropping the promisor
 config fixes it properly. Worth a line in CONTRIBUTING.md.
+
+## Account switching for the agent CLIs
+
+`enhancement` · built; the box-side verifications remain
+
+Several logins per tool on one box, for Claude Code, Codex and Kiro CLI: a
+roster of stored logins, a switch of the live one without a logout, headroom
+on every window the tool reports in the listing and the statusline, a timer
+that switches before the live account hits its limit where the tool exposes
+its usage, and a second account runnable in a second terminal. The design, the
+adapter contract per tool, the cut list and the questions to verify first are
+in [accounts.md](accounts.md). Done: the store, the Claude Code adapter,
+`add`, `switch`, `alias`, `disable`, `enable`, `remove`, `status`, usage in
+the listing and `status`, `switch --soonest`/`--best`, the engine behind
+`auto` with its timer and the quota hook, `run`/`env` profiles, the Codex
+and Kiro adapters, the backup category, the `doctor` section, the statusline
+`ingest`, the suite. Open: the eleven verifications on a box that
+[accounts.md](accounts.md) lists (a switched credential reaching a running
+session, the usage endpoint's shape and limit, Codex and Kiro live pickup,
+what moves Kiro's secret store), and the statusline plugin in the
+marketplace rendering `status --json`.
+
+## Remote sessions
+
+`enhancement` · built; the box-side verifications remain
+
+Sessions that outlive their terminal and can be reached from another device.
+Done: tmux as the session host behind `flakelab sessions --start` /
+`--attach`, Codex and Kiro in the sessions registry beside Claude Code,
+Remote Control on its own option, `flakelab notify` with its hooks, mosh on
+the VM and the Windows-host OpenSSH script for a WSL distro (both over
+WireGuard), `--recent` over the state root, and `flakelab web` as the browser
+front end. Open: the verifications
+[remote-sessions.md](remote-sessions.md) lists (a tmux-hosted session under
+Remote Control, the host route from a phone, mosh through a network change,
+the ntfy payload).

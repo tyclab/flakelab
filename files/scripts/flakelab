@@ -43,6 +43,9 @@ _order=(
   doctor
   backup
   sessions
+  accounts
+  notify
+  web
   clone
   provision
   overlay-gen
@@ -63,6 +66,9 @@ _bin=(
   doctor          nix-doctor
   backup          nix-backup
   sessions        claude-sessions
+  accounts        accounts
+  notify          notify
+  web             web
   clone           nix-clone-repos
   provision       nix-provision
   overlay-gen     nix-overlay-generate
@@ -84,6 +90,9 @@ _file=(
   doctor          nix-doctor
   backup          nix-backup
   sessions        claude-sessions
+  accounts        accounts
+  notify          notify
+  web             web
   clone           ''
   provision       nix-provision
   overlay-gen     nix-overlay-generate
@@ -102,6 +111,9 @@ _args=(
   doctor          ''
   backup          ''
   sessions        ''
+  accounts        ''
+  notify          ''
+  web             ''
   clone           ''
   provision       ''
   overlay-gen     ''
@@ -119,7 +131,10 @@ _desc=(
   update-all      'update, then re-run the GitLab clone sweep'
   doctor          'diagnose this distro and print what to run next'
   backup          'back up home-dir data to the backup root (--restore to read it back)'
-  sessions        'list the running Claude Code sessions (--save before a restart, --open after)'
+  sessions        'the running agent sessions; --start/--attach host one in tmux, --save before a restart, --open after'
+  accounts        'stored logins per agent CLI: add the live one, switch without a logout'
+  notify          'a push (ntfy) when a session waits on you; the Claude and Codex hooks call it'
+  web             'the dashboard in a browser: accounts, sessions, switch and start; token-protected'
   clone           'discover and clone the configured GitLab groups and repos'
   provision       'drive the Windows provisioning script from inside WSL'
   overlay-gen     'scaffold a private flakelab overlay from a user_data.yaml'

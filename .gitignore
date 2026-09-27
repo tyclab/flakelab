@@ -26,4 +26,8 @@ files/config/shared/ssh/keys/*
 
 # Claude Code agent scratch.
 .claude/
+
+# Python bytecode from running lib/web.py.
+__pycache__/
+*.pyc
 nixos.wsl
