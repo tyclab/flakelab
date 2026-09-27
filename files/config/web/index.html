@@ -93,12 +93,15 @@
   // innerHTML, since this page holds the token.
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const pct = (w) => Math.max(0, Math.min(100, Math.round(w.pct || 0)));
-  const barFor = (w) => {
+  const age = (s) => (s == null ? "" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`);
+  // Time to a window's reset: minutes, hours or days; "now" once it passed.
+  const left = (s) => (s == null ? "" : s <= 0 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`);
+  const barFor = (w, now) => {
     const p = pct(w);
     const cls = p >= 95 ? "bad" : p >= 85 ? "warn" : "";
-    return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${esc(w.label)} ${p}%`;
+    const reset = w.resetsAtEpoch == null ? "" : `<span class="mut"> · resets in ${left(w.resetsAtEpoch - now)}</span>`;
+    return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${esc(w.label)} ${p}%${reset}`;
   };
-  const age = (s) => (s == null ? "" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`);
 
   const render = (st) => {
     const now = Math.floor(Date.now() / 1000);
@@ -110,7 +113,7 @@
       if (a.disabled) tags.push('<span class="tag">disabled</span>');
       if (a.quarantine) tags.push(`<span class="tag q">quarantined: ${esc(a.quarantine.reason)}</span>`);
       const u = a.usage || {};
-      const wins = (u.windows || []).map(barFor).join("<br>") || (u.lastError ? `<span class="err">${esc(u.lastError)}</span>` : "—");
+      const wins = (u.windows || []).map((w) => barFor(w, now)).join("<br>") || (u.lastError ? `<span class="err">${esc(u.lastError)}</span>` : "—");
       const fetched = u.fetchedAt ? `<span class="mut"> (${age(now - u.fetchedAt)})</span>` : "";
       const tr = document.createElement("tr");
       tr.innerHTML = `<td>${esc(a.tool)}</td><td>${esc(a.id)}</td><td>${esc(a.alias)}</td><td>${esc(a.label)}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;

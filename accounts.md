@@ -210,17 +210,17 @@ Each tool answers the same nine questions; the roster and the commands never
 ask anything else. Where the answer is "no", the command that needs it says so
 and stops rather than improvising.
 
-| question                                 | Claude Code                                                                             | Codex                                                                                                                         | Kiro CLI                                                                                                                      |
-| ---------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| identity of the live login               | `oauthAccount` in `~/.claude.json`: uuid, email, org                                    | `id_token` claims in `auth.json`: `chatgpt_account_id`, email, plan                                                           | the token row: `start_url`, region (the email from `kiro-cli whoami` is the label only: it needs the network, an id must not) |
-| the credential to store                  | `.credentials.json` + the `oauthAccount` block                                          | `auth.json`, whole                                                                                                            | the two secret rows, exported as JSON                                                                                         |
-| a lock to hold while swapping            | the two `mkdir` locks                                                                   | none known: swap only while no `codex` runs, else refuse                                                                      | none known: swap only while no `kiro-cli` runs, else refuse                                                                   |
-| does a running session follow a switch   | yes on Linux, on its next message (verify 1)                                            | no: a new process; running ones keep their token (verify 6)                                                                   | no: a new process (verify 9)                                                                                                  |
-| usage, and how it is read                | the statusline's `rate_limits` for the live login; the endpoint for the rest            | `codex app-server` → `account/rateLimits/read` in the account's profile                                                       | `GetUsageLimits` with the stored token and profile ARN: one monthly window                                                    |
-| may we refresh an inactive stored token  | yes, and must persist first                                                             | no: the tool refreshes on first use after a switch                                                                            | no: same                                                                                                                      |
-| profile: the env var that moves the home | `CLAUDE_CONFIG_DIR`                                                                     | `CODEX_HOME`                                                                                                                  | `KIRO_HOME` for `~/.kiro`; the secret store needs its own move (verify 8)                                                     |
-| profile: what is shared by symlink       | settings, keybindings, `CLAUDE.md`, skills, commands, agents, projects, `history.jsonl` | `config.toml`, `*.config.toml`, `AGENTS*.md`, `hooks.json`, `hooks/`, `rules/`, `memories/`, `sessions/`, `.credentials.json` | agents, skills, steering, settings, sessions                                                                                  |
-| a login into a profile (`add --login`)   | `claude auth login` under `CLAUDE_CONFIG_DIR`, onboarding marked done first             | `codex login` under `CODEX_HOME`                                                                                              | `kiro-cli login` under `KIRO_HOME` and `XDG_DATA_HOME`; whoami asked there for the label                                      |
+| question                                 | Claude Code                                                                                                                | Codex                                                                                                                         | Kiro CLI                                                                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| identity of the live login               | `oauthAccount` in `~/.claude.json`: uuid, email, org                                                                       | `id_token` claims in `auth.json`: `chatgpt_account_id`, email, plan                                                           | the token row: `start_url`, region (the email from `kiro-cli whoami` is the label only: it needs the network, an id must not) |
+| the credential to store                  | `.credentials.json` + the `oauthAccount` block                                                                             | `auth.json`, whole                                                                                                            | the two secret rows, exported as JSON                                                                                         |
+| a lock to hold while swapping            | the two `mkdir` locks                                                                                                      | none known: swap only while no `codex` runs, else refuse                                                                      | none known: swap only while no `kiro-cli` runs, else refuse                                                                   |
+| does a running session follow a switch   | yes on Linux, on its next message (verify 1)                                                                               | no: a new process; running ones keep their token (verify 6)                                                                   | no: a new process (verify 9)                                                                                                  |
+| usage, and how it is read                | the statusline's `rate_limits` for the live login's session and week, the endpoint for its per-model week and for the rest | `codex app-server` → `account/rateLimits/read` in the account's profile                                                       | `GetUsageLimits` with the stored token and profile ARN: one monthly window                                                    |
+| may we refresh an inactive stored token  | yes, and must persist first                                                                                                | no: the tool refreshes on first use after a switch                                                                            | no: same                                                                                                                      |
+| profile: the env var that moves the home | `CLAUDE_CONFIG_DIR`                                                                                                        | `CODEX_HOME`                                                                                                                  | `KIRO_HOME` for `~/.kiro`; the secret store needs its own move (verify 8)                                                     |
+| profile: what is shared by symlink       | settings, keybindings, `CLAUDE.md`, skills, commands, agents, projects, `history.jsonl`                                    | `config.toml`, `*.config.toml`, `AGENTS*.md`, `hooks.json`, `hooks/`, `rules/`, `memories/`, `sessions/`, `.credentials.json` | agents, skills, steering, settings, sessions                                                                                  |
+| a login into a profile (`add --login`)   | `claude auth login` under `CLAUDE_CONFIG_DIR`, onboarding marked done first                                                | `codex login` under `CODEX_HOME`                                                                                              | `kiro-cli login` under `KIRO_HOME` and `XDG_DATA_HOME`; whoami asked there for the label                                      |
 
 Never shared, per tool: what carries the identity or is instance-scoped,
 `.claude.json`, `.credentials.json`, `plugins/`, `sessions/`, `ide/` for
@@ -437,11 +437,17 @@ allowance that is out is out until the first of the month and a burst cannot
 change that between two polls, but the listing shows it, which is what a
 switch by hand needs.
 
-For **Claude Code** the live login's figures do not come from the endpoint
-at all: the statusline command gets `rate_limits` with every refresh, and
-the statusline plugin writes them into the cache (phase 7). The endpoint,
-with its budget, is for the inactive accounts only, which halves the requests
-and removes the active token from the count entirely.
+For **Claude Code** the live login's session and week figures come from the
+statusline: its command gets `rate_limits` with every refresh, teed into
+`accounts ingest` (phase 7). That object carries `five_hour`, `seven_day`
+and a gateway's `spend_limit` only, never the per-model week, so the
+endpoint still answers for the live login, at the candidate cadence rather
+than the active one: `ingest` plans a poll when none is planned and never
+pushes a planned one out (a tick every few seconds would otherwise defer it
+for ever), and the poll's plan runs on the candidate range while the source
+is the statusline. The endpoint's `resets_at` stamps carry an offset
+(`+00:00`), which `fromdateiso8601` refuses; `lib/accounts-time.jq` applies
+it, so every window's reset is an epoch whatever the source.
 
 Normalised per account into `usage.json`, whatever the tool:
 
@@ -464,7 +470,10 @@ Normalised per account into `usage.json`, whatever the tool:
 
 Three classes, and the adapter says which window is which: for Claude `5h`
 and `7d` plus the scoped windows; for Codex `primary` is `session`,
-`secondary` is `week`, and the named buckets are `model`. Spend, credits and
+`secondary` is `week` when the slots carry no length; when they do
+(`windowDurationMins`), the length names the window, since a plan with one
+weekly window (prolite) reports it as `primary`. The named buckets are
+`model`. Spend, credits and
 pay-as-you-go figures are shown in the listing but never steer a switch. Which
 `model` windows count is `flakelab.accounts.modelWindows`, default `["all"]`;
 narrow it to a list of display names when a plan reports windows that should
@@ -717,8 +726,8 @@ Phases, each shippable on its own:
    stash stay on the box), the `Accounts` section of `flakelab doctor`
    (modes, quarantines, drift through `status --json`, the timer), and
    `accounts ingest`: the statusline command's stdin teed into it, so the
-   live login's `rate_limits` land in the cache and the endpoint is never
-   asked for the active entry. The statusline plugin rendering the account
+   live login's `rate_limits` land in the cache and the endpoint is asked for
+   the active entry at the candidate cadence, for its per-model window only. The statusline plugin rendering the account
    from `status --json` lives in the marketplace, not here.
 
 ## Verify before building

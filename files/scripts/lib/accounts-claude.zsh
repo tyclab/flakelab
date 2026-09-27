@@ -284,9 +284,9 @@ acct_claude_refresh() {
 # account-wide windows and every model-scoped entry of limits[]. resets_at
 # fractions are dropped so jq can parse the stamp.
 acct_claude_normalise() {
-  jq -c '
+  jq -c -L "${LIB}" 'include "accounts-time";
     def stamp: if . == null or . == "" then null else (. | sub("\\.[0-9]+"; "")) end;
-    def epoch: if . == null then null else (try (. | fromdateiso8601) catch null) end;
+    def epoch: stamp_epoch;
     [ (if (.five_hour.utilization? | numbers) != null then
         {label: "5h", class: "session", pct: .five_hour.utilization, resetsAt: (.five_hour.resets_at | stamp)} else empty end),
       (if (.seven_day.utilization? | numbers) != null then

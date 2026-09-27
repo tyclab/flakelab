@@ -198,16 +198,19 @@ acct_codex_creds_path() {
 # limit -> model.
 ACCT_CODEX_NORMALISE_JQ='
   def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
-  def reset: (.resetsAt // .resets_at // .resetAt // .reset_at // null) as $r
-    | if ($r | type) == "number" then ($r | floor)
-      elif ($r | type) == "string" then ($r | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch (tonumber? // null))
-      else null end;
+  def reset: (.resetsAt // .resets_at // .resetAt // .reset_at // null) | stamp_epoch;
+  # The window length names it: under a day "<n>h", else "<n>d"; six days
+  # or more is the week. A plan with one weekly window (prolite) reports it
+  # as primary, so the slot alone does not say which window it is.
+  def mins: ((.windowDurationMins // .window_duration_mins // .windowMinutes // .window_minutes // null) | num);
+  def wlabel($fallback): mins as $m | if $m == null then $fallback elif $m < 1440 then "\(($m / 60) | floor)h" else "\(($m / 1440) | floor)d" end;
+  def wclass($fallback): mins as $m | if $m == null then $fallback elif $m >= 8640 then "week" else "session" end;
   def win($label; $class): select(. != null)
     | {label: $label, class: $class, pct: ((.usedPercent // .used_percent // 0) | num // 0), resetsAtEpoch: reset};
   def snapshot: (.rateLimits // .rate_limits // .);
   def one($name):
-    [ (.primary | win((if $name == "" then "5h" else "\($name) 5h" end); (if $name == "" then "session" else "model" end))),
-      (.secondary | win((if $name == "" then "7d" else "\($name) 7d" end); (if $name == "" then "week" else "model" end))) ];
+    [ (.primary | select(. != null) | win((if $name == "" then wlabel("5h") else "\($name) \(wlabel("5h"))" end); (if $name == "" then wclass("session") else "model" end))),
+      (.secondary | select(. != null) | win((if $name == "" then wlabel("7d") else "\($name) \(wlabel("7d"))" end); (if $name == "" then wclass("week") else "model" end))) ];
   snapshot as $s
   | ( ($s | one("")) )
     # The per-limit map sits beside rateLimits in the app-server response
@@ -279,7 +282,7 @@ acct_codex_usage() {
       fi
       return 0
     fi
-    print -r -- "$resp" | jq -c --arg mw "" '.result | '"${ACCT_CODEX_NORMALISE_JQ}"' | {ok: true, windows: .}' 2>/dev/null ||
+    print -r -- "$resp" | jq -c -L "${LIB}" --arg mw "" 'include "accounts-time"; .result | '"${ACCT_CODEX_NORMALISE_JQ}"' | {ok: true, windows: .}' 2>/dev/null ||
       jq -cn '{ok: false, error: "unparseable"}'
     return 0
   fi
@@ -299,7 +302,7 @@ acct_codex_usage() {
   code="$(curl -sS -m 10 -o "$body" -w '%{http_code}' -H @"$auth" -H "chatgpt-account-id: ${acct}" -H "User-Agent: ${ACCT_CODEX_UA}" "${ACCT_CODEX_USAGE_URL}" 2>/dev/null)" || code=000
   rm -f "$auth"
   case "$code" in
-    200) jq -c "${ACCT_CODEX_NORMALISE_JQ}"' | {ok: true, windows: .}' "$body" 2>/dev/null || jq -cn '{ok: false, error: "unparseable"}' ;;
+    200) jq -c -L "${LIB}" 'include "accounts-time"; '"${ACCT_CODEX_NORMALISE_JQ}"' | {ok: true, windows: .}' "$body" 2>/dev/null || jq -cn '{ok: false, error: "unparseable"}' ;;
     401|403) jq -cn '{ok: false, error: "unauthorized"}' ;;
     429) jq -cn '{ok: false, error: "http-429"}' ;;
     *) jq -cn --arg c "$code" '{ok: false, error: ("http-" + $c)}' ;;
