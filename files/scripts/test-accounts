@@ -389,8 +389,8 @@ usage_answer() {
   local tok="$1" five="$2" seven="$3" model="${4:-}" code="${5:-200}" mentry=""
   [[ -n "$model" ]] && mentry="{\"kind\": \"weekly_scoped\", \"group\": \"weekly\", \"percent\": ${model}, \"resets_at\": \"2026-09-26T00:00:00Z\", \"scope\": {\"model\": {\"id\": null, \"display_name\": \"Fable\"}, \"surface\": null}},"
   cat > "${FAKE_CURL}/usage.${tok}.json" <<USAGEJSON
-{"five_hour": {"utilization": ${five}, "resets_at": "2026-09-24T09:00:00.123456Z"},
- "seven_day": {"utilization": ${seven}, "resets_at": "2026-09-27T12:00:00Z"},
+{"five_hour": {"utilization": ${five}, "resets_at": "2026-09-24T11:00:00.123456+02:00"},
+ "seven_day": {"utilization": ${seven}, "resets_at": "2026-09-27T12:00:00+00:00"},
  "extra_usage": {"is_enabled": false},
  "limits": [{"kind": "session", "group": "session", "percent": ${five}, "scope": null},
             ${mentry}
@@ -410,8 +410,11 @@ check "only the usage URL was called" "$(grep -c 'oauth/usage' "${FAKE_CURL}/req
 check "the active entry's token is the live one" "$(head -1 "${FAKE_CURL}/requests.log" | cut -d' ' -f2)" "tok-b"
 contains "the listing shows alice's windows" "${OUT}" "5h 62% · 7d 91% · Fable 40% (0s)"
 contains "the listing shows bob's windows" "${OUT}" "5h 10% · 7d 20% (0s)"
-check "the cache holds the windows with epoch resets" "$(jq -r '.entries["1"].windows[] | select(.label == "7d") | .resetsAtEpoch' "${STORE}/usage.json")" "$(date -u -d 2026-09-27T12:00:00Z +%s)"
-check "a fractional reset stamp still parses" "$(jq -r '.entries["1"].windows[] | select(.label == "5h") | .resetsAtEpoch' "${STORE}/usage.json")" "$(date -u -d 2026-09-24T09:00:00Z +%s)"
+check "the cache holds the windows with epoch resets: the endpoint's +00:00 stamp" "$(jq -r '.entries["1"].windows[] | select(.label == "7d") | .resetsAtEpoch' "${STORE}/usage.json")" "$(date -u -d 2026-09-27T12:00:00Z +%s)"
+check "a fractional stamp with another offset parses to the same instant" "$(jq -r '.entries["1"].windows[] | select(.label == "5h") | .resetsAtEpoch' "${STORE}/usage.json")" "$(date -u -d 2026-09-24T09:00:00Z +%s)"
+contains "the listing has a resets column" "${OUT}" "$(row TOOL ID ALIAS LABEL STATE USAGE)"
+contains "with each window's time to its reset" "${OUT}" "5h 365d · 7d 368d · Fable 366d"
+check "counted windows only" "$(print -r -- "$OUT" | grep bob@ | sed 's/.*(0s) *//')" "5h 365d · 7d 368d"
 check "the cache is 0600" "$(stat -c %a "${STORE}/usage.json")" "600"
 check "a first fetch plans the active entry 3 minutes out" "$(jq -r '.entries["2"].intervalS' "${STORE}/usage.json")" "180"
 check "and a candidate 5 minutes out" "$(jq -r '.entries["1"].intervalS' "${STORE}/usage.json")" "300"
@@ -1073,6 +1076,20 @@ print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","
 jq '.entries["5"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 run --fetch
 check "a per-model limit beside rateLimits is a model window, the default limit not repeated" "$(jq -r '.entries["5"].windows | map(.label) | join(",")' "${STORE}/usage.json")" "5h,7d,GPT-5 5h"
+# A plan with one weekly window (prolite) reports it as primary: the
+# window's length names it, not its slot.
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":3,"windowDurationMins":10080,"resetsAt":1900500000},"secondary":null}}}' > "${FAKE_CODEX}/limits.rt-tok-e.json"
+jq '.entries["5"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "a primary window of 10080 minutes is the week, not the session" "$(jq -r '.entries["5"].windows[] | "\(.label) \(.class) \(.pct)"' "${STORE}/usage.json")" "7d week 3"
+check "and a missing reset shows as unknown" "$(print -r -- "$OUT" | grep dana@ | sed 's/.*(0s) *//')" "5h 365d · 7d ?"
+# Erin's usual windows back (the engine below reads the cache, a fresh
+# figure never asked for twice), and dana's turn due again for its tick.
+print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":42,"resetsAt":1900000000},"secondary":{"usedPercent":7,"resetsAt":1900500000}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":42,"resetsAt":1900000000}},"gpt-5":{"limitId":"gpt-5","limitName":"GPT-5","primary":{"usedPercent":66,"resetsAt":1900000000}}}}}' > "${FAKE_CODEX}/limits.rt-tok-e.json"
+jq '.entries["5"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "erin's windows are back" "$(jq -r '.entries["5"].windows | map(.label) | join(",")' "${STORE}/usage.json")" "5h,7d,GPT-5 5h"
+jq '.entries["4"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 
 "${REAL_JQ}" '.tokens.access_token = "refreshed" | .tokens.refresh_token = "rt-tok-d2"' "${STORE}/4/auth.json" > "${FAKE_CODEX}/refresh.rt-tok-d.json"
 jq '.entries["4"].nextPollAt = 0' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
@@ -1323,7 +1340,15 @@ check "and prints nothing" "${OUT}${ERR}" ""
 check "the live entry's session and week windows are the statusline's" "$(jq -r '.entries["1"].windows[] | select(.class != "model") | [.label, .class, .pct, .resetsAtEpoch] | join(" ")' "${STORE}/usage.json" | tr '\n' ';')" "5h session 33 1900000000;7d week 61 1790510400;"
 check "a per-model window from the endpoint is kept" "$(jq -r '.entries["1"].windows[] | select(.class == "model") | .label' "${STORE}/usage.json")" "Fable"
 check "the figures are fresh and marked" "$(jq -r '.entries["1"] | [.fetchedAt, .source] | join(" ")' "${STORE}/usage.json")" "1758910000 statusline"
-check "and the endpoint's turn for the active entry is pushed out" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910300"
+check "and the endpoint's planned turn for the active entry is kept: it is the only source of the per-model window" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910050"
+jq 'del(.entries["1"].nextPollAt)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 34, "resets_at": 1900000000}, "seven_day": {"used_percentage": 61, "resets_at": 1900000000}}}' ingest
+check "with no turn planned, one is, at the candidate cadence" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910600"
+usage_answer tok-a 34 61 57
+jq '.entries["1"].nextPollAt = 0 | del(.entries["1"].intervalS)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "the endpoint poll of a statusline-fed live entry brings its per-model window" "$(jq -r '.entries["1"].windows[] | select(.class == "model") | "\(.label) \(.pct)"' "${STORE}/usage.json")" "Fable 57"
+check "and is planned from the candidate range (300 stretched by half), not the active one (180)" "$(jq -r '.entries["1"].intervalS' "${STORE}/usage.json")" "450"
 run_in '{"session_id": "x"}' ingest
 check "a statusline payload without rate_limits changes nothing" "$(jq -r '.entries["1"].fetchedAt' "${STORE}/usage.json") ${RC}" "1758910000 0"
 run_in 'not json' ingest

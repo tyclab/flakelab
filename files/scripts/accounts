@@ -351,7 +351,11 @@ fetch_entry() {
     at_limit=false; [[ -n "$new_pct" ]] && (( ${new_pct%.*} >= 100 )) && at_limit=true
     next_reset="$(print -r -- "$entry" | jq -r --argjson now "$(now)" '[.windows[] | .resetsAtEpoch | numbers | select(. > $now)] | if length == 0 then empty else min end')"
     limiting="$(print -r -- "$entry" | jq -r '[.windows[] | select(.pct >= 100) | .resetsAtEpoch | numbers] | if length == 0 then empty else max end')"
-    plan="$(plan_after_fetch "$prev_i" "$prev_pct" "$new_pct" "$active" "$recent429" "$next_reset" "$limiting" "$at_limit")"
+    # A live entry the statusline feeds needs the endpoint for its per-model
+    # window only: the candidate cadence, not the active one.
+    local cadence="$active"
+    [[ "$(print -r -- "$entry" | jq -r '.source // empty')" == statusline ]] && cadence=false
+    plan="$(plan_after_fetch "$prev_i" "$prev_pct" "$new_pct" "$cadence" "$recent429" "$next_reset" "$limiting" "$at_limit")"
     entry="$(print -r -- "$entry" | jq -c --argjson n "${plan%% *}" --argjson i "${plan##* }" '. + {nextPollAt: $n, intervalS: $i}')"
   else
     local err
@@ -461,6 +465,16 @@ lift_quarantine() {
   fp="$(entry_fingerprint "$id")"
   [[ "$fp" != "$(print -r -- "$cache" | jq -r --arg id "$id" '.quarantine[$id].fingerprint')" ]] || return 0
   write_usage "$(print -r -- "$cache" | jq --arg id "$id" 'del(.quarantine[$id])')" && note "entry ${id} left quarantine: its credential changed"
+}
+
+# The resets column of the listing: each window's time to its reset, "now"
+# once it passed, "?" when the tool gave none.
+resets_text() {
+  print -r -- "$(read_usage)" | jq -r --arg id "$1" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
+    def left: if . == null then "?" elif . <= 0 then "now" elif . < 3600 then "\(. / 60 | floor)m" elif . < 86400 then "\(. / 3600 | floor)h" else "\(. / 86400 | floor)d" end;
+    (.entries[$id] // {}) as $e
+    | if ($e.windows // []) | length == 0 then "-"
+      else [$e.windows[] | select(.class != "model" or (counted | length > 0)) | "\(.label) \((if .resetsAtEpoch == null then null else .resetsAtEpoch - $now end) | left)"] | join(" · ") end'
 }
 
 # The usage column of the listing.
@@ -1164,12 +1178,9 @@ cmd_env() {
 # endpoint is never asked for it (accounts.md, "Usage"). In a statusline's
 # pipeline: never a word, never a non-zero exit, a short wait for the lock.
 
-INGEST_JQ='
+INGEST_JQ='include "accounts-time";
   def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
-  def reset: (.resets_at // .resetsAt // null) as $r
-    | if ($r | type) == "number" then (if $r > 100000000000 then ($r / 1000 | floor) else ($r | floor) end)
-      elif ($r | type) == "string" then ($r | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch (tonumber? // null))
-      else null end;
+  def reset: (.resets_at // .resetsAt // null) | stamp_epoch;
   def win($label; $class): select(. != null)
     | {label: $label, class: $class, pct: ((.utilization // .used_percentage // .used_percent // .percent // null) | num), resetsAtEpoch: reset}
     | select(.pct != null);
@@ -1189,7 +1200,7 @@ cmd_ingest() {
   [[ -f "$ROSTER" ]] || return 0
   has_adapter "$tool" || return 0
   doc="$(cat 2>/dev/null)"; [[ -n "$doc" ]] || return 0
-  windows="$(print -r -- "$doc" | jq -c "${INGEST_JQ}" 2>/dev/null)" || return 0
+  windows="$(print -r -- "$doc" | jq -c -L "${LIB}" "${INGEST_JQ}" 2>/dev/null)" || return 0
   [[ -n "$windows" && "$windows" != "[]" ]] || return 0
   # A session in a profile reports for the profile's entry, named by the
   # manifest; the live identity is the live login's, never the profile's. A
@@ -1207,12 +1218,15 @@ cmd_ingest() {
   exec 9>"${STORE}/lock" 2>/dev/null || return 0
   flock -w 2 9 || return 0
   # The session and week windows replaced, a per-model window from the
-  # endpoint kept; the endpoint's turn for this entry pushed out.
-  write_usage "$(read_usage | jq --arg id "$id" --argjson w "$windows" --argjson now "$(now)" --argjson defer "$ACTIVE_MAX_S" '
+  # endpoint kept. The endpoint's turn for this entry is planned when none
+  # is, never pushed out: the statusline carries no per-model window, so the
+  # endpoint is still the only source of the live login's Fable week, and a
+  # tick every few seconds would otherwise defer that poll for ever.
+  write_usage "$(read_usage | jq --arg id "$id" --argjson w "$windows" --argjson now "$(now)" --argjson defer "$CAND_MAX_S" '
     .entries[$id] = ((.entries[$id] // {})
       | .windows = ([.windows[]? | select(.class != "session" and .class != "week")] + $w)
       | .fetchedAt = $now | .failures = 0 | .lastError = null | .backoffUntil = 0
-      | .nextPollAt = ($now + $defer) | .source = "statusline")')" 2>/dev/null
+      | .nextPollAt = (.nextPollAt // ($now + $defer)) | .source = "statusline")')" 2>/dev/null
   flock -u 9
   return 0
 }
@@ -1252,10 +1266,10 @@ cmd_list() {
                quarantine: ($u.quarantine[$k] // null)}))}'
     return 0
   fi
-  printf '%-7s %-4s %-12s %-32s %-16s %s\n' TOOL ID ALIAS LABEL STATE USAGE
+  printf '%-7s %-4s %-12s %-32s %-16s %-44s %s\n' TOOL ID ALIAS LABEL STATE USAGE RESETS
   while IFS="$US" read -r tool id alias label org act dis; do
     profile_live "$id" && act="${act:+${act} }profile"
-    printf '%-7s %-4s %-12s %-32s %-16s %s\n' "$tool" "$id" "${alias:--}" "$label" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")"
+    printf '%-7s %-4s %-12s %-32s %-16s %-44s %s\n' "$tool" "$id" "${alias:--}" "$label" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")" "$(resets_text "$id")"
     (( n++ ))
   done < <(rows)
   (( n > 0 )) || note "no stored logins; start with: flakelab accounts add <tool>"
