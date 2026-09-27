@@ -31,8 +31,18 @@ let
   # The entrypoint attaches the agents session (creating it when absent),
   # never a bare shell. -b puts ttyd's page and its WebSocket under
   # /terminal, where the dashboard tunnels; -W makes the terminal writable.
+  # The terminal tab in the dashboard's dark palette, the cursor and the
+  # selection in its accent (files/config/web/index.html).
+  ttydTheme = builtins.toJSON {
+    background = "#151515";
+    foreground = "#ececec";
+    cursor = "#5aa0ea";
+    cursorAccent = "#151515";
+    selectionBackground = "#16283d";
+  };
   ttydStart = pkgs.writeShellScript "flakelab-ttyd" ''
     exec ${pkgs.ttyd}/bin/ttyd -i "$1" -b /terminal -W -t titleFixed=agents \
+      -t ${lib.escapeShellArg "theme=${ttydTheme}"} \
       ${pkgs.tmux}/bin/tmux new-session -A -s ${lib.escapeShellArg cfg.web.tmuxSession}
   '';
 in
