@@ -5,29 +5,46 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>flakelab</title>
 <style>
-  :root { --bg: #f6f6f4; --fg: #1a1a1a; --mut: #6b6b6b; --line: #ddd; --ok: #1565c0; --warn: #b26a00; --bad: #c62828; --card: #fff; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #151515; --fg: #ececec; --mut: #9a9a9a; --line: #333; --card: #1e1e1e; --ok: #1e88e5; } }
+  /* One blue accent for everything that is ours to point at (headings, links,
+     buttons, focus, the healthy bars, the active tag); amber and red stay the
+     warning colours. Dark mode swaps the accent for a lighter blue and puts
+     dark text on it, so filled buttons and tags keep their contrast. */
+  :root { --bg: #f6f6f4; --fg: #1a1a1a; --mut: #6b6b6b; --line: #ddd; --card: #fff;
+          --accent: #1565c0; --accent-fg: #fff; --accent-soft: #e6f0fb; --accent-ring: rgba(21, 101, 192, .35);
+          --ok: var(--accent); --warn: #b26a00; --bad: #c62828; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #151515; --fg: #ececec; --mut: #9a9a9a; --line: #333; --card: #1e1e1e;
+          --accent: #5aa0ea; --accent-fg: #0b1a2b; --accent-soft: #16283d; --accent-ring: rgba(90, 160, 234, .45); } }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
   h1 { font-size: 20px; margin: 0 0 12px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  h1::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--accent); align-self: center; }
   h1 small { color: var(--mut); font-weight: normal; font-size: 13px; }
-  h2 { font-size: 16px; margin: 20px 0 8px; }
+  h2 { font-size: 13px; margin: 20px 0 8px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-ring); }
+  a:hover { border-bottom-color: var(--accent); }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; overflow-x: auto; }
   table { border-collapse: collapse; width: 100%; font-size: 14px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
-  th { color: var(--mut); font-weight: 600; }
+  th { color: var(--mut); font-weight: 600; border-bottom: 2px solid var(--accent-soft); }
+  tbody tr:hover { background: var(--accent-soft); }
   td.wrap { white-space: normal; }
   .bar { display: inline-block; width: 90px; height: 8px; background: var(--line); border-radius: 4px; vertical-align: middle; margin-right: 6px; }
   .bar i { display: block; height: 100%; border-radius: 4px; background: var(--ok); }
   .bar.warn i { background: var(--warn); } .bar.bad i { background: var(--bad); }
   .tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 12px; background: var(--line); margin-right: 4px; }
-  .tag.active { background: var(--ok); color: #fff; } .tag.profile { background: var(--warn); color: #fff; } .tag.q { background: var(--bad); color: #fff; }
+  .tag.active { background: var(--accent); color: var(--accent-fg); } .tag.profile { background: var(--warn); color: #fff; } .tag.q { background: var(--bad); color: #fff; }
   button, input, select { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
-  button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
+  input:focus, select:focus, button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+  /* Outline buttons act; filled ones commit (a switch, a start, the token). */
+  button { cursor: pointer; color: var(--accent); border-color: var(--accent); }
+  button:hover { background: var(--accent-soft); }
+  button[type="submit"], button.primary { background: var(--accent); color: var(--accent-fg); }
+  button[type="submit"]:hover, button.primary:hover { filter: brightness(1.1); background: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; filter: none; }
   form.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
   .mut { color: var(--mut); } .err { color: var(--bad); }
   #log { max-height: 240px; overflow: auto; }
-  code { font-size: 13px; }
+  code { font-size: 13px; background: var(--accent-soft); padding: 0 4px; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -118,6 +135,7 @@
       const tr = document.createElement("tr");
       tr.innerHTML = `<td>${esc(a.tool)}</td><td>${esc(a.id)}</td><td>${esc(a.alias)}</td><td>${esc(a.label)}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;
       const btn = document.createElement("button");
+      btn.className = "primary";
       btn.textContent = "switch";
       btn.disabled = active[a.tool] === a.id || !!a.disabled || !!a.quarantine;
       btn.onclick = async () => {
