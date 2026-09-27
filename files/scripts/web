@@ -8,7 +8,7 @@ set -uo pipefail
 # button, the running sessions with their tmux window, a start form, the
 # engine's dry run, and a link to the browser terminal when one is on.
 #
-# Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH]
+# Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH] [--logo FILE]
 #        flakelab web --print-token | --rotate-token
 #
 # One python3 process (lib/web.py, the standard library only), bound to
@@ -34,21 +34,23 @@ BIND="${FLAKELAB_WEB_BIND:-127.0.0.1}"
 PORT="${FLAKELAB_WEB_PORT:-8321}"
 TOKEN_FILE="${FLAKELAB_WEB_TOKEN_FILE:-${HOME}/.local/state/flakelab/web/token}"
 TERMINAL_SOCKET="${FLAKELAB_WEB_TERMINAL_SOCKET:-}"
+LOGO="${FLAKELAB_WEB_LOGO:-}"
 PRINT_TOKEN=false
 ROTATE_TOKEN=false
 
 usage() {
   cat <<'USAGE'
-Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH]
+Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH] [--logo FILE]
        flakelab web --print-token
        flakelab web --rotate-token
 
 Serves the dashboard on ADDR:N (127.0.0.1:8321), every API call behind the
 bearer token in FILE (~/.local/state/flakelab/web/token, made on first start),
 and with --terminal-socket the ttyd terminal listening there, behind a session
-the API issues against the token. Bind to the WireGuard address for a phone;
-never to a public interface. --rotate-token writes a new token: a running
-server follows at once and every terminal session ends.
+the API issues against the token. --logo FILE (svg, png, ico, jpg, webp) is
+the page's heading mark and tab icon, served at /logo. Bind to the WireGuard
+address for a phone; never to a public interface. --rotate-token writes a new
+token: a running server follows at once and every terminal session ends.
 USAGE
 }
 
@@ -58,6 +60,7 @@ while (( $# > 0 )); do
     --port) PORT="${2:-}"; shift ;;
     --token-file) TOKEN_FILE="${2:-}"; shift ;;
     --terminal-socket) TERMINAL_SOCKET="${2:-}"; shift ;;
+    --logo) LOGO="${2:-}"; shift ;;
     --print-token) PRINT_TOKEN=true ;;
     --rotate-token) ROTATE_TOKEN=true ;;
     --help|-h) usage; exit 0 ;;
@@ -67,6 +70,7 @@ while (( $# > 0 )); do
 done
 [[ "$PORT" == <1-65535> ]] || { print -ru2 -- "web: --port takes 1 to 65535"; exit 2 }
 [[ -n "$BIND" ]] || { print -ru2 -- "web: --bind needs an address"; exit 2 }
+[[ -z "$LOGO" || -r "$LOGO" ]] || { print -ru2 -- "web: --logo ${LOGO} is not readable"; exit 2 }
 # The server checks the resolved address too ("0", a name); this is the
 # early word for the spellings that need no lookup.
 case "$BIND" in
@@ -93,7 +97,7 @@ if $ROTATE_TOKEN; then
   exit 0
 fi
 
-export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_SOCKET="$TERMINAL_SOCKET"
+export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_SOCKET="$TERMINAL_SOCKET" FLAKELAB_WEB_LOGO="$LOGO"
 export FLAKELAB_WEB_STATIC="${FLAKELAB_WEB_STATIC:-${SCRIPT_DIR:h}/config/web}"
 export FLAKELAB_WEB_ACCOUNTS="${FLAKELAB_WEB_ACCOUNTS:-${SCRIPT_DIR}/accounts}"
 export FLAKELAB_WEB_SESSIONS="${FLAKELAB_WEB_SESSIONS:-${SCRIPT_DIR}/claude-sessions}"

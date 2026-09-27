@@ -100,9 +100,10 @@ trap '[[ -n "${SERVER_PID}" ]] && kill "${SERVER_PID}" 2>/dev/null; kill "${TTYD
 FLAKELAB_WEB_BIND=0 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" PYTHONDONTWRITEBYTECODE=1 timeout 10 python3 "${SERVER}" 2>"${BASE}/bind0.err"
 check "the server itself refuses the unspecified address in any spelling" "$?" "2"
 contains "and says which address to name" "$(<"${BASE}/bind0.err")" "name the WireGuard address"
+print -r -- '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4"/></svg>' > "${BASE}/logo.svg"
 FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
   FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" FLAKELAB_WEB_TERMINAL_SOCKET="${TTYD_SOCK}" \
-  PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server.err" &
+  FLAKELAB_WEB_LOGO="${BASE}/logo.svg" PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server.err" &
 SERVER_PID=$!
 PORT=""
 for i in {1..50}; do
@@ -223,6 +224,35 @@ BODY="$(curl -s -o - -w '\n%{http_code}' -H 'Host: evil.example' "${URL}/api/hea
 check "a request for another name is 421" "${BODY##*$'\n'}" "421"
 BODY="$(curl -s -o - -w '\n%{http_code}' -H "Host: localhost:${PORT}" "${URL}/api/health")"
 check "localhost names a loopback server" "${BODY##*$'\n'}" "200"
+
+print -r -- ""
+print -r -- "the logo: static like the page, only when configured"
+get /logo
+check "the logo is served without a token" "${CODE}" "200"
+check "as the image type its suffix says" "$(curl -s -o /dev/null -w '%{content_type}' "${URL}/logo")" "image/svg+xml"
+check "byte for byte" "$(curl -s "${URL}/logo")" "$(<"${BASE}/logo.svg")"
+get /api/health
+check "and health says one is there" "$(print -r -- "$BODY" | jq -r '.logo')" "true"
+run --logo "${BASE}/missing.svg" --token-file "${TOKEN_FILE}"
+check "an unreadable --logo refuses with exit 2" "${RC}" "2"
+contains "and says so" "${ERR}" "is not readable"
+print -r -- 'x' > "${BASE}/logo.txt"
+FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_LOGO="${BASE}/logo.txt" PYTHONDONTWRITEBYTECODE=1 timeout 10 python3 "${SERVER}" 2>"${BASE}/logo.err"
+check "a logo that is no image type refuses at start" "$?" "2"
+contains "naming the types" "$(<"${BASE}/logo.err")" "not an image type"
+FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
+  FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" \
+  PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server2.err" &
+SERVER2_PID=$!
+PORT2=""
+for i in {1..50}; do
+  PORT2="$(grep -oE 'http://127\.0\.0\.1:[0-9]+/' "${BASE}/server2.err" 2>/dev/null | head -1 | grep -oE '[0-9]+/' | tr -d /)"
+  [[ -n "$PORT2" ]] && break
+  sleep 0.1
+done
+check "without a logo, /logo is 404" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT2}/logo")" "404"
+check "and health says none" "$(curl -s "http://127.0.0.1:${PORT2}/api/health" | jq -r '.logo')" "false"
+kill "${SERVER2_PID}" 2>/dev/null; wait "${SERVER2_PID}" 2>/dev/null
 
 print -r -- ""
 print -r -- "--rotate-token: the running server follows, every terminal session ends"
