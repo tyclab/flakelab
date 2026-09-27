@@ -81,7 +81,8 @@ acct_kiro_plain() { print -r -- "$1" | jq -r 'fromjson? // . | if type == "objec
 # from the token row, the email from `kiro-cli whoami` when it answers.
 # exit 1 no login; exit 3 an API-key login (KIRO_API_KEY set, no token).
 acct_kiro_identity_of() {
-  local doc="$1" ask="${2:-false}" tok start region email="" type="" who
+  local doc="$1" ask="${2:-false}" profile="${3:-}" tok start region email="" type="" who
+  local -a penv
   tok="$(acct_kiro_token_of "$doc")"
   if [[ -z "$tok" ]]; then [[ -n "${KIRO_API_KEY:-}" ]] && return 3 || return 1; fi
   start="$(print -r -- "$tok" | jq -r '.json.start_url // empty')"
@@ -93,7 +94,9 @@ acct_kiro_identity_of() {
   if [[ "$ask" == true ]] && command -v kiro-cli >/dev/null 2>&1; then
     # The JSON comes first, a plain-text profile trailer after it; a non-zero
     # exit (not logged in, no network) leaves the identity to the rows.
-    who="$(env -u KIRO_API_KEY timeout 10 kiro-cli whoami --format json 2>/dev/null)" || who=""
+    # A profile's rows are asked about in that profile.
+    [[ -n "$profile" ]] && penv=("${(f)$(acct_kiro_profile_env "$profile")}")
+    who="$(env -u KIRO_API_KEY "${penv[@]}" timeout 10 kiro-cli whoami --format json 2>/dev/null)" || who=""
     who="$(print -r -- "$who" | jq -c . 2>/dev/null | head -n 1)"
     email="$(print -r -- "${who:-{\}}" | jq -r '.email // .emailAddress // .userEmail // empty' 2>/dev/null)"
     type="$(print -r -- "${who:-{\}}" | jq -r '.accountType // .account_type // .type // .licenseType // empty' 2>/dev/null)"
@@ -121,10 +124,13 @@ acct_kiro_identity() { acct_kiro_identity_of "$(acct_kiro_export "${ACCT_KIRO_DB
 acct_kiro_id_shared() { return 0 }
 
 # Copy the live login into DIR as token.json, 0600.
-acct_kiro_read_live() {
-  local dir="$1" doc
-  [[ -r "${ACCT_KIRO_DB}" ]] || return 1
-  doc="$(acct_kiro_export "${ACCT_KIRO_DB}")"
+acct_kiro_read_live() { acct_kiro_read_from "${ACCT_KIRO_DB}" "$1" }
+
+# The login rows of DB $1 into DIR $2 as token.json, 0600.
+acct_kiro_read_from() {
+  local db="$1" dir="$2" doc
+  [[ -r "$db" ]] || return 1
+  doc="$(acct_kiro_export "$db")"
   [[ -n "$(acct_kiro_token_of "$doc")" ]] || return 1
   (umask 077; print -r -- "$doc" > "${dir}/token.json.tmp") || return 1
   mv -f -- "${dir}/token.json.tmp" "${dir}/token.json"
@@ -362,6 +368,29 @@ acct_kiro_profile_stale() {
   [[ "${src}/token.json" -nt "$db" ]] || return 1
   [[ "$(acct_kiro_export "$db" | jq -S -c .)" != "$(jq -S -c . "${src}/token.json" 2>/dev/null)" ]]
 }
+
+# --- a login beside the live one ---------------------------------------------
+
+# `kiro-cli login` pinned to the scratch profile DIR ($1; the rest are the
+# tool's own arguments, --license and the like), the API-key variable
+# scrubbed: the CLI makes its own store under the profile's share/.
+acct_kiro_login() {
+  local dir="$1"
+  shift
+  (umask 077; mkdir -p -- "${dir}/share") || return 1
+  env -u KIRO_API_KEY "${(f)$(acct_kiro_profile_env "$dir")}" kiro-cli login "$@"
+}
+
+# The identity of the login in profile DIR, as acct_kiro_identity: the
+# rows, and whoami asked in that profile for the label.
+acct_kiro_login_identity() {
+  local db="$1/share/kiro-cli/data.sqlite3"
+  [[ -r "$db" ]] || return 1
+  acct_kiro_identity_of "$(acct_kiro_export "$db")" true "$1"
+}
+
+# The login in profile DIR ($1) into store directory $2.
+acct_kiro_login_snapshot() { acct_kiro_read_from "$1/share/kiro-cli/data.sqlite3" "$2" }
 
 acct_kiro_profile_live() {
   local dir="$1" pid

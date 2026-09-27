@@ -463,7 +463,9 @@ session that was open; `flakelab sessions --recent` lists the ones closed in
 the last day.
 
 More than one claude.ai login on the box: `flakelab accounts add claude`
-stores the live one, `flakelab accounts switch <alias>` makes another one the
+stores the live one, `flakelab accounts add claude --login` logs the next one
+in beside it (the tool's own login in a scratch profile, nothing logged out),
+`flakelab accounts switch <alias>` makes another one the
 live login under Claude Code's own lock protocol, and running sessions carry
 on with their next message. The listing shows each login's cached windows,
 `switch --soonest claude` takes the one whose week renews first, and

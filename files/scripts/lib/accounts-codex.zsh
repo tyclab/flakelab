@@ -81,10 +81,13 @@ acct_codex_identity_of() {
 acct_codex_identity() { acct_codex_identity_of "${ACCT_CODEX_AUTH}" }
 
 # Copy the live login into DIR, verbatim.
-acct_codex_read_live() {
-  local dir="$1"
-  [[ -r "${ACCT_CODEX_AUTH}" ]] || return 1
-  (umask 077; cp -- "${ACCT_CODEX_AUTH}" "${dir}/auth.json.tmp") || return 1
+acct_codex_read_live() { acct_codex_read_from "${ACCT_CODEX_AUTH}" "$1" }
+
+# The auth.json at $1 into DIR $2, verbatim.
+acct_codex_read_from() {
+  local file="$1" dir="$2"
+  [[ -r "$file" ]] || return 1
+  (umask 077; cp -- "$file" "${dir}/auth.json.tmp") || return 1
   mv -f -- "${dir}/auth.json.tmp" "${dir}/auth.json"
 }
 
@@ -381,6 +384,25 @@ acct_codex_profile_stale() {
   [[ "${src}/auth.json" -nt "${dir}/auth.json" ]] || return 1
   ! cmp -s -- "${src}/auth.json" "${dir}/auth.json"
 }
+
+# --- a login beside the live one ---------------------------------------------
+
+# `codex login` pinned to the scratch profile DIR ($1; the rest are the
+# tool's own arguments), the API-key variable scrubbed. The live seat in
+# ~/.codex is untouched: a login into another home is a login of another
+# account, and the seat a second login of the same account replaces is the
+# stored one, refreshed in place by the caller.
+acct_codex_login() {
+  local dir="$1"
+  shift
+  env -u OPENAI_API_KEY CODEX_HOME="$dir" codex login "$@"
+}
+
+# The identity of the login in profile DIR, as acct_codex_identity.
+acct_codex_login_identity() { acct_codex_identity_of "$1/auth.json" }
+
+# The login in profile DIR ($1) into store directory $2.
+acct_codex_login_snapshot() { acct_codex_read_from "$1/auth.json" "$2" }
 
 # No registry of its own: a running codex whose environment carries the
 # profile as CODEX_HOME.

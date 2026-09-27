@@ -81,6 +81,9 @@ mkdir -p "${FAKE_CURL}"
 # that no token was ever on one (/proc shows arguments to every user).
 export FAKE_ARGS="${BASE}/args.log"
 : > "${FAKE_ARGS}"
+# Every login the tool stand-ins are asked for, with the environment it ran in.
+export FAKE_LOGIN_LOG="${BASE}/logins.log"
+: > "${FAKE_LOGIN_LOG}"
 REAL_JQ="$(command -v jq)"
 cat > "${STUBS}/jq" <<STUB
 #!/usr/bin/env zsh
@@ -775,6 +778,19 @@ print -r -- "profiles: run and env"
 cat > "${STUBS}/claude" <<'STUB'
 #!/usr/bin/env zsh
 if [[ "$1" == auth && "$2" == status ]]; then exit "${FAKE_CLAUDE_AUTH_RC:-0}"; fi
+# `auth login` writes the login FAKE_CLAUDE_LOGIN names (email uuid org
+# token) into CLAUDE_CONFIG_DIR, as the browser flow would; empty, the flow
+# was abandoned. Every call is logged with its environment.
+if [[ "$1" == auth && "$2" == login ]]; then
+  shift 2
+  print -r -- "claude login: CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-unset} ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-unset} onboarding=$(jq -r '.hasCompletedOnboarding // "none"' "${CLAUDE_CONFIG_DIR:-/nonexistent}/.claude.json" 2>/dev/null) args=$*" >> "${FAKE_LOGIN_LOG}"
+  [[ -n "${FAKE_CLAUDE_LOGIN:-}" ]] || { print -r -- "Login cancelled"; exit 1 }
+  set -- ${(s: :)FAKE_CLAUDE_LOGIN}
+  jq --arg e "$1" --arg u "$2" --arg o "$3" '.oauthAccount = {emailAddress: $e, accountUuid: $u, organizationUuid: ("org-" + $u), organizationName: $o}' "${CLAUDE_CONFIG_DIR}/.claude.json" > "${CLAUDE_CONFIG_DIR}/.claude.json.new" && mv "${CLAUDE_CONFIG_DIR}/.claude.json.new" "${CLAUDE_CONFIG_DIR}/.claude.json"
+  print -r -- "{\"claudeAiOauth\": {\"accessToken\": \"${4}\", \"refreshToken\": \"rt-${4}\", \"expiresAt\": 1900000000000, \"scopes\": [\"user:inference\"]}}" > "${CLAUDE_CONFIG_DIR}/.credentials.json"
+  print -r -- "Logged in as $1"
+  exit 0
+fi
 print -r -- "claude ran: CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-unset} ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY-unset} ANTHROPIC_PROFILE=${ANTHROPIC_PROFILE-unset} args=$*"
 STUB
 chmod +x "${STUBS}/claude"
@@ -936,14 +952,16 @@ mkdir -p "${FAKE_CODEX}" "${HOME}/.codex"
 b64url() { print -rn -- "$1" | base64 -w0 | tr '+/' '-_' | tr -d '=' }
 # A JWT with the claims Codex's id_token carries, and an access token with an expiry.
 jwt() { print -r -- "$(b64url '{"alg":"none"}').$(b64url "$1").sig" }
-# codex_login <email> <account id> <plan> <access token> [<exp>]
-codex_login() {
-  local email="$1" acct="$2" plan="$3" tok="$4" exp="${5:-1900000000}"
-  cat > "${HOME}/.codex/auth.json" <<EOF
+# codex_auth_file <path> <email> <account id> <plan> <access token> [<exp>]
+codex_auth_file() {
+  local file="$1" email="$2" acct="$3" plan="$4" tok="$5" exp="${6:-1900000000}"
+  cat > "$file" <<EOF
 {"OPENAI_API_KEY": null, "tokens": {"id_token": "$(jwt "{\"email\": \"${email}\", \"https://api.openai.com/auth\": {\"chatgpt_account_id\": \"${acct}\", \"chatgpt_plan_type\": \"${plan}\"}}")", "access_token": "$(jwt "{\"sub\": \"${tok}\", \"exp\": ${exp}}")", "refresh_token": "rt-${tok}", "account_id": "${acct}"}, "last_refresh": "2026-09-24T10:00:00Z"}
 EOF
-  chmod 600 "${HOME}/.codex/auth.json"
+  chmod 600 "$file"
 }
+# codex_login <email> <account id> <plan> <access token> [<exp>]
+codex_login() { codex_auth_file "${HOME}/.codex/auth.json" "$@" }
 codex_live() { jq -r '.tokens.refresh_token' "${HOME}/.codex/auth.json" }
 # The codex stand-in: `login status` exits FAKE_CODEX_LOGIN_RC; `app-server`
 # answers the rateLimits read from limits.<refresh token>.json (or an error
@@ -953,6 +971,14 @@ codex_live() { jq -r '.tokens.refresh_token' "${HOME}/.codex/auth.json" }
 cat > "${STUBS}/codex" <<'STUB'
 #!/usr/bin/env zsh
 if [[ "$1" == login && "$2" == status ]]; then exit "${FAKE_CODEX_LOGIN_RC:-0}"; fi
+# `login` copies the auth.json FAKE_CODEX_LOGIN names into CODEX_HOME, as
+# the browser flow would; empty, the flow was abandoned.
+if [[ "$1" == login ]]; then
+  print -r -- "codex login: CODEX_HOME=${CODEX_HOME-unset} OPENAI_API_KEY=${OPENAI_API_KEY-unset} args=${*:2}" >> "${FAKE_LOGIN_LOG}"
+  [[ -n "${FAKE_CODEX_LOGIN:-}" ]] || exit 1
+  mkdir -p "${CODEX_HOME}" && cp "${FAKE_CODEX_LOGIN}" "${CODEX_HOME}/auth.json" && exit 0
+  exit 1
+fi
 if [[ "$1" == app-server ]]; then
   rt="$(jq -r '.tokens.refresh_token // empty' "${CODEX_HOME}/auth.json" 2>/dev/null)"
   print -r -- "CODEX_HOME=${CODEX_HOME} rt=${rt}" >> "${FAKE_CODEX}/calls.log"
@@ -1146,6 +1172,14 @@ kiro_live_arn()     { sqlite3 "${KIRO_DB}" "SELECT value FROM state WHERE key = 
 # exit FAKE_KIRO_WHOAMI_RC; anything else prints the environment it ran with.
 cat > "${STUBS}/kiro-cli" <<'STUB'
 #!/usr/bin/env zsh
+# `login` copies the store FAKE_KIRO_LOGIN names into the data dir of the
+# environment it runs in, as the device flow would; empty, it was abandoned.
+if [[ "$1" == login ]]; then
+  print -r -- "kiro-cli login: KIRO_HOME=${KIRO_HOME-unset} XDG_DATA_HOME=${XDG_DATA_HOME-unset} KIRO_API_KEY=${KIRO_API_KEY-unset} args=${*:2}" >> "${FAKE_LOGIN_LOG}"
+  [[ -n "${FAKE_KIRO_LOGIN:-}" ]] || exit 1
+  mkdir -p "${XDG_DATA_HOME:-${HOME}/.local/share}/kiro-cli" && cp "${FAKE_KIRO_LOGIN}" "${XDG_DATA_HOME:-${HOME}/.local/share}/kiro-cli/data.sqlite3" && exit 0
+  exit 1
+fi
 if [[ "$1" == whoami ]]; then
   print -r -- "${FAKE_KIRO_WHOAMI:-{\}}"
   print -r -- "Profile: p (arn:...)"
@@ -1314,6 +1348,85 @@ login alice@example.com "${UUID_A}" personal tok-a
 FLAKELAB_ACCOUNTS_ROOT="${BASE}/nostore" run_in '{"rate_limits": {"five_hour": {"used_percentage": 99}}}' ingest
 check "without a store, nothing happens" "${RC} $(ls "${BASE}/nostore" 2>/dev/null | wc -l | tr -d ' ')" "0 0"
 unset FLAKELAB_NOW
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "add --login: another account logged in beside the live one, nothing logged out"
+export FLAKELAB_ACCOUNTS_ROOT="${BASE}/store-login"
+S2="${FLAKELAB_ACCOUNTS_ROOT}"
+: > "${FAKE_LOGIN_LOG}"
+check "alice is the live login" "$(live_email)" "alice@example.com"
+export ANTHROPIC_API_KEY=sk-must-not-leak
+FAKE_CLAUDE_LOGIN="bob@example.com ${UUID_B} personal tok-b-login" run add claude --login --alias work -- --email bob@example.com
+check "add --login exits 0" "${RC}" "0"
+contains "and stores the account the login made, not active" "${OUT}" "Added claude 1: bob@example.com [personal] as work (stored; the live login is unchanged: flakelab accounts switch work)"
+check "the live login is still alice" "$(live_email) $(live_token)" "alice@example.com tok-a"
+check "the entry holds the new login" "$(jq -r '.claudeAiOauth.refreshToken' "${S2}/1/credentials.json")" "rt-tok-b-login"
+check "and its identity" "$(jq -r '.oauthAccount.emailAddress' "${S2}/1/identity.json")" "bob@example.com"
+check "no entry became active: the live login is in none" "$(jq -r '.active.claude // "none"' "${S2}/accounts.json")" "none"
+SCRATCH="$(sed -n 's/^claude login: CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p' "${FAKE_LOGIN_LOG}" | tail -1)"
+check "the login ran in a scratch profile under the store, not the real home" "$([[ "$SCRATCH" == "${S2}/login."* ]] && print yes || print "no: ${SCRATCH}")" "yes"
+check "which is gone once the login is stored" "$([[ -e "$SCRATCH" ]] && print still-there || print gone)" "gone"
+contains "with onboarding marked done, the key in the shell scrubbed and the tool's arguments passed" "$(tail -1 "${FAKE_LOGIN_LOG}")" "ANTHROPIC_API_KEY=unset onboarding=true args=--email bob@example.com"
+check "the store's files are private" "$(stat -c '%a' "${S2}/1" "${S2}/1/credentials.json" | tr '\n' ' ')" "700 600 "
+FAKE_CLAUDE_LOGIN="carol@example.com ${UUID_C} personal tok-c-login" run add claude --login --switch
+check "--switch makes the new login live" "${RC} $(live_email) $(live_token)" "0 carol@example.com tok-c-login"
+contains "after storing it" "${OUT}" "Added claude 2: carol@example.com [personal]"
+contains "and says so" "${OUT}" "Switched claude to 2 carol@example.com"
+check "the entry is active" "$(jq -r '.active.claude' "${S2}/accounts.json")" "2"
+check "alice, in no entry of this store, went to unclaimed rather than being lost" "$(jq -r '.claudeAiOauth.accessToken' "${S2}"/unclaimed/*-claude-"${UUID_A}"/credentials.json)" "tok-a"
+FAKE_CLAUDE_LOGIN="" run add claude --login
+check "an abandoned login fails with exit 1" "${RC}" "1"
+contains "and says nothing changed" "${ERR}" "login did not complete; nothing stored, the live login untouched"
+check "the roster is as it was" "$(jq -r '[.next, .active.claude] | join(" ")' "${S2}/accounts.json")" "3 2"
+check "and the live login too" "$(live_email)" "carol@example.com"
+SCRATCH="$(sed -n 's/^claude login: CLAUDE_CONFIG_DIR=\([^ ]*\) .*/\1/p' "${FAKE_LOGIN_LOG}" | tail -1)"
+check "the scratch of an abandoned login is gone" "$([[ -e "$SCRATCH" ]] && print still-there || print gone)" "gone"
+FAKE_CLAUDE_LOGIN="bob@example.com ${UUID_B} personal tok-b-again" run add claude --login
+check "a login of an account already stored refreshes its entry in place" "${RC} ${OUT##*$'\n'}" "0 Refreshed claude 1: bob@example.com [personal]"
+check "with the new credential" "$(jq -r '.claudeAiOauth.refreshToken' "${S2}/1/credentials.json")" "rt-tok-b-again"
+check "the live login untouched" "$(live_email) $(jq -r '.active.claude' "${S2}/accounts.json")" "carol@example.com 2"
+run add claude --switch
+check "--switch without --login is a usage error" "${RC}" "2"
+run add claude -- --email x@example.com
+check "as are login arguments without --login" "${RC}" "2"
+FAKE_CLAUDE_LOGIN="dave@example.com dddddddd-0000-0000-0000-000000000004 personal tok-d-login" run add claude --login --alias work
+check "a taken alias refuses after the login and keeps the store as it was" "${RC} $(jq -r '.next' "${S2}/accounts.json")" "2 3"
+unset ANTHROPIC_API_KEY
+# Codex: the live seat in ~/.codex is never replaced.
+CODEX_BEFORE="$(cat "${HOME}/.codex/auth.json")"
+codex_auth_file "${BASE}/codex-login.json" fred@example.com acct-fred plus tok-fred
+export OPENAI_API_KEY=sk-must-not-leak
+FAKE_CODEX_LOGIN="${BASE}/codex-login.json" run add codex --login --alias fred
+unset OPENAI_API_KEY
+check "add codex --login stores the login codex made" "${RC} ${OUT}" "0 Added codex 3: fred@example.com [plus] as fred (stored; the live login is unchanged: flakelab accounts switch fred)"
+check "~/.codex/auth.json is byte for byte what it was" "$([[ "$(cat "${HOME}/.codex/auth.json")" == "$CODEX_BEFORE" ]] && print same || print changed)" "same"
+check "the entry holds it" "$(jq -r '.tokens.refresh_token' "${S2}/3/auth.json")" "rt-tok-fred"
+contains "the login ran in a scratch CODEX_HOME with the key scrubbed" "$(grep '^codex login' "${FAKE_LOGIN_LOG}" | tail -1)" "OPENAI_API_KEY=unset args="
+check "not the real one" "$(grep '^codex login' "${FAKE_LOGIN_LOG}" | tail -1 | grep -c "CODEX_HOME=${HOME}/.codex ")" "0"
+# Kiro: every Builder ID login shares one id, so whoami in the scratch
+# profile names the account; offline, a second such login is kept aside.
+KIRO_LOGIN_DB="${BASE}/kiro-login.db"
+rm -f "${KIRO_LOGIN_DB}"
+KIRO_DB="${KIRO_LOGIN_DB}" kiro_login https://view.awsapps.com/start us-east-1 tok-ian rt-ian
+export FAKE_KIRO_WHOAMI='{"email": "ian@example.com", "accountType": "builder-id"}'
+FAKE_KIRO_LOGIN="${KIRO_LOGIN_DB}" run add kiro --login --alias ian -- --license free
+check "add kiro --login stores the login with whoami's label" "${RC} ${OUT}" "0 Added kiro 4: ian@example.com [builder-id] as ian (stored; the live login is unchanged: flakelab accounts switch ian)"
+contains "the login ran in the scratch profile's data dir with the tool's arguments" "$(grep '^kiro-cli login' "${FAKE_LOGIN_LOG}" | tail -1)" "KIRO_API_KEY=unset args=--license free"
+check "not the real one" "$(grep '^kiro-cli login' "${FAKE_LOGIN_LOG}" | tail -1 | grep -c "XDG_DATA_HOME=${HOME}/.local/share ")" "0"
+rm -f "${KIRO_LOGIN_DB}"
+KIRO_DB="${KIRO_LOGIN_DB}" kiro_login https://view.awsapps.com/start us-east-1 tok-jan rt-jan
+export FAKE_KIRO_WHOAMI='{"email": "jan@example.com", "accountType": "builder-id"}'
+FAKE_KIRO_LOGIN="${KIRO_LOGIN_DB}" run add kiro --login
+check "a second Builder ID login online is a second entry" "${RC} ${OUT}" "0 Added kiro 5: jan@example.com [builder-id] (stored; the live login is unchanged: flakelab accounts switch 5)"
+rm -f "${KIRO_LOGIN_DB}"
+KIRO_DB="${KIRO_LOGIN_DB}" kiro_login https://view.awsapps.com/start us-east-1 tok-kim rt-kim
+FAKE_KIRO_WHOAMI_RC=1 FAKE_KIRO_LOGIN="${KIRO_LOGIN_DB}" run add kiro --login
+check "offline, a third one cannot be told apart and is refused" "${RC}" "2"
+contains "kept aside rather than lost" "${ERR}" "kept at ${S2}/unclaimed/"
+check "with its rows" "$(jq -r '.auth_kv["kirocli:odic:token"] | fromjson | .refresh_token' "${S2}"/unclaimed/*-kiro-*/token.json)" "rt-kim"
+check "and no entry made" "$(jq -r '.next' "${S2}/accounts.json")" "6"
+unset FAKE_KIRO_WHOAMI FLAKELAB_ACCOUNTS_ROOT
 
 # ---------------------------------------------------------------------------
 print -r -- ""
