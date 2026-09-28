@@ -305,6 +305,33 @@ in
       description = "Claude Code output style asserted into settings.outputStyle. Null leaves the key alone, so the style stays whatever /output-style last picked on the box. Name a built-in (\"Concise\", \"Explanatory\", \"Learning\") or a custom style from ~/.claude/output-styles.";
     };
 
+    mcpShared = {
+      gateway = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "developer@devbox";
+        description = "SSH destination of the host that holds the shared MCP OAuth credentials. Null on that host itself: the adapters run locally. Every other box reaches them over SSH stdio (`flakelab mcp connect`), so no MCP HTTP listener is exposed and no token leaves the credential host. See mcp.md.";
+      };
+      servers = mkOption {
+        type = types.attrsOf (
+          types.submodule {
+            options = {
+              url = mkOption {
+                type = types.str;
+                description = "HTTPS MCP endpoint.";
+              };
+              callbackPort = mkOption {
+                type = types.port;
+                description = "Loopback OAuth callback port, 1024 or above and unique per account.";
+              };
+            };
+          }
+        );
+        default = { };
+        description = "OAuth MCP accounts registered in both Claude and Codex under their attribute names. Each name has its own credential directory on the credential host, including two accounts at the same URL. A name also set in claudeMcpServers or codexSettings.mcp_servers is overridden there for that client.";
+      };
+    };
+
     mcpPlaywright = mkOption {
       type = types.bool;
       default = false;
