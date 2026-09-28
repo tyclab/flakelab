@@ -325,7 +325,8 @@
         gitpublisher = suiteCheck "gitpublisher";
         nix-backup = suiteCheck "nix-backup";
         nix-overlay-generate = suiteCheck "nix-overlay-generate";
-        flakelab-cli = suiteCheck "flakelab-cli";
+        # The --help sweep runs `mcp`, a python3 program.
+        flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
@@ -977,6 +978,40 @@
           pkgs.runCommandLocal "flakelab-check-payload-outside-overlay" { } ''
             grep -q '^export FLAKELAB_BACKUP_ROOT=${cfg.repoPath}-payload$' \
               ${(scriptsOf cfg).nix-backup}/bin/nix-backup
+            touch $out
+          '';
+
+        # `flakelab clone` takes no options, and says so: an ignored --help started
+        # the whole fetch-and-rebase sweep. Both shapes of the generated script, the
+        # one with groups to sweep and the one with nothing configured.
+        clone-args =
+          let
+            sys = self.nixosConfigurations.default;
+            cfg = sys.config.flakelab;
+            cloneOf =
+              c:
+              (import ./nix/scripts.nix {
+                inherit (sys) pkgs;
+                cfg = c;
+              }).nix-clone-repos;
+            withWork = cloneOf (cfg // { gitlabGroups = [ "example/group" ]; });
+            noWork = cloneOf (
+              cfg
+              // {
+                gitlabGroups = [ ];
+                repos = [ ];
+              }
+            );
+          in
+          pkgs.runCommandLocal "flakelab-check-clone-args" { } ''
+            for s in ${withWork}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
+              "$s" --help > out
+              grep -q '^Usage: flakelab clone$' out
+              rc=0
+              "$s" --dry-run 2> err || rc=$?
+              test "$rc" = 2
+              grep -q "takes no arguments (got '--dry-run')" err
+            done
             touch $out
           '';
 

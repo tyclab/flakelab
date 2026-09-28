@@ -412,7 +412,9 @@ else
   if ${NO_USER_MANAGER}; then
     log_warn "no auto-switch timer can run or be listed"
     user_manager_hint
-  elif command -v systemctl > /dev/null 2>&1 && systemctl --user list-timers --all 2> /dev/null | grep -q 'flakelab-accounts-autoswitch'; then
+  # Matched on the whole output, not `| grep -q`: under pipefail a grep that
+  # quits at the first match can leave systemctl a SIGPIPE, and the pipe fails.
+  elif command -v systemctl > /dev/null 2>&1 && [[ "$(systemctl --user list-timers --all 2> /dev/null)" == *flakelab-accounts-autoswitch* ]]; then
     log_ok "auto-switch timer scheduled (flakelab-accounts-autoswitch.timer)"
   else
     log_ok "note: no auto-switch timer (flakelab.accounts.autoSwitchInterval)"
@@ -689,7 +691,7 @@ fi
 
 if ! needs_gitlab_ssh; then
   log_ok "nothing on this box clones from gitlab.com — skipping the SSH probe"
-elif ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@gitlab.com 2>&1 | grep -q "Welcome to GitLab"; then
+elif [[ "$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T git@gitlab.com 2>&1)" == *"Welcome to GitLab"* ]]; then
   log_ok "git@gitlab.com authenticates (BatchMode, no prompt)"
 else
   # The probe cannot tell a missing key from an unreachable host, so it names
