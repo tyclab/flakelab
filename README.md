@@ -213,9 +213,14 @@ nix flake metadata ~/git/flakelab-config                     # it locks as writt
 
 Same schema as `provision -Config`, same refusals, same split of secrets (the
 tokens are dropped, not written; only an empty mode-600 git-ignored
-`secrets.env` stub is created). Run **from a checkout** and `--flakelab-ref`
-defaults to `path:` that checkout, which is why the lock above works offline —
-as `flakelab overlay-gen` from PATH it is required instead
+`secrets.env` stub is created), and the same warnings for what the overlay has
+no field for: an unmapped key or entry field, a key in a shape the generator
+does not read, a line outside the flat YAML it parses, wslkube's
+`extra_task_files` and a non-empty `files/config/custom/` are each named (a
+line by number, never by value) and dropped, and each needs a hand-written
+overlay entry if the box still wants it. Run **from a checkout** and
+`--flakelab-ref` defaults to `path:` that checkout, which is why the lock above
+works offline — as `flakelab overlay-gen` from PATH it is required instead
 ([`ARCHITECTURE.md`](ARCHITECTURE.md#options-and-the-overlay) says why).
 
 It does not provision: applying a `wsl`-target overlay is
@@ -230,7 +235,7 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all eighteen.
+all nineteen.
 
 | Command                   | Action                                                          |
 | ------------------------- | --------------------------------------------------------------- |
@@ -243,6 +248,7 @@ all eighteen.
 | `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
 | `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
 | `flakelab web`            | the dashboard in a browser: accounts, sessions, switch, start   |
+| `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)              |
 | `flakelab overlay-gen`    | write the private overlay from a config                         |
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 

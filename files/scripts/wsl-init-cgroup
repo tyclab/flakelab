@@ -1,0 +1,139 @@
+#!/usr/bin/env zsh
+
+# NOT set -e: a step that cannot place the distro reports it and lets systemd start
+# where it is. Failing here would stop nothing - the init shim ignores the
+# activation's status - and would hide the one line that says what happened.
+set -uo pipefail
+
+#
+# Start this distro's systemd in a cgroup its users can enter.
+#
+# The NixOS-WSL init shim runs the system activation and then execs systemd, which
+# takes the cgroup it starts in as the root of its whole tree. Every distro in the
+# WSL VM shares one cgroup hierarchy, and a distro starts in the cgroup of the
+# process that launches it - so a program elsewhere in the VM that has moved that
+# launcher into a cgroup only root may enter decides where every distro started
+# after it comes up. Seen with an endpoint-security agent that runs inside the VM:
+# a 0700 cgroup at the top of the tree, holding the agent and every distro started
+# once it is up. Rooted there, systemd builds user.slice under a directory no user
+# can search, and every user@<uid>.service fails with
+#   Failed to create .../user@<uid>.service/init.scope control group: Permission denied
+# so no user manager runs: no user units, no ssh-agent. A distro that started before
+# the agent settled is left in the open, which is why the same box works one boot
+# and not the next.
+#
+# Run by the wsl target's activation (nix/targets/wsl.nix), which the shim runs
+# before systemd. It acts only then - a switch finds systemd up and leaves - and only
+# when PID 1's cgroup, or a cgroup above it, denies other users search permission.
+# It then moves this distro's processes - the ones its PID namespace can see, which
+# is all it could name; nothing else in that cgroup is touched - into init.scope of
+# a top-level cgroup of its own. systemd started in an init.scope takes the cgroup
+# above it as its root, exactly as it does for the /init.scope it makes at the top.
+# The cgroup is /flakelab-<the machine id's first 12 hex digits>, so every boot of
+# the distro in one VM reuses one directory; when a live distro already holds that
+# name (an imported copy carries the same machine id) the PID namespace's id is
+# added, and without a valid machine id it names the cgroup alone. Two copies
+# starting in the same instant can still both take the shared name.
+#
+# Usage: flakelab-wsl-init-cgroup
+#
+# The outcome, for flakelab doctor, in /run/flakelab/init-cgroup, key=value per line:
+#   result=moved|failed|skipped
+#   from=<the cgroup PID 1 was in>
+#   to=<the init.scope it went to, or was meant to>   (empty when skipped)
+#   reason=<why not>                                  (failed, skipped)
+# No record, and nothing on stderr, when there was nothing to do; otherwise the
+# outcome on stderr too, which the shim sends to the kernel log. Exit status 0
+# always.
+#
+
+CGROUP_ROOT="${FLAKELAB_CGROUP_ROOT:-/sys/fs/cgroup}"
+PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
+SYSTEMD_RUNTIME="${FLAKELAB_SYSTEMD_RUNTIME:-/run/systemd/system}"
+MACHINE_ID="${FLAKELAB_MACHINE_ID:-/etc/machine-id}"
+RECORD="${FLAKELAB_INIT_CGROUP_RECORD:-/run/flakelab/init-cgroup}"
+
+FROM="" TO=""
+
+record() { # <result> [<key=value>...]
+  local body="result=$1"$'\n'"from=${FROM}"$'\n'"to=${TO}" kv
+  shift
+  for kv in "$@"; do body+=$'\n'"${kv}"; done
+  if ! { mkdir -p -- "${RECORD:h}" && print -r -- "${body}" > "${RECORD}.new" && mv -f -- "${RECORD}.new" "${RECORD}" } 2> /dev/null; then
+    print -ru2 -- "flakelab: could not record the cgroup move in ${RECORD}"
+  fi
+}
+
+fail() { # <reason>
+  print -ru2 -- "flakelab: systemd starts in ${FROM}, which its users cannot enter, and could not be moved: $1"
+  record failed "reason=$1"
+  exit 0
+}
+
+# ours <cgroup>: the processes of this namespace in it, one per line. The ones it
+# cannot see read as 0.
+ours() {
+  local -a pids=("${(@f)$(2> /dev/null < "${CGROUP_ROOT}$1/cgroup.procs")}")
+  pids=(${pids:#0})
+  print -rl -- "${pids[@]}"
+}
+
+# systemd is up: a switch, not a boot, and its tree is placed. switch-to-configuration
+# also names its action; the shim's boot activation does not.
+[[ -d "${SYSTEMD_RUNTIME}" || -n "${NIXOS_ACTION:-}" ]] && exit 0
+
+# The unified hierarchy's line. Without one there is no v2 tree to be locked out of.
+line="$(grep -m1 '^0::' "${PROC_ROOT}/1/cgroup" 2> /dev/null)" || exit 0
+FROM="${line#0::}"
+[[ "${FROM}" == /* && "${FROM}" != / ]] || exit 0
+
+# A user manager reaches its own cgroup through every directory above it, so each
+# needs search permission for others.
+dir="${CGROUP_ROOT}" blocked=false
+for part in "${(@s:/:)${FROM#/}}"; do
+  dir+="/${part}"
+  if ! mode="$(stat -c %a -- "${dir}" 2> /dev/null)"; then
+    print -ru2 -- "flakelab: cannot read the mode of ${dir#${CGROUP_ROOT}}, so systemd starts in ${FROM} unchecked"
+    record skipped "reason=cannot read the mode of ${dir#${CGROUP_ROOT}}"
+    exit 0
+  fi
+  (( 8#${mode} & 1 )) || { blocked=true; break }
+done
+${blocked} || exit 0
+
+id="$(tr -d '[:space:]' 2> /dev/null < "${MACHINE_ID}")"
+[[ ${#id} == 32 && "${id}" != *[^0-9a-f]* ]] && id="${id[1,12]}" || id=""
+ns="$(readlink -- "${PROC_ROOT}/1/ns/pid" 2> /dev/null)"
+ns="${ns//[^0-9]/}"
+[[ -n "${id}" ]] || id="${ns}"
+[[ -n "${id}" ]] || fail "no machine id and no PID namespace to name a cgroup after"
+top="/flakelab-${id}"
+# populated=1: processes somewhere below it, so another live distro owns the name.
+# An earlier boot of this one leaves it empty, and it is reused.
+if grep -qx 'populated 1' "${CGROUP_ROOT}${top}/cgroup.events" 2> /dev/null; then
+  [[ -n "${ns}" && "${id}" != "${ns}" ]] || fail "${top} is held by a live distro, and no PID namespace id tells this one apart"
+  top+="-${ns}"
+fi
+TO="${top}/init.scope"
+
+mkdir -p -- "${CGROUP_ROOT}${TO}" 2> /dev/null || fail "cannot create ${TO}"
+
+# PID 1 first, so a refusal is the kernel's answer for the one move that matters.
+if ! err="$({ print -r -- 1 >> "${CGROUP_ROOT}${TO}/cgroup.procs"; } 2>&1)"; then
+  fail "moving PID 1 to ${TO}: ${${(f)err}[-1]:-refused}"
+fi
+
+# The rest of what this namespace sees there: WSL's own init and what it has
+# started. A process forked meanwhile stays behind, so read again until none of
+# ours is left; one that exited meanwhile is gone.
+for pass in 1 2 3 4 5; do
+  pids=(${(f)"$(ours "${FROM}")"})
+  (( ${#pids} )) || break
+  for pid in "${pids[@]}"; do
+    print -r -- "${pid}" >> "${CGROUP_ROOT}${TO}/cgroup.procs" 2> /dev/null
+  done
+done
+
+print -ru2 -- "flakelab: systemd would have started in ${FROM}, which its users cannot enter; moved this distro to ${TO}"
+record moved
+exit 0

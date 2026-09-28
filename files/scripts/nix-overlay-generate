@@ -7,7 +7,8 @@
 # The YAML is parsed by hand in zsh, mirroring setup-wsl-nix.ps1's reader so the two
 # cannot disagree: the schema is flat by construction, and neither PyYAML nor python3
 # is available in `nix develop` or the flake-check sandbox this script's suite runs in.
-# Anything outside that subset (nested maps, block scalars, anchors) is not read.
+# Anything outside that subset (nested maps, block scalars, anchors) is not read, and
+# each such line is named by number; so is every key the overlay has no field for.
 #
 # No secrets are written: the secret half of custom_env_vars is dropped, and the only
 # secret artefact is an empty mode-600 secrets.env stub.
@@ -22,6 +23,7 @@ _self="${0:t}"
 
 die() { print -ru2 -- "${_self}: $*"; exit 1 }
 warn() { print -ru2 -- "${_self}: warning: $*" }
+_dropped() { warn "'$1' in the config maps to nothing in the overlay - dropped; it needs a hand-written overlay entry if this box still wants it" }
 say() { print -r -- "> $*" }
 
 # _url_path <filesystem path> -> the body of a `path:` flake URL. Unescaped, a space
@@ -84,7 +86,7 @@ Value flags - each one overrides the matching user_data.yaml key:
   --profiles <a,b>           profiles            (comma or space separated)
   --gitlab-groups <a,b>      gitlab_groups
   --ssh-keys <a,b>           sshkeyautoadd       (first one is the git identity)
-  --repo-path <dir>          repoPath            (default: the resolved --out)
+  --repo-path <dir>          no config key       (default: the resolved --out)
   --overlay-url <url>        overlay_url         (this overlay's own remote:
                              added as origin, never pushed)
   --state-root <path>        shareable-state directory (flakelab.stateRoot);
@@ -225,6 +227,10 @@ fi
 # item count for the list-of-maps form, YMK the key order for the map form, so the nix
 # output follows the file rather than zsh's hash order.
 typeset -A YS YL YM YMK YI YIC
+# The top-level keys in file order, and the lines of the last flushed block no
+# branch below could read.
+typeset -a YK=()
+typeset -i _yaml_skipped=0
 
 # Through REPLY, not stdout: a $(...) per line would fork once per config line.
 _trim() {
@@ -263,7 +269,9 @@ _yaml_scalar() {
 _yaml_flush() {
   local k="$1" scalar="$2"
   shift 2
+  _yaml_skipped=0
   [[ -n "$k" ]] || return 0
+  (( ${YK[(Ie)$k]} )) || YK+=("$k")
   # A second definition must replace the first outright, not just the array its own
   # shape lands in, or a scalar over a block list leaves the old value winning.
   local _pk
@@ -288,6 +296,8 @@ _yaml_flush() {
     YS[$k]="$scalar"
     return 0
   fi
+  # `key: value` followed by an indented block: the block wins.
+  [[ -n "$scalar" ]] && (( ++_yaml_skipped ))
   local l mk mv
   local -i idx=0
   if [[ "$1" =~ '^[[:space:]]*-[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:' ]]; then
@@ -297,6 +307,7 @@ _yaml_flush() {
       elif (( idx > 0 )) && [[ "$l" =~ '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*(.*)$' ]]; then
         :
       else
+        (( ++_yaml_skipped ))
         continue
       fi
       # Captured before _yaml_scalar, whose own =~ clobbers $match.
@@ -310,7 +321,7 @@ _yaml_flush() {
   local -a acc=()
   if [[ "$1" =~ '^[[:space:]]*-[[:space:]]*[^[:space:]]' ]]; then
     for l in "$@"; do
-      [[ "$l" =~ '^[[:space:]]*-[[:space:]]*(.*)$' ]] || continue
+      [[ "$l" =~ '^[[:space:]]*-[[:space:]]*(.*)$' ]] || { (( ++_yaml_skipped )); continue }
       mv="${match[1]}"
       _yaml_scalar "$mv"
       [[ -n "$REPLY" ]] && acc+=("$REPLY")
@@ -320,7 +331,7 @@ _yaml_flush() {
     return 0
   fi
   for l in "$@"; do
-    [[ "$l" =~ '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*(.*)$' ]] || continue
+    [[ "$l" =~ '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*(.*)$' ]] || { (( ++_yaml_skipped )); continue }
     mk="${match[1]}"; mv="${match[2]}"
     _yaml_scalar "$mv"
     YM[$k/$mk]="$REPLY"
@@ -330,26 +341,40 @@ _yaml_flush() {
 :)acc}"
 }
 
+# Unread lines are counted and numbered, never quoted: a value may be a token.
+_yaml_flush_from() {
+  _yaml_flush "${@:2}"
+  (( _yaml_skipped == 0 )) \
+    || warn "$1: ${_yaml_skipped} line(s) under '$2' are outside the flat YAML this reader parses - not read"
+}
+
 _yaml_load() {
   local file="$1" line key="" scalar="" kk vv
+  local -i n=0
   local -a block=()
   # The `|| [[ -n ... ]]` reads a final line with no trailing newline.
   while IFS= read -r line || [[ -n "$line" ]]; do
+    (( ++n ))
     _trim "$line"
     [[ -z "$REPLY" ]] && continue
     [[ "$REPLY" == '#'* ]] && continue
     if [[ "$line" =~ '^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*(.*)$' ]]; then
       kk="${match[1]}"; vv="${match[2]}"
-      _yaml_flush "$key" "$scalar" "${block[@]}"
+      _yaml_flush_from "$file" "$key" "$scalar" "${block[@]}"
       key="$kk"
       _yaml_scalar "$vv"
       scalar="$REPLY"
       block=()
       continue
     fi
-    [[ -n "$key" && "$line" == [[:space:]]* ]] && block+=("$line")
+    if [[ -n "$key" && "$line" == [[:space:]]* ]]; then
+      block+=("$line")
+    # The document start and end markers carry nothing.
+    elif [[ "$REPLY" != (---|...) ]]; then
+      warn "${file}: line ${n} is not a top-level 'key: value' - not read"
+    fi
   done < "$file"
-  _yaml_flush "$key" "$scalar" "${block[@]}"
+  _yaml_flush_from "$file" "$key" "$scalar" "${block[@]}"
 }
 
 # Read straight out of the arrays: a `$(...)` accessor on an absent key yields a
@@ -459,11 +484,15 @@ if [[ -n "${_config}" ]]; then
   ${_git_editor_given} || _git_editor="${YS[giteditor]:-}"
   # `team:`/`teams:` are read as aliases, as profiles/merge.nix still honours them.
   if ! ${_profiles_given}; then
+    _from=""
     for _k in profiles teams team; do
       _as_list "${_k}"
-      if (( ${#reply} > 0 )); then
+      (( ${#reply} > 0 )) || continue
+      if [[ -n "${_from}" ]]; then
+        warn "'${_k}' is ignored while '${_from}' is set - dropped"
+      else
         _profiles=("${reply[@]}")
-        break
+        _from="${_k}"
       fi
     done
   fi
@@ -514,6 +543,51 @@ if [[ -n "${_config}" ]]; then
   fi
 
   _as_list clone_exclude; _clone_exclude_extra=("${reply[@]}")
+
+  # Every top-level key is read above, reported as a secret or named here. The
+  # letter is the shape it is read in: s a scalar, l a list (a scalar is one
+  # entry), m a map, i a list of maps. dockerautostart is wslkube's and has no
+  # effect here, as user_data.example.yaml says. Keep in step with
+  # setup-wsl-nix.ps1's $ConfigShape and $ConfigFields.
+  typeset -A _shape=(
+    user s target s gitfullname s gitmail s userlocale s windows_username s
+    backupautostart s state_root s state_transcripts s giteditor s dockerautostart s
+    kiro_plugin_repo s whatsapp_mcp_dir s overlay_url s
+    profiles l teams l team l gitlab_groups l sshkeyautoadd l
+    claude_plugins l claude_mcp_plugins l clone_exclude l
+    custom_env_vars m claude_plugin_marketplace m repos i custom_aliases i
+  )
+  typeset -A _shape_name=(s scalar l list m map i 'list of maps')
+  typeset -a _fields=(repos.url repos.rel_path custom_aliases.name custom_aliases.command
+    claude_plugin_marketplace.name claude_plugin_marketplace.url)
+  for _k in "${YK[@]}"; do
+    _want="${_shape[$_k]:-}"
+    if [[ -z "${_want}" ]]; then
+      if (( ${_secret_names[(Ie)$_k]} )); then _skipped_secrets+=("${_k}"); else _dropped "${_k}"; fi
+      continue
+    fi
+    if (( ${+YL[$_k]} )); then _got=l _val="${YL[$_k]}"
+    elif (( ${+YMK[$_k]} )); then _got=m _val="${YMK[$_k]}"
+    elif (( ${+YIC[$_k]} )); then _got=i _val="${YIC[$_k]:#0}"
+    else _got=s _val="${YS[$_k]:-}"
+    fi
+    [[ -z "${_val}" || "${_got}" == "${_want}" || "${_want}${_got}" == ls ]] && continue
+    warn "'${_k}' is a ${_shape_name[$_got]} in the config where the overlay reads a ${_shape_name[$_want]} - dropped"
+  done
+  typeset -a _seen=()
+  for _k in "${(@k)YI}"; do
+    [[ "${_shape[${_k%%/*}]:-}" == i ]] && _seen+=("${_k%%/*}.${_k##*/}")
+  done
+  for _k in ${(f)"${YMK[claude_plugin_marketplace]:-}"}; do _seen+=("claude_plugin_marketplace.${_k}"); done
+  for _k in "${(@ou)_seen}"; do (( ${_fields[(Ie)$_k]} )) || _dropped "${_k}"; done
+
+  _as_list extra_task_files
+  (( ${#reply} == 0 )) || warn "extra_task_files names wslkube Ansible tasks nothing here runs: ${(j:, :)reply}"
+  if [[ -n "${_wslkube}" ]]; then
+    typeset -a _custom=("${_wslkube}"/files/config/custom/*(N:t))
+    (( ${#_custom} == 0 )) \
+      || warn "${_wslkube}/files/config/custom/ holds ${(j:, :)_custom} - wslkube additions nothing here reads; port them to the overlay by hand"
+  fi
 fi
 
 # The repository overlay_url names, for cloneExclude: the last path segment
@@ -555,7 +629,11 @@ if ${_have_values}; then
   # Meaningful only on wsl, so it is left unset and omitted on any other target.
   if [[ "${_target}" == "wsl" ]]; then
     [[ -n "${_windows_user}" ]] || _windows_user="${_user}"
+  elif [[ -n "${_windows_user}" ]]; then
+    warn "windows_username applies to target wsl only - dropped"
   fi
+  [[ -n "${_state_transcripts}" && -z "${_state_root}" ]] \
+    && warn "state_transcripts is set without state_root - dropped"
   [[ -n "${_repo_path}" ]] || _repo_path="${_out}"
 
   # Validated against the checkout's profiles/, not a hard-coded list, so adding

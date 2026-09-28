@@ -727,6 +727,7 @@ check    "exits clean"                       "${RC}" "0"
 f="$(flake_of "${o}")"
 contains "target is emitted"                 "${f}" $'mkSystem {\n        target = "proxmox-vm";\n        username = "tycuser";'
 excludes "windowsUsername is absent"         "${f}" "windowsUsername"
+contains "and the config's value is named as dropped" "${OUT}" "windows_username applies to target wsl only - dropped"
 contains "repoPath is still present"         "${f}" "repoPath = \"${o}\";"
 
 print -r -- "an unknown --target is refused"
@@ -884,6 +885,200 @@ git -C "${o}" remote add origin git@example.com:mine/elsewhere.git
 run_gen --out "${o}" --config "${BASE}/ovl.yaml"
 check    "it generates"                     "${RC}" "0"
 check    "origin is untouched"              "$(git -C "${o}" remote get-url origin)" "git@example.com:mine/elsewhere.git"
+
+# ---------------------------------------------------------------------------
+# 28. Nothing in the config is dropped unsaid
+# ---------------------------------------------------------------------------
+# A wslkube config carries keys the overlay has no field for - its own Ansible
+# variables, extra_task_files, files/config/custom/ - and a key in a shape the
+# generator does not read is as lost as an unknown one. Each is named once, by
+# key or line number, never by value: the value may be a token.
+lines_with() { local -a l=(${(M)${(f)1}:#*$2*}); print -r -- "${#l}" }
+
+print -r -- "the shipped example drops nothing"
+run_gen --out "$(out example-clean)" --config "${EXAMPLE}"
+check    "it generates"                        "${RC}" "0"
+excludes "no key is dropped"                   "${OUT}" "dropped"
+excludes "and no line is left unread"          "${OUT}" "not read"
+
+print -r -- "an unmapped top-level key is named once and dropped"
+cat > "${BASE}/unmapped.yaml" <<'YAML'
+---
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+dockerautostart: true
+apt_packages:
+  - htop
+ansible_become: 'unmapped-value-1'
+repoPath: /somewhere/else
+extra_task_files:
+  - custom/printer.yaml
+  - custom/vpn.yaml
+YAML
+o="$(out unmapped)"
+run_gen --out "${o}" --config "${BASE}/unmapped.yaml"
+f="$(flake_of "${o}")"
+check    "it generates"                        "${RC}" "0"
+contains "a list key is named"                 "${OUT}" "'apt_packages' in the config maps to nothing in the overlay - dropped"
+contains "a scalar key too"                    "${OUT}" "'ansible_become' in the config maps to nothing in the overlay - dropped"
+contains "with what to do about it"            "${OUT}" "needs a hand-written overlay entry"
+check    "once"                                "$(lines_with "${OUT}" "'apt_packages'")" "1"
+excludes "the value is never printed"          "${OUT}" "unmapped-value-1"
+excludes "nor written"                         "${f}" "unmapped-value-1"
+contains "repoPath is no config key"           "${OUT}" "'repoPath' in the config maps to nothing"
+contains "so repoPath stays the overlay"       "${f}" "repoPath = \"${o}\";"
+contains "extra_task_files is named"           "${OUT}" "'extra_task_files' in the config maps to nothing"
+contains "with every task it lists"            "${OUT}" "extra_task_files names wslkube Ansible tasks nothing here runs: custom/printer.yaml, custom/vpn.yaml"
+excludes "dockerautostart is a documented no-op" "${OUT}" "'dockerautostart'"
+excludes "a mapped key is not named"           "${OUT}" "'user' in the config"
+excludes "nor the document marker"             "${OUT}" "not read"
+
+print -r -- "a key in a shape the overlay does not read is named and dropped"
+cat > "${BASE}/shape.yaml" <<'YAML'
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+giteditor:
+  - code
+custom_aliases:
+  k: kiro-cli chat
+repos:
+  - git@example.com:group/alpha.git
+gitlab_groups:
+  mine: yes
+claude_plugin_marketplace: 'git@example.com:group/plugins.git'
+YAML
+o="$(out shape)"
+run_gen --out "${o}" --config "${BASE}/shape.yaml"
+f="$(flake_of "${o}")"
+check    "it generates"                        "${RC}" "0"
+contains "a list where a scalar is read"       "${OUT}" "'giteditor' is a list in the config where the overlay reads a scalar - dropped"
+contains "a map where a list of maps is read"  "${OUT}" "'custom_aliases' is a map in the config where the overlay reads a list of maps - dropped"
+contains "a list where a list of maps is read" "${OUT}" "'repos' is a list in the config where the overlay reads a list of maps - dropped"
+contains "a map where a list is read"          "${OUT}" "'gitlab_groups' is a map in the config where the overlay reads a list - dropped"
+contains "a scalar where a map is read"        "${OUT}" "'claude_plugin_marketplace' is a scalar in the config where the overlay reads a map - dropped"
+contains "gitEditor falls back to null"        "${f}" 'gitEditor = null;'
+excludes "no alias is invented"                "${f}" 'customAliases = {'
+excludes "no repo is invented"                 "${f}" 'repos = ['
+excludes "a scalar list is still a list"       "${OUT}" "'profiles' is a"
+
+print -r -- "an entry field the overlay does not read is named once and dropped"
+cat > "${BASE}/fields.yaml" <<'YAML'
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+repos:
+  - rel_path: tools/alpha
+    url: https://github.com/example/alpha.git
+    branch: dev
+  - url: https://github.com/example/beta.git
+    branch: main
+claude_plugin_marketplace:
+  name: 'Example-tools'
+  url: 'git@example.com:group/plugins.git'
+  ref: main
+custom_aliases:
+  - name: k
+    command: kiro-cli chat
+    shell: fish
+YAML
+o="$(out fields)"
+run_gen --out "${o}" --config "${BASE}/fields.yaml"
+f="$(flake_of "${o}")"
+check    "it generates"                        "${RC}" "0"
+contains "a repos field is named"              "${OUT}" "'repos.branch' in the config maps to nothing in the overlay - dropped"
+check    "once for both entries"               "$(lines_with "${OUT}" "'repos.branch'")" "1"
+contains "a marketplace field"                 "${OUT}" "'claude_plugin_marketplace.ref' in the config maps to nothing"
+contains "an alias field"                      "${OUT}" "'custom_aliases.shell' in the config maps to nothing"
+excludes "a read field is not named"           "${OUT}" "'repos.url'"
+contains "the repo itself is kept"             "${f}" 'url = "https://github.com/example/alpha.git";'
+
+print -r -- "a line outside the flat YAML this reads is named by number, not content"
+cat > "${BASE}/unread.yaml" <<'YAML'
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+odd-key: 'unread-value-2'
+custom_env_vars:
+  GOOD_VAR: 'kept'
+  BAD-VAR: 'unread-value-3'
+YAML
+o="$(out unread)"
+run_gen --out "${o}" --config "${BASE}/unread.yaml"
+f="$(flake_of "${o}")"
+check    "it generates"                        "${RC}" "0"
+contains "a top-level line by number"          "${OUT}" "${BASE}/unread.yaml: line 5 is not a top-level 'key: value' - not read"
+contains "a line under a key by count"         "${OUT}" "${BASE}/unread.yaml: 1 line(s) under 'custom_env_vars' are outside the flat YAML this reader parses - not read"
+excludes "no value is printed"                 "${OUT}" "unread-value"
+contains "the readable entry is kept"          "${f}" 'GOOD_VAR = "kept";'
+
+print -r -- "a profiles alias shadowed by another is named"
+cat > "${BASE}/alias.yaml" <<'YAML'
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+teams:
+  - example
+YAML
+run_gen --out "$(out alias)" --config "${BASE}/alias.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "teams loses to profiles, said so"    "${OUT}" "'teams' is ignored while 'profiles' is set - dropped"
+
+print -r -- "state_transcripts without state_root is named"
+cat > "${BASE}/transcripts.yaml" <<'YAML'
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+state_transcripts: true
+YAML
+o="$(out transcripts)"
+run_gen --out "${o}" --config "${BASE}/transcripts.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "it is named as dropped"              "${OUT}" "state_transcripts is set without state_root - dropped"
+excludes "and not emitted"                     "$(flake_of "${o}")" 'stateTranscripts'
+
+print -r -- "a top-level secret is reported with the other secrets, not written"
+cat > "${BASE}/topsecret.yaml" <<'YAML'
+user: bare
+gitfullname: Bare Person
+gitmail: bare@example.com
+profiles: [example]
+GITLAB_TOKEN: 'not-a-real-token-4'
+YAML
+o="$(out topsecret)"
+run_gen --out "${o}" --config "${BASE}/topsecret.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "it is in the secrets summary"        "${OUT}" "1 secret(s) in the config were NOT written to the flake:"
+contains "by name"                             "${OUT}" "  GITLAB_TOKEN"
+excludes "not as an unmapped key"              "${OUT}" "'GITLAB_TOKEN' in the config"
+excludes "the value is never printed"          "${OUT}" "not-a-real-token-4"
+excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-4"
+
+print -r -- "a non-empty wslkube files/config/custom/ is named"
+# Not ${BASE}/wk-custom: `out wk-custom` below would rm -rf this fixture.
+WKC="${BASE}/wkc-src"
+mkdir -p "${WKC}/files/config/custom"
+print -r -- '# stub' > "${WKC}/main_playbook.yaml"
+print -r -- 'gitlab_groups: [family-recipes]' > "${WKC}/variables.yaml"
+cp "${BASE}/state.yaml" "${WKC}/files/config/user_data.yaml"
+: > "${WKC}/files/config/custom/.gitkeep"
+run_gen --out "$(out wk-custom-empty)" --config "${WKC}/files/config/user_data.yaml"
+check    "it generates"                        "${RC}" "0"
+excludes "a .gitkeep alone is not content"     "${OUT}" "files/config/custom/"
+print -r -- '- name: printer' > "${WKC}/files/config/custom/printer.yaml"
+mkdir -p "${WKC}/files/config/custom/vpn"
+run_gen --out "$(out wk-custom)" --config "${WKC}/files/config/user_data.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "each entry is named"                 "${OUT}" "${WKC}/files/config/custom/ holds printer.yaml, vpn - wslkube additions nothing here reads; port them to the overlay by hand"
+run_gen --out "$(out wk-custom-copied)" --config "${BASE}/state.yaml"
+excludes "without a wslkube checkout there is none" "${OUT}" "files/config/custom/"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
