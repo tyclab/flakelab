@@ -1373,13 +1373,36 @@ check "a per-model window from the endpoint is kept" "$(jq -r '.entries["1"].win
 check "the figures are fresh and marked" "$(jq -r '.entries["1"] | [.fetchedAt, .source] | join(" ")' "${STORE}/usage.json")" "1758910000 statusline"
 check "and the endpoint's planned turn for the active entry is kept: it is the only source of the per-model window" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910050"
 jq 'del(.entries["1"].nextPollAt)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
-run_in '{"rate_limits": {"five_hour": {"used_percentage": 34, "resets_at": 1900000000}, "seven_day": {"used_percentage": 61, "resets_at": 1900000000}}}' ingest
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 34, "resets_at": 1900000000}, "seven_day": {"used_percentage": 61, "resets_at": "2026-09-27T12:00:00Z"}}}' ingest
 check "with no turn planned, one is, at the candidate cadence" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910600"
 usage_answer tok-a 34 61 57
 jq '.entries["1"].nextPollAt = 0 | del(.entries["1"].intervalS)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 run --fetch
 check "the endpoint poll of a statusline-fed live entry brings its per-model window" "$(jq -r '.entries["1"].windows[] | select(.class == "model") | "\(.label) \(.pct)"' "${STORE}/usage.json")" "Fable 57"
 check "and is planned from the candidate range (300 stretched by half), not the active one (180)" "$(jq -r '.entries["1"].intervalS' "${STORE}/usage.json")" "450"
+jq --argjson t "$(( FLAKELAB_NOW - 400 ))" '.entries["1"].statuslineAt = $t | .entries["1"].nextPollAt = 0 | del(.entries["1"].intervalS)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "a statusline silent for longer than the active interval no longer slows the poll: idle sessions tick none, and the figure must stay known" "$(jq -r '.entries["1"].intervalS <= 300' "${STORE}/usage.json")" "true"
+# The statusline's figures carry no account: a session still on the login
+# it had before a switch reports that account's. A week renewing at another
+# time than the entry's current week is not this entry's.
+jq '.entries["1"].windows = [{"label": "5h", "class": "session", "pct": 10, "resetsAtEpoch": 1758920000}, {"label": "7d", "class": "week", "pct": 20, "resetsAtEpoch": 1759000000}]' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 90, "resets_at": 1758915000}, "seven_day": {"used_percentage": 95, "resets_at": 1759200000}}}' ingest
+check "another account's figures, right after a switch, are not filed under the live entry" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json") ${RC}" "10 20 0"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 11, "resets_at": 1758920000}, "seven_day": {"used_percentage": 21, "resets_at": 1759000300}}}' ingest
+check "the entry's own, its week renewing within ten minutes of the known one, are" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json")" "11 21"
+jq '.entries["1"].windows[1].resetsAtEpoch = 1758900000' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
+check "and a new week after the known one renewed is too" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json")" "12 1"
+# A writer killed between its temp and the rename (a statusline command
+# past its timeout) leaves the temp; the next write removes a dead one's.
+sleep 600 & ALIVE=$!
+print -r -- '{}' > "${STORE}/usage.json.flakelab-tmp.4194303"
+print -r -- '{}' > "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 13, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
+check "a dead writer's temp is removed by the next write, a live one's kept" "$(ls "${STORE}" | grep -c 'flakelab-tmp.4194303') $(ls "${STORE}" | grep -c "flakelab-tmp.${ALIVE}")" "0 1"
+kill "$ALIVE" 2>/dev/null; wait "$ALIVE" 2>/dev/null; rm -f "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
+check "and the usage file is private" "$(stat -c %a "${STORE}/usage.json")" "600"
 run_in '{"session_id": "x"}' ingest
 check "a statusline payload without rate_limits changes nothing" "$(jq -r '.entries["1"].fetchedAt' "${STORE}/usage.json") ${RC}" "1758910000 0"
 run_in 'not json' ingest
