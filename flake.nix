@@ -893,6 +893,40 @@
             touch $out
           '';
 
+        # `flakelab clone` takes no options, and says so: an ignored --help started
+        # the whole fetch-and-rebase sweep. Both shapes of the generated script, the
+        # one with groups to sweep and the one with nothing configured.
+        clone-args =
+          let
+            sys = self.nixosConfigurations.default;
+            cfg = sys.config.flakelab;
+            cloneOf =
+              c:
+              (import ./nix/scripts.nix {
+                inherit (sys) pkgs;
+                cfg = c;
+              }).nix-clone-repos;
+            withWork = cloneOf (cfg // { gitlabGroups = [ "example/group" ]; });
+            noWork = cloneOf (
+              cfg
+              // {
+                gitlabGroups = [ ];
+                repos = [ ];
+              }
+            );
+          in
+          pkgs.runCommandLocal "flakelab-check-clone-args" { } ''
+            for s in ${withWork}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
+              "$s" --help > out
+              grep -q '^Usage: flakelab clone$' out
+              rc=0
+              "$s" --dry-run 2> err || rc=$?
+              test "$rc" = 2
+              grep -q "takes no arguments (got '--dry-run')" err
+            done
+            touch $out
+          '';
+
         # `gh auth login` and `glab auth login` cannot write their credential helper
         # into a store link, so git-ssh.nix declares it. Read back through git, because
         # the shape is the point: the empty value has to come first or it resets the

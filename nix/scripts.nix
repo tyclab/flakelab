@@ -497,6 +497,27 @@ rec {
       reposBlock = lib.optionalString (repos != [ ]) (
         lib.concatMapStringsSep "\n        " (r: ''echo "${r.url} $_repos/${r.relPath}" >> "$_list"'') repos
       );
+      # No options, and every argument refused rather than ignored: an ignored
+      # --help started the whole fetch-and-rebase sweep.
+      argGuard = ''
+        case "''${1:-}" in
+          "") ;;
+          -h|--help)
+            echo "Usage: flakelab clone"
+            echo ""
+            echo "Clones what is missing of the configured GitLab groups and repos under"
+            echo "~/git, fetches and rebases the clones already there, installs their"
+            echo "pre-commit hooks, and reports clones whose project is archived or"
+            echo "scheduled for deletion. No options: the groups, the repos and the"
+            echo "exclusions come from the overlay."
+            exit 0
+            ;;
+          *)
+            echo "nix-clone-repos: takes no arguments (got '$1'); see --help" >&2
+            exit 2
+            ;;
+        esac
+      '';
       staleBlock = lib.optionalString (groups != [ ]) ''
         ${zsh} ${s}/report-stale-repos --repos-dir "$_repos" \
           ${lib.concatMapStringsSep " " (g: "--group ${lib.escapeShellArg g}") groups}
@@ -505,10 +526,12 @@ rec {
     pkgs.writeShellScriptBin "nix-clone-repos" (
       if !hasWork then
         ''
+          ${argGuard}
           echo "nix-clone-repos: no gitlabGroups/repos configured — nothing to clone."
         ''
       else
         ''
+          ${argGuard}
           export PATH=${
             bin [
               pkgs.zsh
