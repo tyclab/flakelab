@@ -51,6 +51,8 @@ in
 # `rec` for one self-reference: the nix-update wrappers pin `nix-clone-repos`, which
 # the CLI keeps off PATH under its own name, so `--all` would trip its guard.
 rec {
+  mcp = (import ./mcp-clients.nix { inherit pkgs cfg; }).launcher;
+
   clone-repos = pkgs.writeShellScriptBin "clone-repos" ''
     export PATH=${
       bin [
@@ -327,6 +329,19 @@ rec {
       ]
     }:$PATH:${bin [ pkgs.systemd ]}
     exec ${zsh} ${s}/switch-result "$@"
+  '';
+
+  # Run by the wsl target's activation (nix/targets/wsl.nix), at boot before systemd
+  # starts, so nothing is taken from the ambient PATH: it is pinned whole.
+  wsl-init-cgroup = pkgs.writeShellScriptBin "flakelab-wsl-init-cgroup" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.gnugrep
+      ]
+    }
+    exec ${zsh} ${s}/wsl-init-cgroup "$@"
   '';
 
   # System-wide on the wsl target (nix/configuration.nix). rundll32.exe and wslpath

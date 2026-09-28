@@ -7,11 +7,12 @@
 }:
 let
   cfg = config.flakelab;
+  shared = import ./mcp-clients.nix { inherit pkgs cfg; };
   sources = map (path: (builtins.fromJSON (builtins.readFile path)).mcpServers) cfg.codexMcpSources;
   names = lib.concatMap builtins.attrNames sources;
   servers = lib.foldl' (acc: source: acc // source) { } sources;
   nativeServers = lib.mapAttrs (_: server: builtins.removeAttrs server [ "type" ]) servers;
-  allServers = nativeServers // (cfg.codexSettings.mcp_servers or { });
+  allServers = nativeServers // shared.servers // (cfg.codexSettings.mcp_servers or { });
   commandRules = import ./codex-rules.nix;
   localRules = lib.concatMapStringsSep "\n" (
     rule:
@@ -54,6 +55,7 @@ let
   managed =
     cfg.codexSettings != { }
     || cfg.codexMcpSources != [ ]
+    || shared.servers != { }
     || cfg.codexAutoReview
     || cfg.codexEnforcePermissions;
   settings = lib.recursiveUpdate (lib.optionalAttrs cfg.codexAutoReview {

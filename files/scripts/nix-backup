@@ -280,7 +280,7 @@ merged_history_path() {
   fi
 }
 
-# With a state root, THAT root only: the stale payload copy from before the
+# With a state root, THAT root only: this payload's stale copy from before the
 # root existed must not restore over the shared one.
 memory_root() {
   if state_enabled; then
@@ -298,6 +298,11 @@ codex_memory_root() {
     print -r -- "${BACKUP_CODEX}/memories"
   fi
 }
+
+# A `--from` payload is another repo's, which the state root never merged: a
+# restore reads its memory as well, first, so the root's tombstones and index
+# have the last word.
+from_source_memory() { [[ -n "${SRC_FROM}" ]] && state_enabled }
 
 # Refused outright (exit 1): a root in a git checkout — sync clients write
 # conflict copies of .git internals. Recorded failure, state categories skipped:
@@ -1107,10 +1112,12 @@ do_restore() {
     restore_file "${BACKUP_CLAUDE}/settings.local.json"  "${HOME_DIR}/.claude/settings.local.json"
     # No transcript restore: the payload holds none. Memory goes back under its slug.
     local mem_dir
+    local -a mem_roots=("$(memory_root)")
+    from_source_memory && mem_roots=("${BACKUP_CLAUDE}/projects" "${mem_roots[@]}")
     if state_unavailable; then
       log_warn "State root unavailable; Claude memory not restored this run"
     else
-      for mem_dir in "$(memory_root)"/*/memory(N/); do
+      for mem_dir in "${^mem_roots[@]}"/*/memory(N/); do
         sync_memory_dir restore "${mem_dir}" "${HOME_DIR}/.claude/projects/${mem_dir:h:t}/memory"
       done
     fi
@@ -1181,6 +1188,7 @@ do_restore() {
       log_warn "State root unavailable; Codex memory not restored this run"
     else
       # No index: Codex regenerates every memory file itself, so newest wins.
+      from_source_memory && sync_memory_dir restore "${BACKUP_CODEX}/memories" "${HOME_DIR}/.codex/memories" ""
       sync_memory_dir restore "$(codex_memory_root)" "${HOME_DIR}/.codex/memories" ""
     fi
     if state_enabled && ${STATE_TRANSCRIPTS}; then

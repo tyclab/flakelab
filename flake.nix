@@ -330,6 +330,84 @@
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
         notify = suiteCheck "notify";
+        # The suite; the launcher as installed, against a fixture account; the
+        # account and the headless browser registered in both clients' rendered
+        # configuration; and that browser server driven end to end.
+        mcp =
+          let
+            suite = suiteCheckWith [ pkgs.python3 ] "mcp";
+            fixtureServer = {
+              url = "https://example.invalid/mcp";
+              callbackPort = 18871;
+            };
+            client = import ./nix/mcp-clients.nix {
+              inherit pkgs;
+              cfg = {
+                mcpShared = {
+                  gateway = null;
+                  servers.fixture = fixtureServer;
+                };
+                mcpBrowsers.headless = false;
+              };
+            };
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.mcpShared = {
+                    gateway = "operator@devbox";
+                    servers.fixture = fixtureServer;
+                  };
+                  flakelab.mcpBrowsers.headless = true;
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            claudeMerge = pkgs.writeText "mcp-claude-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.claudeMcpMerge.data
+            );
+            codexSettings = fixture.config.environment.etc."codex/config.toml".source;
+            headlessShell = fixture.pkgs.playwright-driver.browsersJSON.chromium-headless-shell;
+          in
+          pkgs.runCommandLocal "flakelab-check-mcp-installed"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+                pkgs.python3
+                pkgs.remarshal
+              ];
+            }
+            ''
+              test -e ${suite}
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              ${client.launcher}/bin/flakelab-mcp --help > help.txt
+              grep -q import-codex help.txt
+              ${client.launcher}/bin/flakelab-mcp status | jq -e '. == [{"name":"fixture","credentials":"login-required"}]'
+              if ${client.launcher}/bin/flakelab-mcp connect fixture 2> connect.err; then exit 1; fi
+              grep -q 'login required' connect.err
+
+              export fixtureHome="$TMPDIR/fixture" DRY_RUN_CMD=
+              mkdir -p "$fixtureHome"
+              bash -euo pipefail ${claudeMerge}
+              jq -e '.mcpServers.fixture | .type == "stdio" and (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]' "$fixtureHome/.claude.json"
+              toml2json ${codexSettings} | jq -e '.mcp_servers.fixture | (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]'
+              config="$(grep -o '/nix/store/[^ ]*-flakelab-mcp.json' "$(jq -r .mcpServers.fixture.command "$fixtureHome/.claude.json")")"
+              jq -e '.gateway == "operator@devbox" and .servers.fixture.callbackPort == 18871' "$config"
+
+              jq -e '.mcpServers."playwright-headless" | .type == "stdio" and (.command | endswith("/bin/flakelab-playwright-headless")) and .args == []' "$fixtureHome/.claude.json"
+              toml2json ${codexSettings} | jq -e '.mcp_servers."playwright-headless".command | endswith("/bin/flakelab-playwright-headless")'
+              headless="$(jq -r '.mcpServers."playwright-headless".command' "$fixtureHome/.claude.json")"
+              # Hosts launch with the Chromium sandbox on; only this check turns it off,
+              # because Ubuntu 23.10+ runners deny the user namespaces it needs.
+              config="$(grep -o '/nix/store/[^ ]*-playwright-headless.json' "$headless")"
+              jq -e '.browser.launchOptions | has("chromiumSandbox") | not' "$config"
+              if grep -q sandbox "$headless"; then exit 1; fi
+              FLAKELAB_MCP_HEADLESS="$headless" FLAKELAB_MCP_HEADLESS_ARGS=--no-sandbox \
+                FLAKELAB_MCP_HEADLESS_VERSION=${headlessShell.browserVersion} \
+                python3 ${./files/scripts}/lib/test-mcp.py -v HeadlessBrowserTest
+              touch "$out"
+            '';
         # The dashboard's suite runs the server on loopback and talks to it.
         web = suiteCheckWith [
           pkgs.python3
@@ -339,6 +417,7 @@
         nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
         nix-doctor = suiteCheck "nix-doctor";
         switch-result = suiteCheck "switch-result";
+        wsl-init-cgroup = suiteCheck "wsl-init-cgroup";
         xdg-open = suiteCheck "xdg-open";
         codex-config =
           let
@@ -576,6 +655,11 @@
           assert vm.flakelab.target == "proxmox-vm";
           assert !(vm ? wsl);
           assert !(hasPkg vm "xdg-open");
+          # The boot step that chooses systemd's cgroup exists on wsl only, and runs
+          # the wrapper that pins its PATH.
+          assert nixpkgs.lib.hasSuffix "/bin/flakelab-wsl-init-cgroup"
+            wsl.system.activationScripts.flakelab-wsl-init-cgroup.text;
+          assert !(vm.system.activationScripts ? flakelab-wsl-init-cgroup);
           assert vm.services.cloud-init.enable;
           # default_user must arrive alongside the module's own system_info defaults.
           assert vm.services.cloud-init.settings.system_info.default_user.name == vm.flakelab.username;
@@ -706,9 +790,9 @@
 
         # The CLI installers fetch a script and pipe it into a shell. Without pipefail a
         # failed fetch hands the shell an empty script, which exits 0: nothing installed,
-        # nothing deferred, and the health check then fails on the missing binary. The
-        # sandbox has no network, so each rendered entry runs here as an offline switch,
-        # whose failures must all be deferred - a flakelab-warn entry fails the rebuild.
+        # nothing deferred, and the health check then fails on the missing binary. Each
+        # rendered entry runs here as an offline switch, whose failures must all be
+        # deferred - a flakelab-warn entry fails the rebuild.
         cli-installers =
           let
             sys = self.nixosConfigurations.default.config;
@@ -734,6 +818,10 @@
             deferred() { grep -q -- "$1" "$HOME/.local/state/flakelab/activation-deferred"; }
             nothingDeferred() { test ! -e "$HOME/.local/state/flakelab/activation-deferred"; }
             noWarn() { test ! -e "$HOME/.local/state/flakelab/activation-failures"; }
+            # Offline on a builder without the sandbox too: a failing curl, exported so
+            # the entry's inner bash takes it over the store curl on its PATH.
+            offline() { curl() { return 6; }; export -f curl; }
+            offline
 
             echo "kiro-cli: an offline first install is deferred"
             fresh kiro-absent
@@ -771,9 +859,8 @@
             deferred "Codex CLI not updated"
             noWarn
 
-            # A bash function exported under the name shadows the store curl in the
-            # entry's inner bash, so the fetch returns a stand-in installer that
-            # records what the real one would be run with.
+            # The fetch returns a stand-in installer that records what the real one
+            # would be run with.
             echo "codex: the installer runs unprompted, with ~/.local/bin on PATH"
             fresh codex-online
             curl() {
@@ -784,7 +871,7 @@
             }
             export -f curl
             activate ${entry "installCodexCli"}
-            unset -f curl
+            offline
             test -x "$HOME/.local/bin/codex"
             case ":$(cat "$HOME/installer-path"):" in *":$HOME/.local/bin:"*) ;; *) exit 1 ;; esac
             test "$(cat "$HOME/installer-prompt")" = 1

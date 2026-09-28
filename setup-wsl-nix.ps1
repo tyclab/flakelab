@@ -669,7 +669,8 @@ $FlakeFromConfig = $false
 # supported, and nothing deeper is in the schema.
 #
 # All three scalar styles occur in real configs (`user: alice`, `giteditor: 'code'`,
-# `"quoted"`), and an inline comment is not part of the value.
+# `"quoted"`), and an inline comment is not part of the value. A line outside that
+# subset is named by number, never quoted - its value may be a token.
 function ConvertFrom-YamlScalar([string]$raw) {
     $s = $raw.Trim()
     # Anchored and greedy: the closing quote is the last one before end-of-line or
@@ -679,12 +680,17 @@ function ConvertFrom-YamlScalar([string]$raw) {
     return ($s -replace '\s+#.*$', '').Trim()
 }
 
+# Read twice by `provision` (the flake, then the secrets), reported once.
+$YamlReported = @{}
 function Read-UserDataYaml([string]$path) {
     if (-not (Test-Path $path)) { throw "config not found: $path" }
     # Pass 1: top-level key -> its scalar, or the raw indented lines under it.
     $raw = [ordered]@{}
     $key = ''
+    $unread = @()
+    $n = 0
     foreach ($line in [IO.File]::ReadAllLines($path)) {
+        $n++
         if ($line.Trim() -eq '' -or $line -match '^\s*#') { continue }
         if ($line -match '^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$') {
             $key = $Matches[1]
@@ -694,12 +700,16 @@ function Read-UserDataYaml([string]$path) {
             continue
         }
         if ($key -and $line -match '^\s+\S') { $raw[$key].Lines += $line }
+        # The document start and end markers carry nothing.
+        elseif ($line.Trim() -notmatch '^(---|\.\.\.)$') { $unread += ("{0}: line {1} is not a top-level 'key: value' - not read" -f $path, $n) }
     }
     # Pass 2: a block is a list of maps if its first item carries a key, a string
     # list if it carries none, and a map otherwise.
     $out = [ordered]@{}
     foreach ($k in $raw.Keys) {
         $lines = @($raw[$k].Lines)
+        # `key: value` followed by an indented block: the block wins.
+        $skipped = if ($lines.Count -gt 0 -and $raw[$k].Scalar -ne '') { 1 } else { 0 }
         if ($lines.Count -eq 0) {
             # Flow-style list - `profiles: [dev, ops]`, `gitlab_groups: ["x"]`.
             # YAML says it is a list; a reader that only knows the block form
@@ -735,10 +745,12 @@ function Read-UserDataYaml([string]$path) {
                 elseif ($cur -and $l -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$') {
                     $cur[$Matches[1]] = (ConvertFrom-YamlScalar $Matches[2])
                 }
+                else { $skipped++ }
             }
             $out[$k] = $items
         }
         elseif ($lines[0] -match '^\s*-\s*\S') {
+            $skipped += @($lines | Where-Object { $_ -notmatch '^\s*-' }).Count
             $out[$k] = @($lines |
                 Where-Object { $_ -match '^\s*-\s*\S' } |
                 ForEach-Object { ConvertFrom-YamlScalar ($_ -replace '^\s*-\s*', '') })
@@ -747,9 +759,15 @@ function Read-UserDataYaml([string]$path) {
             $m = [ordered]@{}
             foreach ($l in $lines) {
                 if ($l -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$') { $m[$Matches[1]] = (ConvertFrom-YamlScalar $Matches[2]) }
+                else { $skipped++ }
             }
             $out[$k] = $m
         }
+        if ($skipped -gt 0) { $unread += ("{0}: {1} line(s) under '{2}' are outside the flat YAML this reader parses - not read" -f $path, $skipped, $k) }
+    }
+    if (-not $YamlReported.ContainsKey($path)) {
+        $YamlReported[$path] = $true
+        foreach ($u in $unread) { Warn "  $u" }
     }
     return $out
 }
@@ -789,6 +807,67 @@ function Read-WslkubeConfig([string]$udPath, [string]$wslkubeRoot) {
     foreach ($k in $vars.Keys) { $merged[$k] = $vars[$k] }
     foreach ($k in $ud.Keys) { $merged[$k] = $ud[$k] }
     return $merged
+}
+
+# Every top-level key is mapped by New-OverlayFlakeText, harvested by
+# Set-OverlaySecretsAndKey or named by Remove-UnmappedConfig. The letter is the
+# shape it is read in: s a scalar, l a list (a scalar is one entry), m a map, i a
+# list of maps. dockerautostart is wslkube's and has no effect here, as
+# user_data.example.yaml says. Keep in step with nix-overlay-generate's _shape
+# and _fields.
+$ConfigShape = @{
+    user = 's'; target = 's'; gitfullname = 's'; gitmail = 's'; userlocale = 's'; windows_username = 's'
+    backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'; dockerautostart = 's'
+    kiro_plugin_repo = 's'; whatsapp_mcp_dir = 's'; overlay_url = 's'
+    profiles = 'l'; teams = 'l'; team = 'l'; gitlab_groups = 'l'; sshkeyautoadd = 'l'
+    claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'
+    custom_env_vars = 'm'; claude_plugin_marketplace = 'm'; repos = 'i'; custom_aliases = 'i'
+}
+$ConfigFields = @('repos.url', 'repos.rel_path', 'custom_aliases.name', 'custom_aliases.command',
+    'claude_plugin_marketplace.name', 'claude_plugin_marketplace.url')
+
+function Write-DroppedKey([string]$k) {
+    Warn "  '$k' in the config maps to nothing in the overlay - dropped; it needs a hand-written overlay entry if this box still wants it"
+}
+
+# Names what the overlay has no field for, and removes a key whose shape the
+# mapping does not read, so the flake never carries half of it.
+function Remove-UnmappedConfig($ud) {
+    $shapeName = @{ s = 'scalar'; l = 'list'; m = 'map'; i = 'list of maps' }
+    foreach ($k in @($ud.Keys)) {
+        $v = $ud[$k]
+        if (-not $ConfigShape.ContainsKey($k)) {
+            if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written" }
+            elseif ($SecretKeyNames -notcontains $k) { Write-DroppedKey $k }
+            continue
+        }
+        $got = if ($v -is [Collections.IDictionary]) { 'm' }
+        elseif ($v -isnot [array]) { 's' }
+        elseif (@($v | Where-Object { $_ -is [Collections.IDictionary] }).Count -gt 0) { 'i' }
+        else { 'l' }
+        $want = $ConfigShape[$k]
+        $empty = if ($got -eq 's') { -not [string]$v } else { $v.Count -eq 0 }
+        if ($empty -or $got -eq $want -or ($want -eq 'l' -and $got -eq 's')) { continue }
+        Warn ("  '{0}' is a {1} in the config where the overlay reads a {2} - dropped" -f $k, $shapeName[$got], $shapeName[$want])
+        $ud.Remove($k)
+    }
+    $seen = @()
+    foreach ($k in @($ud.Keys)) {
+        if ($ConfigShape[$k] -ne 'i') { continue }
+        foreach ($r in @($ud[$k])) { if ($r -is [Collections.IDictionary]) { $seen += @($r.Keys | ForEach-Object { "$k.$_" }) } }
+    }
+    $market = Get-UserDataValue $ud 'claude_plugin_marketplace'
+    if ($market -is [Collections.IDictionary]) { $seen += @($market.Keys | ForEach-Object { "claude_plugin_marketplace.$_" }) }
+    foreach ($f in @($seen | Sort-Object -Unique)) { if ($ConfigFields -notcontains $f) { Write-DroppedKey $f } }
+
+    $tasks = @(Get-UserDataList $ud 'extra_task_files' | Where-Object { $_ -is [string] -and $_ })
+    if ($tasks.Count -gt 0) { Warn ("  extra_task_files names wslkube Ansible tasks nothing here runs: {0}" -f ($tasks -join ', ')) }
+    $customDir = Join-Path $WslkubeWin 'files\config\custom'
+    $custom = @(Get-ChildItem -Path $customDir -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike '.*' } | Sort-Object Name | Select-Object -ExpandProperty Name)
+    if ($custom.Count -gt 0) {
+        Warn ("  {0}\ holds {1} - wslkube additions nothing here reads; port them to the overlay by hand" -f $customDir, ($custom -join ', '))
+    }
 }
 
 # group -> profile name, read out of profiles/<name>.nix rather than hard-coded,
@@ -864,6 +943,11 @@ function Get-KnownProfileName {
 # NO SECRET reaches this file. custom_env_vars is split on $SecretKeyNames - the
 # same list secrets.env is built from - because the nix store is world-readable.
 function New-OverlayFlakeText($ud, [string]$udPath) {
+    # The only target this script provisions; any other is nix-overlay-generate's.
+    $target = [string](Get-UserDataValue $ud 'target')
+    if ($target -and $target -ne 'wsl') {
+        throw "target '$target' in $udPath - setup-wsl-nix.ps1 writes wsl overlays only; generate this one with files/scripts/nix-overlay-generate"
+    }
     $username = [string](Get-UserDataValue $ud 'user')
     if (-not $username) { throw "no 'user:' in $udPath - that is the Linux username, there is no sane default for it" }
     # wslkube asserts both of these too (main_playbook.yaml): git would otherwise
@@ -896,13 +980,14 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     $body += "        backupAutostart = $(ConvertTo-NixBool ([string](Get-UserDataValue $ud 'backupautostart')));"
     # Both have a default (null / false), so they are emitted only when set.
     $stateRoot = [string](Get-UserDataValue $ud 'state_root')
+    $stateTranscripts = [string](Get-UserDataValue $ud 'state_transcripts')
     if ($stateRoot) {
         $body += '        # Shareable backup state (merged history, Claude and Codex memory) - a plain'
         $body += '        # directory your folder-sync client replicates. Never a git checkout.'
         $body += "        stateRoot = $(ConvertTo-NixString $stateRoot);"
-        $stateTranscripts = [string](Get-UserDataValue $ud 'state_transcripts')
         if ($stateTranscripts) { $body += "        stateTranscripts = $(ConvertTo-NixBool $stateTranscripts);" }
     }
+    elseif ($stateTranscripts) { Warn '  state_transcripts is set without state_root - dropped' }
 
     $body += ''
     $body += '        # Derived from where the overlay sits - no human input.'
@@ -925,9 +1010,12 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     # profiles/ entries, from `profiles:`; `team:`/`teams:` are accepted because
     # merge.nix still honours the old name and a wslkube config may carry it.
     $profiles = @()
+    $profilesFrom = ''
     foreach ($k in @('profiles', 'teams', 'team')) {
-        $profiles = @(Get-UserDataList $ud $k | Where-Object { $_ })
-        if ($profiles.Count -gt 0) { break }
+        $list = @(Get-UserDataList $ud $k | Where-Object { $_ })
+        if ($list.Count -eq 0) { continue }
+        if ($profilesFrom) { Warn "  '$k' is ignored while '$profilesFrom' is set - dropped" }
+        else { $profiles = $list; $profilesFrom = $k }
     }
     $known = @(Get-KnownProfileName)
 
@@ -1091,7 +1179,8 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     $session = [ordered]@{}
     if ($envVars) {
         foreach ($k in $envVars.Keys) {
-            if (($SecretKeyNames + $RetiredSecretKeyNames) -contains $k) { continue }
+            if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written"; continue }
+            if ($SecretKeyNames -contains $k) { continue }
             if ($envVars[$k]) { $session[$k] = $envVars[$k] }
         }
     }
@@ -1861,6 +1950,7 @@ function Invoke-Init {
 function Set-OverlayFromConfig([string]$udPath) {
     Say "overlay flake from config: $udPath"
     $ud = Read-WslkubeConfig $udPath $WslkubeWin
+    Remove-UnmappedConfig $ud
     $flakeExisted = Test-Path $OverlayFlakeWin
     New-OverlaySkeleton $OverlayWin ((New-OverlayFlakeText $ud $udPath) -join "`n") ([string](Get-UserDataValue $ud 'overlay_url'))
     if ($flakeExisted -and -not $Force) {

@@ -825,6 +825,36 @@ absent   "nor the Syncthing-style one"                      "${MEM_HOME}/notes.s
 absent   "nor the metadata directory"                       "${MEM_HOME}/@eaDir"
 absent   "and the payload's stale memory copy is not read"  "${MEM_HOME}/stale.md"
 
+# `--from` names another repo's payload, which this state root never merged: its
+# memory is read beside the root's, first, so the root's tombstones have the last word.
+print -r -- "a --from restore with a state root reads the source's memory too"
+memory_fixture state-memory-from
+SRC_MEM="${BASE}/state-memory-from/source/files/config/instances/TestDistro/claude/projects/some-slug/memory"
+SRC_CODEX="${BASE}/state-memory-from/source/files/config/instances/TestDistro/codex/memories"
+mkdir -p "${SRC_MEM}" "${SRC_CODEX}" "${FIX_STATE}/claude/projects/some-slug/memory-tombstones"
+print -r -- "- [migrated](migrated.md)" > "${SRC_MEM}/MEMORY.md"
+print -r -- "from the old repo"         > "${SRC_MEM}/migrated.md"
+print -r -- "deleted on another box"    > "${SRC_MEM}/deleted.md"
+touch -d '2 days ago' "${SRC_MEM}/deleted.md"
+print -r -- "deleted"                   > "${FIX_STATE}/claude/projects/some-slug/memory-tombstones/deleted.md"
+touch -d '1 day ago' "${FIX_STATE}/claude/projects/some-slug/memory-tombstones/deleted.md"
+print -r -- "codex from the old repo"   > "${SRC_CODEX}/migrated.md"
+print -r -- "- [shared](shared.md)"     > "${MEM_STATE}/MEMORY.md"
+print -r -- "shared notes"              > "${MEM_STATE}/shared.md"
+mkdir -p "${FIX_STATE}/codex/memories"
+print -r -- "codex shared"              > "${FIX_STATE}/codex/memories/shared.md"
+
+run_restore --from "${BASE}/state-memory-from/source"
+check    "the restore exits clean"                      "${RC}" "0"
+is_file  "the source's memory file arrives"             "${MEM_HOME}/migrated.md"
+is_file  "and the state root's"                         "${MEM_HOME}/shared.md"
+check    "the index is the union of both"               "$(< "${MEM_HOME}/MEMORY.md")" \
+"- [migrated](migrated.md)
+- [shared](shared.md)"
+absent   "a source copy the state root tombstoned goes" "${MEM_HOME}/deleted.md"
+is_file  "the source's Codex memory arrives"            "${FIX_HOME}/.codex/memories/migrated.md"
+is_file  "and the state root's"                         "${FIX_HOME}/.codex/memories/shared.md"
+
 print -r -- "the memory index restores as a union, local order first"
 memory_fixture state-memory-index
 print -r -- "ours"   > "${MEM_HOME}/ours.md"
