@@ -500,6 +500,27 @@ contains "the local copy is the one still there" "${live}" "rewritten here"
 contains "and the kept list is written for the caller" \
   "$(< "${FIX_ROOT}/.last-restore-kept")" ".claude/CLAUDE.md"
 
+# run_restore_tty <keys> — run_restore on a pseudo-terminal (util-linux
+# `script`), the keys typed ahead; the escape codes stripped from OUT.
+run_restore_tty() {
+  local keys="$1"
+  local -a cmd=(env FLAKELAB_BACKUP_ROOT="${FIX_ROOT}" FLAKELAB_HOME_DIR="${FIX_HOME}"
+    FLAKELAB_STATE_ROOT="${STATE}" FLAKELAB_STATE_TRANSCRIPTS="${TRANSCRIPTS}"
+    FLAKELAB_STATE_TRANSCRIPT_SECRETS="${TRANSCRIPT_SECRETS}" FLAKELAB_SOPS_RENDER="${SOPS}"
+    PATH="${BASE}/bin:${PATH}" FLAKELAB_GATE_ANSWERS="${ANSWERS}"
+    WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}"
+    "${BACKUP}" --restore)
+  OUT="$(printf "$keys" | TERM=xterm timeout 120 script -qec "${(j: :)${(q)cmd[@]}}" /dev/null 2>&1)"; RC=$?
+  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+}
+print -r -- "a conflicting file at a terminal is asked about"
+run_restore_tty 'n'
+contains "asked the one way every command asks" "${OUT}" "? Overwrite ${FIX_HOME}/.claude/CLAUDE.md? [y/N]"
+contains "a no skips it"                       "${OUT}" "Skipped: ${FIX_HOME}/.claude/CLAUDE.md"
+contains "and keeps the local copy"            "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "rewritten here"
+run_restore_tty 'y'
+contains "a yes overwrites it"                 "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "from the backup"
+
 print -r -- "an activation-owned file keeps the local copy on its own"
 fixture activation-owned
 mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/plugins" "${FIX_HOME}/.claude/plugins"

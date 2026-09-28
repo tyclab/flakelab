@@ -359,6 +359,48 @@ login bob@example.com "${UUID_B}" "Example GmbH" tok-b2
 
 # ---------------------------------------------------------------------------
 print -r -- ""
+print -r -- "at a terminal: a verb without its entry or its tool asks for it"
+# at_tty <keys> <words...> — the command on a pseudo-terminal (util-linux
+# `script`), <keys> typed ahead as printf reads them, each case ending on its
+# own keys; OUT is the screen with the escape codes stripped, RC the status.
+at_tty() {
+  local keys="$1"; shift
+  OUT="$(printf "$keys" | TERM=xterm timeout 30 script -qec "${(j: :)${(q)@}}" /dev/null 2>&1)"; RC=$?
+  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+}
+at_tty '\r' "${CMD}" switch
+check "switch with no entry asks, and switches" "${RC}" "0"
+contains "each login shown as the listing shows it" "${OUT}" "claude  1    home         alice@example.com"
+check "to the one picked" "$(active_id)" "1"
+contains "and prints the command it amounts to" "${OUT}" "→ flakelab accounts switch 1"
+at_tty '\e' "${CMD}" switch
+check "Esc leaves switch with 130" "${RC}" "130"
+check "switching nothing" "$(active_id)" "1"
+at_tty '\r' "${CMD}" switch --next
+check "--next with no tool asks for the tool" "${RC}" "0"
+contains "and says so" "${OUT}" "→ flakelab accounts switch --next claude"
+check "then rotates" "$(active_id)" "2"
+at_tty '\e[B\r' "${CMD}" disable
+contains "disable offers the enabled logins and takes the second" "${OUT}" "→ flakelab accounts disable 2"
+check "which is held out" "$(jq -r '.accounts["2"].disabled' "${STORE}/accounts.json")" "true"
+at_tty '\r' "${CMD}" enable
+contains "enable offers only the disabled one" "${OUT}" "→ flakelab accounts enable 2"
+check "and puts it back" "$(jq -r '.accounts["2"].disabled' "${STORE}/accounts.json")" "null"
+at_tty '\r' "${CMD}" enable
+check "enable with nothing disabled refuses" "${RC}" "2"
+contains "saying why" "${OUT}" "no disabled logins to pick from"
+at_tty '\r\x01\x0bhouse\r' "${CMD}" alias
+contains "alias asks for the login, then the name, its old one typed in" "${OUT}" "→ flakelab accounts alias 1 house"
+check "and renames it" "$(jq -r '.accounts["1"].alias' "${STORE}/accounts.json")" "house"
+run alias 1 home
+at_tty '\e[B\rn' "${CMD}" remove
+check "remove asks for the login, then confirms, and n keeps it" "${RC}" "0"
+contains "the confirm names it" "${OUT}" "Remove 2 (work) bob@example.com and its stored login? [y/N]"
+contains "and a no is reported" "${OUT}" "Cancelled"
+[[ -d "${STORE}/2" ]] && ok "the entry is still there" || bad "the entry was removed on a no"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
 print -r -- "remove"
 run remove work
 check "remove without --yes and without a terminal exits 2" "${RC}" "2"

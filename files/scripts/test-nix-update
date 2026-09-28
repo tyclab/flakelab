@@ -557,6 +557,43 @@ check    "with no switch"                   "$(switches)" "0"
 contains "naming the checkout"              "${OUT}" "Could not fetch ${d}"
 excludes "without blaming flakelab"         "${OUT}" "flakelab updates"
 
+# run_update_tty <keys> <overlay> <args...> - run_update on a pseudo-terminal
+# (util-linux `script`), the keys typed ahead; the escape codes stripped from OUT.
+run_update_tty() {
+  local keys="$1" repo="$2"
+  shift 2
+  : > "${SUDO_LOG}"
+  OUT="$(printf "$keys" | TERM=xterm timeout 60 script -qec "cd ${(q)${RUN_CWD:-${PWD}}} && env PATH=${(q)SHIM}:${(q)TOOLS} FLAKELAB_REPO_ROOT=${(q)repo} ${(q)UPDATE} ${(j: :)${(q)@}}" /dev/null 2>&1)"
+  RC=$?
+  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+}
+
+print -r -- "at a terminal a failed fetch is a question"
+run_update_tty 'n' "${d}"
+contains "asked the one way every command asks" "${OUT}" "? Rebuild anyway from the unverified tree? [y/N]"
+check    "no refuses"                       "${RC}" "1"
+check    "with no switch"                   "$(switches)" "0"
+run_update_tty 'y' "${d}"
+check    "yes rebuilds the tree as it is"   "$(switches)" "1"
+
+print -r -- "a branch behind the default branch is offered a rebase at a terminal"
+d="$(mk_remote featurebehind)"
+git -C "${d}" switch -q -c feature
+git clone -q "${BASE}/featurebehind.git" "${BASE}/featurebehind-other"
+print -r -- '# on main' >> "${BASE}/featurebehind-other/flake.nix"
+git -C "${BASE}/featurebehind-other" commit -q -am 'on main'
+git -C "${BASE}/featurebehind-other" push -q origin main
+run_update "${d}"
+contains "without a terminal it is only said"  "${OUT}" "no terminal to ask"
+run_update_tty 'n' "${d}"
+contains "asked the one way every command asks" "${OUT}" "? Rebase onto origin/main now? [y/N]"
+check    "no still switches"                "$(switches)" "1"
+check    "from the branch as it is"         "$(git -C "${d}" rev-list --count HEAD..origin/main)" "1"
+run_update_tty 'y' "${d}"
+contains "yes rebases"                      "${OUT}" "rebased feature onto origin/main"
+check    "onto the default branch"          "$(git -C "${d}" rev-list --count HEAD..origin/main)" "0"
+check    "and switches"                     "$(switches)" "1"
+
 # ---------------------------------------------------------------------------
 # 4. A lock the caller cannot write is taken back, pins intact
 # ---------------------------------------------------------------------------

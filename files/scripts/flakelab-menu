@@ -1,0 +1,138 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# flakelab-menu — what a bare `flakelab` opens at a terminal: pick a command,
+# then what to do with it, and it runs as if typed with its flags.
+#
+# A thin tree over the real commands. It asks nothing a command can ask for
+# itself: `sessions --start` asks for the tool and the directory, `accounts
+# switch` for the login, so the menu only chooses the flags and every prompt
+# stays with the command that owns its data. The router hands over its own
+# path (FLAKELAB_ROUTER) and the commands this target offers
+# (FLAKELAB_MENU_COMMANDS); a choice re-enters the router, so the target gate
+# and the per-command wrappers apply exactly as they do to a typed command.
+# The `→` line printed before it runs is that typed command, to copy next time.
+#
+# Esc goes back one level; Esc at the top, or Ctrl-C anywhere, leaves (130).
+# Only the router opens this, and only at a terminal.
+#
+
+source "${0:A:h}/lib/prompt.zsh" || exit 1
+
+[[ -n "${FLAKELAB_ROUTER:-}" ]] || { print -ru2 -- "flakelab-menu: run it as a bare 'flakelab' at a terminal"; exit 2 }
+
+typeset -a OFFERED=(${=FLAKELAB_MENU_COMMANDS:-})
+
+# The top level, in the order it is shown: the command and one line on it.
+# Only what a person runs by hand; the rest stays in `flakelab --help`:
+# plumbing, the throwaway-distro builders that wipe interop, overlay-gen (a
+# checkout's bootstrap), provision (Windows-side), web (a server, run as a
+# user service), notify (the hooks' sender) and distro-name.
+typeset -a TOP=(
+  sessions    'agent sessions: list, start, attach, resume'
+  accounts    'stored logins: show, switch, add, remove'
+  update      'rebuild this distro from the flake and the overlay'
+  update-all  'rebuild, then run the clone sweep'
+  doctor      'check this distro and say what to fix'
+  backup      'back up or restore the home-dir data'
+  clone       'clone and refresh the configured repos'
+)
+
+# A command's actions: label, then the arguments, then a flag — `-` none,
+# `ask` when the command asks for what is missing (it prints the full command
+# itself once it knows it), `confirm:<question>` for one that changes the box.
+# A command with a single action runs it without a second menu.
+US=$'\x1f'
+typeset -A ACTIONS
+ACTIONS=(
+  sessions "list the running sessions${US}sessions${US}-
+start a new session${US}sessions --start${US}ask
+attach to a running session${US}sessions --attach${US}ask
+recently stopped sessions, with the command to resume each${US}sessions --recent${US}-
+save the running list (before a restart)${US}sessions --save${US}-
+the resume commands from the last save${US}sessions --resume${US}-
+reopen the last save in Windows Terminal tabs${US}sessions --open${US}wsl"
+  accounts "show the stored logins${US}accounts${US}-
+refresh their usage, then show them${US}accounts --fetch${US}-
+which login is live, per tool${US}accounts status${US}-
+switch the live login${US}accounts switch${US}ask
+switch to the one with the most weekly headroom${US}accounts switch --best${US}ask
+store the live login${US}accounts add${US}ask
+log in another account beside the live one${US}accounts add --login${US}ask
+run a tool on another login's profile${US}accounts run${US}ask
+name a login${US}accounts alias${US}ask
+hold a login out of rotation${US}accounts disable${US}ask
+put a login back in rotation${US}accounts enable${US}ask
+remove a login${US}accounts remove${US}ask"
+  update "rebuild this distro${US}update${US}confirm:Rebuild this distro now?"
+  update-all "rebuild, then run the clone sweep${US}update-all${US}confirm:Rebuild this distro, then run the clone sweep?"
+  doctor "run every check${US}doctor${US}-
+only what is wrong${US}doctor --quiet${US}-"
+  backup "back up now${US}backup${US}-
+what a backup would copy (dry run)${US}backup --dry-run${US}-
+restore into the home directory${US}backup --restore${US}confirm:Restore the backup into your home directory? A file that differs is asked about first.
+sync the state root only${US}backup --state-only${US}-
+review the secrets the gate held back${US}backup --review-secrets${US}-"
+  clone "clone and refresh the configured repos${US}clone${US}confirm:Clone what is missing, then fetch and rebase every configured repo?"
+)
+
+# Leave the menu for the command: PATH back to the caller's (the wrapper put
+# its own pins in front) and the hand-over variables gone, so the command
+# starts in the environment a typed `flakelab <command>` would give it.
+run() {
+  local router="$FLAKELAB_ROUTER" zsh_bin="${commands[zsh]:-zsh}"
+  [[ -n "${FLAKELAB_CALLER_PATH:-}" ]] && PATH="$FLAKELAB_CALLER_PATH"
+  unset FLAKELAB_CALLER_PATH FLAKELAB_ROUTER FLAKELAB_MENU_COMMANDS
+  exec "$zsh_bin" "$router" "$@"
+}
+
+# One command's actions, until one runs or Esc goes back (return 1).
+choose_action() {
+  local cmd="$1" line label args flag
+  local -a labels=() argvs=() flags=()
+  for line in "${(f)ACTIONS[$cmd]}"; do
+    IFS="$US" read -r label args flag <<<"$line"
+    [[ "$flag" == wsl && -z "${WSL_DISTRO_NAME:-}" ]] && continue
+    labels+=("$label"); argvs+=("$args"); flags+=("$flag")
+  done
+  while true; do
+    if (( ${#labels} == 1 )); then
+      PROMPT_INDEX=1
+    else
+      prompt_choose "flakelab ${cmd}" "${labels[@]}" || return 1
+    fi
+    local -a words=(${=argvs[PROMPT_INDEX]})
+    flag="${flags[PROMPT_INDEX]}"
+    case "$flag" in
+      confirm:*)
+        if ! prompt_confirm "${flag#confirm:}"; then
+          (( ${#labels} == 1 )) && return 1
+          continue
+        fi
+        ;;
+    esac
+    [[ "$flag" == ask ]] || prompt_ran flakelab "${words[@]}"
+    run "${words[@]}"
+  done
+}
+
+typeset -a names=() labels=()
+for (( i = 1; i <= ${#TOP}; i += 2 )); do
+  (( ${OFFERED[(Ie)${TOP[i]}]} )) || continue
+  names+=("${TOP[i]}")
+  labels+=("$(printf '%-12s %s' "${TOP[i]}" "${TOP[i+1]}")")
+done
+names+=(help)
+labels+=("$(printf '%-12s %s' help 'every command and its flags')")
+
+while true; do
+  prompt_choose "flakelab" "${labels[@]}" || exit 130
+  cmd="${names[PROMPT_INDEX]}"
+  if [[ "$cmd" == help ]]; then
+    prompt_ran flakelab --help
+    run --help
+  fi
+  choose_action "$cmd"
+done

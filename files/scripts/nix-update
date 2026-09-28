@@ -27,6 +27,8 @@ fi
 # The same lib the sweep scripts source, so the retry behaviour cannot drift.
 source "${0:A:h}/lib/git-net.zsh" || exit 1
 source "${0:A:h}/lib/overlay-git.zsh" || exit 1
+# The y/N questions, asked the one way every flakelab command asks them.
+source "${0:A:h}/lib/prompt.zsh" || exit 1
 
 # The template .gitignore a plain-directory overlay is measured against before it
 # becomes a repository. The nix wrapper names the store copy; from a checkout it
@@ -126,10 +128,7 @@ _nix_check_remote() {
       [[ "${FLAKELAB_STALE_OK:-}" == 1 ]] && return 0
       return 1
     fi
-    local _reply=""
-    read -k 1 "_reply?Rebuild anyway from the unverified tree? [y/N] "
-    echo
-    [[ "$_reply" == [yY] ]] || return 1
+    prompt_confirm "Rebuild anyway from the unverified tree?" || return 1
   fi
   local _local=$(git -C "$_dir" rev-parse HEAD)
   local _remote=$(git -C "$_dir" rev-parse @{u} 2>/dev/null) || return 0
@@ -152,7 +151,7 @@ _nix_check_remote() {
 # that work here. Declaration and assignment stay separate, because `local x=$(cmd)`
 # takes `local`'s status and `|| return` would never fire.
 _nix_check_base() {
-  local _dir="${_repo}" _default _head _behind _reply="" _out
+  local _dir="${_repo}" _default _head _behind _out
   _default="$(git -C "$_dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
   _default="${_default#origin/}"
   if [[ -z "$_default" ]]; then
@@ -182,9 +181,7 @@ _nix_check_base() {
     return 0
   fi
 
-  read -k 1 "_reply?Rebase onto origin/${_default} now? [y/N] "
-  echo
-  [[ "$_reply" == [yY] ]] || return 0
+  prompt_confirm "Rebase onto origin/${_default} now?" || return 0
   if _out="$(git -C "$_dir" rebase "origin/${_default}" 2>&1)"; then
     _say green "✓ rebased ${_head} onto origin/${_default}"
     return 0

@@ -327,6 +327,49 @@ unset FAKE_TMUX_HAS
 
 # ---------------------------------------------------------------------------
 print -r -- ""
+print -r -- "at a terminal: --start and --attach ask for what they were not given"
+# at_tty <keys> <words...> — the command on a pseudo-terminal (util-linux
+# `script`), <keys> typed ahead as printf reads them, each case ending on its
+# own keys; OUT is the screen with the escape codes stripped, RC the status.
+at_tty() {
+  local keys="$1"; shift
+  OUT="$(printf "$keys" | TERM=xterm timeout 30 script -qec "${(j: :)${(q)@}}" /dev/null 2>&1)"; RC=$?
+  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+}
+: > "${TMUX_LOG}"
+at_tty '\e[B\r\r' env PATH="${TMUXBIN}:${PATH}" zsh -c "cd ${(q)WORK} && ${(q)CMD} --start --detach"
+check "--start with no tool asks, and starts" "${RC}" "0"
+contains "the tools are offered" "${OUT}" "kiro    Kiro CLI"
+contains "the second is picked" "${OUT}" "? Start which tool? › codex"
+contains "the directory defaults to here" "${OUT}" "? In which directory? › ${WORK}"
+contains "and the command it amounts to is printed" "${OUT}" "→ flakelab sessions --start codex '${WORK}' --detach"
+contains "codex starts in that directory" "$(<"${TMUX_LOG}")" "-c ${WORK} codex"
+: > "${TMUX_LOG}"
+at_tty '\e' env PATH="${TMUXBIN}:${PATH}" "${CMD}" --start
+check "Esc at the tool leaves with 130" "${RC}" "130"
+excludes "and starts nothing" "$(<"${TMUX_LOG}")" "new-"
+at_tty '' env PATH="${STUBS}:${PATH}" "${CMD}" --start
+check "without tmux --start refuses before asking" "${RC}" "2"
+excludes "anything" "${OUT}" "Start which tool?"
+export FAKE_TMUX_HAS=1
+: > "${TMUX_LOG}"
+at_tty '\e[B\r' env PATH="${TMUXBIN}:${PATH}" "${CMD}" --attach
+contains "--attach with no target lists the sessions with a window" "${OUT}" "codex   "
+contains "and the whole server last" "${OUT}" "every window (the whole agents session)"
+contains "the second, codex, is attached" "$(<"${TMUX_LOG}")" "select-window -t agents-5-"
+contains "and named by its session id" "${OUT}" "→ flakelab sessions --attach ${SID_X}"
+: > "${TMUX_LOG}"
+at_tty 'every\r' env PATH="${TMUXBIN}:${PATH}" "${CMD}" --attach
+contains "the last entry attaches the whole server" "$(<"${TMUX_LOG}")" "attach-session -t agents"
+excludes "without a view on one window" "$(<"${TMUX_LOG}")" "select-window"
+: > "${TMUX_LOG}"
+at_tty '\e' env PATH="${TMUXBIN}:${PATH}" "${CMD}" --attach
+check "Esc leaves --attach with 130" "${RC}" "130"
+excludes "attaching nothing" "$(<"${TMUX_LOG}")" "attach-session"
+unset FAKE_TMUX_HAS
+
+# ---------------------------------------------------------------------------
+print -r -- ""
 print -r -- "resume with nothing saved falls back to the live sessions"
 rm -rf "${HOME}/.local/state/flakelab/sessions"
 run --resume

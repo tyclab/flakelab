@@ -35,10 +35,29 @@ typeset -a WRAPPERS=(
 for w in "${WRAPPERS[@]}"; do
   cat > "${DISPATCH}/${w}" <<STUB
 #!/usr/bin/env zsh
-print -r -- "ran:${w}"
+print -r -- "ran:${w}\${*:+ \$*}"
+print -r -- "env: router=\${FLAKELAB_ROUTER:-unset} caller=\${FLAKELAB_CALLER_PATH:-unset} path=\${PATH}"
 STUB
   chmod +x "${DISPATCH}/${w}"
 done
+# The menu as the gate sees it: a stand-in naming itself and what it was handed.
+cat > "${DISPATCH}/flakelab-menu" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "ran:flakelab-menu router=${FLAKELAB_ROUTER:-unset} menu=${FLAKELAB_MENU_COMMANDS:-unset}"
+STUB
+chmod +x "${DISPATCH}/flakelab-menu"
+# The real menu behind the wrapper nix/scripts.nix writes (the caller's PATH
+# kept aside, pins in front), beside the same command stand-ins.
+MENUDISPATCH="${BASE}/menudispatch/bin"
+mkdir -p "${MENUDISPATCH}"
+cp "${DISPATCH}"/*(.) "${MENUDISPATCH}/"
+cat > "${MENUDISPATCH}/flakelab-menu" <<STUB
+#!/usr/bin/env zsh
+export FLAKELAB_CALLER_PATH="\$PATH"
+export PATH="/menu-pins:\$PATH"
+exec zsh ${(q)SCRIPT_DIR}/flakelab-menu "\$@"
+STUB
+chmod +x "${MENUDISPATCH}/flakelab-menu"
 
 # Mirrored, not sourced: the router's arrays are not meant to be sourced by anything.
 typeset -a ORDER=(
@@ -104,6 +123,131 @@ run_router "proxmox-vm" "build-distr"
 check "a typo near a hidden verb exits 2" "${RC}" "2"
 contains "a typo near a hidden verb is reported unknown" "${OUT}" "unknown command: build-distr"
 excludes "a typo near a hidden verb does NOT suggest it" "${OUT}" "did you mean 'build-distro'"
+
+print -r -- ""
+print -r -- "a bare flakelab: the list anywhere, the menu at a terminal"
+# at_tty <keys> <words...> — the command on a pseudo-terminal (util-linux
+# `script`), <keys> typed ahead as printf reads them; OUT is the screen with
+# the escape codes stripped, RC the command's status.
+at_tty() {
+  local keys="$1"; shift
+  OUT="$(printf "$keys" | TERM=xterm timeout 30 script -qec "${(j: :)${(q)@}}" /dev/null 2>&1)"; RC=$?
+  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+}
+WSLENV=(env FLAKELAB_DISPATCH_DIR="${DISPATCH}" FLAKELAB_TARGET=wsl)
+MENUENV=(env -u WSL_DISTRO_NAME FLAKELAB_DISPATCH_DIR="${MENUDISPATCH}" FLAKELAB_TARGET=wsl)
+
+run_router wsl
+check "no terminal: a bare flakelab exits 0" "${RC}" "0"
+contains "and prints the list" "${OUT}" "Commands:"
+excludes "and opens no menu" "${OUT}" "ran:flakelab-menu"
+contains "the list says a terminal gets a menu" "${OUT}" "At a terminal a bare flakelab opens a menu"
+
+at_tty "" "${WSLENV[@]}" zsh "${ROUTER}"
+contains "at a terminal a bare flakelab opens the menu" "${OUT}" "ran:flakelab-menu"
+contains "handing it the router's own path" "${OUT}" "router=${ROUTER}"
+contains "and the commands this target offers" "${OUT}" "menu=update update-all doctor backup sessions accounts notify web clone provision"
+at_tty "" env FLAKELAB_DISPATCH_DIR="${DISPATCH}" FLAKELAB_TARGET=proxmox-vm zsh "${ROUTER}"
+excludes "a target's gated verbs are not offered" "${OUT}" " provision"
+at_tty "" "${WSLENV[@]}" FLAKELAB_NO_PROMPT=1 zsh "${ROUTER}"
+contains "FLAKELAB_NO_PROMPT=1 gets the list at a terminal" "${OUT}" "Commands:"
+excludes "and no menu" "${OUT}" "ran:flakelab-menu"
+at_tty "" "${WSLENV[@]}" TERM=dumb zsh "${ROUTER}"
+excludes "a dumb terminal gets no menu" "${OUT}" "ran:flakelab-menu"
+at_tty "" "${WSLENV[@]}" zsh -c "zsh ${(q)ROUTER} | cat"
+contains "piped stdout gets the list" "${OUT}" "Commands:"
+excludes "and no menu" "${OUT}" "ran:flakelab-menu"
+
+print -r -- ""
+print -r -- "the menu: a command, an action, and it runs as typed"
+at_tty 'sess\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "sessions, then its first action, runs flakelab sessions" "${OUT}" "ran:claude-sessions"
+contains "printing the command it amounts to" "${OUT}" "→ flakelab sessions"
+excludes "the Windows Terminal action is offered on WSL only" "${OUT}" "reopen the last save"
+contains "the command runs with the caller's PATH, not the menu's" "${OUT}" "caller=unset path="
+excludes "no pin of the menu's is left on it" "${OUT}" "/menu-pins"
+contains "and without the hand-over variables" "${OUT}" "router=unset"
+at_tty 'sess\r\e\e' "${MENUENV[@]}" WSL_DISTRO_NAME=x zsh "${ROUTER}"
+contains "on WSL the tabs action is there" "${OUT}" "reopen the last save in Windows Terminal tabs"
+check "Esc backs out and Esc at the top leaves with 130" "${RC}" "130"
+at_tty 'doc\r\e[B\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "doctor's second action passes its flag" "${OUT}" "ran:nix-doctor --quiet"
+contains "and prints it" "${OUT}" "→ flakelab doctor --quiet"
+at_tty 'acc\rswitch the\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "an action the command completes runs without its argument" "${OUT}" "ran:accounts switch"
+excludes "and leaves the full command to the command" "${OUT}" "→ flakelab accounts switch"
+at_tty 'update\rn\e' "${MENUENV[@]}" zsh "${ROUTER}"
+excludes "a declined rebuild runs nothing" "${OUT}" "ran:nix-update"
+check "and Esc then leaves with 130" "${RC}" "130"
+at_tty 'update\ry' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "a confirmed rebuild runs update" "${OUT}" "ran:nix-update"
+at_tty 'help\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "help prints the list" "${OUT}" "Commands:"
+at_tty '\e' "${MENUENV[@]}" zsh "${ROUTER}"
+check "Esc at the top exits 130" "${RC}" "130"
+at_tty '\e' "${MENUENV[@]}" zsh "${ROUTER}"
+excludes "the menu offers no plumbing" "${OUT}" "clone-repos"
+excludes "no interop-wiping builder" "${OUT}" "build-distro"
+excludes "and none of the commands a person does not run by hand" "${OUT}" "notify"
+
+print -r -- ""
+print -r -- "lib/prompt.zsh"
+PLIB="${SCRIPT_DIR}/lib/prompt.zsh"
+# pick <keys> <script> — a few lines of zsh against the library at a terminal.
+pick() { at_tty "$1" zsh -c "source ${(q)PLIB}; $2" }
+CHOOSE='prompt_choose Pick "alpha one" "beta two" "gamma three" "delta four"; print -r -- "rc=$? idx=$PROMPT_INDEX"; stty -a'
+pick '\e[B\e[B\r' "${CHOOSE}"
+contains "arrows move, Enter picks" "${OUT}" "rc=0 idx=3"
+contains "the answer is left on screen" "${OUT}" "? Pick › gamma three"
+contains "the terminal is back in canonical mode" "${OUT}" " icanon"
+contains "with echo" "${OUT}" " echo "
+pick 'ta\r' "${CHOOSE}"
+contains "typing filters, case-insensitive substring" "${OUT}" "rc=0 idx=2"
+pick 'GAM\r' "${CHOOSE}"
+contains "in any case" "${OUT}" "rc=0 idx=3"
+pick 'zzz\x7f\x7f\x7fdel\r' "${CHOOSE}"
+contains "Backspace edits the filter" "${OUT}" "rc=0 idx=4"
+pick '\e[B\e[B\e[B\e[B\e[B\e[A\r' "${CHOOSE}"
+contains "the arrows stop at the ends" "${OUT}" "rc=0 idx=3"
+pick 'zzz\r\e' "${CHOOSE}"
+contains "Enter on no match picks nothing" "${OUT}" "rc=1 idx="
+pick '\e' "${CHOOSE}"
+contains "Esc cancels" "${OUT}" "rc=1 idx="
+contains "and says so" "${OUT}" "? Pick › cancelled"
+contains "and restores the terminal" "${OUT}" " icanon"
+pick '\e\e' "${CHOOSE}; ${CHOOSE}"
+check "a second Esc cancels the list after it" "$(print -r -- "${OUT}" | grep -c 'rc=1 idx=')" "2"
+pick '\ex' "${CHOOSE}"
+contains "an Alt chord cancels too" "${OUT}" "rc=1 idx="
+INPUT='prompt_input Where "/some/default"; print -r -- "rc=$? text=[$PROMPT_TEXT]"'
+pick '\r' "${INPUT}"
+contains "Enter keeps the default" "${OUT}" "rc=0 text=[/some/default]"
+pick '/more\r' "${INPUT}"
+contains "typing extends it" "${OUT}" "rc=0 text=[/some/default/more]"
+pick '\x01\x0b~/x\r' "${INPUT}"
+contains "a leading ~ is the home directory" "${OUT}" "rc=0 text=[${HOME}/x]"
+KEYS='prompt_keys "Delete?" "y/N/a/q"; print -r -- "key=[$PROMPT_KEY]"'
+pick 'A' "${KEYS}"
+contains "a key is read without Enter, lowercased" "${OUT}" "key=[a]"
+contains "the choices are shown as ever" "${OUT}" "[y/N/a/q]"
+pick '\r' "${KEYS}"
+contains "Enter is the capital default" "${OUT}" "key=[n]"
+pick 'z' "${KEYS}"
+contains "and so is any other key" "${OUT}" "key=[n]"
+CONFIRM='prompt_confirm "Sure?"; print -r -- "rc=$?"'
+pick 'y' "${CONFIRM}"
+contains "confirm: y is yes" "${OUT}" "rc=0"
+pick '\r' "${CONFIRM}"
+contains "confirm: Enter is no" "${OUT}" "rc=1"
+RAN='prompt_ran flakelab sessions --start claude "/a b"'
+pick '' "${RAN}"
+contains "the command is printed with its quoting" "${OUT}" "→ flakelab sessions --start claude '/a b'"
+OUT="$(zsh -c "source ${(q)PLIB}; prompt_tty && print yes || print no" </dev/null 2>&1)"
+check "no terminal, no prompt" "${OUT}" "no"
+pick '' 'prompt_tty && print yes || print no'
+contains "a terminal prompts" "${OUT}" "yes"
+at_tty '' env FLAKELAB_NO_PROMPT=1 zsh -c "source ${(q)PLIB}; prompt_tty && print yes || print no"
+contains "unless FLAKELAB_NO_PROMPT=1" "${OUT}" "no"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

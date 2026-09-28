@@ -56,6 +56,8 @@ STATE_WROTE=false
 
 source "${0:A:h}/lib/state-sync.zsh" || exit 1
 source "${0:A:h}/lib/state-gate.zsh" || exit 1
+# The y/N questions, asked the one way every flakelab command asks them.
+source "${0:A:h}/lib/prompt.zsh" || exit 1
 
 # Sync-client conflict copies and metadata litter, plus place_atomically's own
 # temps: excluded from mirrors, verification and restore. The merged history,
@@ -645,10 +647,7 @@ backup_file() {
           record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite): ${dst}"
           return 0
         fi
-        print -rPn -- "${YELLOW}Overwrite ${dst//\%/%%}? [y/N] ${RESET}"
-        local answer=""
-        read -r answer || answer=""
-        if [[ "${answer}" != [yY] ]]; then
+        if ! prompt_confirm "Overwrite ${dst}?"; then
           log_warn "Skipped: ${dst}"
           return 0
         fi
@@ -873,10 +872,7 @@ restore_file() {
         record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite, or --skip-conflicts to keep): ${dst}"
         return 0
       fi
-      print -rPn -- "${YELLOW}Overwrite ${dst//\%/%%}? [y/N] ${RESET}"
-      local answer=""
-      read -r answer || answer=""
-      if [[ "${answer}" != [yY] ]]; then
+      if ! prompt_confirm "Overwrite ${dst}?"; then
         log_warn "Skipped: ${dst}"
         return 0
       fi

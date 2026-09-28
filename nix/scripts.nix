@@ -196,6 +196,20 @@ rec {
     exec ${zsh} ${s}/accounts "$@"
   '';
 
+  # What a bare `flakelab` opens at a terminal. stty is the one tool it runs;
+  # the caller's PATH is kept aside and restored before the chosen command runs,
+  # so that command's own wrapper sees the PATH a typed `flakelab <command>` has.
+  flakelab-menu = pkgs.writeShellScriptBin "flakelab-menu" ''
+    export FLAKELAB_CALLER_PATH="$PATH"
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/flakelab-menu "$@"
+  '';
+
   # The endpoint is read from secrets.env at use time; nothing is baked in.
   notify = pkgs.writeShellScriptBin "notify" ''
     export PATH=${
