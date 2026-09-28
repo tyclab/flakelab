@@ -69,7 +69,9 @@ include "accounts-headroom";
       # switch never rests on stale data. A candidate in backoff (a 429, a
       # failing read) is never in the plan, escalation or not: the backoff is
       # the endpoint's budget and the plan honours it before the script does.
-      (($activeUsage.nextPollAt // 0) <= $now) as $activeDue
+      # Also whenever its figure is not known and it is not in backoff: a
+      # figure stale by our own schedule is refreshed, never counted.
+      ((($activeUsage.nextPollAt // 0) <= $now) or (($ah.known | not) and (($activeUsage.backoffUntil // 0) <= $now))) as $activeDue
       | ( [ ["session", $ah.session], ["week", $ah.week], ["model", $ah.model] ]
           | map(select(.[1] != null) | select((100 - .[1]) >= $bars[.[0]] - 15)) | length > 0 ) as $near
       | ($ah.known | not) as $unknown
@@ -100,12 +102,22 @@ include "accounts-headroom";
           elif $in.activeTokenExpired and ($idleSince == null or ($now - $idleSince) <= $s.idleHoldS) then
             .state.idleHoldSince[$in.tool] = ($idleSince // $now) | .state.unhealthyTicks[$in.tool] = 0
             | .decision.reason = "active-idle" | .decision.detail = "token expired while the tool is idle; resumes on next use"
+          # Only a read that says the login itself is dead counts toward a
+          # failover: no read yet, a rate-limited or failing usage endpoint
+          # (429, 5xx, the network, an answer that does not parse) leaves the
+          # login working, and a failover would move every session to an
+          # account that may not serve its model.
+          elif ((($activeUsage.lastError // null) as $e | $e == null or ($e | test("^(http-429|http-5[0-9][0-9]|http-000|network|app-server-silent|bad-response|unparseable|no-scratch)$")))) then
+            .state.idleHoldSince[$in.tool] = null | .state.unhealthyTicks[$in.tool] = 0
+            | .decision.reason = "active-usage-unknown"
+            | .decision.detail = "the live entry's figure is not known (\($activeUsage.lastError // "stale, a read is planned")); not a dead login, no failover"
           else
             .state.idleHoldSince[$in.tool] = null
             | ($unhealthy + 1) as $n
             | .state.unhealthyTicks[$in.tool] = $n
             | if $n < $s.unhealthyTicks then .decision.reason = "active-usage-unknown" | .decision.detail = "\($n)/\($s.unhealthyTicks) before failover"
               else .decision.trigger = "failover" | .decision.axis = null end
+            | .decision.detail = "\(.decision.detail // "failover"): the live login's reads fail with \($activeUsage.lastError)"
           end )
       | if .decision.trigger == null then
           .events += [{event: "no-switch", reason: .decision.reason, detail: .decision.detail}]
