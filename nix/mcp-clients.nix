@@ -81,7 +81,7 @@ assert lib.assertMsg (
   !(cfg.mcpBrowsers.headless && cfg.mcpShared.servers ? playwright-headless)
 ) "mcpShared.servers: playwright-headless is the name mcpBrowsers.headless registers";
 {
-  inherit launcher headless;
+  inherit launcher;
   servers =
     lib.mapAttrs (name: _: {
       command = "${launcher}/bin/flakelab-mcp";
