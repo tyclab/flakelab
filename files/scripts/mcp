@@ -17,9 +17,9 @@ set -uo pipefail
 #   mcp import-codex                 move Codex's file-store grants once, Codex stopped
 # `_login <account>` is the worker `login` runs on the credential host.
 #
-# Exit codes: 0; 1 for a failure; 2 for a refusal (an unknown account, the
-# wrong host, an import over existing state, no configuration) or a usage
-# error.
+# Exit codes: 0; 1 for a failure; 2 for a refusal (an unknown account, one
+# that needs a login, the wrong host, an import over existing state, no
+# configuration) or a usage error.
 #
 
 exec python3 "${0:A:h}/lib/mcp.py" "$@"

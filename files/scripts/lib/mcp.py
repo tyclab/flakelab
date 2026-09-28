@@ -107,7 +107,7 @@ def connect(cfg, name):
         command = ssh_command(cfg, ["connect", name])
         os.execvp(command[0], command)
     if not usable(cfg, name):
-        raise ValueError(f"{name}: login required. Run 'flakelab mcp login {name}' on your desktop.")
+        raise Refusal(f"{name}: login required. Run 'flakelab mcp login {name}' on your desktop.")
     command, env = adapter(cfg, name)
     os.execvpe(command[0], command, env)
 
