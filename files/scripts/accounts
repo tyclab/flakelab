@@ -209,11 +209,19 @@ read_roster() {
   cat -- "$ROSTER"
 }
 
-write_roster() {
-  local tmp="${ROSTER}.flakelab-tmp.$$"
-  print -r -- "$1" | jq -e . > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1 }
-  chmod 600 "$tmp" && mv -f -- "$tmp" "$ROSTER"
+# FILE's new content, atomically: a 0600 temp beside it, renamed over it.
+# A writer killed in between (a statusline command past its timeout) leaves
+# its temp; the next writer removes those whose process is gone.
+write_atomic() {
+  local file="$1" tmp="${1}.flakelab-tmp.$$" old
+  for old in "${file}".flakelab-tmp.<->(N); do
+    kill -0 "${old##*.}" 2>/dev/null || rm -f -- "$old"
+  done
+  (umask 077; print -r -- "$2" | jq -e . > "$tmp" 2>/dev/null) || { rm -f "$tmp"; return 1 }
+  mv -f -- "$tmp" "$file"
 }
+
+write_roster() { write_atomic "${ROSTER}" "$1" }
 
 # Serialise every writer. fd 9 stays open for the life of the script.
 take_lock() {
@@ -260,11 +268,7 @@ read_usage() {
   print -r -- '{"version": 1, "entries": {}, "quarantine": {}}'
 }
 
-write_usage() {
-  local tmp="${USAGE}.flakelab-tmp.$$"
-  print -r -- "$1" | jq -e . > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1 }
-  chmod 600 "$tmp" && mv -f -- "$tmp" "$USAGE"
-}
+write_usage() { write_atomic "${USAGE}" "$1" }
 
 # jq: the headroom of an entry's cached windows, from the module the engine
 # uses too (lib/accounts-headroom.jq, one definition of known and of each
@@ -352,9 +356,10 @@ fetch_entry() {
     next_reset="$(print -r -- "$entry" | jq -r --argjson now "$(now)" '[.windows[] | .resetsAtEpoch | numbers | select(. > $now)] | if length == 0 then empty else min end')"
     limiting="$(print -r -- "$entry" | jq -r '[.windows[] | select(.pct >= 100) | .resetsAtEpoch | numbers] | if length == 0 then empty else max end')"
     # A live entry the statusline feeds needs the endpoint for its per-model
-    # window only: the candidate cadence, not the active one.
+    # window only: the candidate cadence, not the active one. Only while it
+    # feeds: an idle session ticks no statusline, and the figure must stay known.
     local cadence="$active"
-    [[ "$(print -r -- "$entry" | jq -r '.source // empty')" == statusline ]] && cadence=false
+    (( $(print -r -- "$entry" | jq -r '.statuslineAt // 0') >= $(now) - ACTIVE_MAX_S )) && cadence=false
     plan="$(plan_after_fetch "$prev_i" "$prev_pct" "$new_pct" "$cadence" "$recent429" "$next_reset" "$limiting" "$at_limit")"
     entry="$(print -r -- "$entry" | jq -c --argjson n "${plan%% *}" --argjson i "${plan##* }" '. + {nextPollAt: $n, intervalS: $i}')"
   else
@@ -830,11 +835,7 @@ read_auto_state() {
   print -r -- '{"lastSwitchAt": null, "lastSwitchTo": null, "unhealthyTicks": {}, "idleHoldSince": {}}'
 }
 
-write_auto_state() {
-  local tmp="${AUTO_STATE}.flakelab-tmp.$$"
-  print -r -- "$1" | jq -e . > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1 }
-  chmod 600 "$tmp" && mv -f -- "$tmp" "$AUTO_STATE"
-}
+write_auto_state() { write_atomic "${AUTO_STATE}" "$1" }
 
 # One event: to the log always, to stdout as JSON with --json, else as a line.
 AUTO_JSON=false
@@ -1200,6 +1201,13 @@ cmd_ingest() {
   [[ -f "$ROSTER" ]] || return 0
   has_adapter "$tool" || return 0
   doc="$(cat 2>/dev/null)"; [[ -n "$doc" ]] || return 0
+  # A session on a gateway, an API key or a cloud provider is not on the
+  # OAuth login in ~/.claude.json: its figures are not that login's.
+  if [[ "$tool" == claude ]]; then
+    local v
+    for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do [[ -n "${(P)v:-}" ]] && return 0; done
+    for v in CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do [[ "${(PL)v:-}" == (1|true|yes|on) ]] && return 0; done
+  fi
   windows="$(print -r -- "$doc" | jq -c -L "${LIB}" "${INGEST_JQ}" 2>/dev/null)" || return 0
   [[ -n "$windows" && "$windows" != "[]" ]] || return 0
   # A session in a profile reports for the profile's entry, named by the
@@ -1217,6 +1225,16 @@ cmd_ingest() {
   fi
   exec 9>"${STORE}/lock" 2>/dev/null || return 0
   flock -w 2 9 || return 0
+  # The statusline's figures carry no account, and right after a switch every
+  # session still reports the old login until its next message: a week that
+  # renews at another time than the entry's current week is another account's.
+  if ! read_usage | jq -e --arg id "$id" --argjson w "$windows" --argjson now "$(now)" '
+      ([.entries[$id].windows[]? | select(.class == "week") | .resetsAtEpoch | numbers | select(. > $now)] | first) as $mine
+      | ([$w[] | select(.class == "week") | .resetsAtEpoch | numbers] | first) as $theirs
+      | $mine == null or $theirs == null or ((($mine - $theirs) | fabs) <= 600)' >/dev/null 2>&1; then
+    flock -u 9
+    return 0
+  fi
   # The session and week windows replaced, a per-model window from the
   # endpoint kept. The endpoint's turn for this entry is planned when none
   # is, never pushed out: the statusline carries no per-model window, so the
@@ -1226,7 +1244,7 @@ cmd_ingest() {
     .entries[$id] = ((.entries[$id] // {})
       | .windows = ([.windows[]? | select(.class != "session" and .class != "week")] + $w)
       | .fetchedAt = $now | .failures = 0 | .lastError = null | .backoffUntil = 0
-      | .nextPollAt = (.nextPollAt // ($now + $defer)) | .source = "statusline")')" 2>/dev/null
+      | .nextPollAt = (.nextPollAt // ($now + $defer)) | .source = "statusline" | .statuslineAt = $now)')" 2>/dev/null
   flock -u 9
   return 0
 }
