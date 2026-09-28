@@ -71,6 +71,40 @@ accounts_section() {
   print -r -- "${out%%$'\n'==> *}"
 }
 
+# cgroup_section <target> [<PID 1 cgroup line>]: the doctor's "systemd cgroup"
+# section against the fake tree under ${CGT}, the record at ${CGREC} and the booted
+# system under ${BASE}/booted, colours stripped. No cgroup file at all when the line
+# is empty.
+CGT="${BASE}/cgroup" CGREC="${BASE}/run/init-cgroup"
+mkdir -p "${CGT}" "${BASE}/run" "${BASE}/proc/1" "${BASE}/booted"
+cgroup_section() {
+  rm -f "${BASE}/proc/1/cgroup"
+  [[ -n "${2:-}" ]] && print -r -- "$2" > "${BASE}/proc/1/cgroup"
+  local out
+  out="$(env -i PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET="$1" \
+    FLAKELAB_PROC_ROOT="${BASE}/proc" FLAKELAB_CGROUP_ROOT="${CGT}" \
+    FLAKELAB_INIT_CGROUP_RECORD="${CGREC}" FLAKELAB_BOOTED_SYSTEM="${BASE}/booted" \
+    zsh "${DOCTOR}" 2>&1 < /dev/null)"
+  out="${out//$'\e'\[[0-9;]#m/}"
+  out="${out#*==> systemd cgroup$'\n'}"
+  print -r -- "${out%%$'\n'==> *}"
+}
+
+# ssh_section <systemctl exit status>: the doctor's SSH section with no agent in the
+# environment and a systemctl whose `--user show-environment` exits as given.
+UMT="${BASE}/tools-um"
+mkdir -p "${UMT}"
+for f in "${TOOLS}"/*(N); do ln -s "${f:A}" "${UMT}/${f:t}"; done
+ssh_section() {
+  print -r -- "#!/bin/sh"$'\n'"exit $1" > "${UMT}/systemctl"
+  chmod +x "${UMT}/systemctl"
+  local out
+  out="$(env -i PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other zsh "${DOCTOR}" 2>&1 < /dev/null)"
+  out="${out//$'\e'\[[0-9;]#m/}"
+  out="${out#*==> SSH$'\n'}"
+  print -r -- "${out%%$'\n'==> *}"
+}
+
 print -r -- "test-nix-doctor"
 
 print -r -- "a path: input is a local override"
@@ -124,6 +158,56 @@ contains "a 755 store warns"        "$(accounts_section)" "[WARN] store is mode 
 contains "a 644 login warns"        "$(accounts_section)" "[WARN] 1 stored login file(s) are not 0600"
 contains "with the chmod"           "$(accounts_section)" "chmod 600 ${AC}/1/credentials.json"
 contains "a quarantined entry warns" "$(accounts_section)" "[WARN] quarantined entries: 3 (invalid_grant)"
+
+print -r -- "systemd cgroup: another target"
+contains "no WSL, nothing to check" "$(cgroup_section other)" "[ OK ] target other: systemd starts at the top of its own cgroup tree"
+
+print -r -- "systemd cgroup: at the top of the tree"
+contains "it passes"      "$(cgroup_section wsl '0::/init.scope')" "[ OK ] systemd runs in /, which its users can enter"
+
+print -r -- "systemd cgroup: under a cgroup only root may enter, on a system without the boot step"
+mkdir -p "${CGT}/agent/init.scope"; chmod 700 "${CGT}/agent"
+contains "it fails"       "$(cgroup_section wsl '0::/agent/init.scope')" "[FAIL] systemd runs under /agent, which only root may enter"
+contains "names the update" "$(cgroup_section wsl '0::/agent/init.scope')" "the running system predates the boot step that moves it"
+
+print -r -- "systemd cgroup: the booted system has the step and it recorded nothing"
+print -r -- "exec /nix/store/x-flakelab-wsl-init-cgroup/bin/flakelab-wsl-init-cgroup" > "${BASE}/booted/activate"
+contains "points at the kernel log" "$(cgroup_section wsl '0::/agent/init.scope')" "the boot step ran and recorded nothing"
+lacks    "not as a predating system" "$(cgroup_section wsl '0::/agent/init.scope')" "predates"
+
+print -r -- "systemd cgroup: the move was refused"
+print -rl -- result=failed from=/agent to=/flakelab-x/init.scope "reason=moving PID 1 to /flakelab-x/init.scope: operation not permitted" > "${CGREC}"
+contains "the refusal is named" "$(cgroup_section wsl '0::/agent/init.scope')" "could not: moving PID 1 to /flakelab-x/init.scope: operation not permitted"
+
+print -r -- "systemd cgroup: the move was skipped"
+print -rl -- result=skipped from=/agent to= "reason=cannot read the mode of /agent" > "${CGREC}"
+contains "the skip is named" "$(cgroup_section wsl '0::/agent/init.scope')" "this boot's move did not run: cannot read the mode of /agent"
+
+print -r -- "systemd cgroup: moved, and under the locked cgroup all the same"
+print -rl -- result=moved from=/agent to=/flakelab-x/init.scope > "${CGREC}"
+contains "it fails"       "$(cgroup_section wsl '0::/agent/init.scope')" "[FAIL] systemd runs under /agent"
+contains "says where it went" "$(cgroup_section wsl '0::/agent/init.scope')" "this boot moved the distro to /flakelab-x/init.scope, and systemd runs under /agent all the same"
+
+print -r -- "systemd cgroup: moved out at boot"
+mkdir -p "${CGT}/flakelab-x/init.scope"; chmod 755 "${CGT}/flakelab-x"
+contains "it passes, saying from where" "$(cgroup_section wsl '0::/flakelab-x/init.scope')" "[ OK ] systemd runs in /flakelab-x, moved there at boot out of /agent"
+
+print -r -- "systemd cgroup: a move recorded to somewhere else is not claimed"
+mkdir -p "${CGT}/wsl/distro/init.scope"; chmod 755 "${CGT}/wsl" "${CGT}/wsl/distro"
+contains "it passes plainly" "$(cgroup_section wsl '0::/wsl/distro/init.scope')" "[ OK ] systemd runs in /wsl/distro, which its users can enter"
+
+print -r -- "systemd cgroup: an open cgroup of WSL's own"
+rm -f "${CGREC}"
+contains "it passes"      "$(cgroup_section wsl '0::/wsl/distro/init.scope')" "[ OK ] systemd runs in /wsl/distro, which its users can enter"
+
+print -r -- "systemd cgroup: nothing to read"
+contains "it warns"       "$(cgroup_section wsl '')" "[WARN] cannot read the cgroup systemd runs in"
+contains "a missing directory warns" "$(cgroup_section wsl '0::/gone/init.scope')" "[WARN] cannot read the mode of /gone"
+
+print -r -- "ssh: no agent because no user manager answers"
+contains "names the user manager" "$(ssh_section 1)" "no user manager answers, so no user unit runs: systemctl status user@"
+lacks    "not while one answers"  "$(ssh_section 0)" "no user manager answers"
+contains "the agent hint stays"   "$(ssh_section 0)" "systemctl --user status ssh-agent.service"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

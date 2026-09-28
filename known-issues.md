@@ -111,6 +111,57 @@ missing handler.
 
 ---
 
+## No user manager: `user@<uid>.service` fails with `Permission denied`
+
+### Symptom
+
+On some starts of a distro and not others, no user unit runs. `ssh-add` prints
+`Error connecting to agent: No such file or directory`, `systemctl --user`
+cannot connect to the user scope bus, and the journal has, per login:
+
+```text
+systemd[…]: Failed to create /<cgroup>/user.slice/user-1000.slice/user@1000.service/init.scope control group: Permission denied
+systemd[…]: Failed to allocate manager object: Permission denied
+```
+
+`cat /proc/1/cgroup` reads `0::/<cgroup>/init.scope`, not `0::/init.scope`, and
+`ls -ld /sys/fs/cgroup/<cgroup>` shows a directory only root may enter.
+
+### Root Cause
+
+Every distro in the WSL VM shares one cgroup hierarchy, and WSL starts a distro in
+the cgroup of the process that launches it. A program running inside the VM can
+move that launcher into a cgroup of its own; seen with an endpoint-security agent,
+whose 0700 cgroup at the top of the tree then holds the agent and every distro
+started once it is up. systemd roots its whole tree in the cgroup it starts in, so
+it builds `user.slice` below that directory, and a user manager, which runs as
+the user and must reach its own cgroup through every directory above it, cannot.
+A distro that started first, typically the one that booted the VM, stays at the
+top, and a running distro is never moved: whichever distro starts first decides
+the boot, which is why the same box works one day and not the next.
+
+### Fix (applied)
+
+`flakelab-wsl-init-cgroup` (files/scripts/wsl-init-cgroup) runs in the wsl
+target's activation, which the NixOS-WSL init shim runs before it execs systemd.
+When PID 1's cgroup, or one above it, denies other users search permission, it
+moves the distro's processes into `/flakelab-<id>/init.scope`, a top-level cgroup
+of its own named after the machine id, and systemd roots its tree there. Nothing else in the other
+cgroup is touched: a process outside the distro's PID namespace cannot even be
+named from inside it. The outcome is in `/run/flakelab/init-cgroup` and in
+`flakelab doctor`'s "systemd cgroup" section, which also names a move the kernel
+refused.
+
+A distro caught before it had this fix: `flakelab update`, then `wsl --shutdown`
+from a Windows terminal; its next start is moved.
+
+### What Does NOT Work
+
+- **Starting this distro first, or making it the default.** It holds only until
+  something else in the VM starts first.
+- **Changing the other cgroup's mode.** It belongs to the program that made it,
+  not to this flake.
+
 ## Terminal Rendering Corruption (Null Bytes from wsl.exe)
 
 ### Symptom

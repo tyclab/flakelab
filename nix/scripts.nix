@@ -315,6 +315,19 @@ rec {
     exec ${zsh} ${s}/switch-result "$@"
   '';
 
+  # Run by the wsl target's activation (nix/targets/wsl.nix), at boot before systemd
+  # starts, so nothing is taken from the ambient PATH: it is pinned whole.
+  wsl-init-cgroup = pkgs.writeShellScriptBin "flakelab-wsl-init-cgroup" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.gnugrep
+      ]
+    }
+    exec ${zsh} ${s}/wsl-init-cgroup "$@"
+  '';
+
   # System-wide on the wsl target (nix/configuration.nix). rundll32.exe and wslpath
   # exist only on the ambient PATH WSL builds, so that one leads; the pinned
   # coreutils after it covers a caller whose PATH has no mktemp.
