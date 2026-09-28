@@ -1403,6 +1403,10 @@ check "the entry's own, its week renewing within ten minutes of the known one, a
 jq '.entries["1"].windows[1].resetsAtEpoch = 1758900000' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 run_in '{"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
 check "and a new week after the known one renewed is too" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json")" "12 1"
+for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK; do
+  env "${v}=x" zsh -c 'print -r -- "$1" | "$2" ingest' _ '{"rate_limits": {"five_hour": {"used_percentage": 97, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' "${CMD}"
+  check "a session on ${v} files nothing against the OAuth login" "$(jq -r '.entries["1"].windows[] | select(.class == "session") | .pct' "${STORE}/usage.json")" "12"
+done
 # A writer killed between its temp and the rename (a statusline command
 # past its timeout) leaves the temp; the next write removes a dead one's.
 sleep 600 & ALIVE=$!

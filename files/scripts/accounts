@@ -1203,6 +1203,15 @@ cmd_ingest() {
   [[ -f "$ROSTER" ]] || return 0
   has_adapter "$tool" || return 0
   doc="$(cat 2>/dev/null)"; [[ -n "$doc" ]] || return 0
+  # A session on a gateway, an API key or a cloud provider is not on the
+  # OAuth login in ~/.claude.json: its figures, if any, are not that login's.
+  # The statusline command inherits the session's environment.
+  if [[ "$tool" == claude ]]; then
+    local v
+    for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
+      [[ -n "${(P)v:-}" ]] && return 0
+    done
+  fi
   windows="$(print -r -- "$doc" | jq -c -L "${LIB}" "${INGEST_JQ}" 2>/dev/null)" || return 0
   [[ -n "$windows" && "$windows" != "[]" ]] || return 0
   # A session in a profile reports for the profile's entry, named by the
