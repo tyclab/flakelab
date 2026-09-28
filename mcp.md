@@ -37,8 +37,12 @@ out of any synced folder: two copies of a rotating refresh token invalidate each
 other.
 
 `flakelab mcp status` prints, per account, whether credentials are stored
-(`stored` or `login-required`). It does not ask the provider whether they are
-still accepted. Run on a box with a gateway, it reports the gateway's store.
+(`stored` or `login-required`). `stored` is what the adapter starts on without
+a browser: an access token with no expiry or more than a minute left, or a
+refresh token beside it. It does not ask the provider whether they are still
+accepted. Run on a box with a gateway, it reports the gateway's store.
+`connect` refuses a `login-required` account with the login hint rather than
+start an adapter that would wait out its five-minute auth timeout.
 
 ## Logging in
 

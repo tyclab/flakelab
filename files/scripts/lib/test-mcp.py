@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -104,6 +105,32 @@ class SharedMcpTest(unittest.TestCase):
         self.assertEqual(json.loads(printed), [{"name": "personal", "credentials": "stored"},
                                                {"name": "business", "credentials": "stored"}])
         self.assertNotIn("example-", printed)
+
+    def write_tokens(self, name, **tokens):
+        mcp.write_private(mcp.cache_file(self.cfg, name, "tokens.json"), {"token_type": "Bearer", **tokens})
+
+    def statuses(self):
+        with patch("builtins.print") as output:
+            mcp.status(self.cfg)
+        return {row["name"]: row["credentials"] for row in json.loads(output.call_args.args[0])}
+
+    def test_connect_refuses_what_status_reports_as_login_required(self):
+        self.write_tokens("personal", access_token="example-access", expires_at=int(time.time() * 1000) - 1000)
+        self.assertEqual(self.statuses()["personal"], "login-required")
+        with patch.object(mcp.os, "execvpe") as execvpe:
+            with self.assertRaisesRegex(ValueError, "personal: login required"):
+                mcp.connect(self.cfg, "personal")
+        execvpe.assert_not_called()
+
+    def test_a_grant_the_adapter_uses_without_a_browser_is_stored_and_connects(self):
+        self.write_tokens("personal", access_token="example-access")
+        self.write_tokens("business", access_token="example-access", refresh_token="example-refresh",
+                          expires_at=int(time.time() * 1000) - 1000)
+        self.assertEqual(self.statuses(), {"personal": "stored", "business": "stored"})
+        with patch.object(mcp.os, "execvpe") as execvpe:
+            for name in self.cfg["servers"]:
+                mcp.connect(self.cfg, name)
+        self.assertEqual(execvpe.call_count, 2)
 
     def test_partial_source_never_changes_native_credentials(self):
         source, data = self.codex_credentials()
