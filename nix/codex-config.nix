@@ -7,11 +7,12 @@
 }:
 let
   cfg = config.flakelab;
+  fleet = import ./mcp-clients.nix { inherit pkgs cfg; };
   sources = map (path: (builtins.fromJSON (builtins.readFile path)).mcpServers) cfg.codexMcpSources;
   names = lib.concatMap builtins.attrNames sources;
   servers = lib.foldl' (acc: source: acc // source) { } sources;
   nativeServers = lib.mapAttrs (_: server: builtins.removeAttrs server [ "type" ]) servers;
-  allServers = nativeServers // (cfg.codexSettings.mcp_servers or { });
+  allServers = nativeServers // fleet.servers // (cfg.codexSettings.mcp_servers or { });
   commandRules = import ./codex-rules.nix;
   localRules = lib.concatMapStringsSep "\n" (
     rule:
@@ -54,6 +55,7 @@ let
   managed =
     cfg.codexSettings != { }
     || cfg.codexMcpSources != [ ]
+    || fleet.servers != { }
     || cfg.codexAutoReview
     || cfg.codexEnforcePermissions;
   settings = lib.recursiveUpdate (lib.optionalAttrs cfg.codexAutoReview {
@@ -78,6 +80,10 @@ in
 {
   config = lib.mkIf (cfg.installCodex && managed) {
     assertions = [
+      {
+        assertion = !cfg.mcpBrowsers.bridge || cfg.target == "wsl";
+        message = "mcpBrowsers.bridge requires WSL with the Windows Chrome extension";
+      }
       {
         assertion = !cfg.codexEnforcePermissions || cfg.codexAutoReview;
         message = "codexEnforcePermissions requires codexAutoReview";

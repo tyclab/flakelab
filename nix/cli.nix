@@ -21,6 +21,7 @@ let
       scripts.accounts
       scripts.notify
       scripts.web
+      scripts.mcp
       scripts.nix-clone-repos
       scripts.nix-provision
       scripts.nix-overlay-generate

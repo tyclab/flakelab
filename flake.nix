@@ -330,6 +330,7 @@
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
         notify = suiteCheck "notify";
+        mcp = suiteCheckWith [ pkgs.python3 ] "mcp";
         # The dashboard's suite runs the server on loopback and talks to it.
         web = suiteCheckWith [
           pkgs.python3
@@ -1027,6 +1028,9 @@
           zsh
           jq
           gnumake
+          python3
+          sqlite
+          curl
         ];
         # To stderr, or the banner prefixes what `nix develop -c <cmd>` prints.
         shellHook = ''

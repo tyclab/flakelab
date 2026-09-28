@@ -305,6 +305,52 @@ in
       description = "Claude Code output style asserted into settings.outputStyle. Null leaves the key alone, so the style stays whatever /output-style last picked on the box. Name a built-in (\"Concise\", \"Explanatory\", \"Learning\") or a custom style from ~/.claude/output-styles.";
     };
 
+    mcpShared = {
+      gateway = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "developer@devbox";
+        description = "SSH destination holding shared MCP OAuth credentials. Null runs the adapters locally. Clients use SSH stdio; no MCP HTTP listener is exposed.";
+      };
+      servers = mkOption {
+        type = types.attrsOf (
+          types.submodule {
+            options = {
+              url = mkOption {
+                type = types.str;
+                description = "HTTPS MCP endpoint.";
+              };
+              callbackPort = mkOption {
+                type = types.port;
+                description = "Dedicated loopback OAuth callback port; unique per account.";
+              };
+            };
+          }
+        );
+        default = { };
+        description = "OAuth MCP accounts shared by Claude and Codex. Each name has a private credential directory, including accounts at the same URL.";
+      };
+    };
+
+    mcpBrowsers = {
+      headless = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Register isolated, headless Playwright in Claude and Codex using the Nix-provided Chromium headless shell.";
+      };
+      bridge = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Also register Playwright's Windows Chrome extension bridge in Claude and Codex. Requires WSL.";
+      };
+    };
+
+    claudeDisabledPlugins = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = "Qualified plugin names to disable after installation, including dependencies of installed bundles. Use when replacing a plugin's MCP with native servers.";
+    };
+
     mcpPlaywright = mkOption {
       type = types.bool;
       default = false;

@@ -51,6 +51,8 @@ in
 # `rec` for one self-reference: the nix-update wrappers pin `nix-clone-repos`, which
 # the CLI keeps off PATH under its own name, so `--all` would trip its guard.
 rec {
+  mcp = (import ./mcp-clients.nix { inherit pkgs cfg; }).launcher;
+
   clone-repos = pkgs.writeShellScriptBin "clone-repos" ''
     export PATH=${
       bin [

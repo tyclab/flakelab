@@ -12,6 +12,7 @@
 }:
 let
   cfg = osConfig.flakelab;
+  fleet = import ../mcp-clients.nix { inherit pkgs cfg; };
   scripts = import ../scripts.nix { inherit pkgs cfg; };
   inherit (flakelab)
     installClaude
@@ -155,15 +156,21 @@ let
 
   # Without these the Playwright server launches a local chrome instead of
   # attaching to Windows Chrome.
-  claudePlaywrightJq = lib.optionalString (isWsl && lib.elem "mcp-playwright" claudePlugins) ''
-    | .env += ${
-      builtins.toJSON {
-        PLAYWRIGHT_MCP_EXECUTABLE_PATH = windowsChromePath;
-        PLAYWRIGHT_MCP_EXTENSION = "true";
-        PLAYWRIGHT_MCP_BROWSER = "chrome";
-      }
-    }
-  '';
+  claudePlaywrightJq =
+    if cfg.mcpBrowsers.headless || cfg.mcpBrowsers.bridge then
+      ''
+        | .env |= del(.PLAYWRIGHT_MCP_EXECUTABLE_PATH, .PLAYWRIGHT_MCP_EXTENSION, .PLAYWRIGHT_MCP_BROWSER)
+      ''
+    else
+      lib.optionalString (isWsl && lib.elem "mcp-playwright" claudePlugins) ''
+        | .env += ${
+          builtins.toJSON {
+            PLAYWRIGHT_MCP_EXECUTABLE_PATH = windowsChromePath;
+            PLAYWRIGHT_MCP_EXTENSION = "true";
+            PLAYWRIGHT_MCP_BROWSER = "chrome";
+          }
+        }
+      '';
 
   # Non-secret halves only: the API key stays in secrets.env.
   claudeWhatsappJq =
@@ -231,6 +238,7 @@ let
             type = "stdio";
           };
         }
+    // lib.mapAttrs (_: server: server // { type = "stdio"; }) fleet.servers
     // cfg.claudeMcpServers
   ) cfg.claudeMcpDisabledServers;
 
@@ -350,7 +358,8 @@ in
   # permissions.allow/ask are not here: the marketplace clone they come from is
   # runtime data, so nix-update asserts them after every switch.
   home.activation.claudeSettings =
-    lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" ]
+    lib.hm.dag.entryAfter
+      [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" "pruneClaudeMcpPlugins" ]
       (
         lib.optionalString installClaude ''
           ${jqPath}
@@ -377,6 +386,9 @@ in
             ${notifyHookJq}
             ${claudeStatuslineJq}
             ${claudePlaywrightJq}
+            | .enabledPlugins = ((.enabledPlugins // {}) + ${
+              builtins.toJSON (lib.genAttrs cfg.claudeDisabledPlugins (_: false))
+            })
             ${claudeWhatsappJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings" || {
             rm -f "$_settings.tmp"

@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- Share Claude and Codex OAuth accounts through a local adapter or SSH gateway, with desktop browser login and automatic callback forwarding.
+- Add isolated headless Playwright and an optional WSL browser bridge as separate native servers.
+- Support disabling marketplace bundle dependencies when native servers replace them.
+
 - The `flakelab accounts` listing, `status` and the dashboard name each login's plan (a `PLAN` column: `max-20x`, `max-5x`, `pro`, `team`, `enterprise` for Claude Code from the `subscriptionType` and `rateLimitTier` it records at login; the ChatGPT plan for Codex; the account type for Kiro), read from a stored entry's own files where the adapter can do that offline, so a plan change shows without a re-add; `--json` carries it as `plan`. A Claude login's org in the roster is its plan rather than the organisation's name.
 - The `flakelab accounts` listing and the dashboard show each window's time to its reset (a `RESETS` column: `5h 2h · 7d 5d · Fable 5d`; `?` for a window the tool gave no reset for).
 
