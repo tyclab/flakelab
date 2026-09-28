@@ -33,6 +33,9 @@ let
     inherit args;
   };
 in
+assert lib.assertMsg (
+  !cfg.mcpBrowsers.bridge || cfg.target == "wsl"
+) "mcpBrowsers.bridge requires WSL with the Windows Chrome extension";
 {
   inherit launcher;
   servers =

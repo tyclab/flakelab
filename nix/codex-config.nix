@@ -81,10 +81,6 @@ in
   config = lib.mkIf (cfg.installCodex && managed) {
     assertions = [
       {
-        assertion = !cfg.mcpBrowsers.bridge || cfg.target == "wsl";
-        message = "mcpBrowsers.bridge requires WSL with the Windows Chrome extension";
-      }
-      {
         assertion = !cfg.codexEnforcePermissions || cfg.codexAutoReview;
         message = "codexEnforcePermissions requires codexAutoReview";
       }
