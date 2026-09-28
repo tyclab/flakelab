@@ -209,10 +209,9 @@ read_roster() {
   cat -- "$ROSTER"
 }
 
-# FILE's new content, atomically: a 0600 temp beside it (made under umask
-# 077, never readable in between), renamed over it. A writer killed between
-# the two (a statusline command past its timeout) leaves its temp behind;
-# the next writer removes those whose process is gone.
+# FILE's new content, atomically: a 0600 temp beside it, renamed over it.
+# A writer killed in between (a statusline command past its timeout) leaves
+# its temp; the next writer removes those whose process is gone.
 write_atomic() {
   local file="$1" tmp="${1}.flakelab-tmp.$$" old
   for old in "${file}".flakelab-tmp.<->(N); do
@@ -358,8 +357,7 @@ fetch_entry() {
     limiting="$(print -r -- "$entry" | jq -r '[.windows[] | select(.pct >= 100) | .resetsAtEpoch | numbers] | if length == 0 then empty else max end')"
     # A live entry the statusline feeds needs the endpoint for its per-model
     # window only: the candidate cadence, not the active one. Only while it
-    # feeds: idle sessions tick no statusline, and at the candidate cadence
-    # the figure would age past the five minutes that make it known.
+    # feeds: an idle session ticks no statusline, and the figure must stay known.
     local cadence="$active"
     (( $(print -r -- "$entry" | jq -r '.statuslineAt // 0') >= $(now) - ACTIVE_MAX_S )) && cadence=false
     plan="$(plan_after_fetch "$prev_i" "$prev_pct" "$new_pct" "$cadence" "$recent429" "$next_reset" "$limiting" "$at_limit")"
@@ -1204,13 +1202,11 @@ cmd_ingest() {
   has_adapter "$tool" || return 0
   doc="$(cat 2>/dev/null)"; [[ -n "$doc" ]] || return 0
   # A session on a gateway, an API key or a cloud provider is not on the
-  # OAuth login in ~/.claude.json: its figures, if any, are not that login's.
-  # The statusline command inherits the session's environment.
+  # OAuth login in ~/.claude.json: its figures are not that login's.
   if [[ "$tool" == claude ]]; then
     local v
-    for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
-      [[ -n "${(P)v:-}" ]] && return 0
-    done
+    for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do [[ -n "${(P)v:-}" ]] && return 0; done
+    for v in CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do [[ "${(PL)v:-}" == (1|true|yes|on) ]] && return 0; done
   fi
   windows="$(print -r -- "$doc" | jq -c -L "${LIB}" "${INGEST_JQ}" 2>/dev/null)" || return 0
   [[ -n "$windows" && "$windows" != "[]" ]] || return 0
@@ -1229,11 +1225,9 @@ cmd_ingest() {
   fi
   exec 9>"${STORE}/lock" 2>/dev/null || return 0
   flock -w 2 9 || return 0
-  # The statusline's figures carry no account: they are what the session's
-  # last response said, and a session keeps the login it had until its next
-  # message. Right after a switch every session still reports the old
-  # account, so figures whose week renews at another time than the entry's
-  # current week are some other account's and are not filed.
+  # The statusline's figures carry no account, and right after a switch every
+  # session still reports the old login until its next message: a week that
+  # renews at another time than the entry's current week is another account's.
   if ! read_usage | jq -e --arg id "$id" --argjson w "$windows" --argjson now "$(now)" '
       ([.entries[$id].windows[]? | select(.class == "week") | .resetsAtEpoch | numbers | select(. > $now)] | first) as $mine
       | ([$w[] | select(.class == "week") | .resetsAtEpoch | numbers] | first) as $theirs

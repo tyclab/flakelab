@@ -445,8 +445,15 @@ and a gateway's `spend_limit` only, never the per-model week, so the
 endpoint still answers for the live login, at the candidate cadence rather
 than the active one: `ingest` plans a poll when none is planned and never
 pushes a planned one out (a tick every few seconds would otherwise defer it
-for ever), and the poll's plan runs on the candidate range while the source
-is the statusline. The endpoint's `resets_at` stamps carry an offset
+for ever), and the poll's plan runs on the candidate range while the
+statusline fed within the last five minutes (an idle session ticks none,
+and the figure must stay known). The figures carry no account: a session on
+a gateway, an API key or a cloud provider (`ANTHROPIC_BASE_URL`,
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, a true
+`CLAUDE_CODE_USE_BEDROCK`/`VERTEX`/`FOUNDRY`) files nothing, and a session
+still on the login it had before a switch reports that account's, so
+figures whose week renews at another time than the entry's current week are
+not filed. The endpoint's `resets_at` stamps carry an offset
 (`+00:00`), which `fromdateiso8601` refuses; `lib/accounts-time.jq` applies
 it, so every window's reset is an epoch whatever the source.
 
@@ -511,14 +518,13 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
 3. Trigger: `proactive` when the deciding axis crossed its bar; `at-limit`
    when any counted window is at 100; `failover` after three consecutive
    ticks whose read of the active account says the login itself is dead
-   (unauthorized, 401 or 403, a credential expired or missing, a refused
-   refresh, a revoked seat). A figure that is only stale is read at once
-   rather than counted, and a failing usage read (429, 5xx, the network, an
-   answer that does not parse) leaves the login working: neither is a reason
-   to move every session to an account that may not serve its model. The
-   exception to counting is an idle hold: the active token is expired on
-   disk and no session is using it, which is the tool idle rather than dead,
-   held for up to thirty minutes before the count resumes.
+   (unauthorized, 401 or 403, a credential missing, a refused refresh). A
+   figure that is only stale is read at once rather than counted, and a
+   failing usage read (429, 5xx, the network, an answer that does not parse)
+   leaves the login working. The exception to counting is an idle hold: the
+   active token is expired on disk and no session is using it, which is the
+   tool idle rather than dead, held for up to thirty minutes before the
+   count resumes.
 4. A cooldown of five minutes since the last switch stops a `proactive`
    trigger and nothing else.
 5. Candidates: every enabled, non-quarantined entry of the tool other than
@@ -528,9 +534,10 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
    and beat the active account there by ten points, so two accounts hovering
    at the line cannot ping-pong. A `proactive` candidate must also carry a
    window for every model the active account has one for: a plan without
-   that model's window does not serve it (Fable on Pro needs usage credits),
-   and the sessions using it would stop. `at-limit` and `failover` skip both gates:
-   any account with room beats a blocked or dead one.
+   that model's window does not serve it (Fable on Pro needs usage credits).
+   `at-limit` and `failover` skip both gates, any account with room beats a
+   blocked or dead one, except at a model's limit: a candidate without that
+   model's window serves it no better and the rest worse, so it is no move.
 6. Order: earliest weekly reset first (`soonest-reset`, the default), or most
    weekly headroom (`best`). Under `soonest-reset` an account over its bar is
    still tried only after every account under it.
