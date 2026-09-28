@@ -712,9 +712,9 @@
 
         # The CLI installers fetch a script and pipe it into a shell. Without pipefail a
         # failed fetch hands the shell an empty script, which exits 0: nothing installed,
-        # nothing deferred, and the health check then fails on the missing binary. The
-        # sandbox has no network, so each rendered entry runs here as an offline switch,
-        # whose failures must all be deferred - a flakelab-warn entry fails the rebuild.
+        # nothing deferred, and the health check then fails on the missing binary. Each
+        # rendered entry runs here as an offline switch, whose failures must all be
+        # deferred - a flakelab-warn entry fails the rebuild.
         cli-installers =
           let
             sys = self.nixosConfigurations.default.config;
@@ -740,6 +740,10 @@
             deferred() { grep -q -- "$1" "$HOME/.local/state/flakelab/activation-deferred"; }
             nothingDeferred() { test ! -e "$HOME/.local/state/flakelab/activation-deferred"; }
             noWarn() { test ! -e "$HOME/.local/state/flakelab/activation-failures"; }
+            # Offline on a builder without the sandbox too: a failing curl, exported so
+            # the entry's inner bash takes it over the store curl on its PATH.
+            offline() { curl() { return 6; }; export -f curl; }
+            offline
 
             echo "kiro-cli: an offline first install is deferred"
             fresh kiro-absent
@@ -777,9 +781,8 @@
             deferred "Codex CLI not updated"
             noWarn
 
-            # A bash function exported under the name shadows the store curl in the
-            # entry's inner bash, so the fetch returns a stand-in installer that
-            # records what the real one would be run with.
+            # The fetch returns a stand-in installer that records what the real one
+            # would be run with.
             echo "codex: the installer runs unprompted, with ~/.local/bin on PATH"
             fresh codex-online
             curl() {
@@ -790,7 +793,7 @@
             }
             export -f curl
             activate ${entry "installCodexCli"}
-            unset -f curl
+            offline
             test -x "$HOME/.local/bin/codex"
             case ":$(cat "$HOME/installer-path"):" in *":$HOME/.local/bin:"*) ;; *) exit 1 ;; esac
             test "$(cat "$HOME/installer-prompt")" = 1
