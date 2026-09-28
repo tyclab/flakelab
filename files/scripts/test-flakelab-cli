@@ -124,9 +124,11 @@ typeset -a HELP_SCRIPTS=(
 )
 for s in "${HELP_SCRIPTS[@]}"; do
   rm -f "${BASE}/help-ran.log"
-  OUT="$(HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --help </dev/null 2>&1)"; RC=$?
+  # Without USER or WSL_DISTRO_NAME, as in a build sandbox: a script must not
+  # need either, or reach for wsl.exe, to say how it is used.
+  OUT="$(env -u USER -u SUDO_USER -u WSL_DISTRO_NAME HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --help </dev/null 2>&1)"; RC=$?
   check "${s} --help exits 0" "${RC}" "0"
-  check "${s} --help prints its help" "$([[ -n "${OUT}" ]] && print yes || print empty)" "yes"
+  check "${s} --help prints its help" "$([[ "${(L)OUT}" == *usage* || "${OUT}" == *"  --"* ]] && print yes || print "${OUT[1,200]}")" "yes"
   check "${s} --help runs no tool" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
 done
 

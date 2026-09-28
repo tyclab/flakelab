@@ -16,8 +16,10 @@ else
   echo "Error: FLAKELAB_BACKUP_ROOT unset and no repo checkout found." >&2
   exit 1
 fi
-# Test seam: nothing in production sets FLAKELAB_HOME_DIR.
-HOME_DIR="${FLAKELAB_HOME_DIR:-/home/${SUDO_USER:-${USER}}}"
+# Test seam: nothing in production sets FLAKELAB_HOME_DIR. $USER is not set
+# everywhere (a build sandbox, some service managers), and under set -u a bare
+# one ended the run before --help was even read.
+HOME_DIR="${FLAKELAB_HOME_DIR:-/home/${SUDO_USER:-${USER:-$(id -un)}}}"
 
 # Configured is not usable: check_state_root decides once, before any write, and
 # an unusable root SKIPS the state categories rather than writing them to the payload.
@@ -99,22 +101,6 @@ sync_artifact_find_args() {
   done
 }
 
-# WSL_DISTRO_NAME wins where it is set (the shell env on a WSL distro).
-# FLAKELAB_INSTANCE is next: the nix-backup wrapper (nix/scripts.nix) exports it
-# from flakelab.hostName on every OTHER target, where WSL_DISTRO_NAME is never
-# set at all — so on those targets this line resolves the instance directly and
-# the wsl.exe fallback below never runs.
-DISTRO_NAME="${WSL_DISTRO_NAME:-${FLAKELAB_INSTANCE:-unknown}}"
-if [[ "${DISTRO_NAME}" == "unknown" ]]; then
-  script_dir="${0:A:h}"
-  if [[ -x "${script_dir}/get_current_wsl_distro_name" ]]; then
-    DISTRO_NAME="$("${script_dir}/get_current_wsl_distro_name")"
-  fi
-fi
-
-SHARED_ROOT="${BACKUP_ROOT}/shared"
-INSTANCE_ROOT="${BACKUP_ROOT}/instances/${DISTRO_NAME}"
-
 SHARED_CATEGORIES=(ssh gitconfig secrets)
 # Everything else is per-instance: .gitignore names the shared/ categories one by
 # one, so a new shared category stays committable until .gitignore learns about it.
@@ -144,8 +130,6 @@ recompute_backup_paths() {
   BACKUP_HELM="$(resolve_backup_path helm)"
   BACKUP_ACCOUNTS="$(resolve_backup_path accounts)"
 }
-
-recompute_backup_paths
 
 FORCE=false
 DRY_RUN=false
@@ -237,6 +221,24 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+# After the arguments, so --help is answered without asking wsl.exe anything.
+# WSL_DISTRO_NAME wins where it is set (the shell env on a WSL distro).
+# FLAKELAB_INSTANCE is next: the nix-backup wrapper (nix/scripts.nix) exports it
+# from flakelab.hostName on every OTHER target, where WSL_DISTRO_NAME is never
+# set at all — so on those targets this line resolves the instance directly and
+# the wsl.exe fallback below never runs.
+DISTRO_NAME="${WSL_DISTRO_NAME:-${FLAKELAB_INSTANCE:-unknown}}"
+if [[ "${DISTRO_NAME}" == "unknown" ]]; then
+  script_dir="${0:A:h}"
+  if [[ -x "${script_dir}/get_current_wsl_distro_name" ]]; then
+    DISTRO_NAME="$("${script_dir}/get_current_wsl_distro_name")"
+  fi
+fi
+
+SHARED_ROOT="${BACKUP_ROOT}/shared"
+INSTANCE_ROOT="${BACKUP_ROOT}/instances/${DISTRO_NAME}"
+recompute_backup_paths
 
 # A read-only SOURCE override; the destination stays this distro's HOME_DIR.
 if [[ -n "${SRC_FROM}" || -n "${SRC_INSTANCE}" ]]; then
