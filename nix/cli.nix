@@ -9,7 +9,8 @@ let
   zsh = "${pkgs.zsh}/bin/zsh";
 
   # Keep in step with the router's subcommand map: an entry it names but this list
-  # does not fails at run time with "no executable at ...".
+  # does not fails at run time with "no executable at ...". flakelab-menu is no
+  # subcommand: the router opens it for a bare `flakelab` at a terminal.
   dispatchDir = pkgs.symlinkJoin {
     name = "flakelab-dispatch";
     paths = [
@@ -32,6 +33,7 @@ let
       scripts.activate-hooks
       scripts.report-stale-repos
       scripts.glab-group-projects
+      scripts.flakelab-menu
     ];
   };
 

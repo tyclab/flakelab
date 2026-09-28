@@ -58,6 +58,8 @@ STATE_WROTE=false
 
 source "${0:A:h}/lib/state-sync.zsh" || exit 1
 source "${0:A:h}/lib/state-gate.zsh" || exit 1
+# The y/N questions, asked the one way every flakelab command asks them.
+source "${0:A:h}/lib/prompt.zsh" || exit 1
 
 # Sync-client conflict copies and metadata litter, plus place_atomically's own
 # temps: excluded from mirrors, verification and restore. The merged history,
@@ -646,16 +648,13 @@ backup_file() {
   if [[ -f "${dst}" ]]; then
     if ! ${FORCE}; then
       if ! diff -q "${src}" "${dst}" > /dev/null 2>&1; then
-        # No TTY: a bare `read` would abort the run. A failure, unlike an
-        # interactive decline — the file asked for is not in the backup.
-        if [[ ! -t 0 ]]; then
+        # Nobody to ask (prompt_tty): a failure, unlike an interactive
+        # decline — the file asked for is not in the backup.
+        if ! prompt_tty; then
           record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite): ${dst}"
           return 0
         fi
-        print -rPn -- "${YELLOW}Overwrite ${dst//\%/%%}? [y/N] ${RESET}"
-        local answer=""
-        read -r answer || answer=""
-        if [[ "${answer}" != [yY] ]]; then
+        if ! prompt_confirm "Overwrite ${dst}?"; then
           log_warn "Skipped: ${dst}"
           return 0
         fi
@@ -869,9 +868,9 @@ restore_file() {
       return 0
     fi
     if ! diff -q "${src}" "${dst}" > /dev/null 2>&1; then
-      # No TTY (setup-wsl-nix.ps1 over wsl.exe): a bare `read` would abort the
-      # restore. A failure unless --skip-conflicts made keeping the file intended.
-      if [[ ! -t 0 ]]; then
+      # Nobody to ask (prompt_tty; setup-wsl-nix.ps1 over wsl.exe): a failure
+      # unless --skip-conflicts made keeping the file intended.
+      if ! prompt_tty; then
         if ${SKIP_CONFLICTS}; then
           CONFLICTS_KEPT+=("${dst}")
           log_warn "Differs, kept existing (--skip-conflicts): ${dst}"
@@ -880,10 +879,7 @@ restore_file() {
         record_failure "Differs, kept existing, no TTY to confirm (pass --force to overwrite, or --skip-conflicts to keep): ${dst}"
         return 0
       fi
-      print -rPn -- "${YELLOW}Overwrite ${dst//\%/%%}? [y/N] ${RESET}"
-      local answer=""
-      read -r answer || answer=""
-      if [[ "${answer}" != [yY] ]]; then
+      if ! prompt_confirm "Overwrite ${dst}?"; then
         log_warn "Skipped: ${dst}"
         return 0
       fi

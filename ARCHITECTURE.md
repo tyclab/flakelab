@@ -225,6 +225,28 @@ dispatches to those copies when it is run from one.
 namespace collision, and other repos invoke them by name. Each subcommand keeps
 its own `--help`, flags, exit codes and `--json` output.
 
+### At a terminal
+
+A person gets questions where an agent gets flags. Everything asked lives in
+`files/scripts/lib/prompt.zsh`, pure zsh plus `stty`: an arrow-key list with
+type-to-filter, one line in the zsh line editor with its default typed in and
+Tab completing paths, and the single-key `[y/N]`. Every prompt is gated on
+`prompt_tty` (stdin and stderr a terminal, `TERM` not dumb, no
+`FLAKELAB_NO_PROMPT`, and not an agent's own shell: `CLAUDECODE` or
+`CODEX_THREAD_ID` set, since Codex can give a command a pty); anywhere else a command does what it did before it could
+ask — refuse, take the default, need the flag — so an agent's shell, a pipe, a
+hook, a timer and every `--json` run meet no prompt and wait on none.
+
+Two layers use it. A bare `flakelab` with all three ends a terminal opens
+`flakelab-menu`: a command, then what to do with it, and it re-enters the
+router with those flags, so the target gate and the command's wrapper apply as
+they do to a typed command; its wrapper sets the caller's PATH back first. The
+menu asks nothing a command asks itself: a command that was not given a
+required argument asks for it — `sessions --start` the tool and the
+directory, `--attach` the session, the `accounts` verbs the login or the
+tool — and prints the full command it amounts to (`→ flakelab accounts
+switch 3`), so the flags are there to copy next time.
+
 ## Why two switches
 
 A `provision` applies the overlay twice. The SSH-dependent activation steps —

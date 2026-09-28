@@ -12,6 +12,10 @@
 
 set -uo pipefail
 
+# The terminal cases need prompts, and this suite may itself run in an agent's
+# shell, where lib/prompt.zsh's prompt_tty says no to any terminal.
+unset CLAUDECODE CODEX_THREAD_ID
+
 SCRIPT_DIR="${0:A:h}"
 GITCHECKER="${SCRIPT_DIR}/gitchecker"
 
@@ -485,5 +489,41 @@ rm -rf "${TESTROOT}/bare/t/dead.git"
 run_gc --repos-dir "${TESTROOT}/roots/dead"
 assert_rc 2 "unreachable remote exits 2"
 assert_has "git fetch --prune failed" "fetch failure is named"
+
+# ── At a terminal ────────────────────────────────────────────────────
+print -r -- "at a terminal:"
+# A dirty HEAD branch strictly behind is the one case gitchecker asks about.
+# run_gc_tty <keys> <args...> — gitchecker on a pseudo-terminal (util-linux
+# `script`), the keys typed ahead; the escape codes stripped from GC_OUT.
+run_gc_tty() {
+  local keys="$1"; shift
+  GC_OUT="$(printf "$keys" | TERM=xterm timeout 60 script -qec "${(q)GITCHECKER} ${(j: :)${(q)@}}" /dev/null 2>&1)"; GC_RC=$?
+  GC_OUT="$(print -r -- "${GC_OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+}
+TT="${TESTROOT}/roots/tty"
+W="$(mk_repo "${TT}" dirtybehind gitlab.com t/dirtybehind)"
+TCLONE="${TESTROOT}/clone-dirtybehind"
+git clone -q "${TESTROOT}/bare/t/dirtybehind.git" "${TCLONE}"
+print -r -- up > "${TCLONE}/up.txt"
+git -C "${TCLONE}" add up.txt && git -C "${TCLONE}" commit -qm up && git -C "${TCLONE}" push -q origin main
+print -r -- changed > "${W}/seed.txt"
+run_gc_tty 'n' --repos-dir "${TT}"
+assert_has "dirtybehind: main is 1 behind and the tree is dirty — fast-forward anyway? [y/N]" "a dirty HEAD branch behind is asked about"
+assert_has "(not fast-forwarded: working tree dirty" "and n leaves it"
+assert_lacks "fast-forwarded ↓" "moving nothing"
+run_gc --repos-dir "${TT}"
+assert_lacks "fast-forward anyway" "without a terminal nothing is asked"
+assert_has "(not fast-forwarded: working tree dirty" "and the branch stays behind"
+run_gc --json --repos-dir "${TT}"
+assert_lacks "ASK" "the question never leaks into --json"
+run_gc_tty 'y' --repos-dir "${TT}"
+assert_has "fast-forwarded ↓1" "y fast-forwards it"
+assert_lacks "not fast-forwarded" "and the report says so"
+[[ "$(git -C "${W}" rev-parse HEAD)" == "$(git -C "${TCLONE}" rev-parse HEAD)" ]] &&
+  { (( PASSED++ )); print -r -- "  ok   the branch is at its upstream" } ||
+  { (( FAILED++ )); print -r -- "  FAIL the branch did not move" }
+[[ "$(< "${W}/seed.txt")" == changed ]] &&
+  { (( PASSED++ )); print -r -- "  ok   the dirty edit survives" } ||
+  { (( FAILED++ )); print -r -- "  FAIL the dirty edit was lost" }
 
 finish
