@@ -339,6 +339,7 @@
         nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
         nix-doctor = suiteCheck "nix-doctor";
         switch-result = suiteCheck "switch-result";
+        wsl-init-cgroup = suiteCheck "wsl-init-cgroup";
         xdg-open = suiteCheck "xdg-open";
         codex-config =
           let
@@ -576,6 +577,11 @@
           assert vm.flakelab.target == "proxmox-vm";
           assert !(vm ? wsl);
           assert !(hasPkg vm "xdg-open");
+          # The boot step that chooses systemd's cgroup exists on wsl only, and runs
+          # the wrapper that pins its PATH.
+          assert nixpkgs.lib.hasSuffix "/bin/flakelab-wsl-init-cgroup"
+            wsl.system.activationScripts.flakelab-wsl-init-cgroup.text;
+          assert !(vm.system.activationScripts ? flakelab-wsl-init-cgroup);
           assert vm.services.cloud-init.enable;
           # default_user must arrive alongside the module's own system_info defaults.
           assert vm.services.cloud-init.settings.system_info.default_user.name == vm.flakelab.username;
