@@ -103,7 +103,7 @@ include "accounts-headroom";
           # Only a read that says the login is dead counts toward a failover:
           # a stale figure or a failing endpoint (429, 5xx, the network, an
           # answer that does not parse) leaves the login working.
-          elif (($activeUsage.lastError // "") | test("^(unauthorized|invalid_grant|no-credentials|no-access-token|refresh-failed|http-40[13])$") | not) then
+          elif (($activeUsage.lastError // "") | test("^(unauthorized|invalid_grant|seat-revoked|expired|no-credentials|no-access-token|no-profile|refresh-failed|http-40[13])$") | not) then
             .state.idleHoldSince[$in.tool] = null | .state.unhealthyTicks[$in.tool] = 0
             | .decision.reason = "active-usage-unknown"
             | .decision.detail = "the live entry's figure is not known (\($activeUsage.lastError // "stale, a read is planned")); not a dead login, no failover"

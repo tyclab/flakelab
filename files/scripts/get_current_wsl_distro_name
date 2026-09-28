@@ -2,6 +2,18 @@
 
 set -euo pipefail
 
+# No options: an argument is refused, not ignored, so --help never reaches wsl.exe.
+case "${1:-}" in
+  "") ;;
+  -h|--help)
+    print -r -- "Usage: flakelab distro-name"
+    print -r -- ""
+    print -r -- "Prints the WSL name of this distro, the one wsl.exe -d takes."
+    exit 0
+    ;;
+  *) print -ru2 -- "distro-name: takes no arguments (got '$1'); see --help"; exit 2 ;;
+esac
+
 _WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
 if ! [[ -x ${_WSL_BIN} ]]
 then

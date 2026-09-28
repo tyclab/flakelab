@@ -199,7 +199,7 @@ run --save
 check "--save exits 0" "${RC}" "0"
 SAVED="$(ls "${HOME}"/.local/state/flakelab/sessions/*.txt 2>/dev/null | head -1)"
 [[ -n "${SAVED}" ]] && ok "--save writes under ~/.local/state/flakelab/sessions without a state root" || bad "--save wrote nothing under ~/.local/state/flakelab/sessions"
-[[ -z "$(ls "${HOME}"/.claude/sessions/*.txt 2>/dev/null)" ]] && ok "--save leaves Claude's own ~/.claude/sessions alone" || bad "--save wrote into ~/.claude/sessions"
+[[ -z "$(print -rl -- "${HOME}"/.claude/sessions/*.txt(N))" ]] && ok "--save leaves Claude's own ~/.claude/sessions alone" || bad "--save wrote into ~/.claude/sessions"
 contains "--save reports the count, id-less processes excluded" "${ERR}" "saved 4 session(s) to"
 check "saved lines are '<tool>  <dir>  <id>'" "$(grep -v '^#' "${SAVED}" | head -1)" "claude  ${WORK}  ${SID_A}"
 contains "the codex session is saved with its tool" "$(<"${SAVED}")" "codex  ${BASE}/codex proj  ${SID_X}"
