@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # Update THIS distro to the current flake + overlay: a pre-flight over the
 # configured repo checkout, then `sudo nixos-rebuild switch`.
-# No `set -e`: the pre-flight is `|| return` control flow and `read -k` prompts,
+# No `set -e`: the pre-flight is `|| return` control flow and y/N prompts,
 # which errexit would turn into silent aborts.
 set -uo pipefail
 
@@ -124,7 +124,7 @@ _nix_check_remote() {
   fi
   if ! _nix_fetch "$_dir"; then
     # An unverified tree is not a current one: fail closed.
-    if [[ ! -t 0 ]]; then
+    if ! prompt_tty; then
       [[ "${FLAKELAB_STALE_OK:-}" == 1 ]] && return 0
       return 1
     fi
@@ -176,7 +176,7 @@ _nix_check_base() {
     _say yellow "  uncommitted changes — not offering a rebase; commit or stash first"
     return 0
   fi
-  if [[ ! -t 0 ]]; then
+  if ! prompt_tty; then
     _say yellow "  no terminal to ask — rebuilding from it anyway; rebase with: git -C ${_dir} rebase origin/${_default}"
     return 0
   fi

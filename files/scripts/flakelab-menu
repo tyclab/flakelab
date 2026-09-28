@@ -15,8 +15,10 @@ set -uo pipefail
 # and the per-command wrappers apply exactly as they do to a typed command.
 # The `→` line printed before it runs is that typed command, to copy next time.
 #
-# Esc goes back one level; Esc at the top, or Ctrl-C anywhere, leaves (130).
-# Only the router opens this, and only at a terminal.
+# In the menu's own lists Esc goes back one level, and at the top it leaves
+# (130), as Ctrl-C does anywhere. Once a command runs the menu is gone: a
+# question that command asks is its own, and Esc there leaves with 130 as it
+# does when the command is typed. Only the router opens this, at a terminal.
 #
 
 source "${0:A:h}/lib/prompt.zsh" || exit 1

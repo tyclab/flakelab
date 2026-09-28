@@ -489,15 +489,21 @@ field() {
 # rewritten to what the answer did, so the report shows it.
 ask_dirty_behind() {
   local rec k kind b up behind dirty repo new_mark ok
-  local -a asks lines
+  local -a asks lines recs=("${WORKDIR}"/rec.*(N))
   local -i j
-  for rec in "${WORKDIR}"/rec.*(N); do
+  # One grep over every record, not one per repo: most runs have nothing to ask.
+  (( ${#recs} )) || return 0
+  recs=("${(@f)$(grep -l $'^ASK\t' "${recs[@]}" 2>/dev/null)}")
+  for rec in "${recs[@]}"; do
+    [[ -n "${rec}" ]] || continue
     asks=("${(@f)$(grep $'^ASK\t' "${rec}")}")
     for k in "${asks[@]}"; do
       [[ -n "${k}" ]] || continue
       IFS=$'\t' read -r kind b up behind dirty <<< "${k}"
       repo="$(field "${rec}" PATH)"
-      prompt_confirm "${repo##*/}: ${b} is ${behind} behind and the tree is dirty — fast-forward anyway?" || continue
+      # The path under its root, as the report groups it: two clones can share
+      # a basename, and the answer moves one of them.
+      prompt_confirm "$(field "${rec}" REL): ${b} is ${behind} behind and the tree is dirty — fast-forward anyway?" || continue
       ok=false
       if gitscan_ff_branch "${repo}" "${b}" "${up}" "${b}" "${dirty}" true; then
         ok=true

@@ -132,10 +132,12 @@ print -r -- ""
 print -r -- "a bare flakelab: the list anywhere, the menu at a terminal"
 # at_tty <keys> <words...> — the command on a pseudo-terminal (util-linux
 # `script`), <keys> typed ahead as printf reads them; OUT is the screen with
-# the escape codes stripped, RC the command's status.
+# the escape codes stripped, RC the command's status. AT_TTY_DELAY holds the
+# keys back that many seconds: typed ahead, they reach a terminal that is still
+# canonical, whose own Backspace and Ctrl-U edit them before a prompt sees them.
 at_tty() {
   local keys="$1"; shift
-  OUT="$(printf "$keys" | TERM=xterm timeout 30 script -qec "${(j: :)${(q)@}}" /dev/null 2>&1)"; RC=$?
+  OUT="$({ [[ -n "${AT_TTY_DELAY:-}" ]] && sleep "${AT_TTY_DELAY}"; printf "$keys"; } | TERM=xterm timeout 30 script -qec "${(j: :)${(q)@}}" /dev/null 2>&1)"; RC=$?
   OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
 }
 WSLENV=(env FLAKELAB_DISPATCH_DIR="${DISPATCH}" FLAKELAB_TARGET=wsl)
@@ -193,6 +195,9 @@ at_tty '\e' "${MENUENV[@]}" zsh "${ROUTER}"
 excludes "the menu offers no plumbing" "${OUT}" "clone-repos"
 excludes "no interop-wiping builder" "${OUT}" "build-distro"
 excludes "and none of the commands a person does not run by hand" "${OUT}" "notify"
+at_tty '\e' env -u FLAKELAB_DISPATCH_DIR -u FLAKELAB_TARGET zsh "${ROUTER}"
+contains "a checkout opens the menu beside the router" "${OUT}" "every command and its flags"
+excludes "without clone, which only an installed distro has" "${OUT}" "clone and refresh"
 
 print -r -- ""
 print -r -- "lib/prompt.zsh"
@@ -209,8 +214,17 @@ pick 'ta\r' "${CHOOSE}"
 contains "typing filters, case-insensitive substring" "${OUT}" "rc=0 idx=2"
 pick 'GAM\r' "${CHOOSE}"
 contains "in any case" "${OUT}" "rc=0 idx=3"
-pick 'zzz\x7f\x7f\x7fdel\r' "${CHOOSE}"
+AT_TTY_DELAY=1 pick 'zzz\x7f\x7f\x7fdel\r' "${CHOOSE}"
 contains "Backspace edits the filter" "${OUT}" "rc=0 idx=4"
+AT_TTY_DELAY=1 pick 'zzz\x15del\r' "${CHOOSE}"
+contains "Ctrl-U clears it" "${OUT}" "rc=0 idx=4"
+pick 'bet\e[3~\r' "${CHOOSE}"
+contains "a key that sends a longer sequence (Delete) types nothing" "${OUT}" "rc=0 idx=2"
+pick '\e[1;5B\r' "${CHOOSE}"
+contains "Ctrl-Down moves like Down" "${OUT}" "rc=0 idx=2"
+pick '\r' 'stty rows 10 cols 30; prompt_choose "a question wider than the terminal is" "x"; print -r -- "rc=$?"'
+contains "a line wider than the terminal is cut, so a redraw leaves none behind" "${OUT}" "? …"
+excludes "the key line too" "${OUT}" "esc cancel"
 pick '\e[B\e[B\e[B\e[B\e[B\e[A\r' "${CHOOSE}"
 contains "the arrows stop at the ends" "${OUT}" "rc=0 idx=3"
 pick 'zzz\r\e' "${CHOOSE}"
@@ -238,6 +252,10 @@ pick '\r' "${KEYS}"
 contains "Enter is the capital default" "${OUT}" "key=[n]"
 pick 'z' "${KEYS}"
 contains "and so is any other key" "${OUT}" "key=[n]"
+pick '\e[Ay' "${KEYS}; ${KEYS/key=/key2=}; stty -a"
+contains "an arrow is one key, the default" "${OUT}" "key=[n]"
+contains "not an answer per byte, its A an a" "${OUT}" "key2=[y]"
+contains "and the terminal is canonical again" "${OUT}" " icanon"
 CONFIRM='prompt_confirm "Sure?"; print -r -- "rc=$?"'
 pick 'y' "${CONFIRM}"
 contains "confirm: y is yes" "${OUT}" "rc=0"

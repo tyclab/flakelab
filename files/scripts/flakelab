@@ -255,6 +255,8 @@ if (( $# == 0 )); then
     if [[ -x "$_menu" ]]; then
       _offered=()
       for _c in ${_order}; do
+        # A checkout cannot run what has no sibling script (clone): not offered.
+        [[ -z "${FLAKELAB_DISPATCH_DIR:-}" && -z "${_file[$_c]}" ]] && continue
         _available "$_c" && _offered+=("$_c")
       done
       export FLAKELAB_ROUTER="${0:A}" FLAKELAB_MENU_COMMANDS="${_offered}"

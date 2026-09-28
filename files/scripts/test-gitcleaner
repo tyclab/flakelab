@@ -154,7 +154,7 @@ check "nothing is deleted without a terminal" "$(branches_of "${ROOTS}")" \
 print -r -- "── --dry-run overrides the terminal ───────────────────────────────"
 build_fixture dryrun; ROOTS="${FIXTURE_ROOTS}"
 if command -v script >/dev/null 2>&1; then
-  OUT="$(printf 'yyy' | script -qec "zsh ${CLEANER} --repos-dir ${ROOTS} --dry-run" /dev/null 2>&1)"
+  OUT="$(printf 'yyy' | TERM=xterm script -qec "zsh ${CLEANER} --repos-dir ${ROOTS} --dry-run" /dev/null 2>&1)"
   contains "--dry-run says how to proceed" "${OUT}" "Drop --dry-run"
   check "--dry-run deletes nothing even when told yes" "$(branches_of "${ROOTS}")" \
     "abandoned in-review local-only main merged-branch squashed wt-branch "
@@ -166,7 +166,7 @@ print -r -- "── interactive: y / n / q ────────────�
 build_fixture interactive; ROOTS="${FIXTURE_ROOTS}"
 if command -v script >/dev/null 2>&1; then
   # y deletes the first candidate, n keeps the second, q stops the run.
-  OUT="$(printf 'ynq' | script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"
+  OUT="$(printf 'ynq' | TERM=xterm script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"
   contains "asks before each delete" "${OUT}" "[y/N/a/q]"
   contains "prints the SHA to restore from" "${OUT}" "restore: git -C"
   contains "q reports that it stopped early" "${OUT}" "Stopped at your request"
@@ -177,13 +177,24 @@ else
   print -r -- "  skip (no script(1) for a pty)"
 fi
 
+print -r -- "── FLAKELAB_NO_PROMPT=1 at a terminal reports, as without one ─────"
+build_fixture noprompt; ROOTS="${FIXTURE_ROOTS}"
+if command -v script >/dev/null 2>&1; then
+  OUT="$(printf 'yyy' | TERM=xterm FLAKELAB_NO_PROMPT=1 script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"
+  excludes "asks nothing" "${OUT}" "[y/N/a/q]"
+  check "and deletes nothing" "$(branches_of "${ROOTS}")" \
+    "abandoned in-review local-only main merged-branch squashed wt-branch "
+else
+  print -r -- "  skip (no script(1) for a pty)"
+fi
+
 print -r -- "── keeping everything is still a run that found work ──────────────"
 build_fixture keepall; ROOTS="${FIXTURE_ROOTS}"
 # The worktree entry is pruned without a prompt, so it is removed first — a
 # branch-only repo is what exposes a summary counting removals as findings.
 git -C "${ROOTS}/repo" worktree prune >/dev/null 2>&1
 if command -v script >/dev/null 2>&1; then
-  OUT="$(printf 'nnnn' | script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"; RC=$?
+  OUT="$(printf 'nnnn' | TERM=xterm script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"; RC=$?
   check "answering n to everything still exits 1" "${RC}" "1"
   excludes "does not claim the tree was clean" "${OUT}" "Nothing to clean"
   contains "counts what was removed against what was found" "${OUT}" "Removed 0 of 3 branches"

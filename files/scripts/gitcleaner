@@ -156,7 +156,7 @@ elif (( ASSUME_YES )); then
   MODE=delete
 elif (( JSON )); then
   MODE=report
-elif [[ -t 0 ]]; then
+elif prompt_tty; then
   MODE=ask
 fi
 

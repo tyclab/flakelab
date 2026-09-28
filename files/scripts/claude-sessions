@@ -129,10 +129,12 @@ Usage: claude-sessions [--start <tool> [dir] [--detach] [-- args...]]
   --start <tool> [dir] [--detach] [-- args...]
                     start claude|codex|kiro in dir (default: here) in its own
                     window of the `agents` tmux session, and attach to it —
-                    unless --detach, or there is no terminal
+                    unless --detach, or there is no terminal. At a terminal,
+                    with no tool, the tool and the directory are asked for
   --attach [id|window]
                     attach this terminal to the window holding session id, or
-                    to the window named; with neither, to the whole server
+                    to the window named; with neither, to the whole server —
+                    at a terminal, picked from a list of the windows first
   --save [file]     list, and write "<tool>  <dir>  <session-id>" lines to file
   --resume [file]   print the resume commands, one per terminal, from file
                     (default: newest save, else the live sessions)
@@ -731,10 +733,10 @@ ask_start() {
   done
   prompt_choose "Start which tool?" "${labels[@]}" || return 130
   START_TOOL="${TOOLS[PROMPT_INDEX]}"
-  if [[ -z "$START_DIR" ]]; then
-    prompt_input "In which directory?" "$PWD" || return 130
-    START_DIR="$PROMPT_TEXT"
-  fi
+  # Emptied, the answer is here, as a start without a directory is; the line
+  # printed below must name it, since '' is no directory the flags take.
+  prompt_input "In which directory?" "$PWD" || return 130
+  START_DIR="${PROMPT_TEXT:-$PWD}"
   prompt_ran flakelab sessions --start "$START_TOOL" "$START_DIR" ${${START_DETACH:#false}:+--detach} ${START_ARGS:+--} "${START_ARGS[@]}"
 }
 

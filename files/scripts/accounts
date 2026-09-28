@@ -891,14 +891,20 @@ cmd_remove() {
     prompt_ran flakelab accounts remove "$target" ${${yes:#false}:+--yes}
   fi
   [[ -n "$target" ]] || refuse "remove needs an entry (id, alias or label)"
-  take_lock
   id="$(resolve "$target")" || exit $?
   name="$(entry_name "$id")"
   profile_live "$id" && refuse "entry ${id} is running in a profile session; finish it first. Nothing changed."
+  # Asked before the lock, like every other question here: the engine's tick
+  # and the statusline wait on it, and a person may take a while to answer.
   if ! $yes; then
-    [[ -t 0 && -t 1 ]] || refuse "remove ${id} needs --yes when not at a terminal"
+    prompt_tty || refuse "remove ${id} needs --yes when not at a terminal"
     prompt_confirm "Remove ${name} and its stored login?" || { print -r -- "Cancelled"; return 0 }
   fi
+  take_lock
+  # Ids are never reused, so this is the entry confirmed; it may have gone, or
+  # started a profile session, while the question was open.
+  id="$(resolve "$id")" || exit $?
+  profile_live "$id" && refuse "entry ${id} is running in a profile session; finish it first. Nothing changed."
   roster="$(read_roster)"
   tool="$(print -r -- "$roster" | jq -r --arg id "$id" '.accounts[$id].tool')"
   roster="$(print -r -- "$roster" | jq --arg id "$id" --arg tool "$tool" '
@@ -1244,7 +1250,8 @@ cmd_env() {
   if [[ -z "$target" ]] && prompt_tty; then
     ask_entry "Pin this shell to which login?"
     target="$ASKED"
-    prompt_ran flakelab accounts env "$target" ${${shell:#sh}:+--shell} ${${shell:#sh}:+$shell}
+    prompt_ran flakelab accounts env "$target" ${${shell:#sh}:+--shell} ${${shell:#sh}:+$shell} \
+      ${${share:#true}:+--no-share-history} ${${reseed:#false}:+--reseed}
   fi
   [[ -n "$target" ]] || refuse "env needs an entry: accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh], or env --unset <tool>"
   id="$(resolve "$target")" || exit 1

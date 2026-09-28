@@ -50,10 +50,18 @@ _pc_filter() {
 }
 
 _pc_draw() {
-  local out="" line w=$(( cols - 3 ))
+  local out="" line text foot w=$(( cols - 3 ))
   (( drawn > 1 )) && out+=$'\e['"$(( drawn - 1 ))"'A'
-  out+=$'\r\e[J'"${_PQ}?${_PR} ${_PB}${question}${_PR} "
-  if [[ -n "$query" ]]; then out+="${query}"; else out+="${_PD}type to filter${_PR}"; fi
+  # Every line is cut to the width: a line that wraps takes two rows, and the
+  # next redraw, which moves up one row per line, would leave a row behind.
+  text="${question} ${query:-type to filter}"
+  if (( ${#text} <= w )); then
+    out+=$'\r\e[J'"${_PQ}?${_PR} ${_PB}${question}${_PR} "
+    if [[ -n "$query" ]]; then out+="${query}"; else out+="${_PD}type to filter${_PR}"; fi
+  else
+    # The end is kept: that is where the typing is.
+    out+=$'\r\e[J'"${_PQ}?${_PR} …${text[-(w-1),-1]}"
+  fi
   drawn=1
   if (( ${#shown} == 0 )); then
     out+=$'\n'"  ${_PD}no match${_PR}"; (( drawn++ ))
@@ -67,18 +75,28 @@ _pc_draw() {
       (( drawn++ ))
     done
   fi
-  out+=$'\n'"${_PD}↑↓ move · enter select · esc cancel"
-  (( ${#shown} > height )) && out+=" · ${cur}/${#shown}"
-  out+="${_PR}"
+  foot="↑↓ move · enter select · esc cancel"
+  (( ${#shown} > height )) && foot+=" · ${cur}/${#shown}"
+  (( ${#foot} > w + 2 )) && foot="${foot[1,w+1]}…"
+  out+=$'\n'"${_PD}${foot}${_PR}"
   (( drawn++ ))
   print -u2 -rn -- "$out"
 }
 
 # The rest of an escape sequence: a key that arrives within 50 ms of the Esc.
 # zselect, because `read -t` on -u 0 answers at once with a NUL instead of
-# waiting out its timeout.
+# waiting out its timeout. Only with the terminal non-canonical: once `read -k`
+# has put a canonical terminal back, zselect reports it readable at once.
 _pc_more() {
   zselect -t 5 -r 0 2>/dev/null && read -rs -k 1 -u 0 "$1"
+}
+
+# _pc_csi <var> — the rest of a sequence after its Esc [: parameter bytes up to
+# the one final byte, which lands in <var>. Delete is Esc [ 3 ~ and Ctrl-Down
+# Esc [ 1 ; 5 B, so none of the middle may land as a typed key.
+_pc_csi() {
+  _pc_more "$1" || return 1
+  while [[ "${(P)1}" != [@-~] ]]; do _pc_more "$1" || return 1; done
 }
 
 _pc_restore() {
@@ -102,6 +120,7 @@ prompt_choose() {
   zmodload zsh/zselect 2>/dev/null
   # A terminal that reports no size (0 0, a bare pty) keeps 24x80.
   size="$(stty size 2>/dev/null)" && [[ "$size" == <1->' '<1-> ]] && { rows=${size% *}; cols=${size#* } }
+  (( cols < 20 )) && cols=20
   height=$(( rows - 3 ))
   (( height > 15 )) && height=15
   (( height < 3 )) && height=3
@@ -134,7 +153,7 @@ prompt_choose() {
           [[ "${c1:-}" == $'\e' ]] && _PC_PENDING="$c1"
           picked=-1; break
         fi
-        _pc_more c2 || continue
+        if [[ "$c1" == '[' ]]; then _pc_csi c2 || continue; else _pc_more c2 || continue; fi
         case "$c2" in
           A) (( cur > 1 )) && (( cur-- )) ;;
           B) (( cur < ${#shown} )) && (( cur++ )) ;;
@@ -181,11 +200,30 @@ prompt_input() {
 # or any other key gives. Sets PROMPT_KEY lowercased.
 prompt_keys() {
   emulate -L zsh
+  setopt localtraps
   local question="$1" choices="$2" key="" def="" c
   _prompt_style
   for c in ${(s:/:)choices}; do [[ "$c" == [[:upper:]] ]] && def="${(L)c}"; done
   print -u2 -rn -- "${_PQ}?${_PR} ${_PB}${question}${_PR} ${_PD}[${choices}]${_PR} "
+  # Non-canonical for the whole read, so the rest of a sequence can be waited
+  # for (_pc_more); Ctrl-C still interrupts, as it always did here.
+  typeset -g _pc_saved="$(stty -g 2>/dev/null)"
+  trap 'stty "$_pc_saved" 2>/dev/null' EXIT
+  stty -echo -icanon min 1 time 0 2>/dev/null
+  zmodload zsh/zselect 2>/dev/null
   read -rs -k 1 -u 0 key || key=""
+  # A key that sends a sequence is one key press, not one answer per byte: Up
+  # is Esc [ A, and its A would answer "a" (gitcleaner: the rest of this
+  # repo). The sequence is read through and gives the default.
+  if [[ "$key" == $'\e' ]]; then
+    if _pc_more c; then
+      case "$c" in
+        '[') _pc_csi c ;;
+        O) _pc_more c ;;
+      esac
+    fi
+    key=""
+  fi
   key="${(L)key}"
   [[ "/${(L)choices}/" == *"/${key}/"* && -n "$key" ]] || key="$def"
   PROMPT_KEY="$key"
