@@ -40,6 +40,10 @@ include "accounts-headroom";
 | ($entries | map(select(.disabled | not) | select(.id != $active) | select(($in.usage.quarantine[.key] // null) == null) | select(($in.live[.key] // false) | not)) | map(.id)) as $candidateIds
 | (if $active == null then {} else ($in.usage.entries[($active | tostring)] // {}) end) as $activeUsage
 | ($activeUsage | headroom($now; $s.modelWindows)) as $ah
+# The models the active entry has a window for (Fable): a plan without that
+# window does not serve the model (Fable on Pro needs usage credits), so the
+# sessions using it would stop on a proactive move there.
+| ([$activeUsage.windows[]? | select(.class == "model") | counted($s.modelWindows) | .label | ascii_downcase] | unique) as $activeModels
 | {session: $s.sessionThreshold, week: $s.weekThreshold, model: $s.modelThreshold} as $bars
 # The costliest axis at or over its bar, week first; null when none is.
 | ( [ ["week", $ah.week], ["model", $ah.model], ["session", $ah.session] ]
@@ -123,9 +127,8 @@ include "accounts-headroom";
                 | .qualifies = (
                     .known and (.spent | not)
                     and (if $trigger == "proactive" then
-                           # A window the candidate's plan does not have
-                           # cannot bind it: full headroom on that axis.
-                           (($h[$axis] // 100) as $ch | ((100 - $ch) < $bars[$axis]) and (($ah[$axis] != null) and ($ch - $ah[$axis] >= $s.hysteresisPct)))
+                           ($h[$axis] != null) and ((100 - $h[$axis]) < $bars[$axis]) and (($ah[$axis] != null) and ($h[$axis] - $ah[$axis] >= $s.hysteresisPct))
+                           and (($activeModels - ([$u.windows[]? | select(.class == "model") | .label | ascii_downcase] | unique)) | length == 0)
                          # At the limit, a candidate at its own limit on that
                          # axis is no move: two spent entries would trade
                          # places every tick.
@@ -143,7 +146,7 @@ include "accounts-headroom";
                 | .decision.earliestResetAt = ([$cands[] | select(.known) | .weeklyReset | numbers] | if length == 0 then null else min end)
               else
                 .decision.action = "blocked" | .decision.reason = "no-qualifying-candidate"
-                | .decision.detail = "no candidate is under the \($axis // "deciding") bar and better than the active entry by \($s.hysteresisPct) points, or its usage is unreadable this tick"
+                | .decision.detail = "no candidate is under the \($axis // "deciding") bar, better than the active entry by \($s.hysteresisPct) points\(if ($activeModels | length) > 0 then " and with a window for \($activeModels | join(", "))" else "" end), or its usage is unreadable this tick"
               end
             else
               # 4. The order: earliest weekly renewal, or most weekly headroom;

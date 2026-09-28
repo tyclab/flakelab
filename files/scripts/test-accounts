@@ -641,8 +641,17 @@ check "hysteresis: a candidate not ten points better is no target" "$(dec '[.act
 engine '.usage.entries["1"].windows[0].pct = 86'
 check "landing: a candidate over the bar is no target" "$(dec '.action')" "blocked"
 engine '.usage.entries["2"].windows[0].pct = 20 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 90000}]'
-check "a per-model week over its bar decides" "$(dec '[.action, .trigger, .axis] | join(" ")')" "switch proactive model"
-check "and a candidate whose plan has no such window has full headroom there: it qualifies" "$(dec '.candidates | join(",")')" "1"
+check "a per-model week over its bar decides" "$(dec '[.trigger, .axis] | join(" ")')" "proactive model"
+check "and a candidate whose plan has no such window is no target: it does not serve that model" "$(dec '[.action, .reason] | join(" ")')" "blocked no-qualifying-candidate"
+check "the detail names the model" "$(dec '.detail')" "no candidate is under the model bar, better than the active entry by 10 points and with a window for fable, or its usage is unreadable this tick"
+engine '.usage.entries["2"].windows[0].pct = 20 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 90000}] | .usage.entries["1"].windows += [{"label": "Fable", "class": "model", "pct": 40, "resetsAtEpoch": 80000}]'
+check "one with the window, under the bar and ten points better, is" "$(dec '[.action, (.candidates | join(","))] | join(" ")')" "switch 1"
+engine '.usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 50, "resetsAtEpoch": 90000}]'
+check "on the session axis too, a candidate without the active entry's model window is no proactive target" "$(dec '[.action, .axis, .reason] | join(" ")')" "blocked session no-qualifying-candidate"
+engine '.settings.modelWindows = "opus" | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 50, "resetsAtEpoch": 90000}]'
+check "unless modelWindows does not count that model" "$(dec '[.action, .trigger] | join(" ")')" "switch proactive"
+engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 50, "resetsAtEpoch": 90000}]'
+check "at the limit it still moves: any room beats a wall" "$(dec '[.action, .trigger] | join(" ")')" "switch at-limit"
 engine '.usage.entries["2"].windows[0].pct = 20 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 90000}] | .usage.entries["1"].windows += [{"label": "Fable", "class": "model", "pct": 90, "resetsAtEpoch": 80000}]'
 check "while one with that window under the bar but not ten points better does not" "$(dec '[.action, .reason] | join(" ")')" "blocked no-qualifying-candidate"
 engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[0].pct = 86'
