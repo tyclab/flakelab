@@ -1,2 +1,16 @@
 #!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for `flakelab mcp` (files/scripts/mcp, lib/mcp.py): the account
+# routing, the Codex import, the refusals and their exit codes. The cases are
+# python unittest in lib/test-mcp.py, beside the module they import in-process;
+# this is the entry point `make test` and the flake check run. The headless
+# browser cases run only where FLAKELAB_MCP_HEADLESS names the built launcher
+# (the flake's mcp check).
+#
+# Usage: files/scripts/test-mcp [unittest arguments]
+#
+
 exec python3 "${0:A:h}/lib/test-mcp.py" "$@"

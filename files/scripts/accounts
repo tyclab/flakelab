@@ -166,8 +166,9 @@ Usage: accounts [--json] [--fetch]
               of the tool's auth-override variables: eval "$(accounts env work)";
               --unset <tool> prints the line that unpins it
   ingest      the statusline's JSON on stdin: its rate_limits become the live
-              login's cached windows, so the endpoint is never asked for the
-              active entry; prints nothing and exits 0 whatever happens
+              login's cached session and week windows, so the endpoint is
+              asked for the active entry only for its per-model week, at the
+              candidate cadence; prints nothing and exits 0 whatever happens
 
 Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
 with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
@@ -443,7 +444,7 @@ entry_of_live() {
   keys=("${(@f)$(print -r -- "$(read_roster)" | jq -r --arg tool "$tool" --arg lid "$lid" '.accounts | to_entries[] | select(.value.tool == $tool and .value.id == $lid) | .key')}")
   keys=("${(@)keys:#}")
   (( ${#keys} )) || return 0
-  if ! typeset -f "acct_${tool}_id_shared" >/dev/null; then print -r -- "${keys[1]}"; return 0; fi
+  if (( ! $+functions[acct_${tool}_id_shared] )); then print -r -- "${keys[1]}"; return 0; fi
   [[ -n "$fp" ]] || fp="$(live_fingerprint "$tool")"
   for k in "${keys[@]}"; do
     [[ -n "$fp" && "$fp" == "$(entry_fingerprint "$k")" ]] && { print -r -- "$k"; return 0 }
@@ -1175,8 +1176,9 @@ cmd_env() {
 #
 # The statusline command receives, with every refresh, a rate_limits object
 # for the live login (five_hour, seven_day: the utilization and the reset).
-# Teed into this verb, those figures are the active entry's usage and the
-# endpoint is never asked for it (accounts.md, "Usage"). In a statusline's
+# Teed into this verb, those figures are the active entry's session and week
+# windows; the endpoint still answers for its per-model week, at the candidate
+# cadence while the statusline feeds (accounts.md, "Usage"). In a statusline's
 # pipeline: never a word, never a non-zero exit, a short wait for the lock.
 
 INGEST_JQ='include "accounts-time";

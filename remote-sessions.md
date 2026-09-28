@@ -130,14 +130,16 @@ the CLI's reason); the server never reads a token file of a tool and never
 touches the network itself.
 
 It binds to 127.0.0.1:8321 unless told otherwise and refuses every-interface
-binds; every API call needs the bearer token from
+binds; every API call but `/api/health` needs the bearer token from
 `~/.local/state/flakelab/web/token` (0600, made on the first start,
 `flakelab web --print-token` shows it), which the page asks for once and
 keeps in the browser. `flakelab.web.enable` runs it as the user service
 `flakelab-web` on `flakelab.web.bind`; the box's WireGuard address is the
 one to name for a phone. On the proxmox-vm target that address opens the
-port in the NixOS firewall, which otherwise leaves only sshd open; a WSL
-distro cannot open a port from inside, so there the bind stays on loopback.
+port in the NixOS firewall, which otherwise leaves only sshd open. A WSL
+distro gets no rule: NixOS-WSL turns its firewall off, so the dashboard
+listens on whatever `bind` names, and what reaches that address from another
+machine is the Windows host's networking and firewall to decide.
 
 The terminal beside it is ttyd, `flakelab.web.terminal`: a browser tab
 attached to the `agents` tmux session (created when absent). ttyd listens on

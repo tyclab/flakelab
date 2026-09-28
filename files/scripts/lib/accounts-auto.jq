@@ -12,7 +12,7 @@
 #    settings: {sessionThreshold, weekThreshold, modelThreshold, cooldownS,
 #               hysteresisPct, unhealthyTicks, idleHoldS, strategy, modelWindows},
 #    roster: {active: {tool: id}, accounts: {id: {tool, disabled, ...}}},
-#    usage:  {entries: {id: {windows, fetchedAt, nextPollAt, backoffUntil}}, quarantine: {id: {...}}},
+#    usage:  {entries: {id: {windows, fetchedAt, nextPollAt, backoffUntil, lastError}}, quarantine: {id: {...}}},
 #    state:  {lastSwitchAt, lastSwitchTo, unhealthyTicks: {tool: n}, idleHoldSince: {tool: epoch}},
 #    live:   {id: true}          entries running a profile session (never targets)
 #    activeTokenExpired: bool    the live token is expired on disk and no session runs
@@ -26,7 +26,8 @@
 # The rules, in the order accounts.md gives them: no active entry; three bars,
 # one per window class, the costliest window over its bar deciding; the
 # trigger (proactive, at-limit, failover, with the idle hold); the cooldown,
-# proactive only; the candidates and the two proactive gates; the order.
+# proactive only; the candidates and the proactive gates (bar, hysteresis,
+# model coverage); the order.
 
 # headroom, weeklyReset, limitingReset, counted: one definition for the
 # engine and the script (jq -L on lib/).
@@ -125,7 +126,8 @@ include "accounts-headroom";
           .decision.trigger as $trigger
           | .decision.axis as $axis
           # 3. The candidates: known usage, weekly budget left, and for a
-          # proactive move the two gates on the deciding axis.
+          # proactive move the gates on the deciding axis (bar, hysteresis,
+          # model coverage).
           | ($candidateIds | map(
                 . as $id | ($in.usage.entries[($id | tostring)] // {}) as $u | ($u | headroom($now; $s.modelWindows)) as $h
                 | (($activeModels - ([$u.windows[]? | select(.class == "model") | .label | ascii_downcase] | unique)) | length == 0) as $covers

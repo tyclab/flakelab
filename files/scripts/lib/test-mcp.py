@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -206,6 +207,74 @@ class SilentPage(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+
+class ExitCodeTest(unittest.TestCase):
+    """The command as the launcher runs it: a refusal exits 2, a failure 1."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.cfg = {"gateway": None, "remoteVersion": "0.14.3", "servers": {
+                        "personal": {"url": "https://mail.example.test/mcp", "callbackPort": 18872}}}
+        self.env = dict(os.environ, HOME=str(self.root), XDG_STATE_HOME=str(self.root / "state"),
+                        CODEX_HOME=str(self.root / "codex"), FLAKELAB_MCP_CONFIG=str(self.root / "mcp.json"))
+
+    def run_mcp(self, *args):
+        (self.root / "mcp.json").write_text(json.dumps(self.cfg))
+        return subprocess.run([sys.executable, str(Path(__file__).with_name("mcp.py")), *args],
+                              env=self.env, capture_output=True, text=True, timeout=30)
+
+    def assertRefused(self, result, reason):
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(result.stderr.startswith("flakelab mcp: "), result.stderr)
+        self.assertIn(reason, result.stderr)
+
+    def codex_credentials(self):
+        with patch.dict(os.environ, self.env):
+            source = Path(self.env["CODEX_HOME"]) / ".credentials.json"
+            mcp.write_private(source, {"personal": {
+                "server_name": "personal", "server_url": self.cfg["servers"]["personal"]["url"],
+                "client_id": "example-client", "access_token": "example-access", "refresh_token": "example-refresh"}})
+        return source
+
+    def test_an_unknown_account_is_refused(self):
+        self.assertRefused(self.run_mcp("connect", "nobody"), "Unknown MCP account")
+        self.assertRefused(self.run_mcp("login", "personal", "nobody"), "Unknown MCP account")
+
+    def test_a_worker_on_a_box_with_a_gateway_is_refused(self):
+        self.cfg["gateway"] = "operator@devbox"
+        self.assertRefused(self.run_mcp("_login", "personal"), "credential gateway")
+        self.assertRefused(self.run_mcp("import-codex"), "original Codex credentials")
+        self.assertFalse((self.root / "state").exists())
+
+    def test_an_import_over_existing_state_is_refused_and_changes_nothing(self):
+        source = self.codex_credentials()
+        before = source.read_text()
+        (self.root / "state/flakelab/mcp-auth/personal").mkdir(parents=True)
+        self.assertRefused(self.run_mcp("import-codex"), "already exists")
+        self.assertEqual(source.read_text(), before)
+        (self.root / "state/flakelab/mcp-auth/personal").rmdir()
+        source.with_name(source.name + ".before-shared-mcp").write_text("{}")
+        self.assertRefused(self.run_mcp("import-codex"), "previous migration backup")
+        self.assertEqual(source.read_text(), before)
+
+    def test_a_login_away_from_a_desktop_is_refused(self):
+        with patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}), \
+                patch.object(mcp.Path, "exists", return_value=False):
+            with self.assertRaises(mcp.Refusal):
+                mcp.login(self.cfg, ["personal"])
+
+    def test_a_failure_exits_1_and_a_usage_error_2(self):
+        result = self.run_mcp("import-codex")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(result.stderr.startswith("flakelab mcp: "), result.stderr)
+        result = self.run_mcp()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertTrue(result.stderr.startswith("usage: flakelab mcp "), result.stderr)
+        del self.env["FLAKELAB_MCP_CONFIG"]
+        self.assertRefused(self.run_mcp("status"), "No MCP configuration")
 
 
 if __name__ == "__main__":

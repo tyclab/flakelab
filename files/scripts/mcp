@@ -1,2 +1,25 @@
 #!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# mcp — the OAuth MCP accounts Claude and Codex share (mcp.md). The work is
+# lib/mcp.py, python3's standard library; nix/mcp-clients.nix wraps this as
+# flakelab-mcp with FLAKELAB_MCP_CONFIG naming the generated configuration
+# (the accounts, the gateway, the pinned mcp-remote version) in the store.
+#
+# Usage:
+#   mcp status                       per account: stored or login-required, no token printed
+#   mcp connect <account>            MCP over stdio: the adapter on the credential
+#                                    host, else ssh -T to the gateway
+#   mcp login [--fresh] [account...] authorize from a desktop browser, the callback
+#                                    forwarded on loopback; --fresh registers again
+#   mcp import-codex                 move Codex's file-store grants once, Codex stopped
+# `_login <account>` is the worker `login` runs on the credential host.
+#
+# Exit codes: 0; 1 for a failure; 2 for a refusal (an unknown account, the
+# wrong host, an import over existing state, no configuration) or a usage
+# error.
+#
+
 exec python3 "${0:A:h}/lib/mcp.py" "$@"
