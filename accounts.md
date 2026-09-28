@@ -520,7 +520,9 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
    week, or a counted model week) is not spent, and whose usage is known. For
    `proactive` a candidate must also land under the bar on the deciding axis
    and beat the active account there by ten points, so two accounts hovering
-   at the line cannot ping-pong. `at-limit` and `failover` skip both gates:
+   at the line cannot ping-pong; a candidate whose plan has no window of
+   that class (the model-scoped keys null for it) has full headroom there,
+   since a window it does not have cannot bind it. `at-limit` and `failover` skip both gates:
    any account with room beats a blocked or dead one.
 6. Order: earliest weekly reset first (`soonest-reset`, the default), or most
    weekly headroom (`best`). Under `soonest-reset` an account over its bar is

@@ -123,7 +123,9 @@ include "accounts-headroom";
                 | .qualifies = (
                     .known and (.spent | not)
                     and (if $trigger == "proactive" then
-                           ($h[$axis] != null) and ((100 - $h[$axis]) < $bars[$axis]) and (($ah[$axis] != null) and ($h[$axis] - $ah[$axis] >= $s.hysteresisPct))
+                           # A window the candidate's plan does not have
+                           # cannot bind it: full headroom on that axis.
+                           (($h[$axis] // 100) as $ch | ((100 - $ch) < $bars[$axis]) and (($ah[$axis] != null) and ($ch - $ah[$axis] >= $s.hysteresisPct)))
                          # At the limit, a candidate at its own limit on that
                          # axis is no move: two spent entries would trade
                          # places every tick.
