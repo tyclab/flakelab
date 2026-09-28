@@ -113,6 +113,10 @@ typeset -a ADAPTERS=()
 ACCT_FORCE=false
 ACCT_LOCK_REASON=""
 
+# The terminal prompts (lib/prompt.zsh): a verb missing its entry or its tool
+# asks for it at a terminal and refuses as before anywhere else.
+source "${SCRIPT_DIR}/lib/prompt.zsh" || exit 1
+
 # The adapters that exist: one file per tool under lib/.
 for _t in "${TOOLS[@]}"; do
   [[ -r "${SCRIPT_DIR}/lib/accounts-${_t}.zsh" ]] && { source "${SCRIPT_DIR}/lib/accounts-${_t}.zsh"; ADAPTERS+=("$_t") }
@@ -256,6 +260,42 @@ entry_name() {
   local id="$1" alias label
   alias="$(entry_field "$id" alias)"; label="$(entry_field "$id" label)"
   print -r -- "${id}${alias:+ (${alias})} ${label}"
+}
+
+# --- asking at a terminal ---------------------------------------------------------
+#
+# A verb run without its entry or its tool asks for it when prompt_tty says a
+# person is there, and says what the full command was once answered. Called
+# outside $(...) and before take_lock: the answer lands in a global, and
+# nobody holds the store's lock while a person reads a list.
+
+ASKED=""
+
+# ask_entry <question> [all|enabled|disabled] — an entry from the roster,
+# each shown as the listing shows it. Sets ASKED to its id; Esc exits 130.
+ask_entry() {
+  local question="$1" which="${2:-all}" tool id alias label org act dis
+  local -a ids=() labels=()
+  while IFS="$US" read -r tool id alias label org act dis; do
+    case "$which" in
+      enabled)  [[ -z "$dis" ]] || continue ;;
+      disabled) [[ -n "$dis" ]] || continue ;;
+    esac
+    ids+=("$id")
+    labels+=("$(printf '%-7s %-4s %-12s %-28s %-9s %s' "$tool" "$id" "${alias:--}" "$label" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")")")
+  done < <(rows)
+  if (( ${#ids} == 0 )); then
+    [[ "$which" == all ]] && refuse "no stored logins; start with: flakelab accounts add <tool>"
+    refuse "no ${which} logins to pick from"
+  fi
+  prompt_choose "$question" "${labels[@]}" || exit 130
+  ASKED="${ids[PROMPT_INDEX]}"
+}
+
+# ask_tool <question> — one of the tools with an adapter. Sets ASKED.
+ask_tool() {
+  prompt_choose "$1" "${ADAPTERS[@]}" || exit 130
+  ASKED="${ADAPTERS[PROMPT_INDEX]}"
 }
 
 valid_alias() {
@@ -510,8 +550,14 @@ usage_text() {
 cmd_add() {
   local tool="${1:-}" alias="" do_login=false then_switch=false roster ident id label org existing rc dir scratch="" snap="" file fp=""
   local -a largs
-  [[ -n "$tool" ]] || refuse "add needs a tool: ${(j:|:)TOOLS}"
-  shift
+  if [[ -z "$tool" || "$tool" == -* ]] && prompt_tty; then
+    ask_tool "Store which tool's login?"
+    tool="$ASKED"
+    prompt_ran flakelab accounts add "$tool" "$@"
+  else
+    [[ -n "$tool" ]] || refuse "add needs a tool: ${(j:|:)TOOLS}"
+    shift
+  fi
   while (( $# > 0 )); do
     case $1 in
       --alias) [[ -n "${2:-}" ]] || refuse "--alias needs a name"; alias="$2"; shift ;;
@@ -725,17 +771,33 @@ pick_by_usage() {
 }
 
 cmd_switch() {
-  local target="" tool="" next=false strategy="" id roster ids cur
+  local target="" tool="" next=false strategy="" id roster ids cur ask_for=""
   while (( $# > 0 )); do
     case $1 in
-      --next) next=true; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "--next needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
-      --soonest|--best) strategy="${1#--}"; [[ -n "${2:-}" && "${2}" != -* ]] || refuse "$1 needs a tool: ${(j:|:)TOOLS}"; tool="$2"; shift ;;
+      --next|--soonest|--best)
+        [[ "$1" == --next ]] && next=true || strategy="${1#--}"
+        if [[ -n "${2:-}" && "${2}" != -* ]]; then
+          tool="$2"; shift
+        else
+          prompt_tty || refuse "$1 needs a tool: ${(j:|:)TOOLS}"
+          ask_for="$1"
+        fi
+        ;;
       --force) ACCT_FORCE=true ;;
       -*) refuse "unknown option for switch: $1" ;;
       *) [[ -z "$target" ]] || refuse "switch takes one entry"; target="$1" ;;
     esac
     shift
   done
+  if [[ -n "$ask_for" ]]; then
+    ask_tool "Switch which tool?"
+    tool="$ASKED"
+    prompt_ran flakelab accounts switch "$ask_for" "$tool" ${${ACCT_FORCE:#false}:+--force}
+  elif [[ -z "$target" ]] && ! $next && [[ -z "$strategy" ]] && prompt_tty; then
+    ask_entry "Switch to which login?"
+    target="$ASKED"
+    prompt_ran flakelab accounts switch "$target" ${${ACCT_FORCE:#false}:+--force}
+  fi
   [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
   take_lock
   if [[ -n "$strategy" ]]; then
@@ -764,6 +826,14 @@ cmd_switch() {
 
 cmd_alias() {
   local target="${1:-}" name="${2:-}" id roster taken
+  if [[ -z "$target" || -z "$name" ]] && prompt_tty; then
+    if [[ -z "$target" ]]; then ask_entry "Name which login?"; target="$ASKED"; fi
+    id="$(resolve "$target")" || exit $?
+    prompt_input "Alias for $(entry_name "$id")" "$(entry_field "$id" alias)" || exit 130
+    name="$PROMPT_TEXT"
+    [[ -n "$name" ]] || { note "Cancelled"; exit 130 }
+    prompt_ran flakelab accounts alias "$target" "$name"
+  fi
   [[ -n "$target" && -n "$name" ]] || refuse "alias needs an entry and a name (or --unset)"
   take_lock
   id="$(resolve "$target")" || exit $?
@@ -784,6 +854,16 @@ cmd_alias() {
 
 cmd_disabled() {
   local flag="$1" target="${2:-}" id roster
+  if [[ -z "$target" ]] && prompt_tty; then
+    if [[ "$flag" == true ]]; then
+      ask_entry "Hold which login out of rotation?" enabled
+      prompt_ran flakelab accounts disable "$ASKED"
+    else
+      ask_entry "Put which login back in rotation?" disabled
+      prompt_ran flakelab accounts enable "$ASKED"
+    fi
+    target="$ASKED"
+  fi
   [[ -n "$target" ]] || refuse "needs an entry (id, alias or label)"
   take_lock
   id="$(resolve "$target")" || exit $?
@@ -797,7 +877,7 @@ cmd_disabled() {
 }
 
 cmd_remove() {
-  local target="" yes=false id roster tool name answer
+  local target="" yes=false id roster tool name
   while (( $# > 0 )); do
     case $1 in
       --yes|-y) yes=true ;;
@@ -806,17 +886,26 @@ cmd_remove() {
     esac
     shift
   done
+  if [[ -z "$target" ]] && prompt_tty; then
+    ask_entry "Remove which login?"
+    target="$ASKED"
+    prompt_ran flakelab accounts remove "$target" ${${yes:#false}:+--yes}
+  fi
   [[ -n "$target" ]] || refuse "remove needs an entry (id, alias or label)"
-  take_lock
   id="$(resolve "$target")" || exit $?
   name="$(entry_name "$id")"
   profile_live "$id" && refuse "entry ${id} is running in a profile session; finish it first. Nothing changed."
+  # Asked before the lock, like every other question here: the engine's tick
+  # and the statusline wait on it, and a person may take a while to answer.
   if ! $yes; then
-    [[ -t 0 && -t 1 ]] || refuse "remove ${id} needs --yes when not at a terminal"
-    print -rn -- "Remove ${name} and its stored login? [y/N] "
-    read -r answer
-    [[ "$answer" == [yY]* ]] || { print -r -- "Cancelled"; return 0 }
+    prompt_tty || refuse "remove ${id} needs --yes when not at a terminal"
+    prompt_confirm "Remove ${name} and its stored login?" || { print -r -- "Cancelled"; return 0 }
   fi
+  take_lock
+  # Ids are never reused, so this is the entry confirmed; it may have gone, or
+  # started a profile session, while the question was open.
+  id="$(resolve "$id")" || exit $?
+  profile_live "$id" && refuse "entry ${id} is running in a profile session; finish it first. Nothing changed."
   roster="$(read_roster)"
   tool="$(print -r -- "$roster" | jq -r --arg id "$id" '.accounts[$id].tool')"
   roster="$(print -r -- "$roster" | jq --arg id "$id" --arg tool "$tool" '
@@ -1095,6 +1184,11 @@ ensure_profile() {
 cmd_run() {
   local id tool share=true reseed=false dir v
   local -a args unsets
+  if [[ -z "${1:-}" || "$1" == -* ]] && prompt_tty; then
+    ask_entry "Run on which login's profile?"
+    prompt_ran flakelab accounts run "$ASKED" "$@"
+    set -- "$ASKED" "$@"
+  fi
   [[ -n "${1:-}" && "$1" != -* ]] || refuse "run needs an entry: accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]"
   id="$(resolve "$1")" || exit 1; shift
   while (( $# > 0 )); do
@@ -1153,6 +1247,12 @@ cmd_env() {
     need_adapter "$unset_tool"
     for v in $(acct_${unset_tool}_profile_vars); do sh_unset "$shell" "$v"; done
     return 0
+  fi
+  if [[ -z "$target" ]] && prompt_tty; then
+    ask_entry "Pin this shell to which login?"
+    target="$ASKED"
+    prompt_ran flakelab accounts env "$target" ${${shell:#sh}:+--shell} ${${shell:#sh}:+$shell} \
+      ${${share:#true}:+--no-share-history} ${${reseed:#false}:+--reseed}
   fi
   [[ -n "$target" ]] || refuse "env needs an entry: accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh], or env --unset <tool>"
   id="$(resolve "$target")" || exit 1

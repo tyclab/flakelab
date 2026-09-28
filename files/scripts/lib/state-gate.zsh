@@ -1142,8 +1142,8 @@ gate_apply_pending_deletes() {
   local ans=""
   local prompt="Apply ${#pending} deletion(s) already decided to this machine's local files? [y = apply / N = ask again next time / k = keep this box's copies of ALL of them, records still here included, and stop offering them here] "
   if ${interactive}; then
-    print -n -- "${prompt}"
-    read -r ans || ans=n
+    prompt_keys "Apply ${#pending} deletion(s) already decided to this machine's local files? (y = apply, N = ask again next time, k = keep this box's copies of ALL of them, records still here included, and stop offering them here)" "y/N/k"
+    ans="${PROMPT_KEY}"
   else
     asked=$(( asked + 1 ))
     ans="${answers[asked]:-n}"
@@ -1237,7 +1237,7 @@ do_review_secrets() {
   local interactive=false
   local -a answers=()
   local -i asked=0
-  if [[ -t 0 ]]; then
+  if prompt_tty; then
     interactive=true
   elif [[ -n "${FLAKELAB_GATE_ANSWERS:-}" ]]; then
     answers=(${(s::)FLAKELAB_GATE_ANSWERS//[^dkasyn]/})
@@ -1329,8 +1329,8 @@ do_review_secrets() {
     print -rl -- "${rendered[@]}"
 
     if ${interactive}; then
-      print -n -- "  [d]elete from local files / [k]eep local, never sync / [a]llow, sync as-is / [s]kip? "
-      read -r ans || ans=s
+      prompt_keys "[d]elete from local files / [k]eep local, never sync / [a]llow, sync as-is / [s]kip?" "d/k/a/S"
+      ans="${PROMPT_KEY}"
     else
       asked=$(( asked + 1 ))
       ans="${answers[asked]:-s}"

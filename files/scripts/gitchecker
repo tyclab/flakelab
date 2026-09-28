@@ -52,6 +52,8 @@ set -uo pipefail
 # the repo.
 GITSCAN_PROG=gitchecker
 source "${0:A:h}/lib/gitscan.zsh" || exit 2
+# The y/N questions, asked the one way every flakelab command asks them.
+source "${0:A:h}/lib/prompt.zsh" || exit 2
 
 typeset -a ROOTS=() REPO_ARGS=()
 MAX_JOBS=8
@@ -327,22 +329,19 @@ check_repo() {
       # Strictly behind: the one state that fast-forwards.
       br_state=behind
       if (( FF )); then
-        local ff_allow=false ff_answer=""
-        if (( FF_DIRTY )); then
-          ff_allow=true
-        elif (( dirty > 0 )) && [[ "${branch}" == "${head_branch}" ]] && [[ -t 0 ]] && (( ! JSON )); then
-          # Only a real terminal is asked. A piped run skips instead, so an
-          # agent never blocks on a prompt it cannot see.
-          print -n -- "  ${repo##*/}: ${branch} is ${behind} behind and the tree is dirty — fast-forward anyway? [y/N] "
-          read -r ff_answer || ff_answer=""
-          [[ "${ff_answer}" == [yY] ]] && ff_allow=true
-        fi
+        local ff_allow=false
+        (( FF_DIRTY )) && ff_allow=true
         if gitscan_ff_branch "${repo}" "${branch}" "${upstream}" "${head_branch}" "${dirty}" "${ff_allow}"; then
           marks+=("${C_GREEN}${label}fast-forwarded ↓${behind}${C_RESET}")
           branch_rows+=("${branch}	${upstream}	0	0	fast-forwarded")
           continue
         fi
         marks+=("${C_YELLOW}${label}↓${behind} (not fast-forwarded: ${GITSCAN_FF_OUT%%$'\n'*})${C_RESET}")
+        # Held back by nothing but a dirty tree: asked about after the scan
+        # (ask_dirty_behind). Not here — this runs as a background job, whose
+        # stdin is /dev/null, so no question from here could reach a person.
+        (( dirty > 0 && ! FF_DIRTY )) && [[ "${branch}" == "${head_branch}" ]] &&
+          emit "${rec}" ASK "${branch}" "${upstream}" "${behind}" "${dirty}"
         attention=1
       else
         marks+=("${C_YELLOW}${label}↓${behind}${C_RESET}")
@@ -483,6 +482,45 @@ field() {
   done < "${rec}"
   return 1
 }
+
+# The questions the workers could not ask: a checked-out branch strictly behind
+# whose only obstacle is a dirty tree. Asked in the foreground once the scan is
+# done, one at a time and only of a person at a terminal; the record is then
+# rewritten to what the answer did, so the report shows it.
+ask_dirty_behind() {
+  local rec k kind b up behind dirty repo new_mark ok
+  local -a asks lines recs=("${WORKDIR}"/rec.*(N))
+  local -i j
+  # One grep over every record, not one per repo: most runs have nothing to ask.
+  (( ${#recs} )) || return 0
+  recs=("${(@f)$(grep -l $'^ASK\t' "${recs[@]}" 2>/dev/null)}")
+  for rec in "${recs[@]}"; do
+    [[ -n "${rec}" ]] || continue
+    asks=("${(@f)$(grep $'^ASK\t' "${rec}")}")
+    for k in "${asks[@]}"; do
+      [[ -n "${k}" ]] || continue
+      IFS=$'\t' read -r kind b up behind dirty <<< "${k}"
+      repo="$(field "${rec}" PATH)"
+      # The path under its root, as the report groups it: two clones can share
+      # a basename, and the answer moves one of them.
+      prompt_confirm "$(field "${rec}" REL): ${b} is ${behind} behind and the tree is dirty — fast-forward anyway?" || continue
+      ok=false
+      if gitscan_ff_branch "${repo}" "${b}" "${up}" "${b}" "${dirty}" true; then
+        ok=true
+        new_mark="${C_GREEN}fast-forwarded ↓${behind}${C_RESET}"
+      else
+        new_mark="${C_YELLOW}↓${behind} (not fast-forwarded: ${GITSCAN_FF_OUT%%$'\n'*})${C_RESET}"
+      fi
+      lines=("${(@f)$(<"${rec}")}")
+      for (( j = 1; j <= ${#lines}; j++ )); do
+        [[ "${lines[j]}" == "MARK	${C_YELLOW}↓${behind} (not fast-forwarded:"* ]] && lines[j]="MARK	${new_mark}"
+        $ok && [[ "${lines[j]}" == "BR	${b}	"* ]] && lines[j]="BR	${b}	${up}	0	0	fast-forwarded"
+      done
+      print -rl -- "${lines[@]}" > "${rec}"
+    done
+  done
+}
+(( ! JSON )) && prompt_tty && ask_dirty_behind
 
 render() {
   # Every local is declared once, here: re-running `local` on a name already

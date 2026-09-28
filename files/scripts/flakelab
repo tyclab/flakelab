@@ -188,6 +188,7 @@ usage() {
   done
   print -r -- ""
   print -r -- "Every command takes its own flags; ${_self} <command> --help shows them."
+  print -r -- "At a terminal a bare ${_self} opens a menu of them instead (FLAKELAB_NO_PROMPT=1: this list)."
   print -r -- "gitchecker, gitcleaner and gitpublisher stay standalone commands."
 }
 
@@ -240,8 +241,31 @@ _suggest() {
 }
 
 # No arguments exits 0 like --help: a bare `flakelab` is a question, not an
-# error.
+# error. At a terminal the answer is the menu (flakelab-menu): only when all
+# three ends are a terminal, so `flakelab | less`, a pipe, a hook and an
+# agent's shell keep getting this list. The menu is handed this script's path
+# to come back through, and the commands this target offers.
 if (( $# == 0 )); then
+  # The same test as lib/prompt.zsh's prompt_tty, stdout added: no menu in an
+  # agent's shell (CLAUDECODE, CODEX_THREAD_ID) even when it has a pty.
+  if [[ -t 0 && -t 1 && -t 2 && -z "${FLAKELAB_NO_PROMPT:-}" && "${TERM:-dumb}" != dumb &&
+        -z "${CLAUDECODE:-}" && -z "${CODEX_THREAD_ID:-}" ]]; then
+    if [[ -n "${FLAKELAB_DISPATCH_DIR:-}" ]]; then
+      _menu="${FLAKELAB_DISPATCH_DIR}/flakelab-menu"
+    else
+      _menu="${0:A:h}/flakelab-menu"
+    fi
+    if [[ -x "$_menu" ]]; then
+      _offered=()
+      for _c in ${_order}; do
+        # A checkout cannot run what has no sibling script (clone): not offered.
+        [[ -z "${FLAKELAB_DISPATCH_DIR:-}" && -z "${_file[$_c]}" ]] && continue
+        _available "$_c" && _offered+=("$_c")
+      done
+      export FLAKELAB_ROUTER="${0:A}" FLAKELAB_MENU_COMMANDS="${_offered}"
+      exec "$_menu"
+    fi
+  fi
   usage
   exit 0
 fi

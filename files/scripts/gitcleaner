@@ -56,6 +56,8 @@ set -uo pipefail
 # both from the nix store copy the wrapper executes and the repo.
 GITSCAN_PROG=gitcleaner
 source "${0:A:h}/lib/gitscan.zsh" || exit 2
+# The y/N questions, asked the one way every flakelab command asks them.
+source "${0:A:h}/lib/prompt.zsh" || exit 2
 
 typeset -a ROOTS=() REPO_ARGS=() ONLY=()
 MAX_DEPTH=6
@@ -154,7 +156,7 @@ elif (( ASSUME_YES )); then
   MODE=delete
 elif (( JSON )); then
   MODE=report
-elif [[ -t 0 ]]; then
+elif prompt_tty; then
   MODE=ask
 fi
 
@@ -432,16 +434,15 @@ clean_repo() {
   done
 
   # confirm <prompt> — y delete, n keep, a rest of this repo, q stop the run.
-  # `read -k 1`, not `read -q`: binding the answer to a variable is what lets
-  # anything other than y/n be handled instead of collapsing into "not yes".
+  # prompt_keys, not a yes/no: the answer is a key, so anything other than
+  # y/n is handled instead of collapsing into "not yes".
   confirm() {
-    local _p="$1" _r=""
+    local _p="$1"
     [[ "${MODE}" == delete ]] && return 0
     [[ "${MODE}" == report ]] && return 1
     (( REPO_ALL )) && return 0
-    read -k 1 "_r?  ${_p} [y/N/a/q] "
-    print -r -- ""
-    case "${_r}" in
+    prompt_keys "${_p}" "y/N/a/q"
+    case "${PROMPT_KEY}" in
       [yY]) return 0 ;;
       [aA]) REPO_ALL=1; return 0 ;;
       [qQ]) QUIT_ALL=1; return 1 ;;

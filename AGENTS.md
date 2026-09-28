@@ -103,6 +103,14 @@ the private overlay `flakelab-config`, which imports this flake via
   - Each subcommand's own `--help`, flags, exit codes and `--json` output are
     unchanged, including the script name the usage text prints
     (`flakelab update --help` still says `nix-update [--all]`).
+  - At a terminal only, a person is asked instead of refused
+    (`lib/prompt.zsh`, `ARCHITECTURE.md#at-a-terminal`): a bare `flakelab`
+    opens `flakelab-menu`, and a missing tool, session or login is picked from
+    a list. Without a terminal, and in an agent's shell even on a pty
+    (`CLAUDECODE`, `CODEX_THREAD_ID`), nothing changed, so an agent always passes the
+    flags; a prompt a person needs is never something to script around, and
+    `FLAKELAB_NO_PROMPT=1` turns them off. Every `[y/N]` goes through
+    `prompt_confirm`/`prompt_keys`, never a bare `read`.
 - **What to run** — four different jobs, often conflated:
   - `flakelab overlay-gen` (zsh; Linux and macOS, no PowerShell and no WSL):
     write the private overlay from a `user_data.yaml`. It scaffolds; it never
