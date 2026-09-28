@@ -554,6 +554,21 @@
             vm = self.nixosConfigurations.proxmox-vm.config;
             hasPkg =
               cfg: name: builtins.any (p: (p.pname or p.name or "") == name) cfg.environment.systemPackages;
+            webOn =
+              system: bind:
+              (system.extendModules {
+                modules = [
+                  {
+                    flakelab.web = {
+                      enable = nixpkgs.lib.mkForce true;
+                      bind = nixpkgs.lib.mkForce bind;
+                    };
+                  }
+                ];
+              }).config;
+            webOnTunnel = webOn self.nixosConfigurations.proxmox-vm "10.66.0.2";
+            webOnLoopback = webOn self.nixosConfigurations.proxmox-vm "127.0.0.1";
+            webOnTunnelWsl = webOn self.nixosConfigurations.default "10.66.0.2";
           in
           assert wsl.flakelab.target == "wsl";
           assert wsl.wsl.enable;
@@ -568,6 +583,14 @@
           assert vm.services.qemuGuest.enable;
           assert vm.users.users.${vm.flakelab.username}.isNormalUser;
           assert !vm.services.openssh.settings.PasswordAuthentication;
+          # The dashboard's port is open only for a bind off loopback, and only on the VM:
+          # the guest's firewall leaves sshd alone, and wsl cannot open a port from inside.
+          assert !(builtins.elem vm.flakelab.web.port vm.networking.firewall.allowedTCPPorts);
+          assert builtins.elem webOnTunnel.flakelab.web.port webOnTunnel.networking.firewall.allowedTCPPorts;
+          assert
+            !(builtins.elem webOnLoopback.flakelab.web.port webOnLoopback.networking.firewall.allowedTCPPorts);
+          assert
+            !(builtins.elem webOnTunnelWsl.flakelab.web.port webOnTunnelWsl.networking.firewall.allowedTCPPorts);
           # A release asset cannot carry the home-manager closure.
           assert self.packages.${system}.proxmoxImage.passthru.config.home-manager.users == { };
           # Forcing the drvPath evaluates every module of both systems, and builds neither.
