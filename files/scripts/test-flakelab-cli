@@ -135,6 +135,11 @@ for s in "${HELP_SCRIPTS[@]}"; do
   check "${s} --help exits 0" "${RC}" "0"
   check "${s} --help prints its help" "$([[ "${(L)OUT}" == *usage* || "${OUT}" == *"  --"* ]] && print yes || print "${OUT[1,200]}")" "yes"
   check "${s} --help runs no tool" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
+  # The other half of the same bug: an argument ignored instead of refused.
+  rm -f "${BASE}/help-ran.log"
+  OUT="$(env -u USER -u SUDO_USER -u WSL_DISTRO_NAME HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --no-such-flag </dev/null 2>&1)"; RC=$?
+  check "${s} refuses an unknown flag" "$(( RC != 0 ))" "1"
+  check "${s} runs no tool on one" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
 done
 
 print -r -- ""
