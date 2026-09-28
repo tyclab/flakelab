@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Offline behavioral checks for shared MCP routing and accounts, and for the
-headless browser server when FLAKELAB_MCP_HEADLESS names its launcher."""
+headless browser server when FLAKELAB_MCP_HEADLESS names its launcher
+(FLAKELAB_MCP_HEADLESS_ARGS adds arguments to it)."""
 import http.server
 import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -168,7 +170,8 @@ class HeadlessBrowserTest(unittest.TestCase):
         self.url = f"http://127.0.0.1:{server.server_address[1]}/"
 
     def start(self):
-        process = McpProcess([os.environ["FLAKELAB_MCP_HEADLESS"]], self.env, self.temp.name)
+        command = [os.environ["FLAKELAB_MCP_HEADLESS"], *shlex.split(os.environ.get("FLAKELAB_MCP_HEADLESS_ARGS", ""))]
+        process = McpProcess(command, self.env, self.temp.name)
         self.addCleanup(process.close)
         return process
 

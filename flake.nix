@@ -397,7 +397,13 @@
 
               jq -e '.mcpServers."playwright-headless" | .type == "stdio" and (.command | endswith("/bin/flakelab-playwright-headless")) and .args == []' "$fixtureHome/.claude.json"
               toml2json ${codexSettings} | jq -e '.mcp_servers."playwright-headless".command | endswith("/bin/flakelab-playwright-headless")'
-              FLAKELAB_MCP_HEADLESS="$(jq -r '.mcpServers."playwright-headless".command' "$fixtureHome/.claude.json")" \
+              headless="$(jq -r '.mcpServers."playwright-headless".command' "$fixtureHome/.claude.json")"
+              # Hosts launch with the Chromium sandbox on; only this check turns it off,
+              # because Ubuntu 23.10+ runners deny the user namespaces it needs.
+              config="$(grep -o '/nix/store/[^ ]*-playwright-headless.json' "$headless")"
+              jq -e '.browser.launchOptions | has("chromiumSandbox") | not' "$config"
+              if grep -q sandbox "$headless"; then exit 1; fi
+              FLAKELAB_MCP_HEADLESS="$headless" FLAKELAB_MCP_HEADLESS_ARGS=--no-sandbox \
                 FLAKELAB_MCP_HEADLESS_VERSION=${headlessShell.browserVersion} \
                 python3 ${./files/scripts}/lib/test-mcp.py -v HeadlessBrowserTest
               touch "$out"
