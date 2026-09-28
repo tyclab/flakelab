@@ -1233,6 +1233,24 @@ cmd_ingest() {
 
 # --- reports ---------------------------------------------------------------------
 
+# An entry's plan: read from its stored files where the adapter can do that
+# offline (Claude, Codex), so it follows an upgrade; else what the roster
+# recorded when the login was added (Kiro, whose plan needs whoami online).
+entry_plan() {
+  local id="$1" tool="$2" org="$3" plan=""
+  (( $+functions[acct_${tool}_plan] )) && plan="$(acct_${tool}_plan "${STORE}/${id}" 2>/dev/null)"
+  print -r -- "${plan:-${org}}"
+}
+
+# {"<id>": "<plan>"} for every entry, for the JSON reports.
+plans_json() {
+  local tool id alias label org act dis out="{}"
+  while IFS="$US" read -r tool id alias label org act dis; do
+    out="$(print -r -- "$out" | jq -c --arg k "$id" --arg p "$(entry_plan "$id" "$tool" "$org")" '.[$k] = $p')"
+  done < <(rows)
+  print -r -- "$out"
+}
+
 # One row per entry: tool US id US alias US label US org US flags, in id order.
 rows() {
   print -r -- "$(read_roster)" | jq -r --arg us "$US" '
@@ -1256,20 +1274,20 @@ cmd_list() {
   done
   if $fetch; then take_lock; n="$(fetch_due)"; note "fetched ${n} entr$( (( n == 1 )) && print y || print ies)"; n=0; fi
   if $json; then
-    jq -n --argjson r "$(read_roster)" --argjson u "$(read_usage)" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
+    jq -n --argjson r "$(read_roster)" --argjson u "$(read_usage)" --argjson plans "$(plans_json)" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
       {version: $r.version, active: $r.active,
        accounts: ($r.accounts | to_entries | sort_by(.key | tonumber)
-        | map(.key as $k | {id: ($k | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org,
+        | map(.key as $k | {id: ($k | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org, plan: ($plans[$k] // .value.org),
                alias: (.value.alias // null), disabled: (.value.disabled // false), added: .value.added,
                usage: (($u.entries[$k] // {}) | {windows: (.windows // []), fetchedAt: (.fetchedAt // null), nextPollAt: (.nextPollAt // null), lastError: (.lastError // null)}),
                headroom: (($u.entries[$k] // {}) | headroom),
                quarantine: ($u.quarantine[$k] // null)}))}'
     return 0
   fi
-  printf '%-7s %-4s %-12s %-32s %-16s %-44s %s\n' TOOL ID ALIAS LABEL STATE USAGE RESETS
+  printf '%-7s %-4s %-12s %-32s %-12s %-16s %-44s %s\n' TOOL ID ALIAS LABEL PLAN STATE USAGE RESETS
   while IFS="$US" read -r tool id alias label org act dis; do
     profile_live "$id" && act="${act:+${act} }profile"
-    printf '%-7s %-4s %-12s %-32s %-16s %-44s %s\n' "$tool" "$id" "${alias:--}" "$label" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")" "$(resets_text "$id")"
+    printf '%-7s %-4s %-12s %-32s %-12s %-16s %-44s %s\n' "$tool" "$id" "${alias:--}" "$label" "$(entry_plan "$id" "$tool" "$org")" "${act:-}${act:+ }${dis:-}" "$(usage_text "$id")" "$(resets_text "$id")"
     (( n++ ))
   done < <(rows)
   (( n > 0 )) || note "no stored logins; start with: flakelab accounts add <tool>"
@@ -1283,6 +1301,7 @@ cmd_status() {
   roster="$(read_roster)"
   for tool in "${ADAPTERS[@]}"; do
     active="$(print -r -- "$roster" | jq -c --arg tool "$tool" '(.active[$tool] // null) as $a | if $a == null then null else (.accounts[($a | tostring)] // {}) + {entry: $a} end')"
+    [[ "$active" == null ]] || active="$(print -r -- "$active" | jq -c --arg p "$(entry_plan "$(print -r -- "$active" | jq -r .entry)" "$tool" "$(print -r -- "$active" | jq -r '.org // ""')")" '.plan = $p')"
     live="$(acct_${tool}_identity 2>/dev/null)" || live="null"
     lid="$(print -r -- "$live" | jq -r '.id // empty')"
     id="$(print -r -- "$active" | jq -r '.id // empty')"
@@ -1290,7 +1309,7 @@ cmd_status() {
     local ue='{}'
     [[ -n "$id" ]] && ue="$(print -r -- "$(read_usage)" | jq -c --arg id "$(print -r -- "$active" | jq -r '.entry')" '.entries[$id] // {}')"
     out="$(print -r -- "$out" | jq --arg tool "$tool" --argjson a "$active" --argjson l "$live" --argjson m "$matches" --argjson u "$ue" '
-      .[$tool] = {active: (if $a == null then null else {id: $a.entry, alias: ($a.alias // null), label: $a.label, org: $a.org} end),
+      .[$tool] = {active: (if $a == null then null else {id: $a.entry, alias: ($a.alias // null), label: $a.label, org: $a.org, plan: ($a.plan // $a.org)} end),
                   live: (if $l == null then null else {account: $l.id, label: $l.label} end),
                   matches: $m, windows: ($u.windows // []), fetchedAt: ($u.fetchedAt // null)}')"
     if ! $json; then
@@ -1299,7 +1318,7 @@ cmd_status() {
       elif [[ "$matches" == false ]]; then
         print -r -- "${tool}: entry $(print -r -- "$active" | jq -r '.entry') ($(print -r -- "$active" | jq -r .label)) is recorded active, but the live login is $(print -r -- "$live" | jq -r .label): someone logged in by hand; run: flakelab accounts add ${tool}"
       else
-        print -r -- "${tool}: $(print -r -- "$active" | jq -r '"\(.entry)\(if .alias then " (\(.alias))" else "" end) \(.label) [\(.org)]"')${lid:+}${${lid:-  (no live login)}:#${lid}}"
+        print -r -- "${tool}: $(print -r -- "$active" | jq -r '"\(.entry)\(if .alias then " (\(.alias))" else "" end) \(.label) [\(.plan)]"')${lid:+}${${lid:-  (no live login)}:#${lid}}"
       fi
     fi
   done

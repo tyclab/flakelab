@@ -63,7 +63,7 @@
 
 <h2>accounts</h2>
 <div class="card">
-  <table id="accounts"><thead><tr><th>tool</th><th>id</th><th>alias</th><th>label</th><th>state</th><th>usage</th><th></th></tr></thead><tbody></tbody></table>
+  <table id="accounts"><thead><tr><th>tool</th><th>id</th><th>alias</th><th>label</th><th>plan</th><th>state</th><th>usage</th><th></th></tr></thead><tbody></tbody></table>
   <p class="row" style="display:flex;gap:8px;margin:10px 0 0">
     <button id="fetch">poll usage now</button>
     <button id="dry">what would auto do?</button>
@@ -136,7 +136,7 @@
       const wins = (u.windows || []).map((w) => barFor(w, now)).join("<br>") || (u.lastError ? `<span class="err">${esc(u.lastError)}</span>` : "—");
       const fetched = u.fetchedAt ? `<span class="mut"> (${age(now - u.fetchedAt)})</span>` : "";
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${esc(a.tool)}</td><td>${esc(a.id)}</td><td>${esc(a.alias)}</td><td>${esc(a.label)}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;
+      tr.innerHTML = `<td>${esc(a.tool)}</td><td>${esc(a.id)}</td><td>${esc(a.alias)}</td><td>${esc(a.label)}</td><td>${esc(a.plan ?? a.org ?? "")}</td><td class="wrap">${tags.join("")}</td><td class="wrap">${wins}${fetched}</td><td></td>`;
       const btn = document.createElement("button");
       btn.className = "primary";
       btn.textContent = "switch";
