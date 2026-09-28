@@ -119,8 +119,14 @@ for f in "${SCRIPT_DIR}"/*(.) "${SCRIPT_DIR}"/lib/*(.); do
   grep -q pipefail "$f" || continue
   QPIPES+=("${(@f)$(grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' "$f" | grep -vE '^[0-9]+:[[:space:]]*#|zsh -lc' | sed "s|^|${f:t}:|")}")
 done
+# Under set -e every status counts, a `| head` too: build-distro's check helper
+# printed a long failure through `| head -3` and the SIGPIPE ended the run.
+for f in "${SCRIPT_DIR}"/*(.) "${SCRIPT_DIR}"/lib/*(.); do
+  grep -qE '^set -[a-z]*e[a-z]* pipefail' "$f" || continue
+  QPIPES+=("${(@f)$(grep -nE '\|[[:space:]]*(head|grep[^|]*-m ?[0-9]|awk[^|]*exit)' "$f" | grep -vE '^[0-9]+:[[:space:]]*#|zsh -lc' | sed "s|^|${f:t}:|")}")
+done
 QPIPES=("${(@)QPIPES:#}")
-check "no pipe in a pipefail script ends in grep -q" "${(F)QPIPES}" ""
+check "no pipe in a pipefail script ends in grep -q, nor in head under set -e" "${(F)QPIPES}" ""
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

@@ -183,7 +183,7 @@ if ${VERIFY}; then
     if o=$(${_WSL_BIN} -d "${DISTRO_NAME}" -u "${_username}" -- "$@" 2>&1); then
       print -rP -- "  %F{green}[PASS]%f ${d//\%/%%}"; (( ++_pass ))
     else
-      print -rP -- "  %F{red}[FAIL]%f ${d//\%/%%}"; [[ -n "$o" ]] && print -r -- "         ${o}" | head -3; (( ++_fail ))
+      print -rP -- "  %F{red}[FAIL]%f ${d//\%/%%}"; [[ -n "$o" ]] && { local -a ol=("${(@f)o}"); print -rl -- "${(@)ol[1,3]/#/         }" }; (( ++_fail ))
     fi
   }
   check_contains() {
