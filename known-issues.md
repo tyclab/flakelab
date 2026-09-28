@@ -62,7 +62,12 @@ interop wipe:**
   `nix/users/default.nix` for its checks.
 - `test-provision-nix` hard-fails its precheck when interop is already broken.
 - **Recovery:** `wsl --shutdown` from a Windows terminal, then re-enter the host
-  distro (`/init` re-registers the handler on VM boot).
+  distro (`/init` re-registers the handler on VM boot). The heal holds only until
+  the next stop of a systemd distro in the VM wipes the handler again, so it goes
+  after a run's last `wsl --terminate`, never before it, as `setup-wsl-nix.ps1`
+  orders it. The durable fix is upstream's
+  [#40621](https://github.com/microsoft/WSL/pull/40621), which only the
+  pre-release channel carries (see the retirement path above).
 - **There is no in-distro repair — do not attempt one.** Registering the handler
   by hand puts unmanaged state into a VM-global registry that WSL rewrites on its
   own schedule; `wsl --shutdown` re-creates the real entry, at the price of
@@ -126,6 +131,14 @@ systemd[…]: Failed to allocate manager object: Permission denied
 
 `cat /proc/1/cgroup` reads `0::/<cgroup>/init.scope`, not `0::/init.scope`, and
 `ls -ld /sys/fs/cgroup/<cgroup>` shows a directory only root may enter.
+
+A `/proc/1/comm` other than `systemd` is a different case that loses the same
+user units: WSL started the distro with its own init as PID 1, which it does unless
+`/etc/wsl.conf` carries `[boot] systemd=true` (NixOS-WSL writes it from
+`wsl.wslConf.boot.systemd`), so no unit runs at all. WSL reads the file when the
+distro starts: restore the setting, then `wsl --shutdown` from a Windows terminal.
+`flakelab doctor`'s "systemd cgroup" section fails on either and names PID 1's
+cgroup.
 
 ### Root Cause
 
