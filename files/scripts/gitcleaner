@@ -362,7 +362,7 @@ clean_repo() {
     [[ "${branch}" == "${default_branch}" ]] && continue
     [[ "${branch}" == "${head_branch}" ]] && continue
     # An open MR means the work is in flight, whatever the ref graph says.
-    print -r -- "${open_srcs}" | grep -qxF -- "${branch}" && continue
+    (( ${${(f)open_srcs}[(Ie)${branch}]} )) && continue
     (( ${held_branches[(Ie)${branch}]} )) && continue
 
     if git -C "${repo}" merge-base --is-ancestor \

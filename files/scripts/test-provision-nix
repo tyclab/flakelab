@@ -49,7 +49,7 @@ if [[ -z "${TARBALL}" ]]; then
 fi
 _tarball_win="$(_win "${TARBALL}")"
 
-if wsl_clean --list --quiet 2>/dev/null | grep -qx "${DISTRO_NAME}"; then
+if (( ${${(f)"$(wsl_clean --list --quiet 2>/dev/null)"}[(Ie)${DISTRO_NAME}]} )); then
   ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
 fi
 _say cyan "Importing ${DISTRO_NAME}..."

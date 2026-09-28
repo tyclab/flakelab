@@ -69,7 +69,7 @@ count_listed() {
   local -i n=0
   local c
   for c in "${ORDER[@]}"; do
-    print -r -- "$OUT" | grep -qE "^  ${c}[[:space:]]" && (( n++ ))
+    [[ "$OUT" =~ $'(^|\n)  '"${c}"'[[:space:]]' ]] && (( n++ ))
   done
   print -r -- "$n"
 }
@@ -104,6 +104,19 @@ run_router "proxmox-vm" "build-distr"
 check "a typo near a hidden verb exits 2" "${RC}" "2"
 contains "a typo near a hidden verb is reported unknown" "${OUT}" "unknown command: build-distr"
 excludes "a typo near a hidden verb does NOT suggest it" "${OUT}" "did you mean 'build-distro'"
+
+print -r -- ""
+print -r -- "no pipefail script decides on a pipe that ends in grep -q"
+# grep -q quits at its first match; whatever still writes into the pipe then
+# dies of SIGPIPE, and pipefail turns the match into a failure. The doctor's
+# timer check reported a running timer as missing about one run in thirty.
+typeset -a QPIPES=()
+for f in "${SCRIPT_DIR}"/*(.) "${SCRIPT_DIR}"/lib/*(.); do
+  grep -q pipefail "$f" || continue
+  QPIPES+=("${(@f)$(grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' "$f" | grep -vE '^[0-9]+:[[:space:]]*#|zsh -lc' | sed "s|^|${f:t}:|")}")
+done
+QPIPES=("${(@)QPIPES:#}")
+check "no pipe in a pipefail script ends in grep -q" "${(F)QPIPES}" ""
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

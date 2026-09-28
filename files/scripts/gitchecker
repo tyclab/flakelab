@@ -277,7 +277,7 @@ check_repo() {
 
     if ! upstream="$(git -C "${repo}" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{upstream}" 2>/dev/null)"; then
       # No upstream at all, or one the prune just removed.
-      if git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null | grep -q 'gone'; then
+      if [[ "$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)" == *gone* ]]; then
         marks+=("${C_RED}gone: ${branch}${C_RESET}")
         br_state=gone
       elif [[ "${branch}" == "${head_branch}" ]]; then
