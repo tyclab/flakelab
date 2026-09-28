@@ -62,6 +62,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `checks.cli-installers` passes on a builder without the sandbox. Its offline cases ran the real installers and counted on the sandbox having no network to fail the fetch; with network the fetch succeeded, an installer really installed into the test home, and the check failed on the binary it asserts absent. A failing `curl`, exported so the installers' inner shell takes it over the store one, keeps every offline case offline wherever the check runs.
 - `flakelab accounts`: the live Claude Code login's per-model week (`Fable 57%`) was never known, since the statusline's `rate_limits` carries only the session and week windows and every statusline tick pushed the endpoint's poll out; `ingest` now keeps a planned poll and the live entry is polled at the candidate cadence for that window. The endpoint's `resets_at` stamps (`+00:00`, an offset `fromdateiso8601` refuses) parsed to no reset, which cost `--soonest`, the engine's reset ordering and the poll plan their figures; `lib/accounts-time.jq` parses them, shared by the adapters and the ingest. A Codex plan with one weekly window (prolite) reports it as `primary`, which the adapter labelled the five-hour session; the window's length names it now.
 - Codex fleet settings now use `/etc/codex/config.toml`, leaving the user config writable for trust decisions and UI changes. Activation backs up and replaces the previous Home Manager symlink; existing regular user files are preserved.
 
