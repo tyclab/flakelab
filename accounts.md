@@ -518,13 +518,13 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
 3. Trigger: `proactive` when the deciding axis crossed its bar; `at-limit`
    when any counted window is at 100; `failover` after three consecutive
    ticks whose read of the active account says the login itself is dead
-   (unauthorized, 401 or 403, a credential missing, a refused refresh). A
-   figure that is only stale is read at once rather than counted, and a
-   failing usage read (429, 5xx, the network, an answer that does not parse)
-   leaves the login working. The exception to counting is an idle hold: the
-   active token is expired on disk and no session is using it, which is the
-   tool idle rather than dead, held for up to thirty minutes before the
-   count resumes.
+   (unauthorized, 401 or 403, a credential missing or expired, a Kiro login
+   without its profile, a refused refresh, a revoked seat). A figure that is
+   only stale is read at once rather than counted, and a failing usage read
+   (429, 5xx, the network, an answer that does not parse) leaves the login
+   working. The exception to counting is an idle hold: the active token is
+   expired on disk and no session is using it, which is the tool idle rather
+   than dead, held for up to thirty minutes before the count resumes.
 4. A cooldown of five minutes since the last switch stops a `proactive`
    trigger and nothing else.
 5. Candidates: every enabled, non-quarantined entry of the tool other than

@@ -65,7 +65,7 @@ Options:
                          edit flakelab and the overlay side by side. Use
                          github:tyclab/flakelab to track the public mirror, or a
                          git+ssh:// URL for a private fork. REQUIRED when this
-                         script runs from the nix store (`flakelab overlay-gen`):
+                         script runs from the nix store (\`flakelab overlay-gen\`):
                          there is no checkout to default to, and a store path
                          would be frozen and garbage-collectable.
   --force                overwrite an existing flake.nix / .gitignore.
