@@ -75,19 +75,26 @@ def adapter(cfg, name, client=False):
     return command, env
 
 
+# The pinned mcp-remote's own test (hasUsableTokens): anything else sends the
+# adapter to a browser login that nobody answers before its auth timeout.
+def usable(cfg, name):
+    try:
+        tokens = json.loads(cache_file(cfg, name, "tokens.json").read_text())
+        expires_at = float(tokens.get("expires_at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    if not isinstance(tokens.get("access_token"), str) or not isinstance(tokens.get("token_type"), str):
+        return False
+    if expires_at and time.time() * 1000 >= expires_at - 60_000:
+        return bool(tokens.get("refresh_token"))
+    return True
+
+
 def status(cfg):
     if cfg.get("gateway"):
         return subprocess.call(ssh_command(cfg, ["status"]))
-    rows = []
-    for name in cfg["servers"]:
-        try:
-            tokens = json.loads(cache_file(cfg, name, "tokens.json").read_text())
-            usable = bool(tokens.get("refresh_token") or
-                          (tokens.get("access_token") and tokens.get("expires_at", 0) > time.time() * 1000))
-        except (OSError, ValueError):
-            usable = False
-        rows.append({"name": name, "credentials": "stored" if usable else "login-required"})
-    print(json.dumps(rows))
+    print(json.dumps([{"name": name, "credentials": "stored" if usable(cfg, name) else "login-required"}
+                      for name in cfg["servers"]]))
     return 0
 
 
@@ -95,7 +102,7 @@ def connect(cfg, name):
     if cfg.get("gateway"):
         command = ssh_command(cfg, ["connect", name])
         os.execvp(command[0], command)
-    if not cache_file(cfg, name, "tokens.json").is_file():
+    if not usable(cfg, name):
         raise ValueError(f"{name}: login required. Run 'flakelab mcp login {name}' on your desktop.")
     command, env = adapter(cfg, name)
     os.execvpe(command[0], command, env)
