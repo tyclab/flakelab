@@ -330,7 +330,35 @@
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
         notify = suiteCheck "notify";
-        mcp = suiteCheckWith [ pkgs.python3 ] "mcp";
+        mcp =
+          let
+            suite = suiteCheckWith [ pkgs.python3 ] "mcp";
+            client = import ./nix/mcp-clients.nix {
+              inherit pkgs;
+              cfg = {
+                target = "proxmox-vm";
+                mcpBrowsers = {
+                  headless = false;
+                  bridge = false;
+                };
+                mcpShared = {
+                  gateway = null;
+                  servers.fixture = {
+                    url = "https://example.invalid/mcp";
+                    callbackPort = 18871;
+                  };
+                };
+              };
+            };
+          in
+          pkgs.runCommandLocal "flakelab-check-mcp-installed" { nativeBuildInputs = [ pkgs.jq ]; } ''
+            test -e ${suite}
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            ${client.launcher}/bin/flakelab-mcp --help > help.txt
+            ${client.launcher}/bin/flakelab-mcp status | jq -e '. == [{"name":"fixture","credentials":"login-required"}]'
+            touch "$out"
+          '';
         # The dashboard's suite runs the server on loopback and talks to it.
         web = suiteCheckWith [
           pkgs.python3

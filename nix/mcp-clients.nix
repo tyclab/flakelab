@@ -26,7 +26,7 @@ let
     }:$PATH
     export FLAKELAB_MCP_CONFIG=${settings}
     # zshenv loads the configured runtime secrets (including the bridge token).
-    exec ${pkgs.zsh}/bin/zsh ${../files/scripts/mcp} "$@"
+    exec ${pkgs.zsh}/bin/zsh ${../files/scripts}/mcp "$@"
   '';
   server = args: {
     command = "${launcher}/bin/flakelab-mcp";
