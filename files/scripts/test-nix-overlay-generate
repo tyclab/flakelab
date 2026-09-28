@@ -85,6 +85,19 @@ check "exactly one flakelab-url: anchor line" "$(markers_in "${TEMPLATE}")" "1"
 excludes "and no %FLAKELAB_PATH% literal is left" "$(< "${TEMPLATE}")" '%FLAKELAB_PATH%'
 contains "the anchor line is the input URL"   "$(< "${TEMPLATE}")" 'inputs.flakelab.url = "github:tyclab/flakelab"; # flakelab-url:'
 
+# The usage heredoc is unquoted, so a backtick in it is a command substitution:
+# `flakelab overlay-gen` inside it ran the generator again from its own --help,
+# nesting until the argument list overflowed. A stand-in flakelab on PATH turns
+# a regression into a marker file instead of that recursion.
+print -r -- "--help prints the usage and runs nothing"
+mkdir -p "${BASE}/fakebin"
+print -rl -- '#!/usr/bin/env zsh' "touch ${(q)BASE}/flakelab-ran" > "${BASE}/fakebin/flakelab"
+chmod +x "${BASE}/fakebin/flakelab"
+OUT="$(PATH="${BASE}/fakebin:${PATH}" "${GEN}" --help 2>&1)"; RC=$?
+check "--help exits 0" "${RC}" "0"
+contains "the usage names the store-mode command literally" "${OUT}" '(`flakelab overlay-gen`)'
+check "and runs no command from its text" "$([[ -e "${BASE}/flakelab-ran" ]] && print ran || print none)" "none"
+
 print -r -- "a bare scaffold is the template with the input URL resolved"
 o="$(out bare)"
 run_gen --out "${o}"

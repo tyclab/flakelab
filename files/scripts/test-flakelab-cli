@@ -110,5 +110,38 @@ contains "a typo near a hidden verb is reported unknown" "${OUT}" "unknown comma
 excludes "a typo near a hidden verb does NOT suggest it" "${OUT}" "did you mean 'build-distro'"
 
 print -r -- ""
+print -r -- "every command's own --help: exit 0, its help, and nothing run"
+# `clone --help` once started the whole sweep and `overlay-gen --help` ran itself
+# from its own usage text. Every tool a script could reach for is a stub that
+# logs its call, so a --help that does anything but print shows up in the log.
+# python3 is left real: it is `mcp`'s interpreter, not a tool it calls.
+HELPBIN="${BASE}/helpbin"
+mkdir -p "${HELPBIN}" "${BASE}/helphome"
+for b in flakelab git glab gh nix nixos-rebuild wsl.exe wt.exe tmux curl sudo systemctl pgrep ssh jq sqlite3 claude codex kiro-cli; do
+  print -rl -- '#!/usr/bin/env zsh' "print -r -- \"ran:${b} \$*\" >> ${(q)BASE}/help-ran.log; exit 1" > "${HELPBIN}/${b}"
+  chmod +x "${HELPBIN}/${b}"
+done
+typeset -a HELP_SCRIPTS=(
+  nix-update nix-doctor nix-backup claude-sessions accounts notify web nix-provision
+  nix-overlay-generate build-dev-wsl-nix test-provision-nix get_current_wsl_distro_name
+  clone-repos activate-hooks report-stale-repos glab-group-projects mcp
+  gitchecker gitcleaner gitpublisher
+)
+for s in "${HELP_SCRIPTS[@]}"; do
+  rm -f "${BASE}/help-ran.log"
+  # Without USER or WSL_DISTRO_NAME, as in a build sandbox: a script must not
+  # need either, or reach for wsl.exe, to say how it is used.
+  OUT="$(env -u USER -u SUDO_USER -u WSL_DISTRO_NAME HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --help </dev/null 2>&1)"; RC=$?
+  check "${s} --help exits 0" "${RC}" "0"
+  check "${s} --help prints its help" "$([[ "${(L)OUT}" == *usage* || "${OUT}" == *"  --"* ]] && print yes || print "${OUT[1,200]}")" "yes"
+  check "${s} --help runs no tool" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
+  # The other half of the same bug: an argument ignored instead of refused.
+  rm -f "${BASE}/help-ran.log"
+  OUT="$(env -u USER -u SUDO_USER -u WSL_DISTRO_NAME HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --no-such-flag </dev/null 2>&1)"; RC=$?
+  check "${s} refuses an unknown flag" "$(( RC != 0 ))" "1"
+  check "${s} runs no tool on one" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
+done
+
+print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))
