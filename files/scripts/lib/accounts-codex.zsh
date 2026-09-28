@@ -78,6 +78,9 @@ acct_codex_identity_of() {
   print -r -- "$id"
 }
 
+# A stored entry's plan, the id_token's chatgpt_plan_type, offline.
+acct_codex_plan() { acct_codex_identity_of "$1/auth.json" | jq -r '.org' }
+
 acct_codex_identity() { acct_codex_identity_of "${ACCT_CODEX_AUTH}" }
 
 # Copy the live login into DIR, verbatim.

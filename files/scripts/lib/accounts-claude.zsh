@@ -61,8 +61,28 @@ acct_claude_identity_of() {
   [[ -n "$(print -r -- "$cfg" | jq -r '.id')" ]] || return 1
   [[ -r "$creds" ]] || return 1
   jq -e '.claudeAiOauth.accessToken? // empty | length > 0' "$creds" >/dev/null 2>&1 || return 3
-  print -r -- "$cfg" | jq -c 'del(.apiKey)'
+  print -r -- "$cfg" | jq -c --arg plan "$(acct_claude_plan_of "$config" "$creds")" 'del(.apiKey) | if $plan != "" then .org = $plan else . end'
 }
+
+# The plan a login is on, as Claude Code records it at login: the
+# credential's subscriptionType (pro, max, team, enterprise), for Max with
+# the rate-limit tier's multiplier (max-5x, max-20x); else the config's
+# organizationType; else the organisation's name. Offline, from the files.
+acct_claude_plan_of() {
+  local config="$1" creds="$2"
+  [[ -r "$config" && -r "$creds" ]] || return 1
+  jq -rn --slurpfile o "$config" --slurpfile c "$creds" '
+    ($o[0].oauthAccount // {}) as $a | ($c[0].claudeAiOauth // {}) as $k
+    | ($k.subscriptionType // (($a.organizationType // "") | sub("^claude_"; ""))) as $s
+    | ($k.rateLimitTier // $a.organizationRateLimitTier // "") as $t
+    | if $s == "" then ($a.organizationName // "personal")
+      elif $s == "max" then "max" + ((($t | capture("_(?<m>[0-9]+x)$") | "-" + .m)) // "")
+      else $s end' 2>/dev/null
+}
+
+# A stored entry's plan, from its own files: the listing shows it current
+# even for an entry that has not been live since the plan changed.
+acct_claude_plan() { acct_claude_plan_of "$1/identity.json" "$1/credentials.json" }
 
 # Copy the live login into DIR: the credential verbatim, the identity block
 # plus the theme (a profile seeded from it must not start on onboarding).
