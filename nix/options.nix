@@ -447,7 +447,7 @@ in
         type = types.str;
         default = "127.0.0.1";
         example = "10.66.0.2";
-        description = "The address the dashboard and the terminal listen on: loopback, or the box's WireGuard address. Never a public interface.";
+        description = "The address the dashboard and the terminal listen on: loopback, or the box's WireGuard address. Never a public interface. On the proxmox-vm target an address off loopback opens `port` in the NixOS firewall; a wsl distro cannot open a port from inside.";
       };
       port = mkOption {
         type = types.port;

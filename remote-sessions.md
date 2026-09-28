@@ -135,7 +135,9 @@ binds; every API call needs the bearer token from
 `flakelab web --print-token` shows it), which the page asks for once and
 keeps in the browser. `flakelab.web.enable` runs it as the user service
 `flakelab-web` on `flakelab.web.bind`; the box's WireGuard address is the
-one to name for a phone.
+one to name for a phone. On the proxmox-vm target that address opens the
+port in the NixOS firewall, which otherwise leaves only sshd open; a WSL
+distro cannot open a port from inside, so there the bind stays on loopback.
 
 The terminal beside it is ttyd, `flakelab.web.terminal`: a browser tab
 attached to the `agents` tmux session (created when absent). ttyd listens on
