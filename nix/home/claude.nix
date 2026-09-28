@@ -13,6 +13,7 @@
 let
   cfg = osConfig.flakelab;
   scripts = import ../scripts.nix { inherit pkgs cfg; };
+  sharedMcp = import ../mcp-clients.nix { inherit pkgs cfg; };
   inherit (flakelab)
     installClaude
     isWsl
@@ -231,6 +232,7 @@ let
             type = "stdio";
           };
         }
+    // lib.mapAttrs (_: server: server // { type = "stdio"; }) sharedMcp.servers
     // cfg.claudeMcpServers
   ) cfg.claudeMcpDisabledServers;
 

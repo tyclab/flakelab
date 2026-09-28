@@ -330,6 +330,65 @@
         # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
         accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
         notify = suiteCheck "notify";
+        # The suite; the launcher as installed, against a fixture account; and the
+        # account registered in both clients' rendered configuration.
+        mcp =
+          let
+            suite = suiteCheckWith [ pkgs.python3 ] "mcp";
+            fixtureServer = {
+              url = "https://example.invalid/mcp";
+              callbackPort = 18871;
+            };
+            client = import ./nix/mcp-clients.nix {
+              inherit pkgs;
+              cfg.mcpShared = {
+                gateway = null;
+                servers.fixture = fixtureServer;
+              };
+            };
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.mcpShared = {
+                    gateway = "operator@devbox";
+                    servers.fixture = fixtureServer;
+                  };
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            claudeMerge = pkgs.writeText "mcp-claude-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.claudeMcpMerge.data
+            );
+            codexSettings = fixture.config.environment.etc."codex/config.toml".source;
+          in
+          pkgs.runCommandLocal "flakelab-check-mcp-installed"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+                pkgs.remarshal
+              ];
+            }
+            ''
+              test -e ${suite}
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              ${client.launcher}/bin/flakelab-mcp --help > help.txt
+              grep -q import-codex help.txt
+              ${client.launcher}/bin/flakelab-mcp status | jq -e '. == [{"name":"fixture","credentials":"login-required"}]'
+              if ${client.launcher}/bin/flakelab-mcp connect fixture 2> connect.err; then exit 1; fi
+              grep -q 'login required' connect.err
+
+              export fixtureHome="$TMPDIR/fixture" DRY_RUN_CMD=
+              mkdir -p "$fixtureHome"
+              bash -euo pipefail ${claudeMerge}
+              jq -e '.mcpServers.fixture | .type == "stdio" and (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]' "$fixtureHome/.claude.json"
+              toml2json ${codexSettings} | jq -e '.mcp_servers.fixture | (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]'
+              config="$(grep -o '/nix/store/[^ ]*-flakelab-mcp.json' "$(jq -r .mcpServers.fixture.command "$fixtureHome/.claude.json")")"
+              jq -e '.gateway == "operator@devbox" and .servers.fixture.callbackPort == 18871' "$config"
+              touch "$out"
+            '';
         # The dashboard's suite runs the server on loopback and talks to it.
         web = suiteCheckWith [
           pkgs.python3

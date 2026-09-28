@@ -235,7 +235,7 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all eighteen.
+all nineteen.
 
 | Command                   | Action                                                          |
 | ------------------------- | --------------------------------------------------------------- |
@@ -248,6 +248,7 @@ all eighteen.
 | `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
 | `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
 | `flakelab web`            | the dashboard in a browser: accounts, sessions, switch, start   |
+| `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)              |
 | `flakelab overlay-gen`    | write the private overlay from a config                         |
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
 
