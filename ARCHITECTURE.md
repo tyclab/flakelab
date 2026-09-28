@@ -84,6 +84,15 @@ that defaults to off, because every activation here runs on every adopter's box:
   `terminal` (default `false`) adds ttyd on a Unix socket attached to the
   `tmuxSession` (`agents`), reached only through the dashboard's `/terminal/`
   behind a session it issues against the same token.
+- `mcpShared.*` — `servers` (attrset of `{ url; callbackPort; }`, default
+  `{}`) registers each OAuth MCP account in Claude and Codex as
+  `flakelab-mcp connect <name>`; `gateway` (nullable string, default `null`)
+  is the SSH destination of the host holding the credentials, `null` on that
+  host itself (`mcp.md`).
+- `mcpBrowsers.headless` (bool, default `false`) — registers
+  `playwright-headless` in Claude and Codex: Playwright's MCP server and the
+  Chromium headless shell from one nixpkgs `playwright-driver`, an in-memory
+  profile per process, beside the Windows Chrome bridge (`mcp.md`).
 - `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
   `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
   That shipped half stays limited to facts about the distro; personal workflow

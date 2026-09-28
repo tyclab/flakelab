@@ -121,6 +121,10 @@ raises both; a host that has not rebuilt since the bump gets the error.
 **Prerequisite:** install the [Playwright MCP Bridge](https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm)
 extension in Chrome.
 
+A browser that needs no Windows Chrome, for work that must not touch the
+logged-in profile, is `mcpBrowsers.headless`: a second server,
+`playwright-headless`, beside this one (`mcp.md`).
+
 ### Taking screenshots via CDP
 
 1. Connect to the WebSocket endpoint from PowerShell
