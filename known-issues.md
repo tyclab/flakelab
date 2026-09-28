@@ -62,7 +62,12 @@ interop wipe:**
   `nix/users/default.nix` for its checks.
 - `test-provision-nix` hard-fails its precheck when interop is already broken.
 - **Recovery:** `wsl --shutdown` from a Windows terminal, then re-enter the host
-  distro (`/init` re-registers the handler on VM boot).
+  distro (`/init` re-registers the handler on VM boot). The heal holds only until
+  the next stop of a systemd distro in the VM wipes the handler again, so it goes
+  after a run's last `wsl --terminate`, never before it, as `setup-wsl-nix.ps1`
+  orders it. The durable fix is upstream's
+  [#40621](https://github.com/microsoft/WSL/pull/40621), which only the
+  pre-release channel carries (see the retirement path above).
 - **There is no in-distro repair — do not attempt one.** Registering the handler
   by hand puts unmanaged state into a VM-global registry that WSL rewrites on its
   own schedule; `wsl --shutdown` re-creates the real entry, at the price of
@@ -110,6 +115,65 @@ class rather than one trigger. That is what `nix-doctor` links when it reports a
 missing handler.
 
 ---
+
+## No user manager: `user@<uid>.service` fails with `Permission denied`
+
+### Symptom
+
+On some starts of a distro and not others, no user unit runs. `ssh-add` prints
+`Error connecting to agent: No such file or directory`, `systemctl --user`
+cannot connect to the user scope bus, and the journal has, per login:
+
+```text
+systemd[…]: Failed to create /<cgroup>/user.slice/user-1000.slice/user@1000.service/init.scope control group: Permission denied
+systemd[…]: Failed to allocate manager object: Permission denied
+```
+
+`cat /proc/1/cgroup` reads `0::/<cgroup>/init.scope`, not `0::/init.scope`, and
+`ls -ld /sys/fs/cgroup/<cgroup>` shows a directory only root may enter.
+
+A `/proc/1/comm` other than `systemd` is a different case that loses the same
+user units: WSL started the distro with its own init as PID 1, which it does unless
+`/etc/wsl.conf` carries `[boot] systemd=true` (NixOS-WSL writes it from
+`wsl.wslConf.boot.systemd`), so no unit runs at all. WSL reads the file when the
+distro starts: restore the setting, then `wsl --shutdown` from a Windows terminal.
+`flakelab doctor`'s "systemd cgroup" section fails on either and names PID 1's
+cgroup.
+
+### Root Cause
+
+Every distro in the WSL VM shares one cgroup hierarchy, and WSL starts a distro in
+the cgroup of the process that launches it. A program running inside the VM can
+move that launcher into a cgroup of its own; seen with an endpoint-security agent,
+whose 0700 cgroup at the top of the tree then holds the agent and every distro
+started once it is up. systemd roots its whole tree in the cgroup it starts in, so
+it builds `user.slice` below that directory, and a user manager, which runs as
+the user and must reach its own cgroup through every directory above it, cannot.
+A distro that started first, typically the one that booted the VM, stays at the
+top, and a running distro is never moved: whichever distro starts first decides
+the boot, which is why the same box works one day and not the next.
+
+### Fix (applied)
+
+`flakelab-wsl-init-cgroup` (files/scripts/wsl-init-cgroup) runs in the wsl
+target's activation, which the NixOS-WSL init shim runs before it execs systemd.
+When PID 1's cgroup, or one above it, denies other users search permission, it
+moves the distro's processes into `/flakelab-<id>/init.scope`, a top-level cgroup
+of its own named after the machine id, and systemd roots its tree there. Nothing else in the other
+cgroup is touched: a process outside the distro's PID namespace cannot even be
+named from inside it. The outcome is in `/run/flakelab/init-cgroup` and in
+`flakelab doctor`'s "systemd cgroup" section, which also names a move the kernel
+refused.
+
+A distro caught before it had this fix: `flakelab update`, then `wsl --shutdown`
+from a Windows terminal; its next start is moved.
+
+### What Does NOT Work
+
+- **Starting this distro first, or making it the default.** It holds only until
+  something else in the VM starts first.
+- **Changing the other cgroup's mode.** It belongs to the program that made it,
+  not to this flake.
 
 ## Terminal Rendering Corruption (Null Bytes from wsl.exe)
 

@@ -178,6 +178,25 @@ meant to be started again rather than to fail it. The unit ships from the target
 so a system already built from an overlay carries it too: the marker is what
 makes it a one-shot, never the image.
 
+The wsl target also decides where systemd starts. Every distro in a WSL VM
+shares one cgroup hierarchy and starts in the cgroup of whatever launches it,
+systemd roots its whole tree in the cgroup it starts in, and a user manager
+reaches its own cgroup through every directory above it. So once another
+program in the VM has put that launcher in a cgroup only root may enter, every
+distro started after it comes up with no user manager at all (known-issues.md).
+The NixOS-WSL init shim runs the activation before it execs systemd, and the
+`flakelab-wsl-init-cgroup` snippet (files/scripts/wsl-init-cgroup) acts at that
+one point: when PID 1's cgroup or one above it denies other users search
+permission, it moves the processes the distro's PID namespace can see into
+`/flakelab-<id>/init.scope`, which systemd then takes as the root of its tree, as
+it takes `/` when it starts in `/init.scope`. The id is the machine id's first 12
+hex digits, so every boot of the distro reuses one cgroup; the PID namespace's id
+is added when a live distro already holds the name (an imported copy shares the
+machine id) and stands alone without a valid machine id. A switch finds systemd up
+and it leaves at once. What it did is in `/run/flakelab/init-cgroup`, which
+`flakelab doctor`'s "systemd cgroup" section reads; `checks.targets` asserts the
+snippet is on the wsl target alone.
+
 ## The CLI
 
 `flakelab` is one binary with subcommands, and it is a **router**

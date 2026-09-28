@@ -1,0 +1,266 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for flakelab-wsl-init-cgroup: the real script against a fake VM - a
+# cgroup tree of plain directories, PID 1's /proc entries and a machine id - so every
+# placement a boot can find is staged. Under test is when it acts (only before
+# systemd, only below a cgroup other users cannot search), where it moves the
+# distro, that it writes only the processes its namespace can see, and that a
+# refusal is recorded and never fails the boot.
+#
+# Usage: files/scripts/test-wsl-init-cgroup
+#
+
+SCRIPT_DIR="${0:A:h}"
+MOVER="${SCRIPT_DIR}/wsl-init-cgroup"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in:      $2" } }
+lacks()    { [[ "$2" != *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       present: $3"; print -r -u2 -- "       in:      $2" } }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+ID=deadbeefcafe
+NS=4026532001
+
+# stage <name>: a fresh VM under ${BASE}/<name>, with an open top and a machine id.
+stage() {
+  S="${BASE}/$1"
+  CG="${S}/cg" PR="${S}/proc" RUN="${S}/run"
+  mkdir -p "${CG}" "${PR}/1/ns" "${RUN}"
+  print -r -- "${ID}0123456789abcdef0123" > "${S}/machine-id"
+  ln -s "pid:[${NS}]" "${PR}/1/ns/pid"
+  RECORD="${RUN}/flakelab/init-cgroup"
+}
+
+# cgroup <path> <mode> [pid...]: a cgroup with those processes, as a namespace reads
+# them (0 for one it cannot see).
+cgroup() {
+  local p="$1" m="$2"; shift 2
+  mkdir -p "${CG}${p}"
+  print -rl -- "$@" > "${CG}${p}/cgroup.procs"
+  chmod "${m}" "${CG}${p}"
+}
+
+pid1() { print -r -- "0::$1" > "${PR}/1/cgroup" }
+
+run() {
+  env FLAKELAB_CGROUP_ROOT="${CG}" FLAKELAB_PROC_ROOT="${PR}" \
+    FLAKELAB_SYSTEMD_RUNTIME="${RUN}/systemd/system" FLAKELAB_MACHINE_ID="${S}/machine-id" \
+    FLAKELAB_INIT_CGROUP_RECORD="${RECORD}" \
+    zsh "${MOVER}" > "${S}/stdout" 2> "${S}/stderr"
+  RC=$?
+  ERR="$(< "${S}/stderr")"
+}
+
+rec()   { [[ -f "${RECORD}" ]] && print -r -- "$(< "${RECORD}")" || print -r -- "(no record)" }
+moved() { [[ -f "${CG}$1/cgroup.procs" ]] && print -r -- "${(j: :)${(@f)$(< "${CG}$1/cgroup.procs")}}" }
+
+print -r -- "test-wsl-init-cgroup"
+
+print -r -- "a switch: systemd is already up"
+stage switch
+cgroup /agent 700 0 1 2
+pid1 /agent
+mkdir -p "${RUN}/systemd/system"
+run
+check    "exits 0"          "${RC}" 0
+check    "records nothing"  "$(rec)" "(no record)"
+check    "moves nothing"    "$(ls "${CG}")" agent
+check    "is silent"        "${ERR}" ""
+
+print -r -- "PID 1 at the top of the tree"
+stage top
+pid1 /
+run
+check    "exits 0"          "${RC}" 0
+check    "records nothing"  "$(rec)" "(no record)"
+check    "is silent"        "${ERR}" ""
+
+print -r -- "a cgroup every user can search"
+stage open
+cgroup /wsl 755
+cgroup /wsl/distro 755 1 2
+pid1 /wsl/distro
+run
+check    "records nothing"  "$(rec)" "(no record)"
+check    "moves nothing"    "$(ls "${CG}")" wsl
+check    "is silent"        "${ERR}" ""
+
+print -r -- "no unified hierarchy"
+stage v1
+print -r -- "1:name=systemd:/" > "${PR}/1/cgroup"
+run
+check    "exits 0"          "${RC}" 0
+check    "records nothing"  "$(rec)" "(no record)"
+check    "is silent"        "${ERR}" ""
+
+print -r -- "a switch-to-configuration run, before /run/systemd/system is read"
+stage action
+cgroup /agent 700 1
+pid1 /agent
+NIXOS_ACTION=switch run
+check    "records nothing"  "$(rec)" "(no record)"
+check    "moves nothing"    "$(ls "${CG}")" agent
+
+print -r -- "search permission alone is enough"
+stage modes
+cgroup /sticky 1777
+cgroup /sticky/searchable 711 1
+pid1 /sticky/searchable
+run
+check    "1777 and 711 are open" "$(rec)" "(no record)"
+
+print -r -- "a cgroup with no permissions at all"
+stage zero
+cgroup /agent 0 1
+pid1 /agent
+run
+contains "is locked"        "$(rec)" "result=moved"
+chmod 700 "${CG}/agent"
+
+print -r -- "a cgroup whose mode cannot be read"
+stage gone
+pid1 /gone/away
+run
+check    "exits 0"          "${RC}" 0
+check    "records the skip" "$(rec)" "result=skipped"$'\n'"from=/gone/away"$'\n'"to="$'\n'"reason=cannot read the mode of /gone"
+contains "says so"          "${ERR}" "cannot read the mode of /gone"
+check    "moves nothing"    "$(ls "${CG}")" ""
+
+print -r -- "PID 1 under a cgroup only root may enter"
+stage locked
+cgroup /agent 700 0 0 1 2 57 0
+pid1 /agent
+run
+check    "exits 0"                  "${RC}" 0
+check    "PID 1 first, then the rest, never an invisible one" \
+  "$(moved /flakelab-${ID}/init.scope | tr ' ' '\n' | awk '!seen[$0]++' | tr '\n' ' ')" "1 2 57 "
+lacks    "no 0 written"             " $(moved /flakelab-${ID}/init.scope) " " 0 "
+check    "records the move"         "$(rec)" "result=moved"$'\n'"from=/agent"$'\n'"to=/flakelab-${ID}/init.scope"
+contains "says so"                  "${ERR}" "moved this distro to /flakelab-${ID}/init.scope"
+check    "leaves the agent's cgroup" "$(stat -c %a "${CG}/agent")" 700
+
+print -r -- "a search-denied cgroup above an open one"
+stage above
+cgroup /agent 700
+cgroup /agent/distro 755 1
+pid1 /agent/distro
+run
+check    "moves it"                 "$(rec)" "result=moved"$'\n'"from=/agent/distro"$'\n'"to=/flakelab-${ID}/init.scope"
+
+print -r -- "a search-denied cgroup below an open one"
+stage below
+cgroup /outer 755
+cgroup /outer/agent 750 1 3
+pid1 /outer/agent
+run
+check    "moves it"                 "$(moved /flakelab-${ID}/init.scope | tr ' ' '\n' | sort -u | tr '\n' ' ')" "1 3 "
+
+print -r -- "no machine id: the PID namespace names the cgroup"
+stage noid
+cgroup /agent 700 1
+pid1 /agent
+rm -f "${S}/machine-id"
+run
+check    "named after the namespace" "$(rec)" "result=moved"$'\n'"from=/agent"$'\n'"to=/flakelab-${NS}/init.scope"
+
+print -r -- "a machine id that is not one"
+stage badid
+cgroup /agent 700 1
+pid1 /agent
+print -r -- uninitialized > "${S}/machine-id"
+run
+contains "named after the namespace" "$(rec)" "to=/flakelab-${NS}/init.scope"
+
+print -r -- "an empty machine id"
+stage emptyid
+cgroup /agent 700 1
+pid1 /agent
+: > "${S}/machine-id"
+run
+contains "named after the namespace" "$(rec)" "to=/flakelab-${NS}/init.scope"
+
+print -r -- "the name is held by a live distro"
+stage held
+cgroup /agent 700 1
+pid1 /agent
+cgroup /flakelab-${ID} 755
+print -r -- "populated 1" > "${CG}/flakelab-${ID}/cgroup.events"
+run
+contains "takes the namespace too"  "$(rec)" "to=/flakelab-${ID}-${NS}/init.scope"
+check    "writes nothing into the other" "$(moved /flakelab-${ID}/init.scope)" ""
+
+print -r -- "the name is held and no namespace id tells this distro apart"
+stage heldnons
+cgroup /agent 700 1
+pid1 /agent
+rm -f "${PR}/1/ns/pid"
+cgroup /flakelab-${ID} 755
+print -r -- "populated 1" > "${CG}/flakelab-${ID}/cgroup.events"
+run
+check    "exits 0"                  "${RC}" 0
+contains "refuses to share it"      "$(rec)" "reason=/flakelab-${ID} is held by a live distro"
+check    "writes nothing into it"   "$(moved /flakelab-${ID}/init.scope)" ""
+
+print -r -- "an earlier boot of this distro left its cgroup"
+stage again
+cgroup /agent 700 1
+pid1 /agent
+cgroup /flakelab-${ID} 755
+cgroup /flakelab-${ID}/init.scope 755
+print -r -- "populated 0" > "${CG}/flakelab-${ID}/cgroup.events"
+run
+contains "reuses it"                "$(rec)" "to=/flakelab-${ID}/init.scope"
+
+print -r -- "the kernel refuses the move"
+stage refused
+cgroup /agent 700 1 2
+pid1 /agent
+mkdir -p "${CG}/flakelab-${ID}/init.scope/cgroup.procs"
+run
+check    "exits 0"                  "${RC}" 0
+contains "records the failure"      "$(rec)" "result=failed"
+contains "names the step"           "$(rec)" "reason=moving PID 1 to /flakelab-${ID}/init.scope: "
+contains "says so"                  "${ERR}" "systemd starts in /agent, which its users cannot enter, and could not be moved"
+
+print -r -- "the kernel refuses the write itself"
+stage writefails
+cgroup /agent 700 1 2
+pid1 /agent
+mkdir -p "${CG}/flakelab-${ID}/init.scope"
+ln -s /dev/full "${CG}/flakelab-${ID}/init.scope/cgroup.procs"
+run
+check    "exits 0"                  "${RC}" 0
+contains "records the failure"      "$(rec)" "reason=moving PID 1 to /flakelab-${ID}/init.scope: "
+lacks    "and not a move"           "${ERR}" "moved this distro"
+
+print -r -- "the cgroup cannot be created"
+stage nomkdir
+cgroup /agent 700 1
+pid1 /agent
+print -r -- "not a directory" > "${CG}/flakelab-${ID}"
+run
+check    "exits 0"                  "${RC}" 0
+check    "records why"              "$(rec)" "result=failed"$'\n'"from=/agent"$'\n'"to=/flakelab-${ID}/init.scope"$'\n'"reason=cannot create /flakelab-${ID}/init.scope"
+
+print -r -- "the record cannot be written"
+stage norecord
+cgroup /agent 700 1
+pid1 /agent
+print -r -- "a file" > "${RUN}/blocker"
+RECORD="${RUN}/blocker/init-cgroup"
+run
+check    "exits 0"                  "${RC}" 0
+contains "still moves"              "$(moved /flakelab-${ID}/init.scope)" 1
+contains "says the record failed"   "${ERR}" "could not record the cgroup move in ${RECORD}"
+
+print -r --
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

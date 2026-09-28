@@ -41,7 +41,8 @@ while (( $# > 0 )); do
       echo "  --quiet    print only FAIL/WARN lines and the summary"
       echo "  --help     show this help message"
       echo ""
-      echo "Blocking checks cover: the WSLInterop handler (WSL target only), the AI CLIs"
+      echo "Blocking checks cover: the WSLInterop handler, systemd as PID 1 and the cgroup"
+      echo "it runs in (WSL target only), the AI CLIs"
       echo "the overlay installs (kiro-cli, Claude Code, Codex), the kiro-plugin checkout,"
       echo "~/.kiro agents/skills/steering, mcp.json,"
       echo "which git config file wins, secrets.env (mode + CRLF), glab config"
@@ -122,6 +123,18 @@ if [[ -z "${TARGET}" ]]; then
     TARGET="other"
   fi
 fi
+
+# User units - the ssh-agent, the accounts auto-switch timer - run only under the
+# user manager, so while none answers a hint that names one of them is no remedy.
+NO_USER_MANAGER=false
+if (( $+commands[systemctl] )) && ! systemctl --user show-environment > /dev/null 2>&1; then
+  NO_USER_MANAGER=true
+fi
+user_manager_hint() {
+  local see=""
+  [[ "${TARGET}" == wsl ]] && see=" (see 'systemd cgroup' above)"
+  log_hint "no user manager answers, so no user unit runs: systemctl status user@${UID}.service${see}"
+}
 
 # Activation warnings are recorded by flakelab-warn.
 log_head "Activation"
@@ -238,6 +251,75 @@ else
   fi
 fi
 
+# A user manager reaches its own cgroup through every directory above it, so under
+# a root systemd started in that denies other users search permission no
+# user@<uid> can start. On WSL the start cgroup is inherited from the VM, and the
+# boot step (files/scripts/wsl-init-cgroup) moves the distro out before systemd
+# starts, recording what it did.
+log_head "systemd cgroup"
+if [[ "${TARGET}" != "wsl" ]]; then
+  log_ok "target ${TARGET}: systemd starts at the top of its own cgroup tree"
+else
+  local cgInit cgLine cgRoot cgDir cgMode cgPart cgBlocked="" cgUnread="" cgRec cgResult="" cgFrom="" cgTo="" cgReason=""
+  local cgRecord="${FLAKELAB_INIT_CGROUP_RECORD:-/run/flakelab/init-cgroup}"
+  local cgTree="${FLAKELAB_CGROUP_ROOT:-/sys/fs/cgroup}"
+  local cgBooted="${FLAKELAB_BOOTED_SYSTEM:-/run/booted-system}"
+  cgInit="$(cat -- "${FLAKELAB_PROC_ROOT:-/proc}/1/comm" 2> /dev/null)"
+  cgLine="$(grep -m1 '^0::' "${FLAKELAB_PROC_ROOT:-/proc}/1/cgroup" 2> /dev/null)"
+  if [[ -r "${cgRecord}" ]]; then
+    while IFS= read -r cgRec; do
+      case "${cgRec}" in
+        result=*) cgResult="${cgRec#result=}" ;;
+        from=*)   cgFrom="${cgRec#from=}" ;;
+        to=*)     cgTo="${cgRec#to=}" ;;
+        reason=*) cgReason="${cgRec#reason=}" ;;
+      esac
+    done < "${cgRecord}"
+  fi
+  # Without [boot] systemd=true WSL keeps its own init as PID 1 and no unit runs.
+  if [[ -n "${cgInit}" && "${cgInit}" != systemd ]]; then
+    log_fail "PID 1 is ${cgInit}, not systemd (cgroup ${${cgLine#0::}:-unread}): no unit runs, so no user manager and no ssh-agent"
+    log_hint "NixOS-WSL needs systemd as init: /etc/wsl.conf needs [boot] systemd=true (wsl.wslConf.boot.systemd)"
+    log_hint "WSL reads it when the distro starts: 'wsl --shutdown' from a Windows terminal, never from an agent session"
+  elif [[ -z "${cgLine}" ]]; then
+    log_warn "cannot read the cgroup systemd runs in"
+  else
+    # systemd started in an init.scope roots its tree at the cgroup above it.
+    cgRoot="${${cgLine#0::}%/init.scope}"
+    [[ -n "${cgRoot}" ]] || cgRoot=/
+    cgDir="${cgTree}"
+    if [[ "${cgRoot}" != / ]]; then
+      for cgPart in "${(@s:/:)${cgRoot#/}}"; do
+        cgDir+="/${cgPart}"
+        cgMode="$(stat -c %a -- "${cgDir}" 2> /dev/null)" || { cgUnread="${cgDir#${cgTree}}"; break }
+        (( 8#${cgMode} & 1 )) || { cgBlocked="${cgDir#${cgTree}}"; break }
+      done
+    fi
+    if [[ -n "${cgBlocked}" ]]; then
+      log_fail "systemd runs under ${cgBlocked}, which only root may enter: no user manager can start, so no user unit and no ssh-agent"
+      case "${cgResult}" in
+        failed)  log_hint "this boot tried to move the distro out and could not: ${cgReason}" ;;
+        skipped) log_hint "this boot's move did not run: ${cgReason}" ;;
+        moved)   log_hint "this boot moved the distro to ${cgTo}, and systemd runs under ${cgBlocked} all the same" ;;
+        *)
+          log_hint "the distro started in a cgroup another program in the WSL VM holds (known-issues.md)"
+          if grep -qF flakelab-wsl-init-cgroup "${cgBooted}/activate" 2> /dev/null; then
+            log_hint "the boot step ran and recorded nothing: journalctl -k -b | grep flakelab"
+          else
+            log_hint "the running system predates the boot step that moves it: flakelab update, then 'wsl --shutdown' from a Windows terminal"
+          fi
+          ;;
+      esac
+    elif [[ -n "${cgUnread}" ]]; then
+      log_warn "cannot read the mode of ${cgUnread} (systemd runs in ${cgRoot})"
+    elif [[ "${cgResult}" == moved && "${cgRoot}" == "${cgTo%/init.scope}" ]]; then
+      log_ok "systemd runs in ${cgRoot}, moved there at boot out of ${cgFrom}, which its users could not enter"
+    else
+      log_ok "systemd runs in ${cgRoot}, which its users can enter"
+    fi
+  fi
+fi
+
 log_head "AI CLIs"
 if (( ${#AI_CLIS} == 0 )); then
   log_ok "no AI CLI installed by this overlay - nothing to check"
@@ -327,7 +409,10 @@ else
   else
     log_ok "note: flakelab not on PATH; drift not checked"
   fi
-  if command -v systemctl > /dev/null 2>&1 && systemctl --user list-timers --all 2> /dev/null | grep -q 'flakelab-accounts-autoswitch'; then
+  if ${NO_USER_MANAGER}; then
+    log_warn "no auto-switch timer can run or be listed"
+    user_manager_hint
+  elif command -v systemctl > /dev/null 2>&1 && systemctl --user list-timers --all 2> /dev/null | grep -q 'flakelab-accounts-autoswitch'; then
     log_ok "auto-switch timer scheduled (flakelab-accounts-autoswitch.timer)"
   else
     log_ok "note: no auto-switch timer (flakelab.accounts.autoSwitchInterval)"
@@ -573,7 +658,11 @@ fi
 log_head "SSH"
 if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
   log_fail "SSH_AUTH_SOCK unset — no ssh-agent in this shell"
-  log_hint "systemctl --user status ssh-agent.service"
+  if ${NO_USER_MANAGER}; then
+    user_manager_hint
+  else
+    log_hint "systemctl --user status ssh-agent.service"
+  fi
 else
   # Capture the status before testing it. `! ssh-add -l` replaces it with the
   # negation, so a dead socket (2) becomes indistinguishable from an agent that
@@ -586,7 +675,11 @@ else
   elif (( agentStatus == 2 )); then
     log_fail "cannot reach the ssh-agent at ${SSH_AUTH_SOCK}"
     log_hint "the socket is stale or the agent is down"
-    log_hint "systemctl --user restart ssh-agent.service   # then: exec zsh -l"
+    if ${NO_USER_MANAGER}; then
+      user_manager_hint
+    else
+      log_hint "systemctl --user restart ssh-agent.service   # then: exec zsh -l"
+    fi
   else
     log_fail "ssh-agent is running but holds NO key"
     log_hint "the TTY-gated hook in the flake's zsh initContent loads every sshKeys"
