@@ -332,6 +332,12 @@ in
       };
     };
 
+    mcpBrowsers.headless = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Register `playwright-headless` in Claude and Codex: Playwright's MCP server with a headless Chromium from nixpkgs, a fresh in-memory profile per server process, on any target. It sits beside the Windows Chrome bridge (the `mcp-playwright` plugin, `mcpPlaywright` for Kiro) and changes nothing about it.";
+    };
+
     mcpPlaywright = mkOption {
       type = types.bool;
       default = false;

@@ -1,4 +1,4 @@
-# Shared MCP accounts
+# Shared MCP accounts and the headless browser
 
 `mcpShared.servers` registers OAuth MCP accounts in Claude and Codex under the
 same names, and both clients use one authorization per account. Kiro keeps its
@@ -77,3 +77,29 @@ cannot be moved; those accounts need a login.
 An imported account keeps using the Codex client id. If its refresh fails, the
 provider may reject a new authorization for that client at the adapter's
 callback address; `--fresh` replaces the registration.
+
+## Headless browser
+
+`mcpBrowsers.headless = true` registers `playwright-headless` in Claude and
+Codex on any target. Its tools are `mcp__playwright-headless__browser_*` in
+Claude. It runs Playwright's own MCP server from nixpkgs' `playwright-driver`
+with that build's Chromium headless shell. Each server process gets a fresh
+in-memory profile, so parallel sessions share no cookies or storage and never
+lock a profile directory. The Chromium sandbox stays on.
+
+The server and the browser come from one package: `@playwright/mcp` on npm is
+a thin wrapper around an alpha `playwright-core` that no nixpkgs browser build
+matches, while nixpkgs' `playwright-core` carries the same MCP server and names
+the headless-shell revision its browsers were built for. A nixpkgs update moves
+both together. The launcher links only the headless shell, the same store path
+the full browser set in `.zshenv` (`PLAYWRIGHT_BROWSERS_PATH`) already
+references, so the server adds only `playwright-core` and the Node.js build it
+was packaged with.
+
+The Windows Chrome bridge is separate and unchanged: the `mcp-playwright`
+Claude plugin, whatever Playwright server a `codexMcpSources` manifest gives
+Codex, and Kiro's `mcpPlaywright`. The
+headless server drops every `PLAYWRIGHT_MCP_*` variable it inherits, because
+the bridge's extension settings reach all servers through the clients'
+environment. Snapshots and screenshots land in `.playwright-mcp/` under the
+session's working directory, as with the bridge.

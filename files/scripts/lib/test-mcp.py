@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Offline behavioral checks for shared MCP routing and accounts."""
+"""Offline behavioral checks for shared MCP routing and accounts, and for the
+headless browser server when FLAKELAB_MCP_HEADLESS names its launcher."""
+import http.server
 import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +110,99 @@ class SharedMcpTest(unittest.TestCase):
             mcp.import_codex(self.cfg)
         self.assertEqual(json.loads(source.read_text()), data)
         self.assertFalse(mcp.auth_dir("personal").exists())
+
+
+class McpProcess:
+    """One stdio MCP server, spoken to with newline-delimited JSON-RPC."""
+
+    def __init__(self, command, env, cwd):
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, env=env, cwd=cwd)
+        self.next_id = 0
+        self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "test-mcp", "version": "0"}})
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def send(self, message):
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def request(self, method, params):
+        self.next_id += 1
+        self.send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                raise AssertionError("server exited: " + self.process.stderr.read())
+            message = json.loads(line)
+            if message.get("id") == self.next_id:
+                return message["result"]
+
+    def call(self, tool, **arguments):
+        result = self.request("tools/call", {"name": tool, "arguments": arguments})
+        text = "".join(part.get("text", "") for part in result["content"])
+        if result.get("isError"):
+            raise AssertionError(f"{tool}: {text}")
+        return text
+
+    def close(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=30)
+        self.process.stdout.close()
+        self.process.stderr.close()
+
+
+@unittest.skipUnless(os.environ.get("FLAKELAB_MCP_HEADLESS"), "needs the built headless launcher")
+class HeadlessBrowserTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        # The bridge's settings as the clients hand them to every server.
+        self.env = dict(os.environ, HOME=self.temp.name, PLAYWRIGHT_MCP_EXTENSION="true",
+                        PLAYWRIGHT_MCP_BROWSER="chrome", PLAYWRIGHT_MCP_EXECUTABLE_PATH="/nonexistent/chrome",
+                        PLAYWRIGHT_BROWSERS_PATH="/nonexistent")
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SilentPage)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.url = f"http://127.0.0.1:{server.server_address[1]}/"
+
+    def start(self):
+        process = McpProcess([os.environ["FLAKELAB_MCP_HEADLESS"]], self.env, self.temp.name)
+        self.addCleanup(process.close)
+        return process
+
+    def test_lists_the_tools_the_bridge_offers(self):
+        tools = {tool["name"] for tool in self.start().request("tools/list", {})["tools"]}
+        self.assertLessEqual({"browser_navigate", "browser_snapshot", "browser_click", "browser_take_screenshot",
+                              "browser_console_messages", "browser_network_requests"}, tools)
+
+    def test_runs_the_paired_headless_shell_despite_bridge_settings(self):
+        browser = self.start()
+        self.assertIn("Page Title: fixture", browser.call("browser_navigate", url=self.url))
+        agent = browser.call("browser_evaluate", function="() => navigator.userAgent")
+        self.assertIn("HeadlessChrome/" + os.environ["FLAKELAB_MCP_HEADLESS_VERSION"], agent)
+
+    def test_each_server_process_has_its_own_profile(self):
+        first, second = self.start(), self.start()
+        for browser in (first, second):
+            browser.call("browser_navigate", url=self.url)
+        first.call("browser_evaluate", function="() => localStorage.setItem('owner', 'first')")
+        self.assertIn("null", second.call("browser_evaluate", function="() => localStorage.getItem('owner')"))
+        self.assertIn("first", first.call("browser_evaluate", function="() => localStorage.getItem('owner')"))
+
+
+class SilentPage(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"<title>fixture</title><button>Press</button>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_):
+        pass
 
 
 if __name__ == "__main__":
