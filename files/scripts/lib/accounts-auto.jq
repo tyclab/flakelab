@@ -40,6 +40,10 @@ include "accounts-headroom";
 | ($entries | map(select(.disabled | not) | select(.id != $active) | select(($in.usage.quarantine[.key] // null) == null) | select(($in.live[.key] // false) | not)) | map(.id)) as $candidateIds
 | (if $active == null then {} else ($in.usage.entries[($active | tostring)] // {}) end) as $activeUsage
 | ($activeUsage | headroom($now; $s.modelWindows)) as $ah
+# The models the active entry has a window for (Fable): a plan without that
+# window does not serve the model (Fable on Pro needs usage credits), so the
+# sessions using it would stop on a proactive move there.
+| ([$activeUsage.windows[]? | select(.class == "model") | counted($s.modelWindows) | .label | ascii_downcase] | unique) as $activeModels
 | {session: $s.sessionThreshold, week: $s.weekThreshold, model: $s.modelThreshold} as $bars
 # The costliest axis at or over its bar, week first; null when none is.
 | ( [ ["week", $ah.week], ["model", $ah.model], ["session", $ah.session] ]
@@ -65,7 +69,9 @@ include "accounts-headroom";
       # switch never rests on stale data. A candidate in backoff (a 429, a
       # failing read) is never in the plan, escalation or not: the backoff is
       # the endpoint's budget and the plan honours it before the script does.
-      (($activeUsage.nextPollAt // 0) <= $now) as $activeDue
+      # Also whenever its figure is not known and it is not in backoff: a
+      # figure stale by our own schedule is refreshed, never counted.
+      ((($activeUsage.nextPollAt // 0) <= $now) or (($ah.known | not) and (($activeUsage.backoffUntil // 0) <= $now))) as $activeDue
       | ( [ ["session", $ah.session], ["week", $ah.week], ["model", $ah.model] ]
           | map(select(.[1] != null) | select((100 - .[1]) >= $bars[.[0]] - 15)) | length > 0 ) as $near
       | ($ah.known | not) as $unknown
@@ -96,12 +102,22 @@ include "accounts-headroom";
           elif $in.activeTokenExpired and ($idleSince == null or ($now - $idleSince) <= $s.idleHoldS) then
             .state.idleHoldSince[$in.tool] = ($idleSince // $now) | .state.unhealthyTicks[$in.tool] = 0
             | .decision.reason = "active-idle" | .decision.detail = "token expired while the tool is idle; resumes on next use"
+          # Only a read that says the login itself is dead counts toward a
+          # failover: no read yet, a rate-limited or failing usage endpoint
+          # (429, 5xx, the network, an answer that does not parse) leaves the
+          # login working, and a failover would move every session to an
+          # account that may not serve its model.
+          elif ((($activeUsage.lastError // null) as $e | $e == null or ($e | test("^(http-429|http-5[0-9][0-9]|http-000|network|app-server-silent|bad-response|unparseable|no-scratch)$")))) then
+            .state.idleHoldSince[$in.tool] = null | .state.unhealthyTicks[$in.tool] = 0
+            | .decision.reason = "active-usage-unknown"
+            | .decision.detail = "the live entry's figure is not known (\($activeUsage.lastError // "stale, a read is planned")); not a dead login, no failover"
           else
             .state.idleHoldSince[$in.tool] = null
             | ($unhealthy + 1) as $n
             | .state.unhealthyTicks[$in.tool] = $n
             | if $n < $s.unhealthyTicks then .decision.reason = "active-usage-unknown" | .decision.detail = "\($n)/\($s.unhealthyTicks) before failover"
               else .decision.trigger = "failover" | .decision.axis = null end
+            | .decision.detail = "\(.decision.detail // "failover"): the live login's reads fail with \($activeUsage.lastError)"
           end )
       | if .decision.trigger == null then
           .events += [{event: "no-switch", reason: .decision.reason, detail: .decision.detail}]
@@ -123,9 +139,8 @@ include "accounts-headroom";
                 | .qualifies = (
                     .known and (.spent | not)
                     and (if $trigger == "proactive" then
-                           # A window the candidate's plan does not have
-                           # cannot bind it: full headroom on that axis.
-                           (($h[$axis] // 100) as $ch | ((100 - $ch) < $bars[$axis]) and (($ah[$axis] != null) and ($ch - $ah[$axis] >= $s.hysteresisPct)))
+                           ($h[$axis] != null) and ((100 - $h[$axis]) < $bars[$axis]) and (($ah[$axis] != null) and ($h[$axis] - $ah[$axis] >= $s.hysteresisPct))
+                           and (($activeModels - ([$u.windows[]? | select(.class == "model") | .label | ascii_downcase] | unique)) | length == 0)
                          # At the limit, a candidate at its own limit on that
                          # axis is no move: two spent entries would trade
                          # places every tick.
@@ -143,7 +158,7 @@ include "accounts-headroom";
                 | .decision.earliestResetAt = ([$cands[] | select(.known) | .weeklyReset | numbers] | if length == 0 then null else min end)
               else
                 .decision.action = "blocked" | .decision.reason = "no-qualifying-candidate"
-                | .decision.detail = "no candidate is under the \($axis // "deciding") bar and better than the active entry by \($s.hysteresisPct) points, or its usage is unreadable this tick"
+                | .decision.detail = "no candidate is under the \($axis // "deciding") bar, better than the active entry by \($s.hysteresisPct) points\(if ($activeModels | length) > 0 then " and with a window for \($activeModels | join(", "))" else "" end), or its usage is unreadable this tick"
               end
             else
               # 4. The order: earliest weekly renewal, or most weekly headroom;

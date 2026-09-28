@@ -510,10 +510,15 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
    session window costs a wait.
 3. Trigger: `proactive` when the deciding axis crossed its bar; `at-limit`
    when any counted window is at 100; `failover` after three consecutive
-   ticks with the active account's usage unknown. The exception to counting
-   unknowns is an idle hold: the active token is expired on disk and no
-   session is using it, which is the tool idle rather than dead, held for up
-   to thirty minutes before the count resumes.
+   ticks whose read of the active account says the login itself is dead
+   (unauthorized, 401 or 403, a credential expired or missing, a refused
+   refresh, a revoked seat). A figure that is only stale is read at once
+   rather than counted, and a failing usage read (429, 5xx, the network, an
+   answer that does not parse) leaves the login working: neither is a reason
+   to move every session to an account that may not serve its model. The
+   exception to counting is an idle hold: the active token is expired on
+   disk and no session is using it, which is the tool idle rather than dead,
+   held for up to thirty minutes before the count resumes.
 4. A cooldown of five minutes since the last switch stops a `proactive`
    trigger and nothing else.
 5. Candidates: every enabled, non-quarantined entry of the tool other than
@@ -521,9 +526,10 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
    week, or a counted model week) is not spent, and whose usage is known. For
    `proactive` a candidate must also land under the bar on the deciding axis
    and beat the active account there by ten points, so two accounts hovering
-   at the line cannot ping-pong; a candidate whose plan has no window of
-   that class (the model-scoped keys null for it) has full headroom there,
-   since a window it does not have cannot bind it. `at-limit` and `failover` skip both gates:
+   at the line cannot ping-pong. A `proactive` candidate must also carry a
+   window for every model the active account has one for: a plan without
+   that model's window does not serve it (Fable on Pro needs usage credits),
+   and the sessions using it would stop. `at-limit` and `failover` skip both gates:
    any account with room beats a blocked or dead one.
 6. Order: earliest weekly reset first (`soonest-reset`, the default), or most
    weekly headroom (`best`). Under `soonest-reset` an account over its bar is

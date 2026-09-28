@@ -641,8 +641,17 @@ check "hysteresis: a candidate not ten points better is no target" "$(dec '[.act
 engine '.usage.entries["1"].windows[0].pct = 86'
 check "landing: a candidate over the bar is no target" "$(dec '.action')" "blocked"
 engine '.usage.entries["2"].windows[0].pct = 20 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 90000}]'
-check "a per-model week over its bar decides" "$(dec '[.action, .trigger, .axis] | join(" ")')" "switch proactive model"
-check "and a candidate whose plan has no such window has full headroom there: it qualifies" "$(dec '.candidates | join(",")')" "1"
+check "a per-model week over its bar decides" "$(dec '[.trigger, .axis] | join(" ")')" "proactive model"
+check "and a candidate whose plan has no such window is no target: it does not serve that model" "$(dec '[.action, .reason] | join(" ")')" "blocked no-qualifying-candidate"
+check "the detail names the model" "$(dec '.detail')" "no candidate is under the model bar, better than the active entry by 10 points and with a window for fable, or its usage is unreadable this tick"
+engine '.usage.entries["2"].windows[0].pct = 20 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 90000}] | .usage.entries["1"].windows += [{"label": "Fable", "class": "model", "pct": 40, "resetsAtEpoch": 80000}]'
+check "one with the window, under the bar and ten points better, is" "$(dec '[.action, (.candidates | join(","))] | join(" ")')" "switch 1"
+engine '.usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 50, "resetsAtEpoch": 90000}]'
+check "on the session axis too, a candidate without the active entry's model window is no proactive target" "$(dec '[.action, .axis, .reason] | join(" ")')" "blocked session no-qualifying-candidate"
+engine '.settings.modelWindows = "opus" | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 50, "resetsAtEpoch": 90000}]'
+check "unless modelWindows does not count that model" "$(dec '[.action, .trigger] | join(" ")')" "switch proactive"
+engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 50, "resetsAtEpoch": 90000}]'
+check "at the limit it still moves: any room beats a wall" "$(dec '[.action, .trigger] | join(" ")')" "switch at-limit"
 engine '.usage.entries["2"].windows[0].pct = 20 | .usage.entries["2"].windows += [{"label": "Fable", "class": "model", "pct": 96, "resetsAtEpoch": 90000}] | .usage.entries["1"].windows += [{"label": "Fable", "class": "model", "pct": 90, "resetsAtEpoch": 80000}]'
 check "while one with that window under the bar but not ten points better does not" "$(dec '[.action, .reason] | join(" ")')" "blocked no-qualifying-candidate"
 engine '.usage.entries["2"].windows[0].pct = 100 | .usage.entries["1"].windows[0].pct = 86'
@@ -659,16 +668,23 @@ check "and says how long is left" "$(dec '.detail')" "200s left"
 engine '.state.lastSwitchAt = 900 | .usage.entries["2"].windows[0].pct = 100'
 check "cooldown never stops an at-limit move" "$(dec '.trigger')" "at-limit"
 
-engine '.usage.entries["2"].fetchedAt = 100'
-check "an unknown active entry counts toward failover" "$(dec '[.reason, .detail] | join(" ")')" "active-usage-unknown 1/3 before failover"
-check "and the count is persisted" "$(print -r -- "$STATE" | jq -r '.unhealthyTicks.claude')" "1"
 engine '.usage.entries["2"].fetchedAt = 100 | .state.unhealthyTicks.claude = 2'
-check "the third unknown tick is a failover" "$(dec '[.action, .trigger] | join(" ")')" "switch failover"
+check "a live entry whose figure is merely stale is no failure: our own schedule aged it" "$(dec '[.action, .reason] | join(" ")')" "none active-usage-unknown"
+check "and the count starts over" "$(print -r -- "$STATE" | jq -r '.unhealthyTicks.claude')" "0"
+for e in http-429 http-503 network unparseable; do
+  engine '.usage.entries["2"].fetchedAt = 100 | .usage.entries["2"].lastError = "'"$e"'" | .state.unhealthyTicks.claude = 2'
+  check "a failing usage read (${e}) is no failure of the login either" "$(dec '.action')" "none"
+done
+engine '.usage.entries["2"].fetchedAt = 100 | .usage.entries["2"].lastError = "unauthorized"'
+check "a read that says the login is dead counts toward failover" "$(dec '[.reason, .detail] | join(" ")')" "active-usage-unknown 1/3 before failover: the live login's reads fail with unauthorized"
+check "and the count is persisted" "$(print -r -- "$STATE" | jq -r '.unhealthyTicks.claude')" "1"
+engine '.usage.entries["2"].fetchedAt = 100 | .usage.entries["2"].lastError = "http-401" | .state.unhealthyTicks.claude = 2'
+check "the third such tick is a failover" "$(dec '[.action, .trigger] | join(" ")')" "switch failover"
 engine '.usage.entries["2"].fetchedAt = 100 | .activeTokenExpired = true'
 check "an expired token with no session is an idle hold, not a failure" "$(dec '.reason')" "active-idle"
 check "the hold is timestamped" "$(print -r -- "$STATE" | jq -r '.idleHoldSince.claude')" "1000"
-engine '.usage.entries["2"].fetchedAt = 100 | .activeTokenExpired = true | .state.idleHoldSince.claude = -1000'
-check "a hold older than thirty minutes resumes the count" "$(dec '.reason')" "active-usage-unknown"
+engine '.usage.entries["2"].fetchedAt = 100 | .usage.entries["2"].lastError = "expired" | .activeTokenExpired = true | .state.idleHoldSince.claude = -1000'
+check "a hold older than thirty minutes resumes the count" "$(dec '[.reason, (.detail | test("1/3"))] | join(" ")')" "active-usage-unknown true"
 
 engine '.roster.accounts["1"].disabled = true'
 check "with every other entry disabled: no candidates" "$(dec '[.action, .reason] | join(" ")')" "blocked no-candidates"
@@ -716,7 +732,9 @@ check "far from every bar, only the due active entry" "$(print -r -- "$FETCH" | 
 engine '.pass = "plan" | .usage.entries["2"].windows[0].pct = 50 | .now = 1300'
 check "and one due candidate" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
 engine '.pass = "plan" | .usage.entries["2"].fetchedAt = 100 | .usage.entries["1"].fetchedAt = 100 | .now = 1100'
-check "an unknown active entry escalates to every stale candidate" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
+check "an unknown active entry is read at once, not at its planned turn, and escalates to every stale candidate" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
+engine '.pass = "plan" | .usage.entries["2"].fetchedAt = 100 | .usage.entries["2"].backoffUntil = 5000 | .usage.entries["1"].fetchedAt = 100 | .now = 1100'
+check "unless it is in backoff" "$(print -r -- "$FETCH" | jq -c .)" "[1]"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -1364,13 +1382,40 @@ check "a per-model window from the endpoint is kept" "$(jq -r '.entries["1"].win
 check "the figures are fresh and marked" "$(jq -r '.entries["1"] | [.fetchedAt, .source] | join(" ")' "${STORE}/usage.json")" "1758910000 statusline"
 check "and the endpoint's planned turn for the active entry is kept: it is the only source of the per-model window" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910050"
 jq 'del(.entries["1"].nextPollAt)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
-run_in '{"rate_limits": {"five_hour": {"used_percentage": 34, "resets_at": 1900000000}, "seven_day": {"used_percentage": 61, "resets_at": 1900000000}}}' ingest
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 34, "resets_at": 1900000000}, "seven_day": {"used_percentage": 61, "resets_at": "2026-09-27T12:00:00Z"}}}' ingest
 check "with no turn planned, one is, at the candidate cadence" "$(jq -r '.entries["1"].nextPollAt' "${STORE}/usage.json")" "1758910600"
 usage_answer tok-a 34 61 57
 jq '.entries["1"].nextPollAt = 0 | del(.entries["1"].intervalS)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
 run --fetch
 check "the endpoint poll of a statusline-fed live entry brings its per-model window" "$(jq -r '.entries["1"].windows[] | select(.class == "model") | "\(.label) \(.pct)"' "${STORE}/usage.json")" "Fable 57"
 check "and is planned from the candidate range (300 stretched by half), not the active one (180)" "$(jq -r '.entries["1"].intervalS' "${STORE}/usage.json")" "450"
+jq --argjson t "$(( FLAKELAB_NOW - 400 ))" '.entries["1"].statuslineAt = $t | .entries["1"].nextPollAt = 0 | del(.entries["1"].intervalS)' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run --fetch
+check "a statusline silent for longer than the active interval no longer slows the poll: idle sessions tick none, and the figure must stay known" "$(jq -r '.entries["1"].intervalS <= 300' "${STORE}/usage.json")" "true"
+# The statusline's figures carry no account: a session still on the login
+# it had before a switch reports that account's. A week renewing at another
+# time than the entry's current week is not this entry's.
+jq '.entries["1"].windows = [{"label": "5h", "class": "session", "pct": 10, "resetsAtEpoch": 1758920000}, {"label": "7d", "class": "week", "pct": 20, "resetsAtEpoch": 1759000000}]' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 90, "resets_at": 1758915000}, "seven_day": {"used_percentage": 95, "resets_at": 1759200000}}}' ingest
+check "another account's figures, right after a switch, are not filed under the live entry" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json") ${RC}" "10 20 0"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 11, "resets_at": 1758920000}, "seven_day": {"used_percentage": 21, "resets_at": 1759000300}}}' ingest
+check "the entry's own, its week renewing within ten minutes of the known one, are" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json")" "11 21"
+jq '.entries["1"].windows[1].resetsAtEpoch = 1758900000' "${STORE}/usage.json" > "${BASE}/t" && mv "${BASE}/t" "${STORE}/usage.json"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
+check "and a new week after the known one renewed is too" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json")" "12 1"
+for v in ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK; do
+  env "${v}=x" zsh -c 'print -r -- "$1" | "$2" ingest' _ '{"rate_limits": {"five_hour": {"used_percentage": 97, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' "${CMD}"
+  check "a session on ${v} files nothing against the OAuth login" "$(jq -r '.entries["1"].windows[] | select(.class == "session") | .pct' "${STORE}/usage.json")" "12"
+done
+# A writer killed between its temp and the rename (a statusline command
+# past its timeout) leaves the temp; the next write removes a dead one's.
+sleep 600 & ALIVE=$!
+print -r -- '{}' > "${STORE}/usage.json.flakelab-tmp.4194303"
+print -r -- '{}' > "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
+run_in '{"rate_limits": {"five_hour": {"used_percentage": 13, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
+check "a dead writer's temp is removed by the next write, a live one's kept" "$(ls "${STORE}" | grep -c 'flakelab-tmp.4194303') $(ls "${STORE}" | grep -c "flakelab-tmp.${ALIVE}")" "0 1"
+kill "$ALIVE" 2>/dev/null; wait "$ALIVE" 2>/dev/null; rm -f "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
+check "and the usage file is private" "$(stat -c %a "${STORE}/usage.json")" "600"
 run_in '{"session_id": "x"}' ingest
 check "a statusline payload without rate_limits changes nothing" "$(jq -r '.entries["1"].fetchedAt' "${STORE}/usage.json") ${RC}" "1758910000 0"
 run_in 'not json' ingest
