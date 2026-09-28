@@ -246,7 +246,10 @@ _suggest() {
 # agent's shell keep getting this list. The menu is handed this script's path
 # to come back through, and the commands this target offers.
 if (( $# == 0 )); then
-  if [[ -t 0 && -t 1 && -t 2 && -z "${FLAKELAB_NO_PROMPT:-}" && "${TERM:-dumb}" != dumb ]]; then
+  # The same test as lib/prompt.zsh's prompt_tty, stdout added: no menu in an
+  # agent's shell (CLAUDECODE, CODEX_THREAD_ID) even when it has a pty.
+  if [[ -t 0 && -t 1 && -t 2 && -z "${FLAKELAB_NO_PROMPT:-}" && "${TERM:-dumb}" != dumb &&
+        -z "${CLAUDECODE:-}" && -z "${CODEX_THREAD_ID:-}" ]]; then
     if [[ -n "${FLAKELAB_DISPATCH_DIR:-}" ]]; then
       _menu="${FLAKELAB_DISPATCH_DIR}/flakelab-menu"
     else

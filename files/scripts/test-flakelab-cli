@@ -2,6 +2,10 @@
 
 set -uo pipefail
 
+# The terminal cases need prompts, and this suite may itself run in an agent's
+# shell, where lib/prompt.zsh's prompt_tty says no to any terminal.
+unset CLAUDECODE CODEX_THREAD_ID
+
 # Offline suite for the flakelab router: the real script against a throwaway dispatch
 # dir of stub wrappers, so no case depends on nix/cli.nix having built anything.
 # Covers the target gate only; the rest of the router is tested by hand.
@@ -158,6 +162,11 @@ excludes "a target's gated verbs are not offered" "${OUT}" " provision"
 at_tty "" "${WSLENV[@]}" FLAKELAB_NO_PROMPT=1 zsh "${ROUTER}"
 contains "FLAKELAB_NO_PROMPT=1 gets the list at a terminal" "${OUT}" "Commands:"
 excludes "and no menu" "${OUT}" "ran:flakelab-menu"
+for marker in CLAUDECODE=1 CODEX_THREAD_ID=019a; do
+  at_tty "" "${WSLENV[@]}" "${marker}" zsh "${ROUTER}"
+  contains "an agent's shell on a pty (${marker%%=*}) gets the list" "${OUT}" "Commands:"
+  excludes "and no menu" "${OUT}" "ran:flakelab-menu"
+done
 at_tty "" "${WSLENV[@]}" TERM=dumb zsh "${ROUTER}"
 excludes "a dumb terminal gets no menu" "${OUT}" "ran:flakelab-menu"
 at_tty "" "${WSLENV[@]}" zsh -c "zsh ${(q)ROUTER} | cat"
@@ -270,6 +279,10 @@ pick '' 'prompt_tty && print yes || print no'
 contains "a terminal prompts" "${OUT}" "yes"
 at_tty '' env FLAKELAB_NO_PROMPT=1 zsh -c "source ${(q)PLIB}; prompt_tty && print yes || print no"
 contains "unless FLAKELAB_NO_PROMPT=1" "${OUT}" "no"
+at_tty '' env CLAUDECODE=1 zsh -c "source ${(q)PLIB}; prompt_tty && print yes || print no"
+contains "or it is Claude Code's shell" "${OUT}" "no"
+at_tty '' env CODEX_THREAD_ID=019a zsh -c "source ${(q)PLIB}; prompt_tty && print yes || print no"
+contains "or Codex's" "${OUT}" "no"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

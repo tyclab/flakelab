@@ -232,7 +232,8 @@ A person gets questions where an agent gets flags. Everything asked lives in
 type-to-filter, one line in the zsh line editor with its default typed in and
 Tab completing paths, and the single-key `[y/N]`. Every prompt is gated on
 `prompt_tty` (stdin and stderr a terminal, `TERM` not dumb, no
-`FLAKELAB_NO_PROMPT`); anywhere else a command does what it did before it could
+`FLAKELAB_NO_PROMPT`, and not an agent's own shell: `CLAUDECODE` or
+`CODEX_THREAD_ID` set, since Codex can give a command a pty); anywhere else a command does what it did before it could
 ask — refuse, take the default, need the flag — so an agent's shell, a pipe, a
 hook, a timer and every `--json` run meet no prompt and wait on none.
 

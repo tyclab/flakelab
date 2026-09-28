@@ -2,6 +2,10 @@
 
 set -uo pipefail
 
+# The terminal cases need prompts, and this suite may itself run in an agent's
+# shell, where lib/prompt.zsh's prompt_tty says no to any terminal.
+unset CLAUDECODE CODEX_THREAD_ID
+
 # Offline suite for claude-sessions (files/scripts/claude-sessions): a fake
 # /proc tree plus stub pgrep/ps/tmux on PATH stand in for running sessions, so
 # the id-from-open-transcript rule, the tool column, the tmux host lookup, the
@@ -347,6 +351,9 @@ contains "codex starts in that directory" "$(<"${TMUX_LOG}")" "-c ${WORK} codex"
 : > "${TMUX_LOG}"
 at_tty '\e' env PATH="${TMUXBIN}:${PATH}" "${CMD}" --start
 check "Esc at the tool leaves with 130" "${RC}" "130"
+at_tty '\r' env CLAUDECODE=1 PATH="${TMUXBIN}:${PATH}" "${CMD}" --start
+check "in an agent's shell on a pty, --start with no tool is the old error" "${RC}" "2"
+contains "word for word" "${OUT}" "Error: --start needs a tool: claude|codex|kiro"
 excludes "and starts nothing" "$(<"${TMUX_LOG}")" "new-"
 at_tty '' env PATH="${STUBS}:${PATH}" "${CMD}" --start
 check "without tmux --start refuses before asking" "${RC}" "2"

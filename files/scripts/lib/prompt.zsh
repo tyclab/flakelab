@@ -7,7 +7,9 @@
 # first; without a terminal the caller keeps what it did before (refuse, take
 # the default, need the flag), so an agent's shell, a pipe or a --json run
 # never meets a prompt and never waits on one. FLAKELAB_NO_PROMPT=1 turns them
-# off at a terminal too.
+# off at a terminal too, and so does an agent's own shell whatever its stdin:
+# Codex can run a command on a pty (1 of about 4800 in a month here), and its
+# shells carry CODEX_THREAD_ID; Claude Code's carry CLAUDECODE=1.
 #
 # Everything is drawn on stderr and answers land in globals, not on stdout, so
 # a caller whose stdout is captured (`eval "$(flakelab accounts env)"`) still
@@ -22,7 +24,8 @@ typeset -g PROMPT_INDEX="" PROMPT_TEXT="" PROMPT_KEY=""
 typeset -g _PC_PENDING=""
 
 prompt_tty() {
-  [[ -t 0 && -t 2 && -z "${FLAKELAB_NO_PROMPT:-}" && "${TERM:-dumb}" != dumb ]]
+  [[ -t 0 && -t 2 && -z "${FLAKELAB_NO_PROMPT:-}" && "${TERM:-dumb}" != dumb &&
+     -z "${CLAUDECODE:-}" && -z "${CODEX_THREAD_ID:-}" ]]
 }
 
 # Colour only on a terminal and without NO_COLOR (no-color.org).
