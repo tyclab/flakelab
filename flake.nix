@@ -1223,6 +1223,39 @@
           assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
           pkgs.runCommandLocal "flakelab-check-shell-overview" { } "touch $out";
 
+        # The prompt's git segment is oh-my-zsh's git_prompt_info, which a theme
+        # colours: rendered here with the configured one (synchronously; the prompt
+        # itself fills it in asynchronously). An overlay's theme still wins.
+        zsh-git-prompt =
+          let
+            hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
+            omz = (hmOf self.nixosConfigurations.default).programs.zsh.oh-my-zsh;
+            other = self.nixosConfigurations.default.extendModules {
+              modules = [ { home-manager.sharedModules = [ { programs.zsh.oh-my-zsh.theme = "agnoster"; } ]; } ];
+            };
+          in
+          assert (hmOf other).programs.zsh.oh-my-zsh.theme == "agnoster";
+          pkgs.runCommandLocal "flakelab-check-zsh-git-prompt"
+            {
+              nativeBuildInputs = [
+                pkgs.zsh
+                pkgs.git
+              ];
+            }
+            ''
+              export HOME=$TMPDIR
+              git init -q -b main "$TMPDIR/repo"
+              cd "$TMPDIR/repo"
+              got="$(ZSH=${omz.package}/share/oh-my-zsh ZSH_THEME=${omz.theme} zsh -fc '
+                DISABLE_AUTO_UPDATE=true ZSH_DISABLE_COMPFIX=true ZSH_CACHE_DIR=$TMPDIR/omz
+                zstyle ":omz:alpha:lib:git" async-prompt no
+                source $ZSH/oh-my-zsh.sh
+                print -rn -- "$(git_prompt_info)"')"
+              case "$got" in *'git:('*main*) ;; *) echo "no git segment: '$got'"; exit 1 ;; esac
+              case "$got" in *'%{'*) ;; *) echo "the git segment is uncoloured: '$got'"; exit 1 ;; esac
+              touch $out
+            '';
+
         # `gh auth login` and `glab auth login` cannot write their credential helper
         # into a store link, so git-ssh.nix declares it. Read back through git, because
         # the shape is the point: the empty value has to come first or it resets the
