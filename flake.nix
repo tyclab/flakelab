@@ -1040,6 +1040,30 @@
             touch $out
           '';
 
+        # The accounts overview at shell start is a file read that needs the timer
+        # writing the file, and the global compinit stays off (oh-my-zsh runs one).
+        shell-overview =
+          let
+            inherit (nixpkgs) lib;
+            ext =
+              accounts:
+              self.nixosConfigurations.default.extendModules { modules = [ { flakelab.accounts = accounts; } ]; };
+            hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
+            withTimer = ext {
+              shellOverview = true;
+              autoSwitchInterval = "2min";
+            };
+            noTimer = ext { shellOverview = true; };
+            failed = builtins.filter (a: !a.assertion) (hmOf noTimer).assertions;
+          in
+          assert lib.hasInfix "/.local/state/flakelab/accounts/overview.txt"
+            (hmOf withTimer).programs.zsh.initContent;
+          assert
+            !(lib.hasInfix "overview.txt" (hmOf self.nixosConfigurations.default).programs.zsh.initContent);
+          assert builtins.any (a: lib.hasInfix "shellOverview needs" a.message) failed;
+          assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
+          pkgs.runCommandLocal "flakelab-check-shell-overview" { } "touch $out";
+
         # `gh auth login` and `glab auth login` cannot write their credential helper
         # into a store link, so git-ssh.nix declares it. Read back through git, because
         # the shape is the point: the empty value has to come first or it resets the
