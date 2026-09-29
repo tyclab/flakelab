@@ -18,7 +18,7 @@ let
   # The npm nodejs bundles refuses pre-commit's node-hook install with EALLOWGIT,
   # blocking every commit in a repo with a node hook.
   # renovate: datasource=npm depName=npm
-  npmVersion = "12.0.2";
+  npmVersion = "12.1.0";
 
   inherit (cfg) bitwardenServer;
 in
