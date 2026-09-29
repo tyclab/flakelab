@@ -1037,6 +1037,61 @@ contains "each entry is named"                 "${OUT}" "${WKC}/files/config/cus
 run_gen --out "$(out wk-custom-copied)" --config "${BASE}/state.yaml"
 excludes "without a wslkube checkout there is none" "${OUT}" "files/config/custom/"
 
+print -r -- "an empty unmapped key is not named: it carries nothing"
+bare_cfg empty-unmapped <<'YAML'
+profiles: [example]
+extra_repos_dirs: []
+apt_packages:
+npm_global_packages: [ ]
+ansible_become: ''
+YAML
+run_gen --out "$(out empty-unmapped)" --config "${BASE}/empty-unmapped.yaml"
+check    "it generates"                        "${RC}" "0"
+excludes "an empty flow list is not"           "${OUT}" "'extra_repos_dirs'"
+excludes "nor an empty key"                    "${OUT}" "'apt_packages'"
+excludes "nor a spaced empty list"             "${OUT}" "'npm_global_packages'"
+excludes "nor an empty string"                 "${OUT}" "'ansible_become'"
+bare_cfg set-unmapped <<'YAML'
+profiles: [example]
+extra_repos_dirs: [ /srv/more ]
+YAML
+run_gen --out "$(out set-unmapped)" --config "${BASE}/set-unmapped.yaml"
+contains "one with a value still is"          "${OUT}" "'extra_repos_dirs' in the config maps to nothing in the overlay - dropped"
+
+print -r -- "a map nested under an entry's key is a line not read, not fields of the entry"
+bare_cfg item-nested <<'YAML'
+profiles: [example]
+custom_aliases:
+  - name: k
+    command: kiro-cli chat
+    extra:
+      nested: nested-value-1
+      - name: deeper
+        command: echo phantom
+  - name: g
+    command: git status
+repos:
+  - url: https://github.com/example/alpha.git
+    meta:
+      owner: nested-value-2
+    rel_path: tools/alpha
+YAML
+o="$(out item-nested)"
+run_gen --out "${o}" --config "${BASE}/item-nested.yaml"
+f="$(flake_of "${o}")"
+check    "it generates"                        "${RC}" "0"
+excludes "a nested key is no entry field"      "${OUT}" "'custom_aliases.nested'"
+excludes "nor one under repos"                 "${OUT}" "'repos.owner'"
+contains "the key they sit under is"           "${OUT}" "'custom_aliases.extra' in the config maps to nothing in the overlay - dropped"
+contains "their lines are counted as not read" "${OUT}" "3 line(s) under 'custom_aliases' are outside the flat YAML this reader parses - not read"
+contains "under repos too"                     "${OUT}" "1 line(s) under 'repos' are outside the flat YAML this reader parses - not read"
+excludes "no nested value is printed"          "${OUT}" "nested-value"
+excludes "nor written"                         "${f}" "nested-value"
+excludes "a nested list starts no entry"       "${f}" 'phantom'
+contains "the entry it sits in is kept"        "${f}" 'k = "kiro-cli chat";'
+contains "the next entry is still read"        "${f}" 'g = "git status";'
+contains "a field after the map is still read" "${f}" 'tools/alpha'
+
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

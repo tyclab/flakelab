@@ -299,11 +299,20 @@ _yaml_flush() {
   # `key: value` followed by an indented block: the block wins.
   [[ -n "$scalar" ]] && (( ++_yaml_skipped ))
   local l mk mv
-  local -i idx=0
+  local -i idx=0 col keycol=0
   if [[ "$1" =~ '^[[:space:]]*-[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:' ]]; then
     for l in "$@"; do
+      # The column a key starts at, past the dash on an item's first line. A key
+      # deeper than its item's own belongs to a map nested under the last one, which
+      # this reader does not parse: read as a field, it would be named as one.
+      col=${#${l%%[A-Za-z_]*}}
+      if (( idx > 0 && col > keycol )); then
+        (( ++_yaml_skipped ))
+        continue
+      fi
       if [[ "$l" =~ '^[[:space:]]*-[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*(.*)$' ]]; then
         (( ++idx ))
+        keycol=col
       elif (( idx > 0 )) && [[ "$l" =~ '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*(.*)$' ]]; then
         :
       else
@@ -563,7 +572,11 @@ if [[ -n "${_config}" ]]; then
   for _k in "${YK[@]}"; do
     _want="${_shape[$_k]:-}"
     if [[ -z "${_want}" ]]; then
-      if (( ${_secret_names[(Ie)$_k]} )); then _skipped_secrets+=("${_k}"); else _dropped "${_k}"; fi
+      # An empty key carries nothing to drop: a wslkube config lists its unused
+      # ones as `extra_repos_dirs: []`.
+      if (( ${_secret_names[(Ie)$_k]} )); then _skipped_secrets+=("${_k}")
+      elif [[ -n "${YS[$_k]:-}${YL[$_k]:-}${YMK[$_k]:-}${${YIC[$_k]:-}:#0}" ]]; then _dropped "${_k}"
+      fi
       continue
     fi
     if (( ${+YL[$_k]} )); then _got=l _val="${YL[$_k]}"
