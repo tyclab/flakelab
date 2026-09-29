@@ -1145,6 +1145,9 @@
             syncthing.configDir
             == "${box.config.users.users.${plain.flakelab.username}.home}/.config/syncthing";
           assert offHome.config.services.syncthing.configDir == "/var/lib/check-secrets/syncthing";
+          assert
+            offHome.config.services.syncthing.databaseDir
+            == "${box.config.users.users.${plain.flakelab.username}.home}/.local/state/syncthing";
           assert builtins.elem "d /var/lib/check-secrets/syncthing 0700 ${plain.flakelab.username} users -"
             offHome.config.systemd.tmpfiles.rules;
           assert builtins.elem "/var/lib/check-secrets/syncthing"

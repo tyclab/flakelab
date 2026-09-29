@@ -34,6 +34,9 @@ in
       group = "users";
       dataDir = home;
       inherit configDir;
+      # The index database is large and not secret: it stays in the home even when
+      # configDir sits on a small key-only disk.
+      databaseDir = "${home}/.local/state/syncthing";
       inherit (st) guiAddress;
       openDefaultPorts = false;
       # The declared hub and folder are the whole config: a device or folder added
