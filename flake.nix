@@ -243,6 +243,7 @@
                     # Inert until the overlay sets sopsSecretsFile.
                     sops-nix.nixosModules.sops
                     ./nix/secrets.nix
+                    ./nix/state-syncthing.nix
                     ./nix/options.nix
                     {
                       # So a type error names this attrset, not the flake's store path.
@@ -1100,6 +1101,43 @@
             hmPlain.systemd.user.services.flakelab-sessions-autosave.Service."X-RestartIfChanged" == false;
           assert hmPlain.systemd.user.timers.flakelab-sessions-autosave.Timer.OnUnitActiveSec == "5min";
           pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
+
+        # The state root under Syncthing: stateRoot is the one folder, shared with the
+        # hub under the password file, which a oneshot writes before syncthing-init reads it.
+        state-syncthing =
+          let
+            box = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    stateRoot = nixpkgs.lib.mkForce "/home/check/flakelab-state";
+                    sopsSecretsFile = nixpkgs.lib.mkForce ./nix/secrets.nix;
+                    stateSyncthing = {
+                      hubDeviceId = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+                      hubName = "hub";
+                      passwordEnvKey = "CHECK_STATE_PASSWORD";
+                    };
+                  };
+                }
+              ];
+            };
+            inherit (box.config.services) syncthing;
+            folder = syncthing.settings.folders.flakelab-state;
+            pw = box.config.systemd.services.flakelab-syncthing-password;
+            plain = self.nixosConfigurations.default.config;
+          in
+          assert syncthing.enable;
+          assert syncthing.user == plain.flakelab.username;
+          assert syncthing.guiAddress == "127.0.0.1:8384";
+          assert folder.path == "/home/check/flakelab-state";
+          assert
+            (builtins.head folder.devices).encryptionPasswordFile
+            == "/run/flakelab-syncthing/flakelab-state.password";
+          assert builtins.elem "syncthing-init.service" pw.requiredBy;
+          assert builtins.elem "syncthing-init.service" pw.before;
+          assert nixpkgs.lib.hasInfix "CHECK_STATE_PASSWORD=" pw.script;
+          assert !plain.services.syncthing.enable;
+          pkgs.runCommandLocal "flakelab-check-state-syncthing" { } "touch $out";
 
         # A program's OSC 52 copy inside a nested tmux, the session on a box reached
         # over ssh from another tmux, lands in the outer tmux, which passes it on to

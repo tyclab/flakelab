@@ -380,7 +380,11 @@ treatment:
 
 `stateRoot` splits them: set it and the state is written there instead of into
 the payload. Whether that directory is replicated by Syncthing, Dropbox, rclone,
-a NAS client or nothing at all is outside this repo's knowledge.
+a NAS client or nothing at all is outside this repo's knowledge, with one
+exception: `stateSyncthing` (`nix/state-syncthing.nix`) runs Syncthing on the
+box with the state root as its only folder, shared with one always-on hub that
+holds it Receive Encrypted. The folder password comes from the sops render, so
+the hub and its disk only ever see ciphertext.
 
 ```text
 <stateRoot>/shell/.zsh_history_merged                 # union of every machine's history
