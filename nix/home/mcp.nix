@@ -18,7 +18,7 @@ let
   # Pins live in variables so renovate.json's customManagers can see them; an inline
   # pin in an args list has no manager watching it.
   # renovate: datasource=npm depName=@playwright/mcp
-  playwrightMcpVersion = "0.0.79";
+  playwrightMcpVersion = "0.0.83";
   # renovate: datasource=npm depName=@jarahkon/hass-mcp-server
   hassMcpVersion = "1.0.10";
   # renovate: datasource=npm depName=@itunified.io/mcp-proxmox
