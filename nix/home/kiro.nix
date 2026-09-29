@@ -18,10 +18,14 @@ let
     sshDefer
     flakelabWarn
     flakelabDefer
+    renderedRecord
     cloneKeyResolve
     sshKeys
     ;
   inherit (flakelabMcp) mcpServers;
+  kiroMcpRecord = renderedRecord "kiro-mcp-servers" "~/.kiro/settings/mcp.json mcpServers" (
+    builtins.attrNames mcpServers
+  );
 
   # Servers whose definition is taken from the Claude marketplace clone instead of
   # from mcp.nix. Add one only after checking its plugin `.mcp.json` env block is
@@ -95,8 +99,9 @@ in
         ''
       );
 
-  # Merge onto whatever the kiro-plugin repo installed, so that baseline survives and
-  # our pins win where they overlap. Must run after kiroInstallGlobal.
+  # Merge onto the file as the user and Kiro left it: their servers survive, our pins
+  # win where they overlap, and a server an earlier generation rendered and this one
+  # does not is removed. Must run after kiroInstallGlobal.
   #
   # A third layer sits on top: the Claude marketplace clone, whose plugins carry the
   # same `mcpServers` schema. Where a plugin defines a server this set already has,
@@ -131,6 +136,7 @@ in
         }:$PATH"
         _mcp="$HOME/.kiro/settings/mcp.json"
         _override=${lib.escapeShellArg (builtins.toJSON { inherit mcpServers; })}
+        ${kiroMcpRecord.load}
         _tmp="$(mktemp)"
         mkdir -p "$HOME/.kiro/settings"
 
@@ -165,16 +171,18 @@ in
           printf '{}\n' > "$_base"
         fi
 
-        if jq --argjson ov "$_override" --argjson mk "$_market" \
+        if jq --argjson ov "$_override" --argjson mk "$_market" --argjson prev "$_prev" \
                --argjson single ${lib.escapeShellArg (builtins.toJSON marketplaceSingleSourced)} \
-               '(. * $ov) as $base
+               '(. * $ov
+                 | .mcpServers |= reduce ($prev - ($ov.mcpServers | keys))[] as $k (.; del(.[$k]))
+                ) as $base
                 | $base
                 | .mcpServers = ((.mcpServers // {})
                     * ($mk | with_entries(select(.key as $k
                         | ($k | in($base.mcpServers // {})) and ($single | index($k))))))' \
                "$_base" > "$_tmp" 2>/dev/null; then
           # jq's `*` takes the right-hand side for arrays and scalars, so our pinned
-          # args override same-named entries from the plugin repo's baseline.
+          # args override same-named entries already in the file.
           :
         else
           ${flakelabWarn} "could not merge MCP overrides into $_mcp; leaving the kiro-plugin base intact."
@@ -185,6 +193,7 @@ in
         if [ -n "$_tmp" ]; then
           $DRY_RUN_CMD install -m644 "$_tmp" "$_mcp"
           rm -f "$_tmp"
+          ${kiroMcpRecord.save}
         fi
       '';
 }

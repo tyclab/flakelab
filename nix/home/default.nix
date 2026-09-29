@@ -32,6 +32,30 @@ let
   flakelabWarn = mkReporter "flakelab-warn" warnLog "WARNING: ";
   flakelabDefer = mkReporter "flakelab-defer" deferredLog "DEFERRED: ";
 
+  # A step that merges into a map of a file the user and the tool also write
+  # records the key names it wrote there, never the values (env values can be
+  # secrets). A name in the last record and not in this render is flakelab's to
+  # remove; a name never recorded belongs to someone else and is left alone.
+  # `load` sets _prev, [] when there is no readable record; `save` runs only
+  # after the file was written, so a failed merge keeps the names for the next.
+  renderedDir = "${stateDir}/activation-rendered";
+  renderedRecord =
+    name: target: keys:
+    let
+      record = "${renderedDir}/${name}.json";
+      names = pkgs.writeText "flakelab-rendered-${name}.json" (builtins.toJSON keys);
+    in
+    {
+      load = ''
+        _prev="$(${pkgs.jq}/bin/jq -cs 'if length == 1 and (.[0] | type) == "array" then .[0] | map(strings) else error end' "${record}" 2>/dev/null)" || _prev='[]'
+      '';
+      save = ''
+        { $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -d -m700 "${renderedDir}" \
+            && $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -m600 ${names} "${record}"; } || \
+          ${flakelabWarn} "could not record the keys flakelab wrote to ${target} in ${record}."
+      '';
+    };
+
   # The activation unit has no SSH_AUTH_SOCK: point it at the well-known user agent
   # socket and record whether it holds a key, since no unattended run can unlock a
   # passphrase-encrypted key.
@@ -90,6 +114,7 @@ in
       deferredLog
       flakelabWarn
       flakelabDefer
+      renderedRecord
       sshAgentPreamble
       sshDefer
       isWsl

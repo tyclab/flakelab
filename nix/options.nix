@@ -347,7 +347,7 @@ in
     claudeMcpServers = mkOption {
       type = types.attrsOf types.attrs;
       default = { };
-      description = "Extra Claude user-scope MCP servers, merged into ~/.claude.json on every rebuild. Same shape as that file's own `mcpServers` entries. The servers this flake defines are already declared in nix/home/mcp.nix; this is where per-developer ones go.";
+      description = "Extra Claude user-scope MCP servers, merged into ~/.claude.json on every rebuild and removed from it again once dropped from here. Same shape as that file's own `mcpServers` entries. The servers this flake defines are already declared in nix/home/mcp.nix; this is where per-developer ones go.";
     };
 
     claudeMcpDisabledServers = mkOption {
