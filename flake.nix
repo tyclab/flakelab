@@ -942,11 +942,6 @@
           assert hmPlain.systemd.user.timers.flakelab-sessions-autosave.Timer.OnUnitActiveSec == "5min";
           pkgs.runCommandLocal "flakelab-check-state-sync-decouple" { } "touch $out";
 
-        # kiro-cli rewrites ~/.kiro/settings/cli.json itself (`kiro-cli settings` saves
-        # by rename), which turns the store link into a regular file. Unforced, Home
-        # Manager moves that aside to cli.json.hm-bak once, then fails the next
-        # activation that finds the backup name taken. Forced, the checked-in baseline
-        # simply wins again on every switch.
         # A program's OSC 52 copy inside a nested tmux, the session on a box reached
         # over ssh from another tmux, lands in the outer tmux, which passes it on to
         # its terminal. With the default set-clipboard (external) both drop it.
@@ -972,6 +967,11 @@
             touch $out
           '';
 
+        # kiro-cli rewrites ~/.kiro/settings/cli.json itself (`kiro-cli settings` saves
+        # by rename), which turns the store link into a regular file. Unforced, Home
+        # Manager moves that aside to cli.json.hm-bak once, then fails the next
+        # activation that finds the backup name taken. Forced, the checked-in baseline
+        # simply wins again on every switch.
         kiro-cli-json =
           let
             sys = self.nixosConfigurations.default.config;

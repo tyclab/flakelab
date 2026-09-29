@@ -736,8 +736,14 @@ function Read-UserDataYaml([string]$path) {
         if ($lines[0] -match '^\s*-\s*[A-Za-z_][A-Za-z0-9_]*\s*:') {
             $items = @()
             $cur = $null
+            $keyCol = 0
             foreach ($l in $lines) {
+                # As nix-overlay-generate: a key deeper than its item's own belongs to
+                # a map nested under the last one, which this reader does not parse.
+                $col = ($l -replace '[A-Za-z_].*$', '').Length
+                if ($cur -and $col -gt $keyCol) { $skipped++; continue }
                 if ($l -match '^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$') {
+                    $keyCol = $col
                     $cur = [ordered]@{}
                     $cur[$Matches[1]] = (ConvertFrom-YamlScalar $Matches[2])
                     $items += $cur
@@ -836,17 +842,18 @@ function Remove-UnmappedConfig($ud, [string]$udPath) {
     $shapeName = @{ s = 'scalar'; l = 'list'; m = 'map'; i = 'list of maps' }
     foreach ($k in @($ud.Keys)) {
         $v = $ud[$k]
-        if (-not $ConfigShape.ContainsKey($k)) {
-            if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written" }
-            elseif ($SecretKeyNames -notcontains $k) { Write-DroppedKey $k }
-            continue
-        }
         $got = if ($v -is [Collections.IDictionary]) { 'm' }
         elseif ($v -isnot [array]) { 's' }
         elseif (@($v | Where-Object { $_ -is [Collections.IDictionary] }).Count -gt 0) { 'i' }
         else { 'l' }
-        $want = $ConfigShape[$k]
         $empty = if ($got -eq 's') { -not [string]$v } else { $v.Count -eq 0 }
+        if (-not $ConfigShape.ContainsKey($k)) {
+            if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written" }
+            # An empty key carries nothing to drop, as nix-overlay-generate has it.
+            elseif ($SecretKeyNames -notcontains $k -and -not $empty) { Write-DroppedKey $k }
+            continue
+        }
+        $want = $ConfigShape[$k]
         if ($empty -or $got -eq $want -or ($want -eq 'l' -and $got -eq 's')) { continue }
         Warn ("  '{0}' is a {1} in the config where the overlay reads a {2} - dropped" -f $k, $shapeName[$got], $shapeName[$want])
         $ud.Remove($k)
