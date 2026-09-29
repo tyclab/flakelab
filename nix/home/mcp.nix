@@ -29,7 +29,7 @@ let
   # renovate-digest: datasource=git-refs depName=https://github.com/atom2ueki/mcp-server-synology tag=1.6.0
   synologyMcpRev = "95c62c74e8526dd299bfe527063d8e3360ae9ebf";
   # renovate: datasource=pypi depName=mcp-grafana
-  grafanaMcpVersion = "1.1.0";
+  grafanaMcpVersion = "1.6.0";
 
   # Extension mode, driving the running Windows Chrome. --executable-path is still
   # required, or the server throws before the extension can attach. The extension
