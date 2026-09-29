@@ -78,8 +78,7 @@ ACCOUNTS = os.environ.get("FLAKELAB_WEB_ACCOUNTS", "accounts")
 SESSIONS = os.environ.get("FLAKELAB_WEB_SESSIONS", "claude-sessions")
 TERMINAL_SOCKET = os.environ.get("FLAKELAB_WEB_TERMINAL_SOCKET", "")
 LOGO = os.environ.get("FLAKELAB_WEB_LOGO", "")
-# The image types a logo file may be, by suffix; anything else is refused at
-# start so a stray path never serves as the page's mark.
+# Any other suffix is refused at start: a stray path never serves as the mark.
 LOGO_TYPES = {
     ".svg": "image/svg+xml",
     ".png": "image/png",

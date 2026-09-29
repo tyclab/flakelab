@@ -820,7 +820,7 @@ $ConfigShape = @{
     backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'; dockerautostart = 's'
     kiro_plugin_repo = 's'; whatsapp_mcp_dir = 's'; overlay_url = 's'
     profiles = 'l'; teams = 'l'; team = 'l'; gitlab_groups = 'l'; sshkeyautoadd = 'l'
-    claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'
+    claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'; extra_task_files = 'l'
     custom_env_vars = 'm'; claude_plugin_marketplace = 'm'; repos = 'i'; custom_aliases = 'i'
 }
 $ConfigFields = @('repos.url', 'repos.rel_path', 'custom_aliases.name', 'custom_aliases.command',

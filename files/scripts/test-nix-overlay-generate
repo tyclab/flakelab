@@ -69,6 +69,9 @@ out() {
 
 flake_of() { print -r -- "$(< "$1/flake.nix")" }
 
+# bare_cfg <name> — ${BASE}/<name>.yaml: the identity every generation needs, then stdin.
+bare_cfg() { { print -rl -- 'user: bare' 'gitfullname: Bare Person' 'gitmail: bare@example.com'; cat } > "${BASE}/$1.yaml" }
+
 # GNU and BSD spellings, since the script supports macOS; neither working leaves the
 # output empty and the assertion fails loudly.
 file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" }
@@ -393,11 +396,7 @@ contains "naming it"               "${OUT}" "frobnicate"
 # With nothing selected the build still succeeds and the box gets nothing, so it is an
 # error; groups without a profile only warns, since the box does get clones.
 print -r -- "an overlay that would install nothing is refused"
-cat > "${BASE}/noprofiles.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
-YAML
+bare_cfg noprofiles < /dev/null
 o="$(out noprofiles)"
 run_gen --out "${o}" --config "${BASE}/noprofiles.yaml"
 check    "it fails"                  "${RC}" "1"
@@ -407,10 +406,7 @@ contains "and where wslkube hides it" "${OUT}" "variables.yaml"
 [[ -e "${o}/flake.nix" ]] && bad "no flake.nix is left behind" || ok "no flake.nix is left behind"
 
 print -r -- "groups without a profile is still only a warning"
-cat > "${BASE}/groupsonly.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg groupsonly <<'YAML'
 gitlab_groups:
   - somegroup
 YAML
@@ -581,10 +577,7 @@ contains "and the group stays personal" "${f}" 'gitlabGroups = [ "example-group"
 
 # Both options have a default, so an absent key must leave the overlay on it.
 print -r -- "state_root and state_transcripts pass through only when set"
-cat > "${BASE}/state.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg state <<'YAML'
 profiles:
   - example
 YAML
@@ -595,10 +588,7 @@ f="$(flake_of "${o}")"
 excludes "no stateRoot line when unset"        "${f}" 'stateRoot'
 excludes "no stateTranscripts line when unset" "${f}" 'stateTranscripts'
 
-cat > "${BASE}/state.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg state <<'YAML'
 profiles:
   - example
 state_root: /mnt/d/sync/flakelab-state
@@ -621,10 +611,7 @@ contains "and so does the transcripts flag" "${f}" 'stateTranscripts = false;'
 # An adopter with no GitLab names their clones under `repos:`, so the profiles/groups
 # refusal must run after repos is read.
 print -r -- "repos: alone generates, without a profile or a group"
-cat > "${BASE}/reposonly.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg reposonly <<'YAML'
 repos:
   - rel_path: tools/alpha
     url: https://github.com/example/alpha.git
@@ -645,10 +632,7 @@ contains "the profile warning says the repos are still cloned" \
 # Entries with no url emit nothing, so counting raw entries lets the empty overlay
 # back through.
 print -r -- "url-less repos entries do not count as a selection"
-cat > "${BASE}/reposnourl.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg reposnourl <<'YAML'
 repos:
   - rel_path: tools/alpha
 YAML
@@ -660,10 +644,7 @@ contains "for the same reason"       "${OUT}" "no profiles, no gitlab_groups and
 # Read as a scalar, a flow-style list reaches the overlay as the literal string
 # "[example]": an unknown profile, or a group name nobody can clone.
 print -r -- "flow-style profiles: and gitlab_groups: parse as lists"
-cat > "${BASE}/flow.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg flow <<'YAML'
 profiles: [example]
 gitlab_groups: [alpha, "beta"]
 YAML
@@ -679,10 +660,7 @@ excludes "and no bracket rides in" "${f}" '"[alpha'
 
 # `[]` must not come back as the two-character string that reads as one entry.
 print -r -- "an empty flow list is empty, not a one-entry list"
-cat > "${BASE}/flowempty.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg flowempty <<'YAML'
 profiles: []
 gitlab_groups:
   - somegroup
@@ -705,10 +683,7 @@ cp "${GEN}" "${SPACED}/files/scripts/"
 cp "${GEN:h}/lib/overlay-git.zsh" "${SPACED}/files/scripts/lib/"
 cp -r "${REPO_ROOT}/templates" "${SPACED}/templates"
 cp -r "${REPO_ROOT}/profiles" "${SPACED}/profiles"
-cat > "${BASE}/spaced.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg spaced <<'YAML'
 profiles: [example]
 YAML
 o="$(out spaced)"
@@ -929,17 +904,14 @@ excludes "the value is never printed"          "${OUT}" "unmapped-value-1"
 excludes "nor written"                         "${f}" "unmapped-value-1"
 contains "repoPath is no config key"           "${OUT}" "'repoPath' in the config maps to nothing"
 contains "so repoPath stays the overlay"       "${f}" "repoPath = \"${o}\";"
-contains "extra_task_files is named"           "${OUT}" "'extra_task_files' in the config maps to nothing"
-contains "with every task it lists"            "${OUT}" "extra_task_files names wslkube Ansible tasks nothing here runs: custom/printer.yaml, custom/vpn.yaml"
+excludes "extra_task_files is not an unmapped key" "${OUT}" "'extra_task_files' in the config maps to nothing"
+contains "it is named with every task it lists" "${OUT}" "extra_task_files names wslkube Ansible tasks nothing here runs: custom/printer.yaml, custom/vpn.yaml"
 excludes "dockerautostart is a documented no-op" "${OUT}" "'dockerautostart'"
 excludes "a mapped key is not named"           "${OUT}" "'user' in the config"
 excludes "nor the document marker"             "${OUT}" "not read"
 
 print -r -- "a key in a shape the overlay does not read is named and dropped"
-cat > "${BASE}/shape.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg shape <<'YAML'
 profiles: [example]
 giteditor:
   - code
@@ -966,10 +938,7 @@ excludes "no repo is invented"                 "${f}" 'repos = ['
 excludes "a scalar list is still a list"       "${OUT}" "'profiles' is a"
 
 print -r -- "an entry field the overlay does not read is named once and dropped"
-cat > "${BASE}/fields.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg fields <<'YAML'
 profiles: [example]
 repos:
   - rel_path: tools/alpha
@@ -998,10 +967,7 @@ excludes "a read field is not named"           "${OUT}" "'repos.url'"
 contains "the repo itself is kept"             "${f}" 'url = "https://github.com/example/alpha.git";'
 
 print -r -- "a line outside the flat YAML this reads is named by number, not content"
-cat > "${BASE}/unread.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg unread <<'YAML'
 profiles: [example]
 odd-key: 'unread-value-2'
 custom_env_vars:
@@ -1018,10 +984,7 @@ excludes "no value is printed"                 "${OUT}" "unread-value"
 contains "the readable entry is kept"          "${f}" 'GOOD_VAR = "kept";'
 
 print -r -- "a profiles alias shadowed by another is named"
-cat > "${BASE}/alias.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg alias <<'YAML'
 profiles: [example]
 teams:
   - example
@@ -1031,10 +994,7 @@ check    "it generates"                        "${RC}" "0"
 contains "teams loses to profiles, said so"    "${OUT}" "'teams' is ignored while 'profiles' is set - dropped"
 
 print -r -- "state_transcripts without state_root is named"
-cat > "${BASE}/transcripts.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg transcripts <<'YAML'
 profiles: [example]
 state_transcripts: true
 YAML
@@ -1045,10 +1005,7 @@ contains "it is named as dropped"              "${OUT}" "state_transcripts is se
 excludes "and not emitted"                     "$(flake_of "${o}")" 'stateTranscripts'
 
 print -r -- "a top-level secret is reported with the other secrets, not written"
-cat > "${BASE}/topsecret.yaml" <<'YAML'
-user: bare
-gitfullname: Bare Person
-gitmail: bare@example.com
+bare_cfg topsecret <<'YAML'
 profiles: [example]
 GITLAB_TOKEN: 'not-a-real-token-4'
 YAML

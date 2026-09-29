@@ -24,11 +24,7 @@ in
     };
   };
 
-  # The NixOS-WSL init shim runs the activation before it execs systemd, so this is
-  # the last point at which the cgroup systemd roots its tree in can still be chosen.
-  # A distro started inside a cgroup its users cannot enter would get no user
-  # manager at all (files/scripts/wsl-init-cgroup, known-issues.md). A switch runs
-  # it too, and it leaves at once there.
+  # The shim runs this before systemd: known-issues.md, "No user manager".
   system.activationScripts.flakelab-wsl-init-cgroup.text = "${scripts.wsl-init-cgroup}/bin/flakelab-wsl-init-cgroup";
 
   # Do not terminate a distro from in here: it wipes WSLInterop for every distro
