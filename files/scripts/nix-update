@@ -334,9 +334,10 @@ _fl_locked() {
       l = builtins.fromJSON (builtins.readFile (builtins.getEnv "FLAKELAB_LOCK"));
       n = l.nodes.${l.root}.inputs.flakelab or null;
       k = if n == null then { } else l.nodes.${n}.locked or { };
+      o = if n == null then { } else l.nodes.${n}.original or { };
       slug = if k ? owner && k ? repo then "${k.owner}/${k.repo}" else k.url or "";
     in
-    "${k.type or ""}|${k.path or ""}|${k.rev or ""}|${slug}|${k.narHash or ""}"
+    "${k.type or ""}|${k.path or ""}|${k.rev or ""}|${slug}|${k.narHash or ""}|${o.rev or ""}"
   ' 2> /dev/null
 }
 
@@ -407,6 +408,9 @@ _nix_relock_flakelab() {
     local _rev1="${_a[3]:-}" _id1="${_a[3]:-${_a[5]:-}}"
     if [[ "${_ty}" == path ]]; then
       _say yellow "⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
+    elif [[ -n "${_a[6]:-}" ]]; then
+      # A rev in the input's URL: `nix flake update` can never move it.
+      _say yellow "⚠ flakelab input unchanged (${_a[6][1,7]}): inputs.flakelab.url in ${_repo}/flake.nix names that rev, so update cannot move it; drop the rev from the URL"
     elif [[ -z "${_id1}" || "${_rev0:-${_nar0}}" == "${_id1}" ]]; then
       # Said, not skipped: "already current" is the answer an update was asked for.
       _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"

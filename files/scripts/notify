@@ -104,6 +104,8 @@ case "$MODE" in
     PRIORITY="${PRIORITY:-3}"; TAGS="${TAGS:-robot}"
     ;;
   auto)
+    # Hooks pipe JSON in; on a terminal, show usage instead of waiting on cat.
+    [[ -t 0 ]] && { usage >&2; exit 2 }
     HOOK=true
     input="$(cat 2>/dev/null)"
     doc="$(print -r -- "$input" | jq -c . 2>/dev/null)" || doc=""
