@@ -579,6 +579,45 @@ in
       description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude and Codex memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot (without a root there is nothing to sync) but NOT backupAutostart: the two timers are independent, so a box that must not run the unattended daily payload pass — a guest whose backup root is a soft network mount, say — still converges its state root. While it is scheduled, a Claude Code SessionEnd hook also starts the sync when a session closes, so a finished session does not wait out the period.";
     };
 
+    stateSyncthing = mkOption {
+      type = types.nullOr (
+        types.submodule {
+          options = {
+            hubDeviceId = mkOption {
+              type = types.str;
+              description = "Full device ID of the always-on hub every box shares the state root with. The hub holds the folder as Receive Encrypted: it stores ciphertext and never the password.";
+            };
+            hubName = mkOption {
+              type = types.str;
+              default = "hub";
+              description = "Local name of the hub device in this box's Syncthing config.";
+            };
+            hubAddresses = mkOption {
+              type = types.listOf types.str;
+              default = [ "dynamic" ];
+              description = "Where this box dials the hub, e.g. [ \"tcp://hub.example:22000\" \"dynamic\" ]. A box behind NAT (a WSL distro) only dials out, so one side must be reachable.";
+            };
+            folderId = mkOption {
+              type = types.str;
+              default = "flakelab-state";
+              description = "Syncthing folder ID of the state root; the same on every box and on the hub.";
+            };
+            passwordEnvKey = mkOption {
+              type = types.str;
+              description = "Key in the sops render /run/secrets/tyc-env that holds the folder's encryption password. The same password on every box; losing it leaves the hub copy unreadable.";
+            };
+            guiAddress = mkOption {
+              type = types.str;
+              default = "127.0.0.1:8384";
+              description = "Where this box's Syncthing GUI and REST API listen. Keep it on loopback: the box's GUI carries no login.";
+            };
+          };
+        }
+      );
+      default = null;
+      description = "Replicate stateRoot with Syncthing through one untrusted hub instead of an external sync client. Non-null runs Syncthing as `username` with stateRoot as its only folder, shared with the hub under an encryption password read from the sops render, so the hub (and whatever stores its disk) never sees plaintext. Needs stateRoot on a Linux path (not a /mnt Windows mount) and sopsSecretsFile. The hub must list this box's device ID and hold the folder as Receive Encrypted; the box's ID is `syncthing device-id --config ~/.config/syncthing`.";
+    };
+
     sessionsAutosaveInterval = mkOption {
       type = types.nullOr types.str;
       default = "5min";
