@@ -1365,11 +1365,10 @@ entry_plan() {
 
 # {"<id>": "<plan>"} for every entry, for the JSON reports.
 plans_json() {
-  local tool id alias label org act dis out="{}"
+  local tool id alias label org act dis
   while IFS="$US" read -r tool id alias label org act dis; do
-    out="$(print -r -- "$out" | jq -c --arg k "$id" --arg p "$(entry_plan "$id" "$tool" "$org")" '.[$k] = $p')"
-  done < <(rows)
-  print -r -- "$out"
+    print -r -- "${id}${US}$(entry_plan "$id" "$tool" "$org")"
+  done < <(rows) | jq -cRn --arg us "$US" '[inputs | split($us) | {(.[0]): .[1]}] | add // {}'
 }
 
 # One row per entry: tool US id US alias US label US org US flags, in id order.
@@ -1398,7 +1397,7 @@ cmd_list() {
     jq -n --argjson r "$(read_roster)" --argjson u "$(read_usage)" --argjson plans "$(plans_json)" --arg mw "$MODEL_WINDOWS" --argjson now "$(now)" -L "${LIB}" "${HEADROOM_JQ}"'
       {version: $r.version, active: $r.active,
        accounts: ($r.accounts | to_entries | sort_by(.key | tonumber)
-        | map(.key as $k | {id: ($k | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org, plan: ($plans[$k] // .value.org),
+        | map(.key as $k | {id: ($k | tonumber), tool: .value.tool, account: .value.id, label: .value.label, org: .value.org, plan: $plans[$k],
                alias: (.value.alias // null), disabled: (.value.disabled // false), added: .value.added,
                usage: (($u.entries[$k] // {}) | {windows: (.windows // []), fetchedAt: (.fetchedAt // null), nextPollAt: (.nextPollAt // null), lastError: (.lastError // null)}),
                headroom: (($u.entries[$k] // {}) | headroom),
@@ -1417,27 +1416,31 @@ cmd_list() {
 
 # status: per adapter, the active entry and whether the live login is it.
 cmd_status() {
-  local json=false tool roster active live lid matches out="{}" id
+  local json=false tool roster active aid aorg live lid matches out="{}" id
   [[ "${1:-}" == --json ]] && json=true
   roster="$(read_roster)"
   for tool in "${ADAPTERS[@]}"; do
     active="$(print -r -- "$roster" | jq -c --arg tool "$tool" '(.active[$tool] // null) as $a | if $a == null then null else (.accounts[($a | tostring)] // {}) + {entry: $a} end')"
-    [[ "$active" == null ]] || active="$(print -r -- "$active" | jq -c --arg p "$(entry_plan "$(print -r -- "$active" | jq -r .entry)" "$tool" "$(print -r -- "$active" | jq -r '.org // ""')")" '.plan = $p')"
+    aid=""
+    if [[ "$active" != null ]]; then
+      IFS="$US" read -r aid aorg < <(print -r -- "$active" | jq -r --arg us "$US" '"\(.entry)\($us)\(.org // "")"')
+      active="$(print -r -- "$active" | jq -c --arg p "$(entry_plan "$aid" "$tool" "$aorg")" '.plan = $p')"
+    fi
     live="$(acct_${tool}_identity 2>/dev/null)" || live="null"
     lid="$(print -r -- "$live" | jq -r '.id // empty')"
     id="$(print -r -- "$active" | jq -r '.id // empty')"
-    if [[ -n "$lid" && -n "$id" ]]; then matches=$([[ "$(entry_of_live "$tool" "$live")" == "$(print -r -- "$active" | jq -r '.entry')" ]] && print true || print false); else matches=null; fi
+    if [[ -n "$lid" && -n "$id" ]]; then matches=$([[ "$(entry_of_live "$tool" "$live")" == "$aid" ]] && print true || print false); else matches=null; fi
     local ue='{}'
-    [[ -n "$id" ]] && ue="$(print -r -- "$(read_usage)" | jq -c --arg id "$(print -r -- "$active" | jq -r '.entry')" '.entries[$id] // {}')"
+    [[ -n "$id" ]] && ue="$(print -r -- "$(read_usage)" | jq -c --arg id "$aid" '.entries[$id] // {}')"
     out="$(print -r -- "$out" | jq --arg tool "$tool" --argjson a "$active" --argjson l "$live" --argjson m "$matches" --argjson u "$ue" '
-      .[$tool] = {active: (if $a == null then null else {id: $a.entry, alias: ($a.alias // null), label: $a.label, org: $a.org, plan: ($a.plan // $a.org)} end),
+      .[$tool] = {active: (if $a == null then null else {id: $a.entry, alias: ($a.alias // null), label: $a.label, org: $a.org, plan: $a.plan} end),
                   live: (if $l == null then null else {account: $l.id, label: $l.label} end),
                   matches: $m, windows: ($u.windows // []), fetchedAt: ($u.fetchedAt // null)}')"
     if ! $json; then
       if [[ "$active" == null ]]; then
         print -r -- "${tool}: no active entry${lid:+ (live login $(print -r -- "$live" | jq -r .label) is not in the roster: flakelab accounts add ${tool})}"
       elif [[ "$matches" == false ]]; then
-        print -r -- "${tool}: entry $(print -r -- "$active" | jq -r '.entry') ($(print -r -- "$active" | jq -r .label)) is recorded active, but the live login is $(print -r -- "$live" | jq -r .label): someone logged in by hand; run: flakelab accounts add ${tool}"
+        print -r -- "${tool}: entry ${aid} ($(print -r -- "$active" | jq -r .label)) is recorded active, but the live login is $(print -r -- "$live" | jq -r .label): someone logged in by hand; run: flakelab accounts add ${tool}"
       else
         print -r -- "${tool}: $(print -r -- "$active" | jq -r '"\(.entry)\(if .alias then " (\(.alias))" else "" end) \(.label) [\(.plan)]"')  $(usage_text "$(print -r -- "$active" | jq -r .entry)")${lid:+}${${lid:-  (no live login)}:#${lid}}"
       fi

@@ -101,16 +101,25 @@ FLAKELAB_WEB_BIND=0 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" 
 check "the server itself refuses the unspecified address in any spelling" "$?" "2"
 contains "and says which address to name" "$(<"${BASE}/bind0.err")" "name the WireGuard address"
 print -r -- '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4"/></svg>' > "${BASE}/logo.svg"
-FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
-  FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" FLAKELAB_WEB_TERMINAL_SOCKET="${TTYD_SOCK}" \
-  FLAKELAB_WEB_LOGO="${BASE}/logo.svg" PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server.err" &
-SERVER_PID=$!
-PORT=""
-for i in {1..50}; do
-  PORT="$(grep -oE 'http://127\.0\.0\.1:[0-9]+/' "${BASE}/server.err" 2>/dev/null | head -1 | grep -oE '[0-9]+/' | tr -d /)"
-  [[ -n "$PORT" ]] && break
-  sleep 0.1
-done
+# start_server <stderr file> [VAR=value...]: the server in the background on
+# 127.0.0.1 and a free port, over the stand-ins; STARTED_PID, and STARTED_PORT
+# once it names one (empty after five seconds without).
+start_server() {
+  local err="$1" i
+  shift
+  env FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
+    FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" \
+    PYTHONDONTWRITEBYTECODE=1 "$@" python3 "${SERVER}" 2>"${err}" &
+  STARTED_PID=$!
+  STARTED_PORT=""
+  for i in {1..50}; do
+    STARTED_PORT="$(grep -oE 'http://127\.0\.0\.1:[0-9]+/' "${err}" 2>/dev/null | head -1 | grep -oE '[0-9]+/' | tr -d /)"
+    [[ -n "${STARTED_PORT}" ]] && break
+    sleep 0.1
+  done
+}
+start_server "${BASE}/server.err" FLAKELAB_WEB_TERMINAL_SOCKET="${TTYD_SOCK}" FLAKELAB_WEB_LOGO="${BASE}/logo.svg"
+SERVER_PID="${STARTED_PID}" PORT="${STARTED_PORT}"
 [[ -n "$PORT" ]] && ok "the server starts and names its port" || { bad "the server did not start"; cat "${BASE}/server.err" >&2; print -r -- "${PASS} passed, ${FAIL} failed"; exit 1 }
 URL="http://127.0.0.1:${PORT}"
 check "the token file is made on the first start, private" "$(stat -c %a "${TOKEN_FILE}") $(stat -c %a "${TOKEN_FILE:h}")" "600 700"
@@ -241,19 +250,10 @@ FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN
 check "a logo that is no image type refuses at start" "$?" "2"
 contains "naming the types" "$(<"${BASE}/logo.err")" "not an image type"
 check "under the server's prefix" "${$(<"${BASE}/logo.err")%%FLAKELAB_WEB_LOGO*}" "flakelab web: refusing "
-FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
-  FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" \
-  PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server2.err" &
-SERVER2_PID=$!
-PORT2=""
-for i in {1..50}; do
-  PORT2="$(grep -oE 'http://127\.0\.0\.1:[0-9]+/' "${BASE}/server2.err" 2>/dev/null | head -1 | grep -oE '[0-9]+/' | tr -d /)"
-  [[ -n "$PORT2" ]] && break
-  sleep 0.1
-done
-check "without a logo, /logo is 404" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT2}/logo")" "404"
-check "and health says none" "$(curl -s "http://127.0.0.1:${PORT2}/api/health" | jq -r '.logo')" "false"
-kill "${SERVER2_PID}" 2>/dev/null; wait "${SERVER2_PID}" 2>/dev/null
+start_server "${BASE}/server2.err"
+check "without a logo, /logo is 404" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${STARTED_PORT}/logo")" "404"
+check "and health says none" "$(curl -s "http://127.0.0.1:${STARTED_PORT}/api/health" | jq -r '.logo')" "false"
+kill "${STARTED_PID}" 2>/dev/null; wait "${STARTED_PID}" 2>/dev/null
 
 print -r -- ""
 print -r -- "--rotate-token: the running server follows, every terminal session ends"
