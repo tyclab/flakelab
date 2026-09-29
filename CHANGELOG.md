@@ -51,6 +51,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- The prompt's git segment is coloured, as wslkube's was: `git:(` in blue, the branch in red, a yellow `✗` when dirty. oh-my-zsh colours `git_prompt_info` only through a theme, and none was set; the default is now `robbyrussell` (`lib.mkDefault`, so an overlay's `programs.zsh.oh-my-zsh.theme` wins), whose own prompt the flakelab `PROMPT` still replaces. `zsh-git-prompt` checks the rendered segment.
 - `@playwright/mcp` 0.0.79 → 0.0.83 for Kiro's Windows Chrome bridge fallback (`nix/home/mcp.nix`; the `mcp-playwright` plugin pin wins where the marketplace clone carries one): the auto-updating Playwright MCP Bridge extension rejects a server that lags it with `unsupported protocol version`.
 - The system-wide `compinit` in `/etc/zshrc` is off (`programs.zsh.enableGlobalCompInit = false`): oh-my-zsh runs its own, so it ran twice. An interactive zsh starts in 0.51 s instead of 0.67 s (median of 20 interleaved runs).
 - tmux and the dashboard's terminal take the dashboard's accent: tmux's status line, current window, active pane border, copy-mode selection, message line and clock in its blue where tmux shows green, and ttyd's xterm in the dashboard's dark palette with the accent for the cursor and the selection.
