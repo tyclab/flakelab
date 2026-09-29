@@ -863,6 +863,22 @@ absent   "a source copy the state root tombstoned goes" "${MEM_HOME}/deleted.md"
 is_file  "the source's Codex memory arrives"            "${FIX_HOME}/.codex/memories/migrated.md"
 is_file  "and the state root's"                         "${FIX_HOME}/.codex/memories/shared.md"
 
+print -r -- "a --from restore whose state root is unavailable still reads the source's memory"
+fixture from-memory-offline
+STATE="${BASE}/from-memory-offline/no-such-parent/state"
+SRC_MEM="${BASE}/from-memory-offline/source/files/config/instances/TestDistro/claude/projects/some-slug/memory"
+SRC_CODEX="${BASE}/from-memory-offline/source/files/config/instances/TestDistro/codex/memories"
+mkdir -p "${SRC_MEM}" "${SRC_CODEX}"
+print -r -- "from the old repo"       > "${SRC_MEM}/migrated.md"
+print -r -- "codex from the old repo" > "${SRC_CODEX}/migrated.md"
+
+run_restore --from "${BASE}/from-memory-offline/source"
+is_file  "the source's memory file arrives"    "${FIX_HOME}/.claude/projects/some-slug/memory/migrated.md"
+is_file  "and its Codex memory"                "${FIX_HOME}/.codex/memories/migrated.md"
+contains "the unavailable root is still named" "${OUT}" "State root unavailable; Claude memory not restored from it"
+contains "for Codex too"                       "${OUT}" "State root unavailable; Codex memory not restored from it"
+absent   "and nothing lands in it"             "${STATE}"
+
 print -r -- "the memory index restores as a union, local order first"
 memory_fixture state-memory-index
 print -r -- "ours"   > "${MEM_HOME}/ours.md"
