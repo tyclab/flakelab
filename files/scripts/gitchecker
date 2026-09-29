@@ -75,9 +75,11 @@ untracked changes, each local branch's ahead/behind/diverged state against its
 upstream, branches whose remote branch was deleted (gone), detached HEAD,
 branches with no upstream, stashed work, and open MRs/PRs on the forge.
 
-Read-only: it never stashes, rebases or checks anything out. `gitcleaner` is
-the half that removes what this one reports; `clone-repos` is the half that
-updates it.
+It changes one thing: a branch strictly behind its upstream is fast-forwarded
+(a checked-out one with a dirty tree only when asked: yes at the terminal, or
+--ff-dirty), unless --no-ff. It never stashes, rebases or checks anything out.
+`gitcleaner` is the half that removes what this one reports; `clone-repos` is
+the half that updates it.
 
 Every run fetches and queries the forge, and any failure aborts the run rather
 than printing a stale "current". Needs git, jq and an authenticated glab — plus

@@ -251,6 +251,9 @@ run switch 1 2
 check "two entries exit 2" "${RC}" "2"
 run switch
 check "no entry exits 2" "${RC}" "2"
+run switch --help
+check "a verb's --help is the usage, exit 0" "${RC}" "0"
+contains "not an unknown option" "${OUT}" "Usage: accounts"
 
 # A live login that is there but cannot be identified (the account block
 # gone from ~/.claude.json) is copied aside before the switch overwrites it.
@@ -347,7 +350,7 @@ print -r -- ""
 print -r -- "status"
 run status
 check "status exits 0" "${RC}" "0"
-check "status names the active entry" "$(print -r -- "$OUT" | head -1)" "claude: 2 (work) bob@example.com [Example GmbH]"
+check "status names the active entry, with its cached windows" "$(print -r -- "$OUT" | head -1)" "claude: 2 (work) bob@example.com [Example GmbH]  -"
 contains "and each other adapter's state" "${OUT}" "codex: no active entry"
 run status --json
 check "status --json says the live login matches" "$(print -r -- "$OUT" | jq -r '.claude.matches')" "true"
@@ -829,9 +832,12 @@ export FLAKELAB_NOW=$(( 1758800000 + 400 ))
 run auto --once --json --dry-run
 check "--dry-run decides" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.to, .dryRun] | join(" ")')" "2 true"
 check "but changes nothing" "$(live_email)" "alice@example.com"
-run auto --once
+# UTC+2 as a POSIX TZ (needs no zoneinfo).
+TZ=XYZ-2 run auto --once
 check "the human form exits 0" "${RC}" "0"
 contains "and prints one line per event" "${OUT}" "claude  switch: 1 -> 2 [proactive on session]"
+contains "stamped with the local clock, not UTC's" "${OUT}" "$(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" +%H:%M:%S)  claude  switch"
+contains "while the log keeps UTC" "$(tail -1 "${STORE}/auto.log")" "\"ts\":\"$(date -u -d "@${FLAKELAB_NOW}" +%Y-%m-%dT%H:%M:%SZ)\""
 check "the switch is real" "$(live_email)" "bob@example.com"
 
 # A dead candidate is quarantined on the way and the next one taken: carol's

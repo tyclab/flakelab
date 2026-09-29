@@ -936,7 +936,8 @@ emit() {
   if [[ -f "$AUTO_LOG" ]] && (( $(stat -c %s "$AUTO_LOG" 2>/dev/null || print 0) > AUTO_LOG_MAX )); then mv -f -- "$AUTO_LOG" "${AUTO_LOG}.1"; fi
   (umask 077; print -r -- "$line" >> "$AUTO_LOG")
   if $AUTO_JSON; then print -r -- "$line"
-  else print -r -- "$line" | jq -r '"\(.ts | .[11:19])  \(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
+  # Display in local time; the log and --json keep UTC.
+  else print -r -- "$line" | jq -r --arg lt "$(date -d "@$(now)" +%H:%M:%S)" '"\($lt)  \(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
   fi
 }
 
@@ -1441,7 +1442,7 @@ cmd_status() {
       elif [[ "$matches" == false ]]; then
         print -r -- "${tool}: entry ${aid} ($(print -r -- "$active" | jq -r .label)) is recorded active, but the live login is $(print -r -- "$live" | jq -r .label): someone logged in by hand; run: flakelab accounts add ${tool}"
       else
-        print -r -- "${tool}: $(print -r -- "$active" | jq -r '"\(.entry)\(if .alias then " (\(.alias))" else "" end) \(.label) [\(.plan)]"')${lid:+}${${lid:-  (no live login)}:#${lid}}"
+        print -r -- "${tool}: $(print -r -- "$active" | jq -r '"\(.entry)\(if .alias then " (\(.alias))" else "" end) \(.label) [\(.plan)]"')  $(usage_text "$(print -r -- "$active" | jq -r .entry)")${lid:+}${${lid:-  (no live login)}:#${lid}}"
       fi
     fi
   done
@@ -1454,6 +1455,15 @@ cmd_status() {
 case "${1:-}" in
   --help|-h|help) usage; exit 0 ;;
 esac
+# -h/--help after a verb shows the usage; after `--` it is the tool's argument.
+() {
+  local a
+  for a in "${@:2}"; do
+    [[ "$a" == -- ]] && return 0
+    [[ "$a" == (-h|--help) ]] && { usage; exit 0 }
+  done
+  return 0
+} "$@"
 check_roster
 case "${1:-}" in
   ""|--json|--fetch)  cmd_list "$@" ;;
