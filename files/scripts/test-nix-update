@@ -1038,6 +1038,30 @@ excludes "saying nothing about the input"   "${OUT}" "flakelab input"
 excludes "and not dying on the short split" "${OUT}" "parameter not set"
 rm -f "${SHIM}/nix"
 
+# The switch runs as root, which cannot fetch a private input a garbage
+# collection removed; the caller fetches the inputs first.
+print -r -- "the overlay's inputs are fetched as the caller before the switch"
+cat > "${SHIM}/nix" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1 $2" == "flake archive" ]] || exit 0
+print -r -- "nix $*" >> "${SUDO_LOG}"
+exit "${ARCHIVE_RC:-0}"
+STUB
+chmod +x "${SHIM}/nix"
+d="$(mk_plain fetchfirst)"
+print -r -- '{ }' > "${d}/flake.lock"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "the fetch comes before the switch" "$(grep -oE '^(nix flake archive|nixos-rebuild switch)' "${SUDO_LOG}" | tr '\n' ' ')" "nix flake archive nixos-rebuild switch "
+contains "and fetches the overlay"          "$(< "${SUDO_LOG}")" "nix flake archive path:${d}"
+ARCHIVE_RC=1 run_update "${d}"
+check    "a failed fetch still switches"    "$(switches)" "1"
+contains "and says why it may not"          "${OUT}" "could not fetch the overlay's inputs"
+d="$(mk_plain nolockfetch)"
+run_update "${d}"
+excludes "an overlay with no lock fetches nothing" "$(< "${SUDO_LOG}")" "flake archive"
+rm -f "${SHIM}/nix"
+
 print -r -- "usage"
 run_update "${d}" --help
 check    "--help exits 0"                   "${RC}" "0"

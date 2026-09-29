@@ -458,6 +458,20 @@ _nix_reclaim_lock() {
 _nix_reclaim_lock
 _nix_relock_flakelab || exit 1
 
+# The switch evaluates as root, which has no ssh key: a private git+ssh input that
+# a garbage collection took out of the store cannot be fetched back there. Fetched
+# here first as the caller, whose agent can; an input still in the store costs
+# nothing. Warns only: the switch gives the verdict.
+_nix_fetch_inputs() {
+  local _out
+  [[ -f "${_repo}/flake.lock" ]] || return 0
+  local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
+  _out="$(nix flake archive "path:$(_url_path "${_repo}")" 2>&1)" && return 0
+  _say yellow "⚠ could not fetch the overlay's inputs as ${USER:-$(id -un)} — the switch runs as root and cannot fetch a private one it lacks"
+  print -r -- "${_out}"
+}
+_nix_fetch_inputs
+
 # `nixos-rebuild switch` restarts home-manager-<user>.service only when that unit
 # changed, which a switch building the same closure never does — so every step the
 # activation deferred for want of an ssh key stays deferred behind a green run.
