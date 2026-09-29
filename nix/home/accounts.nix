@@ -20,6 +20,23 @@ let
   };
 in
 {
+  assertions = [
+    {
+      assertion = !cfg.accounts.shellOverview || auto;
+      message = "flakelab.accounts.shellOverview needs flakelab.accounts.autoSwitchInterval: the timer writes the file it prints";
+    }
+  ];
+
+  # A file read, not `flakelab accounts`: that runs ~46 processes and, when an
+  # entry is due, a network poll before the prompt appears.
+  programs.zsh.initContent = lib.mkIf cfg.accounts.shellOverview (
+    lib.mkAfter ''
+      if [[ -o interactive && -t 1 && -r "$HOME/.local/state/flakelab/accounts/overview.txt" ]]; then
+        print -r -- "$(<"$HOME/.local/state/flakelab/accounts/overview.txt")"
+      fi
+    ''
+  );
+
   systemd.user.services = lib.optionalAttrs auto {
     flakelab-accounts-autoswitch = lib.recursiveUpdate neverRestartedByActivation {
       Unit.Description = "flakelab: switch the live agent login before it hits a rate limit";

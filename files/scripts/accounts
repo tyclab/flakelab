@@ -736,6 +736,7 @@ do_switch() {
   print -r -- "Switched ${tool} to $(entry_name "$id")"
   n="$(pgrep -x "$(acct_${tool}_process)" 2>/dev/null | grep -c .)"
   acct_${tool}_after_switch "$n"
+  write_overview
   return 0
 }
 
@@ -1086,6 +1087,7 @@ cmd_auto() {
       flock -u 9
       [[ "$outcome" == error ]] && rc=1
     done
+    write_overview
     $once && return $rc
     sleep_s=$(( AUTO_INTERVAL * (90 + RANDOM % 21) / 100 ))
     sleep "$sleep_s" || return 130
@@ -1412,6 +1414,20 @@ cmd_list() {
   done < <(rows)
   (( n > 0 )) || note "no stored logins; start with: flakelab accounts add <tool>"
   return 0
+}
+
+# The listing as a file, for flakelab.accounts.shellOverview: every auto tick
+# and every switch rewrite it, so a new shell prints it without running this
+# script. No stored login, no file.
+OVERVIEW="${STORE}/overview.txt"
+write_overview() {
+  local tmp="${OVERVIEW}.flakelab-tmp.$$"
+  if [[ -z "$(rows)" ]]; then rm -f -- "$OVERVIEW"; return 0; fi
+  if (umask 077; { print -r -- "flakelab accounts, as of $(date -d "@$(now)" +%H:%M)"; cmd_list } > "$tmp" 2>/dev/null); then
+    mv -f -- "$tmp" "$OVERVIEW"
+  else
+    rm -f -- "$tmp"
+  fi
 }
 
 # status: per adapter, the active entry and whether the live login is it.

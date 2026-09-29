@@ -223,6 +223,10 @@ login bob@example.com "${UUID_B}" "Example GmbH" tok-b2
 run switch home
 check "switch by alias exits 0" "${RC}" "0"
 check "switch reports the entry" "${OUT}" "Switched claude to 1 (home) alice@example.com"
+# The shell-start overview (flakelab.accounts.shellOverview) prints this file.
+contains "a switch writes the overview file" "$(<"${STORE}/overview.txt")" "flakelab accounts, as of "
+contains "with the listing's rows, the new login active" "$(<"${STORE}/overview.txt")" "$(row claude 1 home alice@example.com personal active)"
+check "readable by the owner only" "$(stat -c %a "${STORE}/overview.txt")" "600"
 check "the live credential is alice's" "$(live_token)" "tok-a2"
 check "the live identity is alice's" "$(live_email)" "alice@example.com"
 check "every other key of ~/.claude.json survives" "$(jq -c '[.projects, .mcpServers, .numStartups]' "${HOME}/.claude.json")" '[{"/work":{"allowedTools":["Bash"]}},{"grafana":{"command":"x"}},7]'
@@ -835,6 +839,7 @@ check "but changes nothing" "$(live_email)" "alice@example.com"
 # UTC+2 as a POSIX TZ (needs no zoneinfo).
 TZ=XYZ-2 run auto --once
 check "the human form exits 0" "${RC}" "0"
+contains "an auto tick rewrites the overview, stamped with the tick's time" "$(<"${STORE}/overview.txt")" "flakelab accounts, as of $(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" +%H:%M)"
 contains "and prints one line per event" "${OUT}" "claude  switch: 1 -> 2 [proactive on session]"
 contains "stamped with the local clock, not UTC's" "${OUT}" "$(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" +%H:%M:%S)  claude  switch"
 contains "while the log keeps UTC" "$(tail -1 "${STORE}/auto.log")" "\"ts\":\"$(date -u -d "@${FLAKELAB_NOW}" +%Y-%m-%dT%H:%M:%SZ)\""

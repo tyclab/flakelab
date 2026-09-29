@@ -436,6 +436,11 @@ in
         default = "soonest-reset";
         description = "How qualifying targets are ordered: soonest-reset tries the entry whose weekly windows renew first (quota spent where it returns soonest), best the one with the most weekly headroom.";
       };
+      shellOverview = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Print the stored logins and their usage at every interactive shell start. The shell prints a file the auto-switch timer rewrites each tick (and each switch), so it runs no process and waits on no network; the table is at most one tick old and says when it was written. Needs autoSwitchInterval.";
+      };
     };
 
     # A push when a session waits on you (remote-sessions.md, phase 3).

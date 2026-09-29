@@ -70,6 +70,9 @@ in
 
   # Makes zsh a valid login shell; the interactive config is in nix/home/zsh.nix.
   programs.zsh.enable = true;
+  # oh-my-zsh (nix/home/zsh.nix) runs compinit; the global one in /etc/zshrc ran
+  # it a second time, with its audit: 0.16 s of a 0.67 s interactive start.
+  programs.zsh.enableGlobalCompInit = false;
 
   # Keeps large contiguous blocks available: without it a fragmented VM cannot
   # allocate a WSL session's ring buffer and every new session stalls on the
