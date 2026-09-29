@@ -268,6 +268,7 @@ class ExitCodeTest(unittest.TestCase):
 
     def test_an_unknown_account_is_refused(self):
         self.assertRefused(self.run_mcp("connect", "nobody"), "Unknown MCP account")
+        self.assertRefused(self.run_mcp("connect", ""), "Unknown MCP account")
         self.assertRefused(self.run_mcp("connect", "personal"), "personal: login required")
         self.assertRefused(self.run_mcp("login", "personal", "nobody"), "Unknown MCP account")
 
