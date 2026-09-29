@@ -240,6 +240,7 @@ print -r -- 'x' > "${BASE}/logo.txt"
 FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_LOGO="${BASE}/logo.txt" PYTHONDONTWRITEBYTECODE=1 timeout 10 python3 "${SERVER}" 2>"${BASE}/logo.err"
 check "a logo that is no image type refuses at start" "$?" "2"
 contains "naming the types" "$(<"${BASE}/logo.err")" "not an image type"
+check "under the server's prefix" "${$(<"${BASE}/logo.err")%%FLAKELAB_WEB_LOGO*}" "flakelab web: refusing "
 FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
   FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" \
   PYTHONDONTWRITEBYTECODE=1 python3 "${SERVER}" 2>"${BASE}/server2.err" &

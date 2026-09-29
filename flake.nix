@@ -947,6 +947,31 @@
         # Manager moves that aside to cli.json.hm-bak once, then fails the next
         # activation that finds the backup name taken. Forced, the checked-in baseline
         # simply wins again on every switch.
+        # A program's OSC 52 copy inside a nested tmux, the session on a box reached
+        # over ssh from another tmux, lands in the outer tmux, which passes it on to
+        # its terminal. With the default set-clipboard (external) both drop it.
+        tmux-clipboard =
+          let
+            sys = self.nixosConfigurations.default.config;
+            hm = sys.home-manager.users.${sys.flakelab.username};
+            conf = hm.xdg.configFile."tmux/tmux.conf".source;
+          in
+          pkgs.runCommandLocal "flakelab-check-tmux-clipboard" { nativeBuildInputs = [ pkgs.tmux ]; } ''
+            export HOME=$TMPDIR TMUX_TMPDIR=$TMPDIR
+            inner="sleep 1; printf '\033]52;c;Y29waWVk\a'; sleep 30"
+            tmux -L outer -f ${conf} new-session -d -x 120 -y 30 \
+              "TERM=tmux-256color tmux -L inner -f ${conf} new-session \"$inner\""
+            for _ in $(seq 100); do
+              [ "$(tmux -L outer show-buffer 2>/dev/null)" = copied ] && break
+              sleep 0.1
+            done
+            got="$(tmux -L outer show-buffer 2>/dev/null || true)"
+            tmux -L inner kill-server 2>/dev/null || true
+            tmux -L outer kill-server 2>/dev/null || true
+            [ "$got" = copied ] || { echo "the copy never reached the outer tmux (got: '$got')"; exit 1; }
+            touch $out
+          '';
+
         kiro-cli-json =
           let
             sys = self.nixosConfigurations.default.config;

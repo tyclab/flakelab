@@ -130,14 +130,16 @@ the CLI's reason); the server never reads a token file of a tool and never
 touches the network itself.
 
 It binds to 127.0.0.1:8321 unless told otherwise and refuses every-interface
-binds; every API call needs the bearer token from
+binds; every API call but `/api/health` needs the bearer token from
 `~/.local/state/flakelab/web/token` (0600, made on the first start,
 `flakelab web --print-token` shows it), which the page asks for once and
 keeps in the browser. `flakelab.web.enable` runs it as the user service
 `flakelab-web` on `flakelab.web.bind`; the box's WireGuard address is the
 one to name for a phone. On the proxmox-vm target that address opens the
-port in the NixOS firewall, which otherwise leaves only sshd open; a WSL
-distro cannot open a port from inside, so there the bind stays on loopback.
+port in the NixOS firewall, which otherwise leaves only sshd open. A WSL
+distro gets no rule: NixOS-WSL turns its firewall off, so the dashboard
+listens on whatever `bind` names, and what reaches that address from another
+machine is the Windows host's networking and firewall to decide.
 
 The terminal beside it is ttyd, `flakelab.web.terminal`: a browser tab
 attached to the `agents` tmux session (created when absent). ttyd listens on
@@ -152,6 +154,13 @@ compares against the file on every check, so it follows at once and every
 terminal session ends with the old token. That is the "no SSH app on the
 phone" option from the table above, at the price it names: a shell in a
 browser tab behind a long-lived token. Keep it on the tunnel.
+
+Copying out of the session: in a terminal app (Windows Terminal, an SSH app),
+a mouse drag selects in tmux and the selection lands on the device's
+clipboard, from a nested tmux over SSH too, and a long URL copies whole even
+where tmux wrapped it. ttyd's browser terminal cannot receive that copy (its
+xterm.js has no OSC 52 handler); there, Shift+drag selects in the browser
+instead, one screen row at a time.
 
 The server also refuses a request whose `Host` is not its own address
 (421), so a page elsewhere that rebinds a name to it gets nothing, and drops

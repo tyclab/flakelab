@@ -175,6 +175,8 @@ from a Windows terminal; its next start is moved.
 - **Changing the other cgroup's mode.** It belongs to the program that made it,
   not to this flake.
 
+---
+
 ## Terminal Rendering Corruption (Null Bytes from wsl.exe)
 
 ### Symptom
