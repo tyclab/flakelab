@@ -606,6 +606,11 @@ in
               type = types.str;
               description = "Key in the sops render /run/secrets/tyc-env that holds the folder's encryption password. The same password on every box; losing it leaves the hub copy unreadable.";
             };
+            configDir = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = "Where Syncthing keeps its config, device key and the folder password it was handed; null is ~/.config/syncthing. Syncthing writes both in cleartext, so a box whose root disk is imaged into backups points this at a backup-excluded disk. A path outside the home is created for `username` (0700) and the services wait for its mount; the index database stays in ~/.local/state/syncthing either way.";
+            };
             guiAddress = mkOption {
               type = types.str;
               default = "127.0.0.1:8384";

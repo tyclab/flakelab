@@ -13,6 +13,7 @@ let
   home = config.users.users.${cfg.username}.home;
   secretDir = "/run/flakelab-syncthing";
   passwordFile = "${secretDir}/${st.folderId}.password";
+  configDir = if st.configDir != null then st.configDir else "${home}/.config/syncthing";
 in
 {
   config = lib.mkIf (st != null) {
@@ -32,7 +33,10 @@ in
       user = cfg.username;
       group = "users";
       dataDir = home;
-      configDir = "${home}/.config/syncthing";
+      inherit configDir;
+      # The index database is large and not secret: it stays in the home even when
+      # configDir sits on a small key-only disk.
+      databaseDir = "${home}/.local/state/syncthing";
       inherit (st) guiAddress;
       openDefaultPorts = false;
       # The declared hub and folder are the whole config: a device or folder added
@@ -56,6 +60,14 @@ in
         };
       };
     };
+
+    # A configDir off the home (a backup-excluded disk) is made for the user, and both
+    # services wait for its mount rather than write the key onto the disk beneath.
+    systemd.tmpfiles.rules = lib.mkIf (st.configDir != null) [
+      "d ${configDir} 0700 ${cfg.username} users -"
+    ];
+    systemd.services.syncthing.unitConfig.RequiresMountsFor = [ configDir ];
+    systemd.services.syncthing-init.unitConfig.RequiresMountsFor = [ configDir ];
 
     # syncthing-init reads the password with jq --rawfile, so it must be one line with
     # no newline, readable by the user it runs as, and in place before it starts.

@@ -1121,6 +1121,10 @@
                 }
               ];
             };
+            # configDir on a backup-excluded disk: made for the user, and waited for.
+            offHome = box.extendModules {
+              modules = [ { flakelab.stateSyncthing.configDir = "/var/lib/check-secrets/syncthing"; } ];
+            };
             inherit (box.config.services) syncthing;
             folder = syncthing.settings.folders.flakelab-state;
             pw = box.config.systemd.services.flakelab-syncthing-password;
@@ -1137,6 +1141,17 @@
           assert builtins.elem "syncthing-init.service" pw.before;
           assert nixpkgs.lib.hasInfix "CHECK_STATE_PASSWORD=" pw.script;
           assert !plain.services.syncthing.enable;
+          assert
+            syncthing.configDir
+            == "${box.config.users.users.${plain.flakelab.username}.home}/.config/syncthing";
+          assert offHome.config.services.syncthing.configDir == "/var/lib/check-secrets/syncthing";
+          assert
+            offHome.config.services.syncthing.databaseDir
+            == "${box.config.users.users.${plain.flakelab.username}.home}/.local/state/syncthing";
+          assert builtins.elem "d /var/lib/check-secrets/syncthing 0700 ${plain.flakelab.username} users -"
+            offHome.config.systemd.tmpfiles.rules;
+          assert builtins.elem "/var/lib/check-secrets/syncthing"
+            offHome.config.systemd.services.syncthing.unitConfig.RequiresMountsFor;
           pkgs.runCommandLocal "flakelab-check-state-syncthing" { } "touch $out";
 
         # A program's OSC 52 copy inside a nested tmux, the session on a box reached
