@@ -287,7 +287,7 @@ def main():
     child.add_argument("--fresh", action="store_true", help="discard old grants and register again")
     args = parser.parse_args()
     cfg = configuration()
-    named = [args.name] if getattr(args, "name", None) else getattr(args, "names", [])
+    named = [args.name] if getattr(args, "name", None) is not None else getattr(args, "names", [])
     if any(name not in cfg["servers"] for name in named):
         raise Refusal("Unknown MCP account.")
     if args.action == "status":
