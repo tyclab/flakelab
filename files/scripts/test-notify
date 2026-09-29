@@ -58,6 +58,12 @@ logged() { cat "${FAKE_LOG}" 2>/dev/null; : > "${FAKE_LOG}" }
 
 CLAUDE_HOOK='{"session_id": "11111111-2222-3333-4444-555555555555", "transcript_path": "/x", "cwd": "/home/u/git/work dir", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"}'
 
+print -r -- "a bare notify on a terminal shows the usage"
+# A hook pipes JSON in; a terminal never would, so it must not wait for it.
+OUT="$(printf '' | TERM=xterm timeout 20 script -qec "${(q)CMD}" /dev/null 2>&1)"; RC=$?
+check "it exits 2" "${RC}" "2"
+contains "with the usage" "${OUT}" "Usage: notify"
+
 print -r -- "unconfigured"
 run_in "${CLAUDE_HOOK}"
 check "a hook run without NTFY_URL exits 0" "${RC}" "0"

@@ -171,6 +171,7 @@ contains "a codex process is identified by the rollout file it holds open" "${OU
 contains "a kiro process takes the locked session of its directory from Kiro's registry" "${OUT}" "kiro    600      0m      ${SID_K}"
 excludes "a registry file for a dead pid is not a session" "${OUT}" "999"
 contains "a claude process with no id is noted on stderr" "${ERR}" "note: claude pid 300 in ${BASE}/other has no session id yet"
+contains "which says what that means: listed, nothing to resume it by" "${ERR}" "has no session id yet: listed, but nothing to save or resume it by"
 excludes "a kiro process with a registry match is not noted" "${ERR}" "kiro pid 600"
 contains "the directory with a space is printed intact" "${OUT}" "${WORK}"
 contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  ${WORK}"
@@ -485,6 +486,14 @@ contains "--recent lists a closed kiro session from its registry" "${OUT}" "cd $
 excludes "--recent leaves a locked kiro session out" "${OUT}" "${SID_K}  #"
 run --recent 96
 contains "--recent <hours> widens the window" "${OUT}" "claude --resume ${SID_D}"
+# Sorted across tools: codex newest, then kiro, then claude.
+touch -d '3 hours ago' "${PROJ}/${SID_C}.jsonl"
+touch -d '2 hours ago' "${HOME}/.kiro/sessions/cli/${SID_K2}.json"
+touch -d '1 hour ago' "${ROLL}/rollout-2026-09-23T10-00-00-${SID_R}.jsonl"
+run --recent
+check "--recent orders every tool by time, newest first" \
+  "$(print -r -- "${OUT}" | grep -oE 'codex resume|kiro-cli chat --resume-id|claude --resume' | tr '\n' ',')" \
+  "codex resume,kiro-cli chat --resume-id,claude --resume,"
 
 # The state root: a session another box synced and this one has not pulled,
 # a rollout likewise, and a copy of a session this box already has.
@@ -541,7 +550,9 @@ PROFILE="${HOME}/.local/state/flakelab/accounts/profiles/2"
 mkdir -p "${PROFILE}/sessions" "${PROFILE}/projects/-other"
 print -r -- "{\"pid\":300,\"sessionId\":\"${SID_P}\",\"cwd\":\"${BASE}/other\",\"startedAt\":${NOW_MS}}" > "${PROFILE}/sessions/300.json"
 run
-contains "pid 300 takes its id from the profile's own registry" "${OUT}" "claude  300      0m      ${SID_P}"
+# Match the row without its age: on a loaded box this can run past 1m.
+check "pid 300 takes its id from the profile's own registry" \
+  "$(print -r -- "${OUT}" | grep -E '^claude  300 +[0-9]+[dhm]' | grep -c -- "${SID_P}")" "1"
 excludes "and is no longer noted as id-less" "${ERR}" "claude pid 300"
 SID_Q=facefeed-0000-0000-0000-000000000010
 print -r -- "{\"type\":\"user\",\"cwd\":\"${BASE}/other\"}" > "${PROFILE}/projects/-other/${SID_Q}.jsonl"

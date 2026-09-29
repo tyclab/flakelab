@@ -371,7 +371,7 @@ gather() {
           ;;
       esac
       [[ -n "$age" ]] || age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
-      [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no session id yet, skipped"
+      [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no session id yet: listed, but nothing to save or resume it by"
       host="$(host_of "$p")"
       IFS="$US" read -r wid wname <<<"$host"
       ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}")
@@ -644,10 +644,18 @@ open_tabs() {
 # rollout names its id in the file name and its cwd in the session_meta line
 # at its head. A Kiro session is its registry entry, skipped while its lock
 # exists.
+# print_recent collects "<mtime> US <resume line>" here and sorts it, so the
+# list is newest first across all tools.
+typeset -a RECENT=()
+recent_add() {
+  local f="$1" tool="$2" cwd="$3" sid="$4" extra="${5:-}" stamp
+  stamp="$(date -r "$f" '+%s %Y-%m-%d %H:%M')"
+  RECENT+=("${stamp%% *}${US}$(resume_line "$tool" "$cwd" "$sid" "${stamp#* }${extra:+, ${extra}}")")
+}
+
 print_recent() {
   local -A live=() seen=()
-  local row tool p age sid cwd wid wname f when
-  local -i n=0
+  local row tool p age sid cwd wid wname f
   gather 2>/dev/null
   for row in "${ROWS[@]}"; do
     IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
@@ -661,9 +669,7 @@ print_recent() {
     [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
     seen[claude${US}${sid}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
-    when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
-    resume_line claude "$cwd" "$sid" "$when"
-    (( ++n ))
+    recent_add "$f" claude "$cwd" "$sid"
   done
   for f in "${HOME}"/.codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
@@ -671,9 +677,7 @@ print_recent() {
     [[ -n "${live[codex${US}${sid}]:-}" ]] && continue
     seen[codex${US}${sid}]=1
     cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
-    when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
-    resume_line codex "$cwd" "$sid" "$when"
-    (( ++n ))
+    recent_add "$f" codex "$cwd" "$sid"
   done
   # The state root's synced transcripts (remote-sessions.md, phase 5): what
   # another box left there and this one has not pulled yet. Resuming one
@@ -686,18 +690,14 @@ print_recent() {
       [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
       [[ -f "${HOME}/.claude/projects/${f:h:t}/${f:t}" ]] && continue
       cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
-      when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
-      resume_line claude "$cwd" "$sid" "${when}, ${pull}"
-      (( ++n ))
+      recent_add "$f" claude "$cwd" "$sid" "${pull}"
     done
     for f in "${FLAKELAB_STATE_ROOT}"/codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
       sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
       [[ -n "$sid" ]] || continue
       [[ -n "${live[codex${US}${sid}]:-}" || -n "${seen[codex${US}${sid}]:-}" ]] && continue
       cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
-      when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
-      resume_line codex "$cwd" "$sid" "${when}, ${pull}"
-      (( ++n ))
+      recent_add "$f" codex "$cwd" "$sid" "${pull}"
     done
   fi
   for f in "${KIRO_SESSIONS}"/*.json(N.mh-${RECENT_HOURS}om); do
@@ -705,11 +705,10 @@ print_recent() {
     [[ -n "${live[kiro${US}${sid}]:-}" ]] && continue
     [[ -e "${KIRO_SESSIONS}/${sid}.lock" ]] && continue
     cwd="$(jq -r '.cwd // empty' "$f" 2>/dev/null)"
-    when="$(date -r "$f" '+%Y-%m-%d %H:%M')"
-    resume_line kiro "$cwd" "$sid" "$when"
-    (( ++n ))
+    recent_add "$f" kiro "$cwd" "$sid"
   done
-  (( n > 0 )) || print -ru2 -- "no stopped session changed in the last ${RECENT_HOURS}h"
+  for row in "${(@On)RECENT}"; do print -r -- "${row#*${US}}"; done
+  (( ${#RECENT} > 0 )) || print -ru2 -- "no stopped session changed in the last ${RECENT_HOURS}h"
   return 0
 }
 
