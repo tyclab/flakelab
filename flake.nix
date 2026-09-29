@@ -573,9 +573,31 @@
             hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
             # Isolate the generated activation entry without changing the test
             # process's HOME or accessing any live Claude account files.
-            entry = pkgs.writeText "claude-mcp-exclusion-activation" (
-              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.claudeMcpMerge.data
+            rendered =
+              name: sys:
+              pkgs.writeText name (
+                nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ]
+                  sys.config.home-manager.users.${sys.config.flakelab.username}.home.activation.claudeMcpMerge.data
+              );
+            entry = rendered "claude-mcp-exclusion-activation" fixture;
+            # The generation before: one more declared server.
+            earlier = rendered "claude-mcp-earlier-activation" (
+              fixture.extendModules {
+                modules = [
+                  {
+                    flakelab.claudeMcpServers.retired = {
+                      command = "retired-mcp";
+                      args = [
+                        "--dir"
+                        "/example/retired-value"
+                      ];
+                    };
+                  }
+                ];
+              }
             );
+            # A generation that renders no server at all.
+            none = rendered "claude-mcp-none-activation" self.nixosConfigurations.default;
           in
           assert nixpkgs.lib.hasInfix "whatsapp" hm.home.activation.kiroMcpMerge.data;
           pkgs.runCommandLocal "flakelab-check-claude-mcp-exclusion"
@@ -595,6 +617,143 @@
               bash -euo pipefail ${entry}
               cmp before.json "$fixtureHome/.claude.json"
               test "$(stat -c %a "$fixtureHome/.claude.json")" = 600
+
+              # fresh <name>: an empty fixture home with the same paths under it.
+              fresh() {
+                export fixtureHome="$TMPDIR/$1"
+                mkdir -p "$fixtureHome"
+                claudeJson="$fixtureHome/.claude.json"
+                record="$fixtureHome/.local/state/flakelab/activation-rendered/claude-mcp-servers.json"
+              }
+
+              echo "a missing record removes nothing"
+              fresh no-record
+              printf '%s\n' '{"mcpServers":{"retired":{"command":"earlier"}}}' > "$claudeJson"
+              bash -euo pipefail ${entry}
+              jq -e '.mcpServers | .retired.command == "earlier" and .custom.command == "example-mcp"' "$claudeJson"
+              jq -e '. == ["custom"]' "$record"
+
+              echo "a server one generation rendered and the next does not is removed, a hand-added one survives both"
+              fresh generations
+              printf '%s\n' '{"mcpServers":{"manual":{"command":"keep"}}}' > "$claudeJson"
+              bash -euo pipefail ${earlier}
+              jq -e '.mcpServers | .retired.command == "retired-mcp" and .manual.command == "keep"' "$claudeJson"
+              bash -euo pipefail ${entry}
+              jq -e '.mcpServers | (has("retired") | not) and .custom.command == "example-mcp" and .manual.command == "keep"' "$claudeJson"
+
+              echo "the record holds the rendered names, no values, mode 600"
+              jq -e '. == ["custom"]' "$record"
+              test "$(stat -c %a "$record")" = 600
+              bash -euo pipefail ${earlier}
+              jq -e '. == ["custom", "retired"]' "$record"
+              if grep -q -e retired-mcp -e retired-value -e example-mcp "$record"; then exit 1; fi
+
+              echo "a generation that renders no server removes the last ones rendered"
+              bash -euo pipefail ${none}
+              jq -e '.mcpServers == {"manual":{"command":"keep"}}' "$claudeJson"
+              jq -e '. == []' "$record"
+
+              echo "no server rendered and no ~/.claude.json: none is created"
+              fresh none
+              bash -euo pipefail ${none}
+              test ! -e "$claudeJson"
+              touch $out
+            '';
+        # settings.json is Claude's own file as much as ours, so the rendered claudeSettings
+        # entry runs across two generations: the env keys and the statusline the first
+        # one wrote and the second no longer renders go, the user's own stay.
+        claude-settings-prune =
+          let
+            later = self.nixosConfigurations.default;
+            earlier = later.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    claudePlugins = [
+                      "mcp-playwright"
+                      "mcp-whatsapp"
+                      "statusbar@fixture-market"
+                    ];
+                    sessionVariables.WHATSAPP_BRIDGE_HOST = "bridge.example.invalid:8180";
+                    whatsappMcpDir = "/example/whatsapp-mcp-server";
+                  };
+                }
+              ];
+            };
+            entry =
+              name: sys:
+              pkgs.writeText name
+                sys.config.home-manager.users.${sys.config.flakelab.username}.home.activation.claudeSettings.data;
+            entryEarlier = entry "claude-settings-earlier-activation" earlier;
+            entryLater = entry "claude-settings-later-activation" later;
+          in
+          pkgs.runCommandLocal "flakelab-check-claude-settings-prune"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export DRY_RUN_CMD=
+              # fresh <name>: an empty HOME with the same paths under it.
+              fresh() {
+                export HOME="$TMPDIR/$1"
+                mkdir -p "$HOME/.claude"
+                settings="$HOME/.claude/settings.json"
+                record="$HOME/.local/state/flakelab/activation-rendered/claude-settings-env.json"
+                warnLog="$HOME/.local/state/flakelab/activation-failures"
+              }
+              base='["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY","DISABLE_ERROR_REPORTING","DISABLE_FEEDBACK_COMMAND"]'
+
+              echo "a missing record removes nothing"
+              fresh no-record
+              echo '{"env":{"WHATSAPP_MCP_DIR":"/earlier","MY_VAR":"mine"}}' > "$settings"
+              bash -euo pipefail ${entryLater}
+              jq -e '.env | .WHATSAPP_MCP_DIR == "/earlier" and .MY_VAR == "mine"' "$settings" > /dev/null
+              jq -e --argjson b "$base" '. == $b' "$record" > /dev/null
+
+              echo "env keys and the statusline one generation rendered and the next does not are removed, the user's survive both"
+              fresh generations
+              echo '{"env":{"MY_VAR":"mine"}}' > "$settings"
+              bash -euo pipefail ${entryEarlier}
+              jq -e '.env | .MY_VAR == "mine" and .WHATSAPP_MCP_DIR == "/example/whatsapp-mcp-server" and .PLAYWRIGHT_MCP_EXTENSION == "true"' "$settings" > /dev/null
+              jq -e '.statusLine.command | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$")' "$settings" > /dev/null
+              bash -euo pipefail ${entryLater}
+              jq -e --argjson b "$base" '.env | keys == ($b + ["MY_VAR"] | sort)' "$settings" > /dev/null
+              jq -e 'has("statusLine") | not' "$settings" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "the record holds the rendered names, no values, mode 600"
+              jq -e --argjson b "$base" '. == $b' "$record" > /dev/null
+              test "$(stat -c %a "$record")" = 600
+              bash -euo pipefail ${entryEarlier}
+              jq -e --argjson b "$base" '. == ($b + ["PLAYWRIGHT_MCP_BROWSER","PLAYWRIGHT_MCP_EXECUTABLE_PATH","PLAYWRIGHT_MCP_EXTENSION","WHATSAPP_BRIDGE_HOST","WHATSAPP_MCP_DIR","WHATSAPP_MCP_TOOLSETS"])' "$record" > /dev/null
+              if grep -q -e bridge.example.invalid -e whatsapp-mcp-server -e chrome.exe -e core,send "$record"; then exit 1; fi
+
+              echo "an env key added by hand after flakelab stopped rendering it survives"
+              bash -euo pipefail ${entryLater}
+              jq '.env.WHATSAPP_MCP_DIR = "/by-hand"' "$settings" > settings.tmp
+              mv settings.tmp "$settings"
+              bash -euo pipefail ${entryLater}
+              jq -e '.env.WHATSAPP_MCP_DIR == "/by-hand"' "$settings" > /dev/null
+
+              echo "a statusline of the user's own survives both generations"
+              fresh own-statusline
+              echo '{"statusLine":{"type":"command","command":"my-statusline"}}' > "$settings"
+              bash -euo pipefail ${entryEarlier}
+              jq -e '.statusLine.command == "my-statusline"' "$settings" > /dev/null
+              bash -euo pipefail ${entryLater}
+              jq -e '.statusLine.command == "my-statusline"' "$settings" > /dev/null
+
+              echo "a settings.json jq cannot read warns and keeps the record"
+              fresh failed-merge
+              bash -euo pipefail ${entryEarlier}
+              echo 'not-json' > "$settings"
+              bash -euo pipefail ${entryLater}
+              grep -q 'could not update' "$warnLog"
+              grep -qx 'not-json' "$settings"
+              jq -e '. | length == 9' "$record" > /dev/null
               touch $out
             '';
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
@@ -1131,7 +1290,9 @@
         # against each state that clone can be in: absent (every first switch, where
         # installClaudePlugins defers until provisioning seeds a key), empty, valid and
         # malformed. A flakelab-warn entry fails the rebuild through flakelabHealthCheck,
-        # so the three benign states also assert that none was written.
+        # so the three benign states also assert that none was written. Then across two
+        # generations, the earlier one rendering whatsapp too, against each state of the
+        # record of names it wrote: present, missing, unreadable, and kept by a failed merge.
         kiro-mcp-merge =
           let
             fixture = self.nixosConfigurations.default.extendModules {
@@ -1142,6 +1303,19 @@
             };
             hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
             entry = pkgs.writeText "kiro-mcp-merge-activation" hm.home.activation.kiroMcpMerge.data;
+            # The generation before: whatsapp rendered too.
+            earlier = fixture.extendModules {
+              modules = [
+                {
+                  flakelab = {
+                    sessionVariables.WHATSAPP_BRIDGE_HOST = "bridge.example.invalid:8180";
+                    whatsappMcpDir = "/example/whatsapp-mcp-server";
+                  };
+                }
+              ];
+            };
+            hmEarlier = earlier.config.home-manager.users.${earlier.config.flakelab.username};
+            entryEarlier = pkgs.writeText "kiro-mcp-merge-earlier-activation" hmEarlier.home.activation.kiroMcpMerge.data;
           in
           pkgs.runCommandLocal "flakelab-check-kiro-mcp-merge"
             {
@@ -1183,6 +1357,67 @@
               activate
               jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
               grep -q 'could not read the Claude marketplace MCP definitions' "$warnLog"
+
+              # fresh <name>: an empty HOME with the same paths under it.
+              fresh() {
+                export HOME="$TMPDIR/$1"
+                mkdir -p "$HOME/.kiro/settings"
+                mcp="$HOME/.kiro/settings/mcp.json"
+                record="$HOME/.local/state/flakelab/activation-rendered/kiro-mcp-servers.json"
+                warnLog="$HOME/.local/state/flakelab/activation-failures"
+              }
+              activateEarlier() { bash -euo pipefail ${entryEarlier}; }
+
+              echo "a server one generation rendered and the next does not is removed, a hand-added one survives both"
+              fresh generations
+              echo '{"mcpServers":{"mine":{"command":"user"}}}' > "$mcp"
+              activateEarlier
+              jq -e '.mcpServers | .whatsapp.command == "sh" and .mine.command == "user"' "$mcp" > /dev/null
+              activate
+              jq -e '.mcpServers | (has("whatsapp") | not) and .synology.command == "sh" and .mine.command == "user"' "$mcp" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "the record holds the rendered names, no values, mode 600"
+              jq -e '. == ["synology"]' "$record" > /dev/null
+              test "$(stat -c %a "$record")" = 600
+              activateEarlier
+              jq -e '. == ["synology", "whatsapp"]' "$record" > /dev/null
+              if grep -q -e whatsapp-mcp-server -e bridge.example.invalid -e '"sh"' "$record"; then exit 1; fi
+              activate
+
+              echo "a server added by hand after flakelab stopped rendering it survives"
+              jq '.mcpServers.whatsapp = {"command":"hand"}' "$mcp" > mcp.tmp
+              mv mcp.tmp "$mcp"
+              activate
+              jq -e '.mcpServers.whatsapp.command == "hand"' "$mcp" > /dev/null
+
+              echo "a missing record removes nothing"
+              fresh no-record
+              echo '{"mcpServers":{"whatsapp":{"command":"earlier"}}}' > "$mcp"
+              activate
+              jq -e '.mcpServers.whatsapp.command == "earlier"' "$mcp" > /dev/null
+              jq -e '. == ["synology"]' "$record" > /dev/null
+
+              echo "an unreadable record removes nothing and is rewritten"
+              fresh bad-record
+              activateEarlier
+              echo 'not-json' > "$record"
+              activate
+              jq -e '.mcpServers.whatsapp.command == "sh"' "$mcp" > /dev/null
+              jq -e '. == ["synology"]' "$record" > /dev/null
+              test ! -e "$warnLog"
+
+              echo "a merge that fails keeps the record, so the next one still removes"
+              fresh failed-merge
+              activateEarlier
+              cp "$mcp" earlier.json
+              echo 'not-json' > "$mcp"
+              activate
+              grep -q 'could not merge MCP overrides' "$warnLog"
+              jq -e '. == ["synology", "whatsapp"]' "$record" > /dev/null
+              cp earlier.json "$mcp"
+              activate
+              jq -e '.mcpServers | has("whatsapp") | not' "$mcp" > /dev/null
 
               touch $out
             '';

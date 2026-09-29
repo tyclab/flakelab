@@ -21,6 +21,7 @@ let
     sshDefer
     flakelabWarn
     flakelabDefer
+    renderedRecord
     cloneKeyResolve
     sshKeys
     ;
@@ -132,8 +133,9 @@ let
   '';
 
   # Written when absent or when it is flakelab's own (an earlier generation's
-  # tee script, or the plain plugin command every box before the tee had), so
-  # a local override survives while a provisioned box follows this flake; the
+  # tee script, or the plain plugin command every box before the tee had), and
+  # flakelab's own is removed once the statusbar plugin is not enabled, so a
+  # local override survives while a provisioned box follows this flake; the
   # sort -V glob resolves the newest cached plugin version at statusline time.
   # The stdin Claude Code hands the statusline carries the live login's
   # rate_limits with every refresh: teed into `accounts ingest` on the way, so
@@ -148,42 +150,47 @@ let
   claudeStatuslineArg = lib.optionalString (
     statuslineMarketplace != null
   ) "--arg statusline ${lib.escapeShellArg "${claudeStatuslineCmd}"}";
-  claudeStatuslineJq = lib.optionalString (statuslineMarketplace != null) ''
-    | .statusLine = (
-        if .statusLine == null
-           or ((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))
-        then {type: "command", command: $statusline} else .statusLine end)
-  '';
+  claudeStatuslineOurs = ''((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))'';
+  claudeStatuslineJq =
+    if statuslineMarketplace != null then
+      ''
+        | .statusLine = (
+            if .statusLine == null or ${claudeStatuslineOurs}
+            then {type: "command", command: $statusline} else .statusLine end)
+      ''
+    else
+      ''
+        | if ${claudeStatuslineOurs} then del(.statusLine) else . end
+      '';
 
-  # Without these the Playwright server launches a local chrome instead of
-  # attaching to Windows Chrome.
-  claudePlaywrightJq = lib.optionalString (isWsl && lib.elem "mcp-playwright" claudePlugins) ''
-    | .env += ${
-      builtins.toJSON {
-        PLAYWRIGHT_MCP_EXECUTABLE_PATH = windowsChromePath;
-        PLAYWRIGHT_MCP_EXTENSION = "true";
-        PLAYWRIGHT_MCP_BROWSER = "chrome";
-      }
-    }
-  '';
-
-  # Non-secret halves only: the API key stays in secrets.env.
-  claudeWhatsappJq =
-    lib.optionalString
+  # Without the Playwright keys the server launches a local chrome instead of
+  # attaching to Windows Chrome. WhatsApp's are the non-secret halves only: the
+  # API key stays in secrets.env.
+  claudeEnv = {
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY = "1";
+    DISABLE_FEEDBACK_COMMAND = "1";
+    DISABLE_ERROR_REPORTING = "1";
+  }
+  // lib.optionalAttrs (isWsl && lib.elem "mcp-playwright" claudePlugins) {
+    PLAYWRIGHT_MCP_EXECUTABLE_PATH = windowsChromePath;
+    PLAYWRIGHT_MCP_EXTENSION = "true";
+    PLAYWRIGHT_MCP_BROWSER = "chrome";
+  }
+  //
+    lib.optionalAttrs
       (
         lib.elem "mcp-whatsapp" claudePlugins
         && cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST
         && whatsappMcpDir != null
       )
-      ''
-        | .env += ${
-          builtins.toJSON {
-            WHATSAPP_MCP_DIR = whatsappMcpDir;
-            WHATSAPP_BRIDGE_HOST = cfg.sessionVariables.WHATSAPP_BRIDGE_HOST;
-            WHATSAPP_MCP_TOOLSETS = "core,send,media";
-          }
-        }
-      '';
+      {
+        WHATSAPP_MCP_DIR = whatsappMcpDir;
+        WHATSAPP_BRIDGE_HOST = cfg.sessionVariables.WHATSAPP_BRIDGE_HOST;
+        WHATSAPP_MCP_TOOLSETS = "core,send,media";
+      };
+  claudeEnvRecord = renderedRecord "claude-settings-env" "~/.claude/settings.json env" (
+    builtins.attrNames claudeEnv
+  );
 
   # Newline-terminated, or the END marker lands on the last line of the extra text.
   claudeMdExtraFile = pkgs.writeText "claude-md-extra.md" (
@@ -236,6 +243,9 @@ let
     // lib.mapAttrs (_: server: server // { type = "stdio"; }) sharedMcp.servers
     // cfg.claudeMcpServers
   ) cfg.claudeMcpDisabledServers;
+  claudeMcpRecord = renderedRecord "claude-mcp-servers" "~/.claude.json mcpServers" (
+    builtins.attrNames claudeMcpServers
+  );
 
   jqPath = ''export PATH="${
     lib.makeBinPath [
@@ -348,8 +358,8 @@ in
       );
 
   # The settings.json policy in one pass: attribution off, feedback and error
-  # reporting off, installMethod, the update channel, autoMode and the deny floor
-  # asserted whole, then the opt-in bundle, statusline and plugin env.
+  # reporting off with the plugin env, installMethod, the update channel, autoMode
+  # and the deny floor asserted whole, then the opt-in bundle and statusline.
   # permissions.allow/ask are not here: the marketplace clone they come from is
   # runtime data, so nix-update asserts them after every switch.
   home.activation.claudeSettings =
@@ -359,15 +369,17 @@ in
           ${jqPath}
           _settings="$HOME/.claude/settings.json"
           _attrs='{"commit":"","pr":"","sessionUrl":false}'
-          _env='{"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":"1","DISABLE_FEEDBACK_COMMAND":"1","DISABLE_ERROR_REPORTING":"1"}'
+          _env=${lib.escapeShellArg (builtins.toJSON claudeEnv)}
           _deny=${lib.escapeShellArg (builtins.toJSON claudeDeny)}
+          ${claudeEnvRecord.load}
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          jq --argjson a "$_attrs" --argjson e "$_env" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
+          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
+            | .env |= reduce ($prev - ($e | keys))[] as $k (.; del(.[$k]))
             | .installMethod = "native"
             | .autoUpdatesChannel = "${claudeAutoUpdatesChannel}"
             | .autoMode = $am[0]
@@ -379,43 +391,50 @@ in
             ${accountsHookJq}
             ${notifyHookJq}
             ${claudeStatuslineJq}
-            ${claudePlaywrightJq}
-            ${claudeWhatsappJq}
-          ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings" || {
+          ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings"; then
+            ${claudeEnvRecord.save}
+          else
             rm -f "$_settings.tmp"
             ${flakelabWarn} "could not update $_settings."
-          }
+          fi
           # env carries MCP credentials, and the merge replaces the inode.
           chmod 600 "$_settings"
         ''
       );
 
   # `claude mcp add` refuses an existing name, so converge on the file: declared
-  # servers are reasserted, hand-added ones survive. `+`, not `*`, or an arg
-  # dropped from a declaration would linger.
+  # servers are reasserted, hand-added ones survive, and one an earlier generation
+  # declared and this one does not is removed. `+`, not `*`, or an arg dropped
+  # from a declaration would linger.
   home.activation.claudeMcpMerge =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" ]
       (
-        lib.optionalString
-          (installClaude && (claudeMcpServers != { } || cfg.claudeMcpDisabledServers != [ ]))
-          ''
-            ${jqPath}
-            _claudeJson="$HOME/.claude.json"
-            _ours=${lib.escapeShellArg (builtins.toJSON claudeMcpServers)}
-            _disabled=${lib.escapeShellArg (builtins.toJSON cfg.claudeMcpDisabledServers)}
+        lib.optionalString installClaude ''
+          ${jqPath}
+          _claudeJson="$HOME/.claude.json"
+          _ours=${lib.escapeShellArg (builtins.toJSON claudeMcpServers)}
+          _disabled=${lib.escapeShellArg (builtins.toJSON cfg.claudeMcpDisabledServers)}
+          ${claudeMcpRecord.load}
+          # Claude rewrites this file constantly: with nothing to add and nothing
+          # to take back it is left alone.
+          if [ "$_ours" = '{}' ] && { [ ! -s "$_claudeJson" ] || [ "$_disabled$_prev" = '[][]' ]; }; then
+            ${claudeMcpRecord.save}
+          else
             [ -s "$_claudeJson" ] || echo '{}' > "$_claudeJson"
             _tmp="$(mktemp)"
-            if jq --argjson ours "$_ours" --argjson disabled "$_disabled" '
+            if jq --argjson ours "$_ours" --argjson disabled "$_disabled" --argjson prev "$_prev" '
                  .mcpServers = ((.mcpServers // {}) + $ours)
-                 | reduce $disabled[] as $name (.; del(.mcpServers[$name]))' \
+                 | .mcpServers |= reduce (($prev - ($ours | keys)) + $disabled)[] as $name (.; del(.[$name]))' \
                  "$_claudeJson" > "$_tmp" 2>/dev/null && [ -s "$_tmp" ]; then
               # 600: the same file carries Claude's account and OAuth state.
               $DRY_RUN_CMD install -m600 "$_tmp" "$_claudeJson"
+              ${claudeMcpRecord.save}
             else
               ${flakelabWarn} "could not merge Claude MCP servers into $_claudeJson."
             fi
             rm -f "$_tmp"
-          ''
+          fi
+        ''
       );
 
   # Nothing here pins Claude or its marketplaces, so the two switches that would

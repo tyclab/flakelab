@@ -347,6 +347,17 @@ symlinks, because Claude rewrites these files itself:
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
   shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.
 
+A merge takes back what it stops rendering, and nothing else. The `env` of
+`settings.json`, the `mcpServers` of `~/.claude.json` and those of Kiro's
+`~/.kiro/settings/mcp.json` are maps the user and the tool write too, so each
+merge records the key names it wrote, never their values, in
+`~/.local/state/flakelab/activation-rendered/` (mode 600). A name in that record
+that the next generation no longer renders is removed; a name never recorded
+stays, and a missing or unreadable record removes nothing. The record is
+rewritten only after the file was, so a merge that failed leaves it for the
+next one. The statusline is known by its command instead: flakelab's own goes
+once the statusbar plugin is not enabled, a local one stays.
+
 `~/.gitconfig` is a flake-owned `[include]` of `~/.config/git/config`. git reads
 the legacy path last, so a real file there overrides every key `programs.git`
 sets and `backupFileExtension` cannot catch it — Home Manager writes the XDG
