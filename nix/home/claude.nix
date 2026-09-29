@@ -137,8 +137,9 @@ let
   # sort -V glob resolves the newest cached plugin version at statusline time.
   # The stdin Claude Code hands the statusline carries the live login's
   # rate_limits with every refresh: teed into `accounts ingest` on the way, so
-  # the usage endpoint is never asked for the active entry (accounts.md,
-  # "Usage"). The tee never delays or fails the statusline.
+  # the usage endpoint is asked for the active entry only for its per-model
+  # week, at the candidate cadence (accounts.md, "Usage"). The tee never
+  # delays or fails the statusline.
   statuslineMarketplace = marketplaceOf "statusbar";
   claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
   claudeStatuslineCmd = pkgs.writeShellScript "flakelab-claude-statusline" ''

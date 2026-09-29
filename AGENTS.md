@@ -86,6 +86,13 @@ the private overlay `flakelab-config`, which imports this flake via
     a bearer token from `~/.local/state/flakelab/web/token` (`--print-token`);
     `flakelab.web.*` runs it as a user service, `web.terminal` adds ttyd on
     the `agents` tmux session with the same token.
+  - `mcp` (new, `mcp`): the OAuth MCP accounts Claude and Codex share
+    (`lib/mcp.py`, python3 stdlib; `mcp.md`). Both clients run
+    `flakelab-mcp connect <account>`: the pinned `mcp-remote` adapter on the
+    credential host (`flakelab.mcpShared.gateway = null`), `ssh -T` to it
+    everywhere else. `status`, `login [--fresh]` from a desktop,
+    `import-codex` once; a refusal exits 2. Its suite is python unittest in
+    `lib/test-mcp.py`, run by `test-mcp`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Seven deprecation shims still answer to the old names — `nix-update`,

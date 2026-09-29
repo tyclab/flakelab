@@ -12,9 +12,9 @@ set -uo pipefail
 #        flakelab web --print-token | --rotate-token
 #
 # One python3 process (lib/web.py, the standard library only), bound to
-# 127.0.0.1:8321 unless told otherwise, every API call behind a bearer token
-# from the token file (0600 under ~/.local/state/flakelab/web/, made on first
-# start). It shells out to `accounts` and `claude-sessions` for everything,
+# 127.0.0.1:8321 unless told otherwise, every API call but /api/health behind
+# a bearer token from the token file (0600 under ~/.local/state/flakelab/web/,
+# made on first start). It shells out to `accounts` and `claude-sessions` for everything,
 # so their locks, refusals and exit codes hold; it never touches a token file
 # of a tool. Bind it to the box's WireGuard address to reach it from a phone;
 # never to a public interface. With --terminal-socket it also fronts ttyd,
@@ -44,13 +44,14 @@ Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-soc
        flakelab web --print-token
        flakelab web --rotate-token
 
-Serves the dashboard on ADDR:N (127.0.0.1:8321), every API call behind the
-bearer token in FILE (~/.local/state/flakelab/web/token, made on first start),
-and with --terminal-socket the ttyd terminal listening there, behind a session
-the API issues against the token. --logo FILE (svg, png, ico, jpg, webp) is
-the page's heading mark and tab icon, served at /logo. Bind to the WireGuard
-address for a phone; never to a public interface. --rotate-token writes a new
-token: a running server follows at once and every terminal session ends.
+Serves the dashboard on ADDR:N (127.0.0.1:8321), every API call but
+/api/health behind the bearer token in FILE (~/.local/state/flakelab/web/token,
+made on first start), and with --terminal-socket the ttyd terminal listening
+there, behind a session the API issues against the token. --logo FILE (svg,
+png, ico, jpg, webp) is the page's heading mark and tab icon, served at /logo.
+Bind to the WireGuard address for a phone; never to a public interface.
+--rotate-token writes a new token: a running server follows at once and every
+terminal session ends.
 USAGE
 }
 

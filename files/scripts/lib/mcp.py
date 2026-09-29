@@ -17,10 +17,14 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 
+class Refusal(ValueError):
+    """Nothing was changed: exit 2, as the rest of the CLI refuses."""
+
+
 def configuration():
     filename = os.environ.get("FLAKELAB_MCP_CONFIG")
     if not filename:
-        raise ValueError("No MCP configuration; use the installed flakelab command.")
+        raise Refusal("No MCP configuration; use the installed flakelab command.")
     cfg = json.loads(Path(filename).read_text())
     ports = []
     for name, server in cfg["servers"].items():
@@ -103,7 +107,7 @@ def connect(cfg, name):
         command = ssh_command(cfg, ["connect", name])
         os.execvp(command[0], command)
     if not usable(cfg, name):
-        raise ValueError(f"{name}: login required. Run 'flakelab mcp login {name}' on your desktop.")
+        raise Refusal(f"{name}: login required. Run 'flakelab mcp login {name}' on your desktop.")
     command, env = adapter(cfg, name)
     os.execvpe(command[0], command, env)
 
@@ -126,7 +130,7 @@ def event(kind, **values):
 
 def login_local(cfg, name, fresh=False):
     if cfg.get("gateway"):
-        raise ValueError("The login worker must run on the credential gateway.")
+        raise Refusal("The login worker must run on the credential gateway.")
     directory = auth_dir(name)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory.chmod(0o700)
@@ -183,7 +187,7 @@ def login(cfg, names, fresh=False):
     # Launch from WSL: SSH carries both the login events and the callback tunnel.
     # The authorization URL never needs to be copied out of SSH or tmux.
     if not cfg.get("gateway") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or Path("/mnt/c/Windows").exists()):
-        raise ValueError("Run 'flakelab mcp login' on a desktop; it opens the browser and forwards callbacks automatically.")
+        raise Refusal("Run 'flakelab mcp login' on a desktop; it opens the browser and forwards callbacks automatically.")
     opener = shutil.which("xdg-open")
     if not opener:
         raise ValueError("xdg-open is required to open the desktop browser.")
@@ -230,7 +234,7 @@ def write_private(path, value):
 def import_codex(cfg):
     """Explicit one-time move, after stopping clients using native Codex OAuth."""
     if cfg.get("gateway"):
-        raise ValueError("Import must run on the host holding the original Codex credentials.")
+        raise Refusal("Import must run on the host holding the original Codex credentials.")
     source = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / ".credentials.json"
     data = json.loads(source.read_text())
     selected = []
@@ -240,7 +244,7 @@ def import_codex(cfg):
         if len(matches) != 1:
             raise ValueError(f"{name}: expected exactly one matching native Codex credential.")
         if auth_dir(name).exists():
-            raise ValueError(f"{name}: shared auth directory already exists; refusing to overwrite it.")
+            raise Refusal(f"{name}: shared auth directory already exists; refusing to overwrite it.")
         key, value = matches[0]
         if not value.get("client_id") or not value.get("refresh_token") or not value.get("access_token"):
             raise ValueError(f"{name}: credential lacks a client ID or token.")
@@ -248,7 +252,7 @@ def import_codex(cfg):
     # Keep a private rollback copy; never use it concurrently with the new owner.
     backup = source.with_name(source.name + ".before-shared-mcp")
     if backup.exists():
-        raise ValueError("A previous migration backup exists; inspect it before retrying.")
+        raise Refusal("A previous migration backup exists; inspect it before retrying.")
     write_private(backup, data)
     for name, key, value in selected:
         write_private(auth_dir(name) / "imported-client.json",
@@ -270,7 +274,7 @@ def import_codex(cfg):
 
 def main():
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="flakelab mcp", description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("status", help="report credential presence without exposing tokens")
     sub.add_parser("import-codex", help="move native Codex grants; stop agent clients first")
@@ -285,7 +289,7 @@ def main():
     args = parser.parse_args()
     cfg = configuration()
     if getattr(args, "name", None) and args.name not in cfg["servers"]:
-        raise ValueError("Unknown MCP account.")
+        raise Refusal("Unknown MCP account.")
     if args.action == "status":
         return status(cfg)
     if args.action == "connect":
@@ -296,13 +300,16 @@ def main():
         return import_codex(cfg)
     names = args.names or list(cfg["servers"])
     if any(name not in cfg["servers"] for name in names):
-        raise ValueError("Unknown MCP account.")
+        raise Refusal("Unknown MCP account.")
     return login(cfg, names, args.fresh)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except Refusal as error:
+        print(f"flakelab mcp: {error}", file=sys.stderr)
+        sys.exit(2)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print(f"flakelab mcp: {error}", file=sys.stderr)
         sys.exit(1)

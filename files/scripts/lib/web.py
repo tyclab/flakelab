@@ -8,13 +8,13 @@ does nothing the CLI could not: every write is one CLI call, so the CLI's
 own locks, refusals and exit codes hold.
 
 Bind and token: 127.0.0.1:8321 unless told otherwise, never every interface;
-every /api call needs `Authorization: Bearer <token>` matching the token
-file (0600, generated on first start when absent). The file is read again
-whenever it changes, so `flakelab web --rotate-token` takes effect on a
-running server. The page is static and served without the token; it asks
-for the token once and keeps it in the browser. A request whose Host is not
-this server's address is refused (421): a page elsewhere that rebinds a
-name to this address gets nothing.
+every /api call but /api/health needs `Authorization: Bearer <token>`
+matching the token file (0600, generated on first start when absent). The
+file is read again whenever it changes, so `flakelab web --rotate-token`
+takes effect on a running server. The page is static and served without the
+token; it asks for the token once and keeps it in the browser. A request
+whose Host is not this server's address is refused (421): a page elsewhere
+that rebinds a name to this address gets nothing.
 
 The terminal: with FLAKELAB_WEB_TERMINAL_SOCKET set, ttyd listens on that
 Unix socket with no credential of its own and this server is its only door.
@@ -33,7 +33,10 @@ Environment (set by the zsh wrapper):
                                             page's heading mark and tab icon
   FLAKELAB_WEB_TIMEOUT                      seconds per CLI call (default 60)
 
-API (all JSON):
+Without the token: GET / (the page), GET /logo (the configured image, 404
+without one), GET /api/health {ok, logo}.
+
+API (all JSON, the bearer required):
   GET  /api/state                {accounts, status, sessions, terminal}
   POST /api/fetch                accounts --fetch --json         -> {accounts}
   POST /api/switch {entry}       accounts switch <entry> [--force]
@@ -519,7 +522,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     if LOGO and Path(LOGO).suffix.lower() not in LOGO_TYPES:
         sys.stderr.write(
-            f"web: refusing FLAKELAB_WEB_LOGO {LOGO}: not an image type ({', '.join(sorted(LOGO_TYPES))})\n"
+            f"flakelab web: refusing FLAKELAB_WEB_LOGO {LOGO}: not an image type ({', '.join(sorted(LOGO_TYPES))})\n"
         )
         sys.exit(2)
     refusal = bind_refusal(BIND)

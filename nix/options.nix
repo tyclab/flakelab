@@ -474,7 +474,7 @@ in
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Run `flakelab web` as the user service flakelab-web: the dashboard over the stored logins (windows, switch) and the running sessions (host window, start in tmux), every API call behind the bearer token in ~/.local/state/flakelab/web/token, made on the first start. Bind it to the box's WireGuard address to reach it from a phone; it refuses every-interface binds.";
+        description = "Run `flakelab web` as the user service flakelab-web: the dashboard over the stored logins (windows, switch) and the running sessions (host window, start in tmux), every API call but /api/health behind the bearer token in ~/.local/state/flakelab/web/token, made on the first start. Bind it to the box's WireGuard address to reach it from a phone; it refuses every-interface binds.";
       };
       bind = mkOption {
         type = types.str;

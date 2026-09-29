@@ -80,10 +80,13 @@ that defaults to off, because every activation here runs on every adopter's box:
   beside sshd, its UDP range opened by the module.
 - `web.*` — `enable` (default `false`) runs `flakelab web` as the user
   service `flakelab-web` on `bind` (default `127.0.0.1`) and `port` (8321),
-  the dashboard behind the token in `~/.local/state/flakelab/web/token`;
-  `terminal` (default `false`) adds ttyd on a Unix socket attached to the
-  `tmuxSession` (`agents`), reached only through the dashboard's `/terminal/`
-  behind a session it issues against the same token.
+  the dashboard behind the token in `~/.local/state/flakelab/web/token`; on
+  the proxmox-vm target a `bind` off loopback opens `port` in the NixOS
+  firewall. `terminal` (default `false`) adds ttyd on a Unix socket attached
+  to the `tmuxSession` (`agents`), reached only through the dashboard's
+  `/terminal/` behind a session it issues against the same token. `logo`
+  (nullable path, default `null`) is the page's heading mark and tab icon,
+  served at `/logo` without the token.
 - `mcpShared.*` — `servers` (attrset of `{ url; callbackPort; }`, default
   `{}`) registers each OAuth MCP account in Claude and Codex as
   `flakelab-mcp connect <name>`; `gateway` (nullable string, default `null`)

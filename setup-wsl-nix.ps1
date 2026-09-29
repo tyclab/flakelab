@@ -832,7 +832,7 @@ function Write-DroppedKey([string]$k) {
 
 # Names what the overlay has no field for, and removes a key whose shape the
 # mapping does not read, so the flake never carries half of it.
-function Remove-UnmappedConfig($ud) {
+function Remove-UnmappedConfig($ud, [string]$udPath) {
     $shapeName = @{ s = 'scalar'; l = 'list'; m = 'map'; i = 'list of maps' }
     foreach ($k in @($ud.Keys)) {
         $v = $ud[$k]
@@ -862,6 +862,10 @@ function Remove-UnmappedConfig($ud) {
 
     $tasks = @(Get-UserDataList $ud 'extra_task_files' | Where-Object { $_ -is [string] -and $_ })
     if ($tasks.Count -gt 0) { Warn ("  extra_task_files names wslkube Ansible tasks nothing here runs: {0}" -f ($tasks -join ', ')) }
+    # As nix-overlay-generate does: only for a config read from the wslkube checkout.
+    $fromWslkube = $udPath -and ([IO.Path]::GetFullPath((Split-Path $udPath -Parent)).TrimEnd('\') -eq
+        [IO.Path]::GetFullPath((Join-Path $WslkubeWin 'files\config')).TrimEnd('\'))
+    if (-not $fromWslkube) { return }
     $customDir = Join-Path $WslkubeWin 'files\config\custom'
     $custom = @(Get-ChildItem -Path $customDir -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notlike '.*' } | Sort-Object Name | Select-Object -ExpandProperty Name)
@@ -1950,7 +1954,7 @@ function Invoke-Init {
 function Set-OverlayFromConfig([string]$udPath) {
     Say "overlay flake from config: $udPath"
     $ud = Read-WslkubeConfig $udPath $WslkubeWin
-    Remove-UnmappedConfig $ud
+    Remove-UnmappedConfig $ud $udPath
     $flakeExisted = Test-Path $OverlayFlakeWin
     New-OverlaySkeleton $OverlayWin ((New-OverlayFlakeText $ud $udPath) -join "`n") ([string](Get-UserDataValue $ud 'overlay_url'))
     if ($flakeExisted -and -not $Force) {
