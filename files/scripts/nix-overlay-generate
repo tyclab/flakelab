@@ -554,7 +554,7 @@ if [[ -n "${_config}" ]]; then
     backupautostart s state_root s state_transcripts s giteditor s dockerautostart s
     kiro_plugin_repo s whatsapp_mcp_dir s overlay_url s
     profiles l teams l team l gitlab_groups l sshkeyautoadd l
-    claude_plugins l claude_mcp_plugins l clone_exclude l
+    claude_plugins l claude_mcp_plugins l clone_exclude l extra_task_files l
     custom_env_vars m claude_plugin_marketplace m repos i custom_aliases i
   )
   typeset -A _shape_name=(s scalar l list m map i 'list of maps')

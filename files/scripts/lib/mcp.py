@@ -21,22 +21,21 @@ class Refusal(ValueError):
     """Nothing was changed: exit 2, as the rest of the CLI refuses."""
 
 
+# mcp-remote's wait for the browser; the login worker outlasts it.
+AUTH_TIMEOUT_S = 300
+
+
+# Names and ports are asserted in nix/mcp-clients.nix, which writes the only
+# file the installed command reads.
 def configuration():
     filename = os.environ.get("FLAKELAB_MCP_CONFIG")
     if not filename:
         raise Refusal("No MCP configuration; use the installed flakelab command.")
     cfg = json.loads(Path(filename).read_text())
-    ports = []
     for name, server in cfg["servers"].items():
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
-            raise ValueError("MCP account names must use letters, numbers, underscores or hyphens.")
         url = urlsplit(server["url"])
         if url.scheme != "https" or not url.hostname or url.username or url.fragment:
             raise ValueError(f"{name}: expected an HTTPS endpoint without credentials or fragment.")
-        port = server["callbackPort"]
-        if not isinstance(port, int) or not 1024 <= port <= 65535 or port in ports:
-            raise ValueError("Callback ports must be distinct unprivileged TCP ports.")
-        ports.append(port)
     gateway = cfg.get("gateway")
     if gateway and (gateway.startswith("-") or not re.fullmatch(r"[a-zA-Z0-9_.@:-]+", gateway)):
         raise ValueError("Invalid SSH gateway.")
@@ -67,7 +66,7 @@ def adapter(cfg, name, client=False):
     server = cfg["servers"][name]
     command = ["npx", "--yes", f"--package=mcp-remote@{cfg['remoteVersion']}",
                "mcp-remote-client" if client else "mcp-remote", server["url"],
-               str(server["callbackPort"]), "--host", "127.0.0.1", "--auth-timeout", "300"]
+               str(server["callbackPort"]), "--host", "127.0.0.1", "--auth-timeout", str(AUTH_TIMEOUT_S)]
     imported = auth_dir(name) / "imported-client.json"
     if imported.exists():
         command += ["--static-oauth-client-info", "@" + str(imported)]
@@ -146,7 +145,7 @@ def login_local(cfg, name, fresh=False):
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     buffer = b""
-    deadline = time.monotonic() + 330
+    deadline = time.monotonic() + AUTH_TIMEOUT_S + 30
     connected = False
     try:
         while time.monotonic() < deadline:
@@ -288,7 +287,8 @@ def main():
     child.add_argument("--fresh", action="store_true", help="discard old grants and register again")
     args = parser.parse_args()
     cfg = configuration()
-    if getattr(args, "name", None) and args.name not in cfg["servers"]:
+    named = [args.name] if getattr(args, "name", None) is not None else getattr(args, "names", [])
+    if any(name not in cfg["servers"] for name in named):
         raise Refusal("Unknown MCP account.")
     if args.action == "status":
         return status(cfg)
@@ -298,10 +298,7 @@ def main():
         return login_local(cfg, args.name, args.fresh)
     if args.action == "import-codex":
         return import_codex(cfg)
-    names = args.names or list(cfg["servers"])
-    if any(name not in cfg["servers"] for name in names):
-        raise Refusal("Unknown MCP account.")
-    return login(cfg, names, args.fresh)
+    return login(cfg, args.names or list(cfg["servers"]), args.fresh)
 
 
 if __name__ == "__main__":

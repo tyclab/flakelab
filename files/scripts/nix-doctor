@@ -251,16 +251,12 @@ else
   fi
 fi
 
-# A user manager reaches its own cgroup through every directory above it, so under
-# a root systemd started in that denies other users search permission no
-# user@<uid> can start. On WSL the start cgroup is inherited from the VM, and the
-# boot step (files/scripts/wsl-init-cgroup) moves the distro out before systemd
-# starts, recording what it did.
+# known-issues.md, "No user manager"; files/scripts/wsl-init-cgroup records its move.
 log_head "systemd cgroup"
 if [[ "${TARGET}" != "wsl" ]]; then
   log_ok "target ${TARGET}: systemd starts at the top of its own cgroup tree"
 else
-  local cgInit cgLine cgRoot cgDir cgMode cgPart cgBlocked="" cgUnread="" cgRec cgResult="" cgFrom="" cgTo="" cgReason=""
+  local cgInit cgLine cgRoot cgFound cgBlocked="" cgUnread="" cgRec cgResult="" cgFrom="" cgTo="" cgReason=""
   local cgRecord="${FLAKELAB_INIT_CGROUP_RECORD:-/run/flakelab/init-cgroup}"
   local cgTree="${FLAKELAB_CGROUP_ROOT:-/sys/fs/cgroup}"
   local cgBooted="${FLAKELAB_BOOTED_SYSTEM:-/run/booted-system}"
@@ -287,14 +283,13 @@ else
     # systemd started in an init.scope roots its tree at the cgroup above it.
     cgRoot="${${cgLine#0::}%/init.scope}"
     [[ -n "${cgRoot}" ]] || cgRoot=/
-    cgDir="${cgTree}"
-    if [[ "${cgRoot}" != / ]]; then
-      for cgPart in "${(@s:/:)${cgRoot#/}}"; do
-        cgDir+="/${cgPart}"
-        cgMode="$(stat -c %a -- "${cgDir}" 2> /dev/null)" || { cgUnread="${cgDir#${cgTree}}"; break }
-        (( 8#${cgMode} & 1 )) || { cgBlocked="${cgDir#${cgTree}}"; break }
-      done
-    fi
+    source "${0:A:h}/lib/cgroup.zsh"
+    cgFound="$(first_unsearchable "${cgTree}" "${cgRoot}")"
+    case $? in
+      0) cgBlocked="${cgFound}" ;;
+      1) ;;
+      *) cgUnread="${cgFound:-${cgRoot}}" ;;
+    esac
     if [[ -n "${cgBlocked}" ]]; then
       log_fail "systemd runs under ${cgBlocked}, which only root may enter: no user manager can start, so no user unit and no ssh-agent"
       case "${cgResult}" in

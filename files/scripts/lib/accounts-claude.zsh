@@ -64,10 +64,7 @@ acct_claude_identity_of() {
   print -r -- "$cfg" | jq -c --arg plan "$(acct_claude_plan_of "$config" "$creds")" 'del(.apiKey) | if $plan != "" then .org = $plan else . end'
 }
 
-# The plan a login is on, as Claude Code records it at login: the
-# credential's subscriptionType (pro, max, team, enterprise), for Max with
-# the rate-limit tier's multiplier (max-5x, max-20x); else the config's
-# organizationType; else the organisation's name. Offline, from the files.
+# The plan a login is on, as Claude Code records it at login; offline.
 acct_claude_plan_of() {
   local config="$1" creds="$2"
   [[ -r "$config" && -r "$creds" ]] || return 1

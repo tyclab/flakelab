@@ -51,10 +51,7 @@ in
   # the WireGuard tunnel); the module opens its UDP range. Off by default.
   programs.mosh.enable = cfg.mosh.enable;
 
-  # The dashboard off loopback (flakelab.web.bind, the box's WireGuard
-  # address for the phone): its port opened in the NixOS firewall, which
-  # leaves only sshd open, or the bind reaches nobody. Loopback needs no
-  # rule; wsl cannot open a port from inside at all.
+  # A bind off loopback is unreachable behind a firewall open only to sshd.
   networking.firewall.allowedTCPPorts = lib.optional (
     cfg.web.enable
     && !(builtins.elem cfg.web.bind [

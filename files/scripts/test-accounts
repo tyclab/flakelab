@@ -1469,17 +1469,18 @@ jq '.entries["1"].windows[1].resetsAtEpoch = 1758900000' "${STORE}/usage.json" >
 run_in '{"rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
 check "and a new week after the known one renewed is too" "$(jq -r '[.entries["1"].windows[] | .pct] | join(" ")' "${STORE}/usage.json")" "12 1"
 for v in ANTHROPIC_BASE_URL=x ANTHROPIC_API_KEY=x ANTHROPIC_AUTH_TOKEN=x CLAUDE_CODE_USE_BEDROCK=true; do
-  env "${v}" zsh -c 'print -r -- "$1" | "$2" ingest' _ '{"rate_limits": {"five_hour": {"used_percentage": 97, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' "${CMD}"
+  ( export "${v}"; run_in '{"rate_limits": {"five_hour": {"used_percentage": 97, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest )
   check "a session on ${v%%=*} files nothing against the OAuth login" "$(jq -r '.entries["1"].windows[] | select(.class == "session") | .pct' "${STORE}/usage.json")" "12"
 done
-env CLAUDE_CODE_USE_BEDROCK=0 zsh -c 'print -r -- "$1" | "$2" ingest' _ '{"rate_limits": {"five_hour": {"used_percentage": 14, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' "${CMD}"
+( export CLAUDE_CODE_USE_BEDROCK=0; run_in '{"rate_limits": {"five_hour": {"used_percentage": 14, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest )
 check "a provider switch set to 0 is off, as Claude Code reads it: the figures are filed" "$(jq -r '.entries["1"].windows[] | select(.class == "session") | .pct' "${STORE}/usage.json")" "14"
-sleep 600 & ALIVE=$!
+# This suite's own process is the live writer.
+ALIVE=$$
 print -r -- '{}' > "${STORE}/usage.json.flakelab-tmp.4194303"
 print -r -- '{}' > "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
 run_in '{"rate_limits": {"five_hour": {"used_percentage": 13, "resets_at": 1758920000}, "seven_day": {"used_percentage": 1, "resets_at": 1759500000}}}' ingest
 check "a dead writer's temp is removed by the next write, a live one's kept" "$(ls "${STORE}" | grep -c 'flakelab-tmp.4194303') $(ls "${STORE}" | grep -c "flakelab-tmp.${ALIVE}")" "0 1"
-kill "$ALIVE" 2>/dev/null; wait "$ALIVE" 2>/dev/null; rm -f "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
+rm -f "${STORE}/usage.json.flakelab-tmp.${ALIVE}"
 check "and the usage file is private" "$(stat -c %a "${STORE}/usage.json")" "600"
 run_in '{"session_id": "x"}' ingest
 check "a statusline payload without rate_limits changes nothing" "$(jq -r '.entries["1"].fetchedAt' "${STORE}/usage.json") ${RC}" "1758910000 0"

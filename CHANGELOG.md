@@ -68,6 +68,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab mcp connect ''` is refused as an unknown account (exit 2) instead of ending in a Python `KeyError` traceback: an empty name skipped the account check.
 - `flakelab sessions`: the note for a process without a session id said "skipped" although the row is listed; it now says the row is listed but cannot be saved or resumed. `--recent` sorts across all tools by time instead of tool by tool, as its "newest first" header claims.
 - `flakelab accounts <verb> --help` shows the usage instead of "unknown option". `accounts status` shows each active login's cached windows, as its help says. `accounts auto` prints event times in local time; the log and `--json` keep UTC.
 - A bare `flakelab notify` at a terminal prints its usage instead of waiting for hook JSON on stdin.

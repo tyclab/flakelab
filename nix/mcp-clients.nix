@@ -70,7 +70,7 @@ let
     exec ${pkgs.nodejs_24}/bin/node ${playwrightMcpCli} --config ${headlessConfig} "$@"
   '';
 in
-# The same rules mcp.py enforces at run time, so a bad declaration fails the build.
+# The only check of names and ports: mcp.py reads the file these guard.
 assert lib.assertMsg (lib.all (name: builtins.match "[a-zA-Z0-9_-]+" name != null) (
   builtins.attrNames cfg.mcpShared.servers
 )) "mcpShared.servers: names use letters, digits, underscores and hyphens only";
