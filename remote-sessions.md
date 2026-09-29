@@ -155,6 +155,13 @@ terminal session ends with the old token. That is the "no SSH app on the
 phone" option from the table above, at the price it names: a shell in a
 browser tab behind a long-lived token. Keep it on the tunnel.
 
+Copying out of the session: in a terminal app (Windows Terminal, an SSH app),
+a mouse drag selects in tmux and the selection lands on the device's
+clipboard, from a nested tmux over SSH too, and a long URL copies whole even
+where tmux wrapped it. ttyd's browser terminal cannot receive that copy (its
+xterm.js has no OSC 52 handler); there, Shift+drag selects in the browser
+instead, one screen row at a time.
+
 The server also refuses a request whose `Host` is not its own address
 (421), so a page elsewhere that rebinds a name to it gets nothing, and drops
 a connection idle for 30 s before its request, so idle connections cannot
