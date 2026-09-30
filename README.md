@@ -487,6 +487,9 @@ pins a shell to it. Codex and Kiro logins work the same way (`add codex`,
 with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
 `flakelab backup` and checked by `flakelab doctor`; the design and what is
 still to verify on a box are in [`accounts.md`](accounts.md).
+`flakelab accounts config set weekThreshold 92` moves a bar at run time, over
+the flake's value, until `config unset`; `config set paused true` holds every
+automatic switch, and the dashboard does both.
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session

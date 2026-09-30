@@ -390,6 +390,15 @@ else
       log_hint "log in with the tool again, then: flakelab accounts add <tool>"
     fi
   fi
+  # A run-time override (`accounts config set`) outlives every switch and
+  # update: the flake's value is not what the engine uses until it is unset.
+  if [[ -f "${ACCT_STORE}/settings.json" ]]; then
+    _acct_o="$(jq -r 'to_entries | map("\(.key)=\(.value)") | join(" ")' "${ACCT_STORE}/settings.json" 2> /dev/null)" || _acct_o="settings.json is not a JSON object"
+    if [[ -n "${_acct_o}" ]]; then
+      log_warn "auto-switch settings overridden at run time: ${_acct_o}"
+      log_hint "flakelab accounts config shows each beside the flake's value; flakelab accounts config unset --all returns to it"
+    fi
+  fi
   if command -v flakelab > /dev/null 2>&1; then
     _acct_st="$(flakelab accounts status --json 2> /dev/null)"
     if [[ -n "${_acct_st}" ]]; then

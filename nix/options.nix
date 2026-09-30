@@ -436,6 +436,21 @@ in
         default = "soonest-reset";
         description = "How qualifying targets are ordered: soonest-reset tries the entry whose weekly windows renew first (quota spent where it returns soonest), best the one with the most weekly headroom.";
       };
+      cooldownSeconds = mkOption {
+        type = types.ints.between 0 86400;
+        default = 300;
+        description = "Seconds after a switch during which a proactive move waits. An at-limit move or a failover never does.";
+      };
+      hysteresis = mkOption {
+        type = types.ints.between 0 50;
+        default = 10;
+        description = "Points by which a candidate must beat the live entry on the deciding window for a proactive move, so two entries hovering at the bar do not trade places every tick.";
+      };
+      unhealthyTicks = mkOption {
+        type = types.ints.between 1 100;
+        default = 3;
+        description = "Consecutive ticks whose read says the live login itself is dead (unauthorized, a refused refresh, a revoked seat) before the engine fails over.";
+      };
       shellOverview = mkOption {
         type = types.bool;
         default = false;

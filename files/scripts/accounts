@@ -40,6 +40,10 @@ set -uo pipefail
 #                                            for eval; --unset the one that unpins
 #   accounts ingest [--tool T]               the statusline's rate_limits (stdin) for
 #                                            the live login into the cache; silent
+#   accounts config [--json]                 the engine's settings, each with its source
+#   accounts config set KEY VALUE            override one at run time, over the flake option
+#   accounts config unset KEY|--all          back to the flake's value
+#   accounts log [--json] [--lines N]        the engine's last events from auto.log
 #
 # The store:
 #   accounts.json        the roster: version, active per tool, next id, entries
@@ -48,6 +52,7 @@ set -uo pipefail
 #                        failure backoff; the quarantine of dead lineages
 #   auto.json            the engine's state: cooldown, unhealthy ticks, idle hold
 #   auto.log             the engine's events, one JSON object per line, rotated at 1 MiB
+#   settings.json        run-time overrides of the engine's settings (config)
 #   unclaimed/<ts>/      a live credential a switch could not attribute
 #   profiles/<id>/       a private home per entry for run / env: the login, and
 #                        links into the real home for everything shared
@@ -97,7 +102,27 @@ MODEL_THRESHOLD="${FLAKELAB_ACCOUNTS_MODEL_THRESHOLD:-95}"
 STRATEGY="${FLAKELAB_ACCOUNTS_STRATEGY:-soonest-reset}"
 AUTO_INTERVAL="${FLAKELAB_ACCOUNTS_INTERVAL:-120}"
 AUTO_COOLDOWN="${FLAKELAB_ACCOUNTS_COOLDOWN:-300}"
-AUTO_HYSTERESIS=10; AUTO_UNHEALTHY=3; AUTO_IDLE_HOLD=1800
+AUTO_HYSTERESIS="${FLAKELAB_ACCOUNTS_HYSTERESIS:-10}"
+AUTO_UNHEALTHY="${FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS:-3}"
+AUTO_IDLE_HOLD=1800
+AUTO_PAUSED=false
+# The engine's settings a person may override at run time (`config`), in
+# listing order: each key's variable, and the wrapper's variable carrying the
+# flake option (paused has none: the flake's off is no timer). The override
+# file sits in the store; the order is flag, override, flake option, default.
+SETTINGS="${STORE}/settings.json"
+typeset -a SETTING_KEYS=(sessionThreshold weekThreshold modelThreshold modelWindows strategy cooldownSeconds hysteresis unhealthyTicks paused)
+typeset -A SETTING_VAR=(
+  sessionThreshold SESSION_THRESHOLD weekThreshold WEEK_THRESHOLD modelThreshold MODEL_THRESHOLD
+  modelWindows MODEL_WINDOWS strategy STRATEGY cooldownSeconds AUTO_COOLDOWN
+  hysteresis AUTO_HYSTERESIS unhealthyTicks AUTO_UNHEALTHY paused AUTO_PAUSED
+)
+typeset -A SETTING_ENV=(
+  sessionThreshold FLAKELAB_ACCOUNTS_SESSION_THRESHOLD weekThreshold FLAKELAB_ACCOUNTS_WEEK_THRESHOLD
+  modelThreshold FLAKELAB_ACCOUNTS_MODEL_THRESHOLD modelWindows FLAKELAB_ACCOUNTS_MODEL_WINDOWS
+  strategy FLAKELAB_ACCOUNTS_STRATEGY cooldownSeconds FLAKELAB_ACCOUNTS_COOLDOWN
+  hysteresis FLAKELAB_ACCOUNTS_HYSTERESIS unhealthyTicks FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS
+)
 # The tools the engine decides for: a comma list, default every adapter that
 # reads usage.
 AUTO_TOOLS="${FLAKELAB_ACCOUNTS_TOOLS:-claude}"
@@ -139,6 +164,10 @@ Usage: accounts [--json] [--fetch]
        accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
        accounts env --unset <tool> [--shell sh|fish|pwsh]
        accounts ingest [--tool claude]
+       accounts config [--json]
+       accounts config set KEY VALUE
+       accounts config unset KEY|--all
+       accounts log [--json] [--lines N]
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
               plan is due first; --json for one document
@@ -173,6 +202,17 @@ Usage: accounts [--json] [--fetch]
               login's cached session and week windows, so the endpoint is
               asked for the active entry only for its per-model week, at the
               candidate cadence; prints nothing and exits 0 whatever happens
+  config      the engine's settings, each with its value and where it came
+              from: runtime (settings.json in the store), flake (the
+              flakelab.accounts option) or default. set overrides one until
+              unset, taking effect on the next auto tick; an auto flag still
+              beats it. Keys: sessionThreshold weekThreshold modelThreshold
+              (50-100), modelWindows (all or display names, comma-separated),
+              strategy (soonest-reset|best), cooldownSeconds (0-86400),
+              hysteresis (0-50 points), unhealthyTicks (1-100), paused
+              (true|false: every tick decides nothing, the polls go on)
+  log         the engine's last --lines (20) events from auto.log, oldest
+              first; --json prints them as the JSON lines the log holds
 
 Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
 with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
@@ -919,6 +959,127 @@ cmd_remove() {
   return 0
 }
 
+# --- run-time settings -------------------------------------------------------------
+#
+# settings.json holds what `config set` wrote, one key each, typed. It is read
+# once, before dispatch, over the wrapper's flake values; an auto flag is
+# parsed later and still wins. A key it does not know or a value out of range
+# is left out and named by `config`, never a refusal: a hand edit must not
+# stop the timer.
+
+typeset -A SETTING_BASE=() SETTING_OVERRIDE=()
+typeset -a SETTING_IGNORED=()
+
+# setting_valid KEY VALUE: 0 when KEY takes VALUE, else prints the rule.
+setting_valid() {
+  case "$1" in
+    sessionThreshold|weekThreshold|modelThreshold)
+      [[ "$2" == <50-100> ]] || { print -r -- "$1 must be an integer between 50 and 100 (100: never move proactively on that window)"; return 1 } ;;
+    modelWindows) [[ -n "$2" && "$2" != *[[:cntrl:]]* ]] || { print -r -- "modelWindows must be all or display names, comma-separated"; return 1 } ;;
+    strategy) [[ "$2" == (soonest-reset|best) ]] || { print -r -- "strategy must be soonest-reset or best"; return 1 } ;;
+    cooldownSeconds) [[ "$2" == <0-86400> ]] || { print -r -- "cooldownSeconds must be between 0 and 86400"; return 1 } ;;
+    hysteresis) [[ "$2" == <0-50> ]] || { print -r -- "hysteresis must be between 0 and 50 points"; return 1 } ;;
+    unhealthyTicks) [[ "$2" == <1-100> ]] || { print -r -- "unhealthyTicks must be between 1 and 100"; return 1 } ;;
+    paused) [[ "$2" == (true|false) ]] || { print -r -- "paused must be true or false"; return 1 } ;;
+    *) print -r -- "unknown setting '$1' (${(j:, :)SETTING_KEYS})"; return 1 ;;
+  esac
+}
+
+# setting_json KEY VALUE: VALUE as the JSON the file and --json carry.
+setting_json() {
+  case "$1" in
+    paused) print -r -- "$2" ;;
+    *) if [[ "$1" != (modelWindows|strategy) && "$2" == <-> ]]; then print -r -- $(( 10#$2 )); else jq -cn --arg v "$2" '$v'; fi ;;
+  esac
+}
+
+# Where KEY's value comes from without an override: flake or default.
+setting_base_source() { [[ -n "${SETTING_ENV[$1]-}" && -n "${(P)SETTING_ENV[$1]+x}" ]] && print flake || print default }
+
+settings_doc() { jq -c 'select(type == "object")' "$SETTINGS" 2>/dev/null }
+
+apply_settings() {
+  local key val doc
+  for key in "${SETTING_KEYS[@]}"; do SETTING_BASE[$key]="${(P)SETTING_VAR[$key]}"; done
+  [[ -f "$SETTINGS" ]] || return 0
+  doc="$(settings_doc)"
+  [[ -n "$doc" ]] || { SETTING_IGNORED+=("settings.json is not a JSON object"); return 0 }
+  while IFS="$US" read -r key val; do
+    if [[ -z "${SETTING_VAR[$key]-}" ]] || ! setting_valid "$key" "$val" >/dev/null; then
+      SETTING_IGNORED+=("${key}=${val}"); continue
+    fi
+    SETTING_OVERRIDE[$key]="$val"
+    typeset -g "${SETTING_VAR[$key]}=${val}"
+  done < <(print -r -- "$doc" | jq -r --arg us "$US" 'to_entries[] | "\(.key)\($us)\(.value | if type == "string" then . else tojson end)"')
+}
+
+# {path, settings: {KEY: {value, source, base, baseSource}}, ignored}: source
+# is runtime, flake or default; base is the value under an override.
+config_doc() {
+  local key doc='{}'
+  for key in "${SETTING_KEYS[@]}"; do
+    doc="$(print -r -- "$doc" | jq -c --arg k "$key" --arg src "${${SETTING_OVERRIDE[$key]+runtime}:-$(setting_base_source "$key")}" \
+      --arg bsrc "$(setting_base_source "$key")" --argjson v "$(setting_json "$key" "${(P)SETTING_VAR[$key]}")" \
+      --argjson b "$(setting_json "$key" "${SETTING_BASE[$key]}")" '.[$k] = {value: $v, source: $src, base: $b, baseSource: $bsrc}')"
+  done
+  jq -cn --arg path "$SETTINGS" --argjson s "$doc" '{path: $path, settings: $s, ignored: $ARGS.positional}' --args "${SETTING_IGNORED[@]}"
+}
+
+config_set() {
+  (( $# == 2 )) || refuse "usage: accounts config set KEY VALUE"
+  local key="$1" val="$2" why doc
+  why="$(setting_valid "$key" "$val")" || refuse "$why"
+  take_lock
+  doc="$(settings_doc)"
+  doc="$(print -r -- "${doc:-{\}}" | jq -c --arg k "$key" --argjson v "$(setting_json "$key" "$val")" '.[$k] = $v')"
+  write_atomic "$SETTINGS" "$doc" || die "cannot write ${SETTINGS}"
+  print -r -- "${key} = ${val} (runtime; $(setting_base_source "$key") ${SETTING_BASE[$key]}); the next auto tick uses it"
+}
+
+config_unset() {
+  (( $# == 1 )) || refuse "usage: accounts config unset KEY|--all"
+  local key="$1" doc
+  take_lock
+  if [[ "$key" == --all ]]; then
+    rm -f -- "$SETTINGS" || die "cannot remove ${SETTINGS}"
+    print -r -- "no overrides; the flake's values apply"
+    return 0
+  fi
+  doc="$(settings_doc)"
+  if [[ -n "$doc" ]] && print -r -- "$doc" | jq -e --arg k "$key" 'has($k)' >/dev/null; then
+    doc="$(print -r -- "$doc" | jq -c --arg k "$key" 'del(.[$k])')"
+    if [[ "$doc" == '{}' ]]; then rm -f -- "$SETTINGS"; else write_atomic "$SETTINGS" "$doc" || die "cannot write ${SETTINGS}"; fi
+    if [[ -n "${SETTING_VAR[$key]-}" ]]; then print -r -- "${key} = ${SETTING_BASE[$key]} again ($(setting_base_source "$key"))"
+    else print -r -- "${key} removed from ${SETTINGS}"; fi
+    return 0
+  fi
+  [[ -n "${SETTING_VAR[$key]-}" ]] || refuse "unknown setting '${key}' (${(j:, :)SETTING_KEYS})"
+  note "${key} is not overridden"
+}
+
+cmd_config() {
+  case "${1:-}" in
+    set) shift; config_set "$@"; return ;;
+    unset) shift; config_unset "$@"; return ;;
+  esac
+  local json=false key val src base bsrc
+  while (( $# > 0 )); do
+    case $1 in
+      --json) json=true ;;
+      *) refuse "unknown option for config: $1 (set KEY VALUE, unset KEY|--all)" ;;
+    esac
+    shift
+  done
+  if $json; then config_doc | jq .; return 0; fi
+  printf '%-18s %-16s %s\n' KEY VALUE SOURCE
+  while IFS="$US" read -r key val src base bsrc; do
+    [[ "$src" == runtime ]] && src="runtime (${bsrc} ${base})"
+    printf '%-18s %-16s %s\n' "$key" "$val" "$src"
+  done < <(config_doc | jq -r --arg us "$US" '.settings | to_entries[] | [.key, (.value.value | tostring), .value.source, (.value.base | tostring), .value.baseSource] | join($us)')
+  (( ${#SETTING_IGNORED} )) && note "ignored in ${SETTINGS}: ${(j:, :)SETTING_IGNORED}; accounts config unset KEY (or --all) clears it"
+  return 0
+}
+
 # --- auto-switch -----------------------------------------------------------------
 
 read_auto_state() {
@@ -938,16 +1099,36 @@ emit() {
   (umask 077; print -r -- "$line" >> "$AUTO_LOG")
   if $AUTO_JSON; then print -r -- "$line"
   # Display in local time; the log and --json keep UTC.
-  else print -r -- "$line" | jq -r --arg lt "$(date -d "@$(now)" +%H:%M:%S)" '"\($lt)  \(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
+  else print -r -- "$line" | jq -r --arg lt "$(date -d "@$(now)" +%H:%M:%S)" '"\($lt)  " + ('"${EVENT_TEXT}"')'
   fi
+}
+
+# An event as one line after its time, for emit and log.
+EVENT_TEXT='"\(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
+
+# log: the last events of auto.log, oldest first; a line that does not parse
+# is skipped.
+cmd_log() {
+  local json=false n=20
+  while (( $# > 0 )); do
+    case $1 in
+      --json) json=true ;;
+      --lines) [[ "${2:-}" == <1-1000> ]] || refuse "--lines takes 1 to 1000"; n="$2"; shift ;;
+      *) refuse "unknown option for log: $1" ;;
+    esac
+    shift
+  done
+  [[ -s "$AUTO_LOG" ]] || { $json || note "no events yet (${AUTO_LOG})"; return 0 }
+  if $json; then tail -n "$n" -- "$AUTO_LOG" | jq -cR 'fromjson? // empty'; return 0; fi
+  tail -n "$n" -- "$AUTO_LOG" | jq -rR 'fromjson? // empty | "\(.ts | fromdateiso8601 | strflocaltime("%m-%d %H:%M:%S"))  " + ('"${EVENT_TEXT}"') + (if .dryRun then "  (dry run)" else "" end)'
 }
 
 # The engine's settings document.
 auto_settings() {
   jq -cn --argjson s "$SESSION_THRESHOLD" --argjson w "$WEEK_THRESHOLD" --argjson m "$MODEL_THRESHOLD" \
     --argjson c "$AUTO_COOLDOWN" --argjson h "$AUTO_HYSTERESIS" --argjson u "$AUTO_UNHEALTHY" --argjson i "$AUTO_IDLE_HOLD" \
-    --arg st "$STRATEGY" --arg mw "$MODEL_WINDOWS" \
-    '{sessionThreshold: $s, weekThreshold: $w, modelThreshold: $m, cooldownS: $c, hysteresisPct: $h, unhealthyTicks: $u, idleHoldS: $i, strategy: $st, modelWindows: $mw}'
+    --arg st "$STRATEGY" --arg mw "$MODEL_WINDOWS" --argjson p "$AUTO_PAUSED" \
+    '{sessionThreshold: $s, weekThreshold: $w, modelThreshold: $m, cooldownS: $c, hysteresisPct: $h, unhealthyTicks: $u, idleHoldS: $i, strategy: $st, modelWindows: $mw, paused: $p}'
 }
 
 # Entries of a tool with a live profile session: never a target.
@@ -1073,6 +1254,8 @@ cmd_auto() {
   done
   [[ "$AUTO_INTERVAL" == <15-3600> ]] || refuse "--interval must be between 15 and 3600 seconds"
   [[ "$AUTO_COOLDOWN" == <0-86400> ]] || refuse "--cooldown must be between 0 and 86400 seconds"
+  [[ "$AUTO_HYSTERESIS" == <0-50> ]] || refuse "hysteresis must be between 0 and 50 points"
+  [[ "$AUTO_UNHEALTHY" == <1-100> ]] || refuse "unhealthyTicks must be between 1 and 100"
   [[ "$STRATEGY" == best || "$STRATEGY" == soonest-reset ]] || refuse "strategy must be best or soonest-reset"
   if [[ -n "$tool" ]]; then need_adapter "$tool"; tools=("$tool"); else tools=("${(s:,:)AUTO_TOOLS}"); fi
   for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
@@ -1463,6 +1646,11 @@ cmd_status() {
     fi
   done
   $json && print -r -- "$out" | jq .
+  if ! $json && (( ${#SETTING_OVERRIDE} )); then
+    local k; local -a o=()
+    for k in "${SETTING_KEYS[@]}"; do [[ -n "${SETTING_OVERRIDE[$k]+x}" ]] && o+=("${k} ${SETTING_OVERRIDE[$k]}"); done
+    print -r -- "auto-switch overrides (accounts config): ${(j:, :)o}"
+  fi
   return 0
 }
 
@@ -1481,6 +1669,7 @@ esac
   return 0
 } "$@"
 check_roster
+apply_settings
 case "${1:-}" in
   ""|--json|--fetch)  cmd_list "$@" ;;
   add)        shift; cmd_add "$@" ;;
@@ -1494,6 +1683,8 @@ case "${1:-}" in
   run)        shift; cmd_run "$@" ;;
   env)        shift; cmd_env "$@" ;;
   ingest)     shift; cmd_ingest "$@" ;;
+  config)     shift; cmd_config "$@" ;;
+  log)        shift; cmd_log "$@" ;;
   --help|-h|help) usage ;;
   *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;
 esac

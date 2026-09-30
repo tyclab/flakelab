@@ -729,6 +729,17 @@ check "and says how long is left" "$(dec '.detail')" "200s left"
 engine '.state.lastSwitchAt = 900 | .usage.entries["2"].windows[0].pct = 100'
 check "cooldown never stops an at-limit move" "$(dec '.trigger')" "at-limit"
 
+engine '.settings.paused = true'
+check "paused holds a proactive move" "$(dec '[.action, .reason] | join(" ")')" "none paused"
+check "and names the move it held" "$(dec '.detail')" "auto-switch is paused; would move: proactive on session"
+check "with the no-switch event" "$(print -r -- "$EVS" | jq -r '.[-1] | [.event, .reason] | join(" ")')" "no-switch paused"
+engine '.settings.paused = true | .usage.entries["2"].windows[0].pct = 100'
+check "an at-limit one too" "$(dec '[.action, .reason, .detail] | join(" ")')" "none paused auto-switch is paused; would move: at-limit on session"
+engine '.settings.paused = true | .usage.entries["2"].windows[0].pct = 84'
+check "under every bar it says that, not paused" "$(dec '.reason')" "below-threshold"
+engine '.pass = "plan" | .settings.paused = true | .now = 1300'
+check "and the plan pass polls as ever" "$(print -r -- "$FETCH" | jq -c .)" "[2,1]"
+
 engine '.usage.entries["2"].fetchedAt = 100 | .state.unhealthyTicks.claude = 2'
 check "a live entry whose figure is merely stale is no failure: our own schedule aged it" "$(dec '[.action, .reason] | join(" ")')" "none active-usage-unknown"
 check "and the count starts over" "$(print -r -- "$STATE" | jq -r '.unhealthyTicks.claude')" "0"
@@ -879,6 +890,7 @@ contains "and names it" "${ERR}" "--interval needs a value"
 run auto --once --interval 5
 check "an interval under 15 seconds is refused" "${RC}" "2"
 unset FLAKELAB_NOW
+
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -1585,6 +1597,91 @@ contains "kept aside rather than lost" "${ERR}" "kept at ${S2}/unclaimed/"
 check "with its rows" "$(jq -r '.auth_kv["kirocli:odic:token"] | fromjson | .refresh_token' "${S2}"/unclaimed/*-kiro-*/token.json)" "rt-kim"
 check "and no entry made" "$(jq -r '.next' "${S2}/accounts.json")" "6"
 unset FAKE_KIRO_WHOAMI FLAKELAB_ACCOUNTS_ROOT
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "config: run-time overrides over the flake's values; log: the engine's events"
+rm -rf "${STORE}"
+login alice@example.com "${UUID_A}" personal tok-a
+run add claude --alias home
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run add claude --alias work
+export FLAKELAB_NOW=1758800000
+usage_answer tok-b 90 50
+usage_answer tok-a 20 60
+run config --json
+check "config lists every setting, each from its default outside the wrapper" "$(print -r -- "$OUT" | jq -r '(.settings | length), ([.settings[].source] | unique | join(","))' | paste -sd ' ')" "9 default"
+FLAKELAB_ACCOUNTS_WEEK_THRESHOLD=97 run config --json
+check "the wrapper's variable is the flake's value" "$(print -r -- "$OUT" | jq -r '.settings.weekThreshold.source')" "flake"
+run config set sessionThreshold 95
+check "set exits 0" "${RC}" "0"
+check "the override is stored typed, and private" "$(jq -c '.sessionThreshold' "${STORE}/settings.json") $(stat -c %a "${STORE}/settings.json")" "95 600"
+run config --json
+check "and listed as runtime over the value under it" "$(print -r -- "$OUT" | jq -r '.settings.sessionThreshold | [.value, .source, .base, .baseSource] | join(" ")')" "95 runtime 85 default"
+run config
+contains "the human form says the same" "${OUT}" "runtime (default 85)"
+run auto --once --json --dry-run
+check "the engine reads it: bob's 5h 90% is under a bar of 95" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | .reason')" "below-threshold"
+run auto --once --json --dry-run --session-threshold 85
+check "a flag still beats it" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | .to')" "1"
+run config set sessionThreshold 40
+check "a value out of range refuses with exit 2" "${RC}" "2"
+contains "naming the range" "${ERR}" "between 50 and 100"
+check "and leaves the file as it was" "$(jq -c . "${STORE}/settings.json")" '{"sessionThreshold":95}'
+run config set bogus 1
+check "an unknown key refuses with exit 2" "${RC}" "2"
+run config set paused yes
+check "paused takes true or false only" "${RC}" "2"
+run config set strategy worst
+check "strategy its two orders only" "${RC}" "2"
+run config set hysteresis 60
+check "hysteresis 0 to 50 points" "${RC}" "2"
+run config set paused true
+check "paused is stored as a boolean" "$(jq -c '.paused' "${STORE}/settings.json")" "true"
+run config unset sessionThreshold
+contains "unset names the value it returns to" "${OUT}" "sessionThreshold = 85 again (default)"
+run config unset sessionThreshold
+check "unsetting what is not overridden is no error" "${RC}" "0"
+run auto --once --json
+check "paused, the tick decides nothing and says what it held" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | [.reason, .detail] | join(" ")')" "paused auto-switch is paused; would move: proactive on session"
+check "and switches nothing" "$(live_email)" "bob@example.com"
+check "while the polls go on" "$(print -r -- "$OUT" | jq -r 'select(.event == "poll") | .active')" "2"
+run status
+contains "status names the overrides" "${OUT}" "auto-switch overrides (accounts config): paused true"
+run config set paused false
+run auto --once --json
+check "resumed, the next tick switches" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.to, .trigger] | join(" ")')" "1 proactive"
+check "for real" "$(live_email)" "alice@example.com"
+
+print -r -- '{"weekThreshold": 10, "hysteresis": 5, "x": 1}' > "${STORE}/settings.json"
+run auto --once --json --dry-run
+check "a hand edit with bad keys does not stop a tick" "${RC}" "0"
+run config --json
+check "its valid key applies" "$(print -r -- "$OUT" | jq -r '.settings.hysteresis | [.value, .source] | join(" ")')" "5 runtime"
+check "the rest are named as ignored" "$(print -r -- "$OUT" | jq -r '.ignored | join(" ")')" "weekThreshold=10 x=1"
+run config unset x
+contains "unset also clears a key it does not know" "${OUT}" "x removed from"
+print -r -- 'not json' > "${STORE}/settings.json"
+run config
+check "a file that is no object is ignored, not fatal" "${RC}" "0"
+contains "and named" "${ERR}" "settings.json is not a JSON object"
+run config set weekThreshold 92
+check "set starts it over" "$(jq -c . "${STORE}/settings.json")" '{"weekThreshold":92}'
+run config unset --all
+check "unset --all removes the file" "$([[ -e "${STORE}/settings.json" ]] && print there || print gone)" "gone"
+
+run log --json --lines 2
+check "log --json prints the last events as JSON lines" "$(print -r -- "$OUT" | jq -s 'length')" "2"
+check "oldest first, the newest last" "$(print -r -- "$OUT" | tail -1)" "$(tail -1 "${STORE}/auto.log")"
+TZ=XYZ-2 run log --lines 1
+contains "the human form stamps each event in local time" "${OUT}" "$(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" '+%m-%d %H:%M:%S')  claude"
+contains "and marks a dry run" "${OUT}" "(dry run)"
+run log --lines 0
+check "--lines outside 1 to 1000 refuses" "${RC}" "2"
+print -r -- 'garbage' >> "${STORE}/auto.log"
+run log --json --lines 1
+check "a line that does not parse is skipped" "${OUT}" ""
+unset FLAKELAB_NOW
 
 # ---------------------------------------------------------------------------
 print -r -- ""

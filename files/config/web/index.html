@@ -44,6 +44,10 @@
   pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
   .mut { color: var(--mut); } .err { color: var(--bad); }
   #log { max-height: 240px; overflow: auto; }
+  #events { margin-top: 10px; max-height: 200px; overflow: auto; }
+  #settings input[type="range"] { width: 140px; padding: 0; vertical-align: middle; }
+  #settings input[type="number"] { width: 90px; }
+  .tag.runtime { background: var(--warn); color: #fff; }
   code { font-size: 13px; background: var(--accent-soft); padding: 0 4px; border-radius: 4px; }
 </style>
 </head>
@@ -66,6 +70,17 @@
     <button id="dry">what would auto do?</button>
     <span class="mut" id="accounts-note"></span>
   </p>
+</div>
+
+<h2>auto-switch</h2>
+<div class="card">
+  <p class="row" style="display:flex;gap:8px;margin:0 0 10px;align-items:center;flex-wrap:wrap">
+    <button id="pause" class="primary">pause</button>
+    <span id="auto-state" class="mut"></span>
+    <button id="reset-all" hidden>back to the flake's values</button>
+  </p>
+  <table id="settings"><thead><tr><th>setting</th><th>value</th><th>from</th><th></th></tr></thead><tbody></tbody></table>
+  <pre id="events" class="mut">—</pre>
 </div>
 
 <h2>sessions</h2>
@@ -119,6 +134,78 @@
     const reset = w.resetsAtEpoch == null ? "" : `<span class="mut"> · resets in ${left(w.resetsAtEpoch - now)}</span>`;
     return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${esc(w.label)} ${p}%${reset}`;
   };
+  // An engine event as one line, as `accounts log` prints it.
+  const evText = (e) => `${e.tool || ""} ${e.event}${e.reason ? ": " + e.reason : ""}${e.detail ? " (" + e.detail + ")" : ""}${e.event === "switch" ? `: ${e.from} -> ${e.to} [${e.trigger}]` : ""}`;
+
+  // The engine's settings (`accounts config`). The CLI holds the rules and
+  // refuses a value out of range; these bounds only shape the controls.
+  const SETTINGS = [
+    { key: "sessionThreshold", label: "session bar (5h)", kind: "range", min: 50, max: 100 },
+    { key: "weekThreshold", label: "week bar (7d)", kind: "range", min: 50, max: 100 },
+    { key: "modelThreshold", label: "model-week bar", kind: "range", min: 50, max: 100 },
+    { key: "modelWindows", label: "model windows counted", kind: "text" },
+    { key: "strategy", label: "target order", kind: "select", options: ["soonest-reset", "best"] },
+    { key: "cooldownSeconds", label: "cooldown (s)", kind: "number", min: 0, max: 86400 },
+    { key: "hysteresis", label: "hysteresis (points)", kind: "number", min: 0, max: 50 },
+    { key: "unhealthyTicks", label: "dead reads before failover", kind: "number", min: 1, max: 100 },
+  ];
+  const controls = {};
+  let paused = false;
+  const setConfig = async (body, what) => {
+    try { const r = await api("/api/config", body); log((r.call.stdout || "").trim() || what); }
+    catch (e) { log(`${what}: ${e.message}`, true); }
+    refresh();
+  };
+  for (const s of SETTINGS) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(s.label)} <span class="mut">${esc(s.key)}</span></td><td></td><td></td><td></td>`;
+    let el;
+    if (s.kind === "select") {
+      el = document.createElement("select");
+      for (const o of s.options) { const opt = document.createElement("option"); opt.textContent = o; el.appendChild(opt); }
+    } else {
+      el = document.createElement("input");
+      el.type = s.kind;
+      if (s.min != null) { el.min = s.min; el.max = s.max; }
+    }
+    const shown = document.createElement("span");
+    el.oninput = () => { if (s.kind === "range") shown.textContent = ` ${el.value}%`; };
+    el.onchange = () => {
+      el.blur();
+      const text = s.kind === "text" || s.kind === "select";
+      setConfig({ key: s.key, value: text ? el.value : Number(el.value) }, `${s.key} = ${el.value}`);
+    };
+    tr.children[1].append(el, shown);
+    const reset = document.createElement("button");
+    reset.textContent = "reset";
+    reset.onclick = () => setConfig({ key: s.key, unset: true }, `${s.key} reset`);
+    tr.children[3].appendChild(reset);
+    controls[s.key] = { el, shown, from: tr.children[2], reset, kind: s.kind };
+    $("#settings tbody").appendChild(tr);
+  }
+  const renderConfig = (cfg, events) => {
+    const set = (cfg && cfg.settings) || {};
+    for (const [key, c] of Object.entries(controls)) {
+      const s = set[key];
+      if (!s) continue;
+      // A control being edited keeps what the person typed.
+      if (document.activeElement !== c.el) c.el.value = String(s.value);
+      if (c.kind === "range") c.shown.textContent = ` ${c.el.value}%`;
+      c.from.innerHTML = s.source === "runtime"
+        ? `<span class="tag runtime">runtime</span><span class="mut">${esc(s.baseSource)} ${esc(s.base)}</span>`
+        : `<span class="mut">${esc(s.source)}</span>`;
+      c.reset.hidden = s.source !== "runtime";
+    }
+    paused = !!(set.paused && set.paused.value === true);
+    $("#pause").textContent = paused ? "resume" : "pause";
+    const ignored = (cfg && cfg.ignored) || [];
+    $("#auto-state").textContent = (paused ? "paused: every tick decides nothing, the polls go on" : "on")
+      + (ignored.length ? ` · ignored in settings.json: ${ignored.join(", ")}` : "");
+    $("#reset-all").hidden = !ignored.length && !Object.values(set).some((s) => s.source === "runtime");
+    const lines = (events || []).slice().reverse()
+      .map((e) => `${e.ts ? new Date(e.ts).toLocaleString() : ""}  ${evText(e)}${e.dryRun ? "  (dry run)" : ""}`);
+    $("#events").textContent = lines.join("\n") || "no engine events yet";
+  };
 
   const render = (st) => {
     const now = Math.floor(Date.now() / 1000);
@@ -156,6 +243,7 @@
       tr.innerHTML = `<td>${esc(s.tool)}</td><td>${esc(s.pid)}</td><td>${esc(s.age)}</td><td><code>${esc(s.session || "—")}</code></td><td>${esc(host)}</td><td class="wrap">${esc(s.dir || s.cwd)}</td>`;
       sb.appendChild(tr);
     }
+    renderConfig(st.config, st.events);
     $("#terminal").hidden = !st.terminal;
     $("#clock").textContent = new Date().toLocaleTimeString();
   };
@@ -198,8 +286,7 @@
     $("#dry").disabled = true;
     try {
       const r = await api("/api/auto", { dryRun: true });
-      const lines = r.events.map((e) => `${e.tool || ""} ${e.event}${e.reason ? ": " + e.reason : ""}${e.detail ? " (" + e.detail + ")" : ""}${e.event === "switch" ? `: ${e.from} -> ${e.to} [${e.trigger}]` : ""}`);
-      log(lines.join("\n") || "no events");
+      log(r.events.map(evText).join("\n") || "no events");
     } catch (e) { log(`auto: ${e.message}`, true); }
     $("#dry").disabled = false;
   };
@@ -212,8 +299,13 @@
     refresh();
   };
 
+  $("#pause").onclick = () => setConfig({ key: "paused", value: !paused }, paused ? "resumed" : "paused");
+  $("#reset-all").onclick = () => setConfig({ unset: true, all: true }, "every override removed");
+
   refresh();
-  setInterval(refresh, 30000);
+  // A hidden tab asks for nothing; it catches up when shown.
+  setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 })();
 </script>
 </body>

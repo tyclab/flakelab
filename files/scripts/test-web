@@ -39,6 +39,13 @@ case "$1" in
   status) print -r -- '{"claude":{"active":{"id":2,"alias":"work"},"live":{"account":"x"},"matches":false}}' ;;
   switch) [[ "$2" == 9 ]] && { print -ru2 -- "Error: entry 9 is running in a profile session"; exit 2 }; print -r -- "Switched claude to $2" ;;
   auto) print -r -- '{"event":"poll","tool":"claude"}'; print -r -- '{"event":"switch","tool":"claude","from":2,"to":1,"trigger":"proactive","dryRun":true}' ;;
+  config)
+    case "$2" in
+      --json) print -r -- '{"path":"/s/settings.json","settings":{"weekThreshold":{"value":92,"source":"runtime","base":97,"baseSource":"flake"},"paused":{"value":false,"source":"default","base":false,"baseSource":"default"}},"ignored":[]}' ;;
+      set) [[ "$3" == bogus ]] && { print -ru2 -- "Error: unknown setting 'bogus'"; exit 2 }; print -r -- "$3 = $4 (runtime; flake 97); the next auto tick uses it" ;;
+      unset) print -r -- "$3 = 97 again (flake)" ;;
+    esac ;;
+  log) print -r -- '{"event":"poll","tool":"claude","ts":"2025-09-25T11:33:20Z"}'; print -r -- '{"event":"no-switch","tool":"claude","reason":"paused","ts":"2025-09-25T11:33:20Z"}' ;;
   *) exit 2 ;;
 esac
 STUB
@@ -195,6 +202,45 @@ post /api/auto '{"dryRun":false,"tool":"claude"}' "${TOKEN}"
 contains "a real tick drops --dry-run and names the tool" "$(calls)" "accounts auto --once --json --tool claude"
 post /api/auto '{"tool":"gemini"}' "${TOKEN}"
 check "an unknown tool is 400" "${CODE}" "400"
+: > "${LOG}"
+
+get /api/state "${TOKEN}"
+check "state carries the engine's settings" "$(print -r -- "$BODY" | jq -r '.config.settings.weekThreshold | [.value, .source] | join(" ")')" "92 runtime"
+check "and its last events, parsed" "$(print -r -- "$BODY" | jq -r '.events[1].reason')" "paused"
+ST_CALLS="$(calls)"
+contains "read with config --json" "${ST_CALLS}" "accounts config --json"
+contains "and log --json" "${ST_CALLS}" "accounts log --json --lines 30"
+post /api/config '{"key":"weekThreshold","value":92}' "${TOKEN}"
+check "config set runs the CLI" "${CODE}" "200"
+contains "with the key and the value" "$(calls)" "accounts config set weekThreshold 92"
+check "and returns its output" "$(print -r -- "$BODY" | jq -r '.call.stdout')" "weekThreshold = 92 (runtime; flake 97); the next auto tick uses it"
+post /api/config '{"key":"paused","value":true}' "${TOKEN}"
+contains "a boolean goes as true or false" "$(calls)" "accounts config set paused true"
+post /api/config '{"key":"hysteresis","value":5.0}' "${TOKEN}"
+contains "a whole float as an integer" "$(calls)" "accounts config set hysteresis 5"
+post /api/config '{"key":"modelWindows","value":" Fable,Opus "}' "${TOKEN}"
+contains "a string as it came, trimmed" "$(calls)" "accounts config set modelWindows Fable,Opus"
+post /api/config '{"key":"weekThreshold","unset":true}' "${TOKEN}"
+contains "unset one key" "$(calls)" "accounts config unset weekThreshold"
+post /api/config '{"all":true,"unset":true}' "${TOKEN}"
+contains "or every one" "$(calls)" "accounts config unset --all"
+post /api/config '{"key":"bogus","value":1}' "${TOKEN}"
+check "a CLI refusal is 409" "${CODE}" "409"
+contains "with the reason" "$(print -r -- "$BODY" | jq -r '.call.stderr')" "unknown setting"
+: > "${LOG}"
+post /api/config '{"key":"--all","value":1}' "${TOKEN}"
+check "an option as the key is 400" "${CODE}" "400"
+post /api/config '{"value":1}' "${TOKEN}"
+check "no key is 400" "${CODE}" "400"
+post /api/config '{"key":"weekThreshold"}' "${TOKEN}"
+check "no value is 400" "${CODE}" "400"
+post /api/config '{"key":"weekThreshold","value":{"x":1}}' "${TOKEN}"
+check "a value that is no scalar is 400" "${CODE}" "400"
+post /api/config '{"key":"hysteresis","value":2.5}' "${TOKEN}"
+check "nor a fraction" "${CODE}" "400"
+post /api/config '{"unset":true}' "${TOKEN}"
+check "an unset without a key or all is 400" "${CODE}" "400"
+check "and none of them ran" "$(calls)" ""
 
 post /api/sessions/start "{\"tool\":\"codex\",\"dir\":\"${BASE}\"}" "${TOKEN}"
 check "start runs the sessions command" "${CODE}" "200"

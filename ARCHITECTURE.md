@@ -69,7 +69,11 @@ that defaults to off, because every activation here runs on every adopter's box:
   names the tools it decides for; `sessionThreshold` (85), `weekThreshold`
   (97) and `modelThreshold` (95) are the bars, `modelWindows` (`[ "all" ]`)
   which per-model weeks count, `strategy` (`soonest-reset` or `best`) the
-  target order. The wrapper exports them as `FLAKELAB_ACCOUNTS_*`; with the
+  target order, `cooldownSeconds` (300), `hysteresis` (10) and
+  `unhealthyTicks` (3) the engine's gates. The wrapper exports them as
+  `FLAKELAB_ACCOUNTS_*`; `flakelab accounts config set` overrides any of them
+  at run time from `settings.json` in the store (`flakelab doctor` warns
+  while one is set), and an `auto` flag overrides both. With the
   timer on for Claude Code, a `Notification` hook on
   `quota_auto_resume_fired` runs one tick at once.
 - `notify.enable` (bool, default `false`) and `notify.events` (list) — the
