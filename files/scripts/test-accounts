@@ -883,7 +883,6 @@ run auto --once --interval 5
 check "an interval under 15 seconds is refused" "${RC}" "2"
 unset FLAKELAB_NOW
 
-
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "profiles: run and env"
@@ -1690,6 +1689,16 @@ run config set weekThreshold 92
 check "set starts it over" "$(jq -c . "${STORE}/settings.json")" '{"weekThreshold":92}'
 run config unset --all
 check "unset --all removes the file" "$([[ -e "${STORE}/settings.json" ]] && print there || print gone)" "gone"
+run auto on
+run config set weekThreshold 92
+run config unset --all
+check "and keeps on or off, which is no override" "$(jq -c . "${STORE}/settings.json")" '{"autoSwitch":true}'
+run auto off
+run config set modelWindows ' Fable , Opus ,'
+check "a model list is stored without the spaces around its commas" "$(jq -r '.modelWindows' "${STORE}/settings.json")" "Fable,Opus"
+run config set modelWindows All
+check "and all, in any case, as all" "$(jq -r '.modelWindows' "${STORE}/settings.json")" "all"
+run config unset --all
 
 run log --json --lines 2
 check "log --json prints the last events as JSON lines" "$(print -r -- "$OUT" | jq -s 'length')" "2"

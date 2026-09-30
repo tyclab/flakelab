@@ -994,7 +994,8 @@ setting_valid() {
 # setting_json KEY VALUE: VALUE as the JSON the file and --json carry.
 setting_json() {
   case "$1" in
-    autoSwitch) print -r -- "$2" ;;
+    # Anything but true is off to cmd_auto, so a hand-set variable reads so.
+    autoSwitch) [[ "$2" == true ]] && print true || print false ;;
     *) if [[ "$1" != (modelWindows|strategy) && "$2" == <-> ]]; then print -r -- $(( 10#$2 )); else jq -cn --arg v "$2" '$v'; fi ;;
   esac
 }
@@ -1034,6 +1035,9 @@ config_doc() {
 config_set() {
   (( $# == 2 )) || refuse "usage: accounts config set KEY VALUE"
   local key="$1" val="$2" why doc
+  # The engine splits the list on bare commas and knows "all" in lower case
+  # only: "Fable, Opus" or "All" would count no model window.
+  [[ "$key" == modelWindows ]] && val="$(jq -rn --arg v "$val" '$v | split(",") | map(sub("^\\s+"; "") | sub("\\s+$"; "") | select(. != "")) | if map(ascii_downcase) == ["all"] then "all" else join(",") end')"
   why="$(setting_valid "$key" "$val")" || refuse "$why"
   take_lock
   doc="$(settings_doc)"
@@ -1046,8 +1050,13 @@ config_unset() {
   (( $# == 1 )) || refuse "usage: accounts config unset KEY|--all"
   local key="$1" doc
   take_lock
+  # --all drops the overrides and keeps on or off, which is not one of them.
   if [[ "$key" == --all ]]; then
-    rm -f -- "$SETTINGS" || die "cannot remove ${SETTINGS}"
+    if [[ -n "${SETTING_OVERRIDE[autoSwitch]+x}" ]]; then
+      write_atomic "$SETTINGS" "{\"autoSwitch\": ${AUTO_SWITCH}}" || die "cannot write ${SETTINGS}"
+    else
+      rm -f -- "$SETTINGS" || die "cannot remove ${SETTINGS}"
+    fi
     print -r -- "no overrides; the flake's values apply"
     return 0
   fi
@@ -1076,7 +1085,7 @@ cmd_config() {
     esac
     shift
   done
-  if $json; then config_doc | jq .; return 0; fi
+  if $json; then config_doc | jq .; return; fi
   printf '%-18s %-16s %s\n' KEY VALUE SOURCE
   while IFS="$US" read -r key val src base bsrc; do
     [[ "$src" == runtime ]] && src="runtime (${bsrc} ${base})"
@@ -1268,17 +1277,17 @@ cmd_auto() {
   done
   [[ "$AUTO_INTERVAL" == <15-3600> ]] || refuse "--interval must be between 15 and 3600 seconds"
   [[ "$AUTO_COOLDOWN" == <0-86400> ]] || refuse "--cooldown must be between 0 and 86400 seconds"
-  [[ "$AUTO_HYSTERESIS" == <0-50> ]] || refuse "hysteresis must be between 0 and 50 points"
-  [[ "$AUTO_UNHEALTHY" == <1-100> ]] || refuse "unhealthyTicks must be between 1 and 100"
+  local why
+  for t in hysteresis unhealthyTicks; do why="$(setting_valid "$t" "${(P)SETTING_VAR[$t]}")" || refuse "$why"; done
   [[ "$STRATEGY" == best || "$STRATEGY" == soonest-reset ]] || refuse "strategy must be best or soonest-reset"
   if [[ -n "$tool" ]]; then need_adapter "$tool"; tools=("$tool"); else tools=("${(s:,:)AUTO_TOOLS}"); fi
   for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
   [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
-  # Off, a tick makes no store and asks nothing of the network; the overview
-  # still follows the roster. A dry run is asked for by hand, so it runs.
+  # Off, a tick touches nothing: no store, no network, not the overview either,
+  # which only a switch changes while off, and a switch rewrites it. A dry run
+  # is asked for by hand, so it runs.
   if [[ "$AUTO_SWITCH" != true ]]; then
     if ! $AUTO_DRY; then
-      [[ -d "$STORE" ]] && write_overview
       $AUTO_JSON || note "auto-switch is off (flakelab accounts auto on)"
       return 0
     fi
@@ -1672,7 +1681,7 @@ cmd_status() {
   $json && print -r -- "$out" | jq .
   if ! $json; then
     local k; local -a o=()
-    for k in "${(@)SETTING_KEYS[2,-1]}"; do [[ -n "${SETTING_OVERRIDE[$k]+x}" ]] && o+=("${k} ${SETTING_OVERRIDE[$k]}"); done
+    for k in "${(@)SETTING_KEYS:#autoSwitch}"; do [[ -n "${SETTING_OVERRIDE[$k]+x}" ]] && o+=("${k} ${SETTING_OVERRIDE[$k]}"); done
     print -r -- "auto-switch: ${${AUTO_SWITCH:#true}:+off}${${(M)AUTO_SWITCH:#true}:+on} (${${SETTING_OVERRIDE[autoSwitch]+runtime}:-$(setting_base_source autoSwitch)})${o:+; overrides (accounts config): ${(j:, :)o}}"
   fi
   return 0

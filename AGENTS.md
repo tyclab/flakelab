@@ -72,11 +72,8 @@ the private overlay `flakelab-config`, which imports this flake via
     contract, usage and the engine's rules are in `accounts.md`. The store
     rides `flakelab backup` (`accounts/`); `flakelab doctor` has an
     `Accounts` section; `ingest` takes the statusline's `rate_limits`.
-    `config [--json]`, `config set KEY VALUE`, `config unset KEY|--all`
-    override the engine's settings at run time (`settings.json` in the
-    store: a flag beats it, it beats the flake option); `auto on|off` is its
-    `autoSwitch` key, auto-switch on or off with no rebuild (the timer is on
-    every box; off, a tick does nothing); `log` prints the engine's events.
+    `auto on|off` and `config [set|unset]` switch it and override its
+    settings at run time, over the flake options; `log` prints its events.
   - `notify` (new, `notify`): a push to an ntfy topic when a session waits
     on you; the Claude Code `Notification` hook (`flakelab.notify.enable`)
     and Codex's `notify` hook call it, `--message` sends one by hand.

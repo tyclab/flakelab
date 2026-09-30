@@ -172,8 +172,8 @@
     el.oninput = () => { if (s.kind === "range") shown.textContent = ` ${el.value}%`; };
     el.onchange = () => {
       el.blur();
-      const text = s.kind === "text" || s.kind === "select";
-      setConfig({ key: s.key, value: text ? el.value : Number(el.value) }, `${s.key} = ${el.value}`);
+      // As typed: an emptied field is refused, not sent as Number("") = 0.
+      setConfig({ key: s.key, value: el.value }, `${s.key} = ${el.value}`);
     };
     tr.children[1].append(el, shown);
     const reset = document.createElement("button");
@@ -196,13 +196,17 @@
         : `<span class="mut">${esc(s.source)}</span>`;
       c.reset.hidden = s.source !== "runtime";
     }
-    on = !!(set.autoSwitch && set.autoSwitch.value === true);
+    // Without an answer from accounts config the state is unknown, not off.
+    const known = !!set.autoSwitch;
+    on = known && set.autoSwitch.value === true;
     $("#onoff").textContent = on ? "turn off" : "turn on";
+    $("#onoff").disabled = !known;
     const ignored = (cfg && cfg.ignored) || [];
-    const from = set.autoSwitch ? ` (${set.autoSwitch.source})` : "";
-    $("#auto-state").textContent = (on ? `on${from}: the timer switches before a limit` : `off${from}: ticks do nothing; a switch by hand still works`)
+    const from = known ? ` (${set.autoSwitch.source})` : "";
+    $("#auto-state").textContent = (!known ? "unknown: accounts config --json did not answer" : on ? `on${from}: the timer switches before a limit` : `off${from}: ticks do nothing; a switch by hand still works`)
       + (ignored.length ? ` · ignored in settings.json: ${ignored.join(", ")}` : "");
-    $("#reset-all").hidden = !ignored.length && !Object.values(set).some((s) => s.source === "runtime");
+    // Back to the flake's values leaves on or off alone, as unset --all does.
+    $("#reset-all").hidden = !ignored.length && !Object.entries(set).some(([k, s]) => k !== "autoSwitch" && s.source === "runtime");
     const lines = (events || []).slice().reverse()
       .map((e) => `${e.ts ? new Date(e.ts).toLocaleString() : ""}  ${evText(e)}${e.dryRun ? "  (dry run)" : ""}`);
     $("#events").textContent = lines.join("\n") || "no engine events yet";

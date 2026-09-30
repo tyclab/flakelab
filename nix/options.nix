@@ -454,7 +454,7 @@ in
       shellOverview = mkOption {
         type = types.bool;
         default = false;
-        description = "Print the stored logins and their usage at every interactive shell start. The shell prints a file the auto-switch timer rewrites each tick (and each switch), so it runs no process and waits on no network; the table is at most one tick old and says when it was written. With auto-switch off a tick polls nothing, so the usage figures are the cache's.";
+        description = "Print the stored logins and their usage at every interactive shell start. The shell prints a file the auto-switch timer rewrites each tick (and each switch), so it runs no process and waits on no network; the table is at most one tick old and says when it was written. With auto-switch off a tick writes nothing; a switch still rewrites the file.";
       };
     };
 

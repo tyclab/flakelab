@@ -590,8 +590,8 @@ The timer is `flakelab-accounts-autoswitch` (`nix/home/accounts.nix`, in
 `flakelab accounts auto --once --json` every
 `flakelab.accounts.autoSwitchInterval`, or every two minutes when that is
 `null`. Auto-switch itself is on or off (below): on by default when the
-interval is set, off when it is not, and off, a tick does nothing but rewrite
-the overview from the cache, so the timer costs one short process. Its state between
+interval is set, off when it is not, and off, a tick does nothing, so the
+timer costs one short process. Its state between
 ticks is `auto.json`, which is why the unhealthy count and the idle hold are
 persisted rather than kept in a process; there is no process. Two minutes is a
 sensible interval: the poll plan, not the timer, decides who is fetched when,
@@ -619,7 +619,8 @@ under the lock, to `settings.json` in the store, and every later `accounts`
 command reads it over the wrapper's value: a flag, then the override, then
 the flake option, then the script's default. `config` lists each setting with
 its value and its source (`runtime`, `flake` or `default`), and for an
-override the value under it; `config unset KEY`, or `--all`, goes back.
+override the value under it; `config unset KEY`, or `--all` (which keeps on or
+off), goes back.
 
 The keys are `autoSwitch` (true or false, above) and the options' names,
 `sessionThreshold`, `weekThreshold`, `modelThreshold`, `modelWindows` (a
