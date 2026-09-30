@@ -395,7 +395,7 @@ in
         type = types.nullOr types.str;
         default = null;
         example = "2min";
-        description = "systemd time span (OnUnitActiveSec syntax) between ticks of `flakelab accounts auto --once`, the engine that switches a tool's live login to another stored one before the live one hits a rate limit. null (the default) schedules no timer; the engine can still be run by hand. The poll plan, not the timer, decides how often the usage endpoint is asked, so a short interval costs nothing against its budget.";
+        description = "systemd time span (OnUnitActiveSec syntax) between ticks of `flakelab accounts auto --once`, the engine that switches a tool's live login to another stored one before the live one hits a rate limit. Set, auto-switch is on by default at that span. null (the default) leaves it off: the timer still ticks every 2 minutes, doing nothing, so `flakelab accounts auto on` turns it on without a rebuild (and `auto off` off again, over either default). The poll plan, not the timer, decides how often the usage endpoint is asked, so a short interval costs nothing against its budget.";
       };
       autoSwitchTools = mkOption {
         type = types.listOf (
@@ -454,7 +454,7 @@ in
       shellOverview = mkOption {
         type = types.bool;
         default = false;
-        description = "Print the stored logins and their usage at every interactive shell start. The shell prints a file the auto-switch timer rewrites each tick (and each switch), so it runs no process and waits on no network; the table is at most one tick old and says when it was written. Needs autoSwitchInterval.";
+        description = "Print the stored logins and their usage at every interactive shell start. The shell prints a file the auto-switch timer rewrites each tick (and each switch), so it runs no process and waits on no network; the table is at most one tick old and says when it was written. With auto-switch off a tick polls nothing, so the usage figures are the cache's.";
       };
     };
 

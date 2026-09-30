@@ -10,7 +10,7 @@
 # Input:
 #   {pass: "plan"|"decide", tool, now (epoch s),
 #    settings: {sessionThreshold, weekThreshold, modelThreshold, cooldownS,
-#               hysteresisPct, unhealthyTicks, idleHoldS, strategy, modelWindows, paused},
+#               hysteresisPct, unhealthyTicks, idleHoldS, strategy, modelWindows},
 #    roster: {active: {tool: id}, accounts: {id: {tool, disabled, ...}}},
 #    usage:  {entries: {id: {windows, fetchedAt, nextPollAt, backoffUntil, lastError}}, quarantine: {id: {...}}},
 #    state:  {lastSwitchAt, lastSwitchTo, unhealthyTicks: {tool: n}, idleHoldSince: {tool: epoch}},
@@ -25,10 +25,9 @@
 #
 # The rules, in the order accounts.md gives them: no active entry; three bars,
 # one per window class, the costliest window over its bar deciding; the
-# trigger (proactive, at-limit, failover, with the idle hold); paused, which
-# holds every trigger while the plan pass still polls; the cooldown, proactive
-# only; the candidates and the proactive gates (bar, hysteresis, model
-# coverage); the order.
+# trigger (proactive, at-limit, failover, with the idle hold); the cooldown,
+# proactive only; the candidates and the proactive gates (bar, hysteresis,
+# model coverage); the order.
 
 # headroom, weeklyReset, limitingReset, counted: one definition for the
 # engine and the script (jq -L on lib/).
@@ -119,19 +118,14 @@ include "accounts-headroom";
           end )
       | if .decision.trigger == null then
           .events += [{event: "no-switch", reason: .decision.reason, detail: .decision.detail}]
-        # 2. Paused (accounts config): every trigger held, named in the detail.
-        elif $s.paused // false then
-          .decision.detail = "auto-switch is paused; would move: \(.decision.trigger)\(if .decision.axis then " on \(.decision.axis)" else "" end)"
-          | .decision.trigger = null | .decision.axis = null | .decision.reason = "paused"
-          | .events += [{event: "no-switch", reason: "paused", detail: .decision.detail}]
-        # 3. The cooldown, proactive only.
+        # 2. The cooldown, proactive only.
         elif .decision.trigger == "proactive" and $lastSwitch != null and ($now - $lastSwitch) < $s.cooldownS then
           .decision.trigger = null | .decision.reason = "cooldown" | .decision.detail = "\($s.cooldownS - ($now - $lastSwitch))s left"
           | .events += [{event: "no-switch", reason: "cooldown", detail: .decision.detail}]
         else
           .decision.trigger as $trigger
           | .decision.axis as $axis
-          # 4. The candidates: known usage, weekly budget left, and for a
+          # 3. The candidates: known usage, weekly budget left, and for a
           # proactive move the gates on the deciding axis (bar, hysteresis,
           # model coverage).
           | ($candidateIds | map(
@@ -169,7 +163,7 @@ include "accounts-headroom";
                     else "no candidate is under the \($axis // "deciding") bar, better than the active entry by \($s.hysteresisPct) points\($models), or its usage is unreadable this tick" end)
               end
             else
-              # 5. The order: earliest weekly renewal, or most weekly headroom;
+              # 4. The order: earliest weekly renewal, or most weekly headroom;
               # under soonest-reset an entry over a bar still goes after every
               # entry under it.
               .decision.action = "switch"

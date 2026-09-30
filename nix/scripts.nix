@@ -185,6 +185,7 @@ rec {
     export FLAKELAB_ACCOUNTS_COOLDOWN=${toString cfg.accounts.cooldownSeconds}
     export FLAKELAB_ACCOUNTS_HYSTERESIS=${toString cfg.accounts.hysteresis}
     export FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS=${toString cfg.accounts.unhealthyTicks}
+    export FLAKELAB_ACCOUNTS_AUTO_SWITCH=${lib.boolToString (cfg.accounts.autoSwitchInterval != null)}
     export PATH=${
       bin [
         pkgs.zsh

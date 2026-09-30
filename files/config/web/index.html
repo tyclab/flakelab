@@ -75,7 +75,7 @@
 <h2>auto-switch</h2>
 <div class="card">
   <p class="row" style="display:flex;gap:8px;margin:0 0 10px;align-items:center;flex-wrap:wrap">
-    <button id="pause" class="primary">pause</button>
+    <button id="onoff" class="primary">turn on</button>
     <span id="auto-state" class="mut"></span>
     <button id="reset-all" hidden>back to the flake's values</button>
   </p>
@@ -150,7 +150,7 @@
     { key: "unhealthyTicks", label: "dead reads before failover", kind: "number", min: 1, max: 100 },
   ];
   const controls = {};
-  let paused = false;
+  let on = false;
   const setConfig = async (body, what) => {
     try { const r = await api("/api/config", body); log((r.call.stdout || "").trim() || what); }
     catch (e) { log(`${what}: ${e.message}`, true); }
@@ -196,10 +196,11 @@
         : `<span class="mut">${esc(s.source)}</span>`;
       c.reset.hidden = s.source !== "runtime";
     }
-    paused = !!(set.paused && set.paused.value === true);
-    $("#pause").textContent = paused ? "resume" : "pause";
+    on = !!(set.autoSwitch && set.autoSwitch.value === true);
+    $("#onoff").textContent = on ? "turn off" : "turn on";
     const ignored = (cfg && cfg.ignored) || [];
-    $("#auto-state").textContent = (paused ? "paused: every tick decides nothing, the polls go on" : "on")
+    const from = set.autoSwitch ? ` (${set.autoSwitch.source})` : "";
+    $("#auto-state").textContent = (on ? `on${from}: the timer switches before a limit` : `off${from}: ticks do nothing; a switch by hand still works`)
       + (ignored.length ? ` · ignored in settings.json: ${ignored.join(", ")}` : "");
     $("#reset-all").hidden = !ignored.length && !Object.values(set).some((s) => s.source === "runtime");
     const lines = (events || []).slice().reverse()
@@ -299,7 +300,7 @@
     refresh();
   };
 
-  $("#pause").onclick = () => setConfig({ key: "paused", value: !paused }, paused ? "resumed" : "paused");
+  $("#onoff").onclick = () => setConfig({ key: "autoSwitch", value: !on }, on ? "auto-switch off" : "auto-switch on");
   $("#reset-all").onclick = () => setConfig({ unset: true, all: true }, "every override removed");
 
   refresh();

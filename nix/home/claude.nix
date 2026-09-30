@@ -90,10 +90,10 @@ let
 
   # The reactive half of auto-switch: when Claude Code decides to wait for its
   # quota window (a Notification of type quota_auto_resume_fired), the engine
-  # ticks at once instead of at the next timer. Owned by its command, like the
-  # SessionEnd hook: a box without the engine drops it again.
-  accountsHook =
-    cfg.accounts.autoSwitchInterval != null && lib.elem "claude" cfg.accounts.autoSwitchTools;
+  # ticks at once instead of at the next timer; with auto-switch off the tick
+  # does nothing. Owned by its command, like the SessionEnd hook: a box whose
+  # engine does not decide for Claude drops it again.
+  accountsHook = lib.elem "claude" cfg.accounts.autoSwitchTools;
   accountsHookCmd = "${scripts.accounts}/bin/accounts auto --once --tool claude --json >/dev/null 2>&1 || true";
   accountsHookArg = lib.optionalString accountsHook "--arg accountsHook ${lib.escapeShellArg accountsHookCmd}";
   accountsHookJq = ''

@@ -313,6 +313,7 @@ flakelab accounts env ID | --unset <tool>  eval-able export of the tool's home v
 flakelab accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N] [--week-threshold N]
                        [--model-threshold N] [--interval S] [--cooldown S]
 flakelab accounts status [--json]          per tool: active account and cached headroom; cache only, for hooks
+flakelab accounts auto on|off              auto-switch on or off at run time, no rebuild
 flakelab accounts config [--json]          each engine setting with its value and its source
 flakelab accounts config set KEY VALUE     a run-time override over the flake option; unset KEY|--all drops it
 flakelab accounts log [--json] [--lines N] the engine's last events, from auto.log
@@ -530,10 +531,8 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
    working. The exception to counting is an idle hold: the active token is
    expired on disk and no session is using it, which is the tool idle rather
    than dead, held for up to thirty minutes before the count resumes.
-4. Paused (`accounts config set paused true`, below) holds every trigger,
-   and the no-switch event names the move it held. Otherwise a cooldown
-   (`cooldownSeconds`, five minutes) since the last switch stops a
-   `proactive` trigger and nothing else.
+4. A cooldown (`cooldownSeconds`, five minutes) since the last switch stops
+   a `proactive` trigger and nothing else.
 5. Candidates: every enabled, non-quarantined entry of the tool other than
    the active one that has no live `run` session, whose weekly budget (the
    week, or a counted model week) is not spent, and whose usage is known. For
@@ -587,13 +586,28 @@ so the reactive case does not wait for the timer, and the timer keeps the
 proactive case. Both go through the same engine and the same transaction.
 
 The timer is `flakelab-accounts-autoswitch` (`nix/home/accounts.nix`, in
-`nix/home/backup.nix`'s style):
-`flakelab.accounts.autoSwitchInterval`, default `null` (off), runs
-`flakelab accounts auto --once --json` every interval. Its state between
+`nix/home/backup.nix`'s style), on every box: it runs
+`flakelab accounts auto --once --json` every
+`flakelab.accounts.autoSwitchInterval`, or every two minutes when that is
+`null`. Auto-switch itself is on or off (below): on by default when the
+interval is set, off when it is not, and off, a tick does nothing but rewrite
+the overview from the cache, so the timer costs one short process. Its state between
 ticks is `auto.json`, which is why the unhealthy count and the idle hold are
 persisted rather than kept in a process; there is no process. Two minutes is a
 sensible interval: the poll plan, not the timer, decides who is fetched when,
 so a short timer costs nothing against the budget.
+
+### On and off
+
+`flakelab accounts auto on` and `auto off` switch auto-switch at run time, on
+any box, with no rebuild: the timer is there either way. Off, a tick makes no
+store, polls nothing, switches nothing and logs nothing, and the
+`quota_auto_resume_fired` hook's tick is the same; `switch` by hand and the
+listing work as ever, and `auto --dry-run` still shows what the engine would
+do. The switch is the `autoSwitch` key below, so it outlives an update, and
+`config unset autoSwitch` goes back to the flake's default (on exactly when
+`autoSwitchInterval` is set). `status` and the dashboard say which it is and
+where that came from.
 
 ### Run-time overrides
 
@@ -607,22 +621,20 @@ the flake option, then the script's default. `config` lists each setting with
 its value and its source (`runtime`, `flake` or `default`), and for an
 override the value under it; `config unset KEY`, or `--all`, goes back.
 
-The keys are the options' names, `sessionThreshold`, `weekThreshold`,
-`modelThreshold`, `modelWindows` (a comma list), `strategy`,
-`cooldownSeconds`, `hysteresis` and `unhealthyTicks`, and one more with no
-option, `paused`: the flake's off is no timer. Paused, a tick still polls on
-its plan, so the listing and the dashboard stay current, and decides nothing.
-The interval is not a key: it is the timer's own `OnUnitActiveSec`, and the
+The keys are `autoSwitch` (true or false, above) and the options' names,
+`sessionThreshold`, `weekThreshold`, `modelThreshold`, `modelWindows` (a
+comma list), `strategy`, `cooldownSeconds`, `hysteresis` and
+`unhealthyTicks`. The interval is not a key: it is the timer's own `OnUnitActiveSec`, and the
 poll plan, not the timer, sets the fetch rate. A key the file carries that is
 unknown or out of range is skipped and named by `config`, never refused, so a
 hand edit cannot stop the timer.
 
 The file stays on the box. `flakelab backup` does not carry it, and
-`flakelab doctor` warns while it holds anything, since the flake's value is
-then not the one in use. `accounts log` prints the engine's last events from
-`auto.log`. The dashboard (remote-sessions.md) drives all of it: a slider per
-bar, the other settings, a pause button and the event log, each change one
-`config` call.
+`flakelab doctor` warns while it holds an override other than `autoSwitch`,
+since the flake's value is then not the one in use; on or off it reports. `accounts log` prints the engine's last events from
+`auto.log`. The dashboard (remote-sessions.md) drives all of it: an on/off
+button, a slider per bar, the other settings and the event log, each change
+one `config` call.
 
 ### A second account in a second terminal
 
@@ -684,7 +696,7 @@ revoked seats, and reports the timer.
 
 ```nix
 flakelab.accounts = {
-  autoSwitchInterval = null;          # systemd span; null schedules no timer
+  autoSwitchInterval = null;          # set: on by default, ticking at it; null: off, ticking every 2min
   autoSwitchTools    = [ "claude" ];  # which tools the timer decides for; add "codex" once verify 6/7 pass
   sessionThreshold   = 85;            # the 5h window, Claude and Codex alike
   weekThreshold      = 97;

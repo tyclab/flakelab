@@ -29,6 +29,7 @@ set -uo pipefail
 #   accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
 #                 [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
 #                                            switch before the live entry hits a limit
+#   accounts auto on|off                     auto-switch on or off, at run time
 #   accounts status [--json]                 per tool: the active entry, whether the
 #                                            live login still matches it, its cached
 #                                            windows; reads no network
@@ -105,20 +106,22 @@ AUTO_COOLDOWN="${FLAKELAB_ACCOUNTS_COOLDOWN:-300}"
 AUTO_HYSTERESIS="${FLAKELAB_ACCOUNTS_HYSTERESIS:-10}"
 AUTO_UNHEALTHY="${FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS:-3}"
 AUTO_IDLE_HOLD=1800
-AUTO_PAUSED=false
+# Off, a tick does nothing but rewrite the overview: no poll, no switch, no
+# event. The wrapper says on when the flake sets autoSwitchInterval.
+AUTO_SWITCH="${FLAKELAB_ACCOUNTS_AUTO_SWITCH:-false}"
 # The engine's settings a person may override at run time (`config`), in
 # listing order: each key's variable, and the wrapper's variable carrying the
-# flake option (paused has none: the flake's off is no timer). The override
-# file sits in the store; the order is flag, override, flake option, default.
+# flake option. The override file sits in the store; the order is flag,
+# override, flake option, default.
 SETTINGS="${STORE}/settings.json"
-typeset -a SETTING_KEYS=(sessionThreshold weekThreshold modelThreshold modelWindows strategy cooldownSeconds hysteresis unhealthyTicks paused)
+typeset -a SETTING_KEYS=(autoSwitch sessionThreshold weekThreshold modelThreshold modelWindows strategy cooldownSeconds hysteresis unhealthyTicks)
 typeset -A SETTING_VAR=(
-  sessionThreshold SESSION_THRESHOLD weekThreshold WEEK_THRESHOLD modelThreshold MODEL_THRESHOLD
+  autoSwitch AUTO_SWITCH sessionThreshold SESSION_THRESHOLD weekThreshold WEEK_THRESHOLD modelThreshold MODEL_THRESHOLD
   modelWindows MODEL_WINDOWS strategy STRATEGY cooldownSeconds AUTO_COOLDOWN
-  hysteresis AUTO_HYSTERESIS unhealthyTicks AUTO_UNHEALTHY paused AUTO_PAUSED
+  hysteresis AUTO_HYSTERESIS unhealthyTicks AUTO_UNHEALTHY
 )
 typeset -A SETTING_ENV=(
-  sessionThreshold FLAKELAB_ACCOUNTS_SESSION_THRESHOLD weekThreshold FLAKELAB_ACCOUNTS_WEEK_THRESHOLD
+  autoSwitch FLAKELAB_ACCOUNTS_AUTO_SWITCH sessionThreshold FLAKELAB_ACCOUNTS_SESSION_THRESHOLD weekThreshold FLAKELAB_ACCOUNTS_WEEK_THRESHOLD
   modelThreshold FLAKELAB_ACCOUNTS_MODEL_THRESHOLD modelWindows FLAKELAB_ACCOUNTS_MODEL_WINDOWS
   strategy FLAKELAB_ACCOUNTS_STRATEGY cooldownSeconds FLAKELAB_ACCOUNTS_COOLDOWN
   hysteresis FLAKELAB_ACCOUNTS_HYSTERESIS unhealthyTicks FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS
@@ -159,6 +162,7 @@ Usage: accounts [--json] [--fetch]
        accounts remove <ID|ALIAS|LABEL> [--yes]
        accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
                      [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
+       accounts auto on|off
        accounts status [--json]
        accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
        accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
@@ -188,7 +192,9 @@ Usage: accounts [--json] [--fetch]
   auto        switch before the live entry hits a limit: one tick per tool with
               usage (--once, the timer's form; --dry-run decides but never
               switches; --json prints the events as JSON lines), else a loop
-              every --interval seconds until Ctrl-C
+              every --interval seconds until Ctrl-C. Off (auto off, or the
+              flake without autoSwitchInterval), a tick does nothing; a dry
+              run still shows what it would do. auto on|off sets autoSwitch
   status      per tool: the active entry, whether the live login is still the
               one the roster thinks, and its cached windows; reads no network
   run         the tool on the entry's own profile (profiles/<id>/, seeded from
@@ -206,11 +212,11 @@ Usage: accounts [--json] [--fetch]
               from: runtime (settings.json in the store), flake (the
               flakelab.accounts option) or default. set overrides one until
               unset, taking effect on the next auto tick; an auto flag still
-              beats it. Keys: sessionThreshold weekThreshold modelThreshold
-              (50-100), modelWindows (all or display names, comma-separated),
-              strategy (soonest-reset|best), cooldownSeconds (0-86400),
-              hysteresis (0-50 points), unhealthyTicks (1-100), paused
-              (true|false: every tick decides nothing, the polls go on)
+              beats it. Keys: autoSwitch (true|false, on or off),
+              sessionThreshold weekThreshold modelThreshold (50-100),
+              modelWindows (all or display names, comma-separated), strategy
+              (soonest-reset|best), cooldownSeconds (0-86400), hysteresis
+              (0-50 points), unhealthyTicks (1-100)
   log         the engine's last --lines (20) events from auto.log, oldest
               first; --json prints them as the JSON lines the log holds
 
@@ -980,7 +986,7 @@ setting_valid() {
     cooldownSeconds) [[ "$2" == <0-86400> ]] || { print -r -- "cooldownSeconds must be between 0 and 86400"; return 1 } ;;
     hysteresis) [[ "$2" == <0-50> ]] || { print -r -- "hysteresis must be between 0 and 50 points"; return 1 } ;;
     unhealthyTicks) [[ "$2" == <1-100> ]] || { print -r -- "unhealthyTicks must be between 1 and 100"; return 1 } ;;
-    paused) [[ "$2" == (true|false) ]] || { print -r -- "paused must be true or false"; return 1 } ;;
+    autoSwitch) [[ "$2" == (true|false) ]] || { print -r -- "autoSwitch must be true or false"; return 1 } ;;
     *) print -r -- "unknown setting '$1' (${(j:, :)SETTING_KEYS})"; return 1 ;;
   esac
 }
@@ -988,7 +994,7 @@ setting_valid() {
 # setting_json KEY VALUE: VALUE as the JSON the file and --json carry.
 setting_json() {
   case "$1" in
-    paused) print -r -- "$2" ;;
+    autoSwitch) print -r -- "$2" ;;
     *) if [[ "$1" != (modelWindows|strategy) && "$2" == <-> ]]; then print -r -- $(( 10#$2 )); else jq -cn --arg v "$2" '$v'; fi ;;
   esac
 }
@@ -1127,8 +1133,8 @@ cmd_log() {
 auto_settings() {
   jq -cn --argjson s "$SESSION_THRESHOLD" --argjson w "$WEEK_THRESHOLD" --argjson m "$MODEL_THRESHOLD" \
     --argjson c "$AUTO_COOLDOWN" --argjson h "$AUTO_HYSTERESIS" --argjson u "$AUTO_UNHEALTHY" --argjson i "$AUTO_IDLE_HOLD" \
-    --arg st "$STRATEGY" --arg mw "$MODEL_WINDOWS" --argjson p "$AUTO_PAUSED" \
-    '{sessionThreshold: $s, weekThreshold: $w, modelThreshold: $m, cooldownS: $c, hysteresisPct: $h, unhealthyTicks: $u, idleHoldS: $i, strategy: $st, modelWindows: $mw, paused: $p}'
+    --arg st "$STRATEGY" --arg mw "$MODEL_WINDOWS" \
+    '{sessionThreshold: $s, weekThreshold: $w, modelThreshold: $m, cooldownS: $c, hysteresisPct: $h, unhealthyTicks: $u, idleHoldS: $i, strategy: $st, modelWindows: $mw}'
 }
 
 # Entries of a tool with a live profile session: never a target.
@@ -1227,6 +1233,14 @@ tick() {
 
 cmd_auto() {
   local once=false tool="" tools rc=0 outcome t
+  case "${1:-}" in
+    on|off)
+      (( $# == 1 )) || refuse "usage: accounts auto on|off"
+      config_set autoSwitch "${${1:#off}:+true}${${(M)1:#off}:+false}" >/dev/null
+      if [[ "$1" == on ]]; then print -r -- "auto-switch on: the timer's next tick switches before a limit"
+      else print -r -- "auto-switch off: ticks do nothing until accounts auto on; a switch by hand still works"; fi
+      return 0 ;;
+  esac
   while (( $# > 0 )); do
     case $1 in
       --once) once=true ;;
@@ -1260,6 +1274,16 @@ cmd_auto() {
   if [[ -n "$tool" ]]; then need_adapter "$tool"; tools=("$tool"); else tools=("${(s:,:)AUTO_TOOLS}"); fi
   for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
   [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
+  # Off, a tick makes no store and asks nothing of the network; the overview
+  # still follows the roster. A dry run is asked for by hand, so it runs.
+  if [[ "$AUTO_SWITCH" != true ]]; then
+    if ! $AUTO_DRY; then
+      [[ -d "$STORE" ]] && write_overview
+      $AUTO_JSON || note "auto-switch is off (flakelab accounts auto on)"
+      return 0
+    fi
+    note "note: auto-switch is off; this dry run shows what it would do"
+  fi
   ensure_store
   local -i sleep_s
   while true; do
@@ -1646,10 +1670,10 @@ cmd_status() {
     fi
   done
   $json && print -r -- "$out" | jq .
-  if ! $json && (( ${#SETTING_OVERRIDE} )); then
+  if ! $json; then
     local k; local -a o=()
-    for k in "${SETTING_KEYS[@]}"; do [[ -n "${SETTING_OVERRIDE[$k]+x}" ]] && o+=("${k} ${SETTING_OVERRIDE[$k]}"); done
-    print -r -- "auto-switch overrides (accounts config): ${(j:, :)o}"
+    for k in "${(@)SETTING_KEYS[2,-1]}"; do [[ -n "${SETTING_OVERRIDE[$k]+x}" ]] && o+=("${k} ${SETTING_OVERRIDE[$k]}"); done
+    print -r -- "auto-switch: ${${AUTO_SWITCH:#true}:+off}${${(M)AUTO_SWITCH:#true}:+on} (${${SETTING_OVERRIDE[autoSwitch]+runtime}:-$(setting_base_source autoSwitch)})${o:+; overrides (accounts config): ${(j:, :)o}}"
   fi
   return 0
 }

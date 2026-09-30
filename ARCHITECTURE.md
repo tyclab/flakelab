@@ -63,9 +63,11 @@ that defaults to off, because every activation here runs on every adopter's box:
   `claudeAgentDefaults` implies it. Off, the key and the vars are left as the
   user has them.
 - `accounts.*` — the account switcher's knobs (`accounts.md`):
-  `autoSwitchInterval` (nullable string, default `null`) schedules the
+  `autoSwitchInterval` (nullable string, default `null`) is the span of the
   `flakelab-accounts-autoswitch` user timer running
-  `flakelab accounts auto --once`; `autoSwitchTools` (default `[ "claude" ]`)
+  `flakelab accounts auto --once` (every 2 minutes when `null`; the timer is on
+  every box) and, set, turns auto-switch on by default, where
+  `flakelab accounts auto on|off` switches it at run time; `autoSwitchTools` (default `[ "claude" ]`)
   names the tools it decides for; `sessionThreshold` (85), `weekThreshold`
   (97) and `modelThreshold` (95) are the bars, `modelWindows` (`[ "all" ]`)
   which per-model weeks count, `strategy` (`soonest-reset` or `best`) the
