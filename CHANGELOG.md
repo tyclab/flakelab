@@ -42,6 +42,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `test-nix-update`, `test-nix-doctor` and `test-clone-repos`: offline suites in `make test` and `nix flake check`.
 - `GLAB_NO_PROMPT=1` in every login session.
 - The Claude permissions merge installs the marketplace's `recommended-ask.json` as `permissions.ask`, asserted whole.
+- `installTycswap` (default `true`): tycswap's `cswap`, the Claude Code and Codex account switcher, pinned in `flake.nix` and built as a flake check.
 
 ### Changed
 

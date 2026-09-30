@@ -181,6 +181,12 @@ in
       description = "Install the Codex CLI via its official installer into ~/.local/bin, re-run on every switch to update it.";
     };
 
+    installTycswap = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Install tycswap's `cswap`: the account switcher for Claude Code and Codex logins (numbered slots, switch without a logout, auto-switch before a rate limit, a dashboard), pinned to a release in flake.nix. `flakelab accounts` stays available beside it.";
+    };
+
     # The tiering is the whole point, and it is easy to get backwards:
     #   hard_deny  cannot be cleared by anything, including a direct operator
     #              instruction. Reserve it for boundaries that are never legitimate.

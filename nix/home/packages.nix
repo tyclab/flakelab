@@ -89,6 +89,8 @@ in
     # Codex's Linux sandbox runs the first bwrap on PATH; without one it warns at
     # every start and falls back to a bundled helper.
     ++ lib.optional cfg.installCodex pkgs.bubblewrap
+    # The account switcher for Claude Code and Codex, pinned in flake.nix.
+    ++ lib.optional cfg.installTycswap pkgs.tycswap
     ++ profilePkgs;
 
   # ~/.local/bin for Claude Code, Codex, and `uv tool` installs.
