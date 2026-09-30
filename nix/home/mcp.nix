@@ -1,15 +1,8 @@
-# MCP server definitions: version pins, per-server attrsets, and the Kiro server
-# set built from them. One file, so kiro.nix and claude.nix cannot drift; exported
-# via _module.args.flakelabMcp.
-{
-  lib,
-  osConfig,
-  flakelab,
-  ...
-}:
+# MCP server definitions: version pins and per-server attrsets, exported via
+# _module.args.flakelabMcp so claude.nix builds its set from one source.
+{ osConfig, ... }:
 let
   cfg = osConfig.flakelab;
-  inherit (flakelab) isWsl;
   inherit (cfg) whatsappMcpDir;
 
   # claude.nix's Playwright env defaults read this path, so it is the single source.
@@ -17,90 +10,8 @@ let
 
   # Pins live in variables so renovate.json's customManagers can see them; an inline
   # pin in an args list has no manager watching it.
-  # renovate: datasource=npm depName=@playwright/mcp
-  playwrightMcpVersion = "0.0.83";
-  # renovate: datasource=npm depName=@jarahkon/hass-mcp-server
-  hassMcpVersion = "1.0.10";
-  # renovate: datasource=npm depName=@itunified.io/mcp-proxmox
-  proxmoxMcpVersion = "2026.4.10-1";
-  # Upstream cuts GitHub releases but publishes nothing to PyPI, so the pin is the
-  # release tag's commit: a tag can be moved by a compromised account, a SHA cannot.
-  # uvx reads no uv.lock and resolves the server's dependencies fresh at every start.
-  # renovate-digest: datasource=git-refs depName=https://github.com/atom2ueki/mcp-server-synology tag=1.6.0
-  synologyMcpRev = "95c62c74e8526dd299bfe527063d8e3360ae9ebf";
   # renovate: datasource=pypi depName=mcp-grafana
   grafanaMcpVersion = "1.6.0";
-
-  # Extension mode, driving the running Windows Chrome. --executable-path is still
-  # required, or the server throws before the extension can attach. The extension
-  # cannot be pinned, so the server pin must keep pace with it.
-  playwrightServer = {
-    command = "npx";
-    args = [
-      "--yes"
-      "@playwright/mcp@${playwrightMcpVersion}"
-      "--executable-path"
-      windowsChromePath
-      "--extension"
-      "--browser"
-      "chrome"
-    ];
-  };
-
-  # The wrapper maps the runtime HASS_* to the HA_* this server expects, so no secret
-  # is written to the store or mcp.json.
-  homeassistantServer = {
-    command = "sh";
-    args = [
-      "-c"
-      ''HA_URL="$HASS_URL" HA_TOKEN="$HASS_TOKEN" exec npx --yes @jarahkon/hass-mcp-server@${hassMcpVersion}''
-    ];
-  };
-
-  # Env var names already match, so PROXMOX_* is inherited from the shell.
-  proxmoxServer = {
-    command = "npx";
-    args = [
-      "--yes"
-      "@itunified.io/mcp-proxmox@${proxmoxMcpVersion}"
-    ];
-  };
-
-  # Fallback only: kiroMcpMerge prefers the mcp-synology plugin's definition from the
-  # Claude marketplace clone, which carries the same pin; bumping it here alone does
-  # not change what Kiro runs.
-  #
-  # DSM hands out its long-lived device token only through the server's settings
-  # file -- no env var reads it, and SYNOLOGY_OTP_CODE is spent on the first login.
-  # The wrapper materialises that file on tmpfs so the password stays out of
-  # persistent disk; without XDG_RUNTIME_DIR it refuses.
-  #
-  # The three exec-line assignments are not restated defaults: the server reads a
-  # generic VERIFY_SSL and defaults it to false, XIAOZHI bridges it to a foreign
-  # WebSocket endpoint, and MCP_HTTP opens an unauthenticated listener. None may
-  # follow a stray shell variable.
-  synologyServer = {
-    command = "sh";
-    args = [
-      "-c"
-      ''
-        set -eu
-        if [ -n "''${SYNOLOGY_DEVICE_ID:-}" ]; then
-          umask 077
-          [ -n "''${XDG_RUNTIME_DIR:-}" ] || { echo "synology-mcp: SYNOLOGY_DEVICE_ID is set but XDG_RUNTIME_DIR is not; refusing to write the password to persistent disk" >&2; exit 1; }
-          d="$XDG_RUNTIME_DIR/synology-mcp"
-          mkdir -p "$d/synology-mcp"
-          jq -n --arg u "$SYNOLOGY_URL" --arg n "$SYNOLOGY_USERNAME" \
-            --arg p "$SYNOLOGY_PASSWORD" --arg i "$SYNOLOGY_DEVICE_ID" \
-            '{synology:{nas:{url:$u,username:$n,password:$p,device_id:$i}}}' \
-            > "$d/synology-mcp/settings.json"
-          export XDG_CONFIG_HOME="$d"
-        fi
-        VERIFY_SSL="''${SYNOLOGY_VERIFY_SSL:-true}" ENABLE_XIAOZHI=false MCP_HTTP=false \
-          exec uvx --from "git+https://github.com/atom2ueki/mcp-server-synology@${synologyMcpRev}" synology-mcp
-      ''
-    ];
-  };
 
   # One server covering Grafana, Prometheus and Loki; GRAFANA_* is inherited.
   grafanaServer = {
@@ -117,35 +28,10 @@ let
       ''BRIDGE_HOST="$WHATSAPP_BRIDGE_HOST" WHATSAPP_MCP_TOOLSETS="''${WHATSAPP_MCP_TOOLSETS:-core,send,media}" exec uv run --directory "${whatsappMcpDir}" python main.py''
     ];
   };
-
-  mcpServers =
-    lib.warnIf (cfg.mcpPlaywright && !isWsl)
-      "flakelab.mcpPlaywright is set but flakelab.target is not \"wsl\" — extension mode needs the Windows Chrome path in nix/home/mcp.nix, which is meaningless off WSL; the playwright MCP server was NOT registered."
-      (
-        lib.optionalAttrs (cfg.mcpPlaywright && isWsl) { playwright = playwrightServer; }
-        // lib.optionalAttrs (cfg.sessionVariables ? HASS_URL) {
-          homeassistant = homeassistantServer;
-        }
-        // lib.optionalAttrs (cfg.sessionVariables ? PROXMOX_API_URL) {
-          proxmox = proxmoxServer;
-        }
-        // lib.optionalAttrs (cfg.sessionVariables ? SYNOLOGY_URL) {
-          synology = synologyServer;
-        }
-        // lib.optionalAttrs (cfg.sessionVariables ? GRAFANA_URL) {
-          grafana = grafanaServer;
-        }
-        // lib.optionalAttrs (cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST && whatsappMcpDir != null) {
-          whatsapp = whatsappServer;
-        }
-      );
 in
 {
-  # Two servers are exported individually because claude.nix's gating differs and
-  # computes its own set from these definitions.
   _module.args.flakelabMcp = {
     inherit
-      mcpServers
       grafanaServer
       whatsappServer
       whatsappMcpDir

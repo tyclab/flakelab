@@ -14,7 +14,7 @@ the private overlay `flakelab-config`, which imports this flake via
   execs the same per-command wrapper `nix/scripts.nix` builds, so every one
   keeps its own pinned PATH and exported environment
   (`FLAKELAB_REPO_ROOT` from `repoPath`, `FLAKELAB_BACKUP_ROOT`,
-  `FLAKELAB_STATE_ROOT` from `stateRoot` when set, `FLAKELAB_KIRO_PLUGIN_*`).
+  `FLAKELAB_STATE_ROOT` from `stateRoot` when set).
   `nix/cli.nix` assembles the wrappers into the
   dispatch dir the router reads.
   - Renamed, old name gone from PATH: `update` (was `nix-update`),
@@ -24,16 +24,15 @@ the private overlay `flakelab-config`, which imports this flake via
     (was `get_current_wsl_distro_name`), `clone-repos`, `activate-hooks`,
     `stale-repos` (was `report-stale-repos`), `glab-projects`.
   - `sessions` (`claude-sessions`, the script name kept): the running agent
-    sessions — Claude Code, Codex, Kiro CLI — with their session ids: Claude
-    Code's from its own registry `~/.claude/sessions/<pid>.json` (open
-    transcript in `/proc` as fallback), Codex's from the rollout file the
-    process holds open, Kiro's from `~/.kiro/sessions/cli/<id>.json` (the
-    locked entry in the process's directory). `--start <tool> [dir] [-- args]`
+    sessions — Claude Code, Codex — with their session ids: Claude Code's
+    from its own registry `~/.claude/sessions/<pid>.json` (open transcript in
+    `/proc` as fallback), Codex's from the rollout file the process holds
+    open. `--start <tool> [dir] [-- args]`
     runs one in a window of the `agents` tmux session so it outlives its
     terminal; `--attach [id|window]` joins it (a grouped view session per
     terminal); the table's HOST column names the window. `--save` before a
     `wsl --shutdown` or reboot, `--resume` prints each tool's resume command
-    after (`claude --resume`, `codex resume`, `kiro-cli chat --resume-id`),
+    after (`claude --resume`, `codex resume`),
     `--open` puts each in its own Windows Terminal tab — attached to a tmux
     window when tmux is on PATH, so the tab can close. `--autosave` (the
     `flakelab-sessions-autosave` timer, `sessionsAutosaveInterval`) keeps one
@@ -64,11 +63,9 @@ the private overlay `flakelab-config`, which imports this flake via
 [-- args]` and `env <entry> [--shell sh|fish|pwsh]` give an entry a
     profile of its own (`profiles/<id>/`, `CLAUDE_CONFIG_DIR`) beside the
     live login; an entry with a running profile session is never switched
-    onto or targeted. Adapters: Claude Code, Codex (`lib/accounts-codex.zsh`:
+    onto or targeted. Adapters: Claude Code and Codex (`lib/accounts-codex.zsh`:
     `auth.json` whole, refuses a switch while a `codex` runs unless
-    `--force`, usage through `codex app-server`) and Kiro
-    (`lib/accounts-kiro.zsh`: rows of the SQLite store swapped in one
-    transaction, one monthly window the engine never counts). The adapter
+    `--force`, usage through `codex app-server`). The adapter
     contract, usage and the engine's rules are in `accounts.md`. The store
     rides `flakelab backup` (`accounts/`); `flakelab doctor` has an
     `Accounts` section; `ingest` takes the statusline's `rate_limits`.

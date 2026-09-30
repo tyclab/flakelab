@@ -257,7 +257,7 @@ Any operation that expects interactive input hangs when run without a TTY. The i
 replaced the agent** — it bypasses the agent and forces SSH to read the raw key
 file. Without a TTY it cannot prompt for the passphrase, so it does not hang: it
 fails outright with `Permission denied (publickey)`. The activation steps in
-`nix/home/kiro.nix` and `nix/home/claude.nix` that clone over SSH pass `-i`
+`nix/home/claude.nix` that clone over SSH pass `-i`
 **and** point at the agent
 (`sshAgentPreamble`) for exactly that reason — the `-i` alone authenticates
 nothing.

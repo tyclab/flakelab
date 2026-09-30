@@ -22,7 +22,6 @@
   profiles = [ ];
   profileCliTools = [ ];
 
-  installKiro = true;
   installClaude = true;
   installCodex = true;
   claudeAutoUpdatesChannel = "stable";
@@ -37,8 +36,6 @@
 
   # No secrets: this lands in the world-readable Nix store.
   sessionVariables = { };
-
-  kiroPluginRepo = null;
 
   claudePluginMarketplaces = [ ];
   claudePlugins = [ ];

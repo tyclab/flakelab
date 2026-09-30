@@ -19,11 +19,8 @@ let
     warnLog
     deferredLog
     sshAgentPreamble
-    installKiro
     installClaude
     installCodex
-    kiroPluginRepo
-    kiroPlugin
     ;
 
   # Marker honoured alongside FLAKELAB_SKIP_HEALTHCHECK=1: activation runs from a
@@ -41,9 +38,9 @@ in
   '';
 
   # ── Post-activation health check (must be the LAST activation entry) ───────
-  # The installers (kiro.nix, claude.nix, codex.nix) are warn-not-fail by design,
-  # which is why a rebuild can report success on a distro with no kiro-cli, no
-  # plugins and no repos. This turns that silence back into a failed activation:
+  # The installers (claude.nix, codex.nix) are warn-not-fail by design, which is
+  # why a rebuild can report success on a distro with no claude, no plugins and
+  # no repos. This turns that silence back into a failed activation:
   # it fails on anything flakelab-warn recorded, plus the post-conditions that
   # must hold unattended.
   # Interactive state (an agent holding a key, a browser login) is deliberately
@@ -53,9 +50,6 @@ in
       [
         "writeBoundary"
         "flakelabWarnReset"
-        "installKiroCli"
-        "kiroInstallGlobal"
-        "kiroMcpMerge"
         "installClaudeCode"
         "installClaudePlugins"
         "pruneClaudeMcpPlugins"
@@ -127,27 +121,6 @@ in
             _hcOk "ssh-agent reachable with a loaded key during activation"
           else
             _hcSkip "no ssh-agent key during activation — SSH-dependent steps are deferred, not failed"
-          fi
-
-          ${lib.optionalString installKiro ''
-            if [ -x "$HOME/.local/bin/kiro-cli" ]; then
-              _hcOk "kiro-cli installed (~/.local/bin/kiro-cli)"
-            else
-              _hcBadUnlessDeferred "kiro-cli missing or not executable: ~/.local/bin/kiro-cli" "kiro-cli"
-            fi
-          ''}
-          ${lib.optionalString (installKiro && kiroPluginRepo != null) ''
-            if [ -d "${kiroPlugin}/.git" ]; then
-              _hcOk "kiro-plugin checkout present (${kiroPlugin})"
-            else
-              _hcBadUnlessDeferred "kiro-plugin checkout missing: ${kiroPlugin}/.git" "kiro-plugin not cloned"
-            fi
-          ''}
-          _hcMcp="$HOME/.kiro/settings/mcp.json"
-          if [ -f "$_hcMcp" ] && jq -e . "$_hcMcp" >/dev/null 2>&1; then
-            _hcOk "mcp.json valid JSON, $(jq -r '(.mcpServers // {}) | length' "$_hcMcp") server(s)"
-          else
-            _hcBad "~/.kiro/settings/mcp.json missing or not valid JSON"
           fi
 
           ${lib.optionalString installClaude ''

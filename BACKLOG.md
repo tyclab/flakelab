@@ -12,12 +12,10 @@ the repository, alongside the code it describes.
 `security` · mostly closed
 
 Every adopter used to inherit the operator's full-trust agent setup without
-opting in. Five of six items are now gated behind options that default off:
+opting in. Three of four items are now gated behind options that default off:
 
 | surface                                                                                  | option                         |
 | ---------------------------------------------------------------------------------------- | ------------------------------ |
-| `kk` = `kiro-cli chat --trust-all-tools`                                                 | `flakelab.kiroTrustAll`        |
-| `cli.json` `chat.disableTrustAllConfirmation`                                            | `flakelab.kiroTrustAll`        |
 | `cc` = `claude --dangerously-skip-permissions`                                           | `flakelab.claudeTrustAll`      |
 | `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`, `remoteControlAtStartup` | `flakelab.claudeAgentDefaults` |
 | the Playwright MCP server                                                                | `flakelab.mcpPlaywright`       |
@@ -95,7 +93,7 @@ config fixes it properly. Worth a line in CONTRIBUTING.md.
 
 `enhancement` · built; the box-side verifications remain
 
-Several logins per tool on one box, for Claude Code, Codex and Kiro CLI: a
+Several logins per tool on one box, for Claude Code and Codex: a
 roster of stored logins, a switch of the live one without a logout, headroom
 on every window the tool reports in the listing and the statusline, a timer
 that switches before the live account hits its limit where the tool exposes
@@ -105,11 +103,11 @@ in [accounts.md](accounts.md). Done: the store, the Claude Code adapter,
 `add`, `switch`, `alias`, `disable`, `enable`, `remove`, `status`, usage in
 the listing and `status`, `switch --soonest`/`--best`, the engine behind
 `auto` with its timer and the quota hook, `run`/`env` profiles, the Codex
-and Kiro adapters, the backup category, the `doctor` section, the statusline
-`ingest`, the suite. Open: the eleven verifications on a box that
+adapter, the backup category, the `doctor` section, the statusline
+`ingest`, the suite. Open: the eight verifications on a box that
 [accounts.md](accounts.md) lists (a switched credential reaching a running
-session, the usage endpoint's shape and limit, Codex and Kiro live pickup,
-what moves Kiro's secret store), and the statusline plugin in the
+session, the usage endpoint's shape and limit, Codex live pickup), and the
+statusline plugin in the
 marketplace rendering `status --json`.
 
 ## Remote sessions
@@ -118,7 +116,7 @@ marketplace rendering `status --json`.
 
 Sessions that outlive their terminal and can be reached from another device.
 Done: tmux as the session host behind `flakelab sessions --start` /
-`--attach`, Codex and Kiro in the sessions registry beside Claude Code,
+`--attach`, Codex in the sessions registry beside Claude Code,
 Remote Control on its own option, `flakelab notify` with its hooks, mosh on
 the VM and the Windows-host OpenSSH script for a WSL distro (both over
 WireGuard), `--recent` over the state root, and `flakelab web` as the browser

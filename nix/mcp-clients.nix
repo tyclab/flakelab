@@ -1,5 +1,5 @@
 # Servers registered in both Claude and Codex: the shared OAuth accounts and the
-# headless browser. Kiro keeps its own registry.
+# headless browser.
 { pkgs, cfg }:
 let
   inherit (pkgs) lib;

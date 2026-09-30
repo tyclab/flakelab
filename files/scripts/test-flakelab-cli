@@ -296,7 +296,7 @@ print -r -- "every command's own --help: exit 0, its help, and nothing run"
 # python3 is left real: it is `mcp`'s interpreter, not a tool it calls.
 HELPBIN="${BASE}/helpbin"
 mkdir -p "${HELPBIN}" "${BASE}/helphome"
-for b in flakelab git glab gh nix nixos-rebuild wsl.exe wt.exe tmux curl sudo systemctl pgrep ssh jq sqlite3 claude codex kiro-cli; do
+for b in flakelab git glab gh nix nixos-rebuild wsl.exe wt.exe tmux curl sudo systemctl pgrep ssh jq claude codex; do
   print -rl -- '#!/usr/bin/env zsh' "print -r -- \"ran:${b} \$*\" >> ${(q)BASE}/help-ran.log; exit 1" > "${HELPBIN}/${b}"
   chmod +x "${HELPBIN}/${b}"
 done

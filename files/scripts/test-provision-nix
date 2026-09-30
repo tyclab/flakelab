@@ -98,9 +98,9 @@ check "the nix-update shim still answers" zsh -lc "nix-update --help >/dev/null 
 check "home-manager activation completed" zsh -lc 'for i in {1..60}; do [ -e ~/.zshrc ] && exit 0; sleep 2; done; exit 1'
 # claude is downloaded by activation, so allow it time to land.
 check "claude installed via activation"       zsh -lc 'for i in {1..90}; do [ -x ~/.local/bin/claude ] && exit 0; sleep 2; done; exit 1'
-# Both spellings: Home Manager emits `alias -- kk=…`, initContent has no `--`, and
+# Both spellings: Home Manager emits `alias -- c=…`, initContent has no `--`, and
 # moving an alias between them must not turn this red.
-check "kiro aliases in .zshrc"                zsh -lc 'grep -qE "alias (-- )?kk=" ~/.zshrc'
+check "claude alias in .zshrc"                zsh -lc 'grep -qE "alias (-- )?c=" ~/.zshrc'
 check "gitcheck aliases in .zshrc"            zsh -lc 'grep -qE "alias (-- )?gitcheck=" ~/.zshrc'
 check "pinned npm wins over bundled npm 11"   zsh -lc '[ "$(npm --version | cut -d. -f1)" -ge 12 ]'
 

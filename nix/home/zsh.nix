@@ -42,7 +42,7 @@ in
       extended = true;
       ignoreDups = true;
     };
-    # Written after oh-my-zsh, so `k` here shadows the kubectl plugin's `k=kubectl`.
+    # Written after oh-my-zsh, so an alias here shadows a plugin's of the same name.
     # Emitted as `alias -- <name>=...`, so anything grepping .zshrc must allow the `--`.
     shellAliases = {
       ll = "ls -alF";
@@ -52,17 +52,10 @@ in
       gitcheck = "gitchecker ${gitRootArgs}";
       gitclean = "gitcleaner ${gitRootArgs}";
 
-      k = "kiro-cli chat";
-      kwsl = ''(cd "${cfg.repoPath}" && kiro-cli chat)'';
-
       c = "claude";
     }
-    # Trust-all outranks the agent's deniedCommands, so the destructive floor does
-    # not apply under `kk`; hence the opt-in.
-    // lib.optionalAttrs cfg.kiroTrustAll {
-      kk = "kiro-cli chat --trust-all-tools";
-    }
-    # The Claude-side twin, gated for the same reason.
+    # Trust-all skips every permission prompt, the one thing between an agent and
+    # an unreviewed command; hence the opt-in.
     // lib.optionalAttrs cfg.claudeTrustAll {
       cc = "claude --dangerously-skip-permissions";
     }

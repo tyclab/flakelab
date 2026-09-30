@@ -8,10 +8,10 @@ How flakelab is put together, and why. Usage lives in
 1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
    the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
    `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
-   `zsh`, `git-ssh`, `mcp`, `kiro`, `claude`, `codex`, `tooling`, `health`,
+   `zsh`, `git-ssh`, `mcp`, `claude`, `codex`, `tooling`, `health`,
    `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
-   whose nixpkgs builds lag upstream (kiro-cli, Claude Code, Codex) and SSH key
+   whose nixpkgs builds lag upstream (Claude Code, Codex) and SSH key
    material — both behind guarded, idempotent activation, never in the store.
 3. **Per-user values are data.** `nix/users/default.nix` holds placeholders; real
    values are injected by the private overlay through `lib.mkSystem`. Flakes
@@ -350,8 +350,8 @@ symlinks, because Claude rewrites these files itself:
   shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.
 
 A merge takes back what it stops rendering, and nothing else. The `env` of
-`settings.json`, the `mcpServers` of `~/.claude.json` and those of Kiro's
-`~/.kiro/settings/mcp.json` are maps the user and the tool write too, so each
+`settings.json` and the `mcpServers` of `~/.claude.json` are maps the user and
+the tool write too, so each
 merge records the key names it wrote, never their values, in
 `~/.local/state/flakelab/activation-rendered/` (mode 600). A name in that record
 that the next generation no longer renders is removed; a name never recorded
@@ -541,9 +541,8 @@ Python tooling.
 defaults migrate to `programs.ssh.settings."*"`; the NixOS-WSL image is
 `config.system.build.tarballBuilder` and native Docker is
 `virtualisation.docker.enable`, **not** `wsl.docker-desktop.enable`;
-`claude-code` in nixpkgs lags what this environment needs, and kiro-cli has no
-nixpkgs path at all, so both come from their official installers through
-activation with `programs.nix-ld`. Codex comes from its official installer too:
+`claude-code` in nixpkgs lags what this environment needs, so it comes from
+its official installer through activation with `programs.nix-ld`. Codex comes from its official installer too:
 nixpkgs' `codex` trailed upstream by ten minor releases on 2026-09-23. Its binary
 is static, so it needs no nix-ld, and the installer runs on every switch because
 `codex update` is that same installer. Each fetch is piped into its shell under
