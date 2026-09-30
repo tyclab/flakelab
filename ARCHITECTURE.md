@@ -230,7 +230,9 @@ hook, a timer and every `--json` run meet no prompt and wait on none.
 Two layers use it. A bare `flakelab` with all three ends a terminal opens
 `flakelab-menu`: a command, then what to do with it, and it re-enters the
 router with those flags, so the target gate and the command's wrapper apply as
-they do to a typed command; its wrapper sets the caller's PATH back first. The
+they do to a typed command; its wrapper sets the caller's PATH back first. An
+action is listed with the flags it adds beside its wording, so typing `add`
+finds `add` and `add --login` as typing `store` does. The
 menu asks nothing a command asks itself: a command that was not given a
 required argument asks for it — `sessions --start` the tool and the
 directory, `--attach` the session, the `accounts` verbs the login or the
