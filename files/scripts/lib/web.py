@@ -37,10 +37,14 @@ Without the token: GET / (the page), GET /logo (the configured image, 404
 without one), GET /api/health {ok, logo}.
 
 API (all JSON, the bearer required):
-  GET  /api/state                {accounts, status, sessions, terminal}
+  GET  /api/state                {accounts, status, config, sessions, terminal}
+                                 (config: accounts config --json)
   POST /api/fetch                accounts --fetch --json         -> {accounts}
   POST /api/switch {entry}       accounts switch <entry> [--force]
   POST /api/auto {dryRun}        accounts auto --once --json [--dry-run] -> {events}
+  POST /api/config {key, value}  accounts config set <key> <value>
+  POST /api/config {key, unset: true} | {all: true, unset: true}
+                                 accounts config unset <key> | --all
   POST /api/sessions/start {tool, dir, args?}   claude-sessions --start <tool> <dir> --detach
   POST /api/terminal             a session cookie for /terminal/ (204)
 Every CLI result comes back as {ok, code, stdout, stderr} beside the parsed
@@ -59,6 +63,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -229,16 +234,53 @@ def json_lines(text):
 
 
 def state():
-    acc = run([ACCOUNTS, "--json"])
-    st = run([ACCOUNTS, "status", "--json"])
-    se = run([SESSIONS, "--json"])
+    # Read-only calls, none takes the store's lock: side by side, so a
+    # refresh costs the slowest of them.
+    with ThreadPoolExecutor(4) as pool:
+        acc, st, cfg, se = pool.map(
+            run,
+            [
+                [ACCOUNTS, "--json"],
+                [ACCOUNTS, "status", "--json"],
+                [ACCOUNTS, "config", "--json"],
+                [SESSIONS, "--json"],
+            ],
+        )
     return {
         "accounts": parse(acc["stdout"], {}),
         "status": parse(st["stdout"], {}),
+        "config": parse(cfg["stdout"], {}),
         "sessions": parse(se["stdout"], []),
         "terminal": bool(TERMINAL_SOCKET),
-        "calls": {"accounts": acc, "status": st, "sessions": se},
+        "calls": {"accounts": acc, "status": st, "config": cfg, "sessions": se},
     }
+
+
+def config_argv(doc):
+    """The `accounts config` call a POST /api/config body asks for, or the
+    reason it is refused. The CLI validates the key and the value; this only
+    keeps an option out of the key and turns a JSON value into its text."""
+    key = doc.get("key")
+    if doc.get("unset") is True:
+        if doc.get("all") is True:
+            return [ACCOUNTS, "config", "unset", "--all"], None
+        if isinstance(key, str) and key and not key.startswith("-"):
+            return [ACCOUNTS, "config", "unset", key], None
+        return None, "key is required (or all: true)"
+    if not isinstance(key, str) or not key or key.startswith("-"):
+        return None, "key is required"
+    value = doc.get("value")
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, float) and value.is_integer():
+        text = str(int(value))
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+    else:
+        return None, "value must be a string, an integer or a boolean"
+    return [ACCOUNTS, "config", "set", key, text], None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -492,6 +534,16 @@ class Handler(BaseHTTPRequestHandler):
             r = run(argv)
             self.send_json(
                 200 if r["ok"] else 502, {"call": r, "events": json_lines(r["stdout"])}
+            )
+            return
+        if path == "/api/config":
+            argv, why = config_argv(doc)
+            if argv is None:
+                self.send_json(400, {"error": why})
+                return
+            r = run(argv)
+            self.send_json(
+                200 if r["ok"] else (409 if r["code"] == 2 else 502), {"call": r}
             )
             return
         if path == "/api/sessions/start":

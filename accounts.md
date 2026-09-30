@@ -126,7 +126,7 @@ with the reason.
 | a corporate LLM-gateway client, its SSO login, key minting, budget     | there is no gateway on this box; a proxy is `ANTHROPIC_BASE_URL` in a shell if it is ever wanted                                                        |
 | a plugin-usage telemetry reporter and OTLP header helper               | nobody is collecting; flakelab's Claude settings turn reporting off, not on                                                                             |
 | fleet-published "mandatory" `settings.json` keys fetched at start      | the flake is the fleet: `nix/home/claude.nix` asserts settings, reviewed, at every switch                                                               |
-| a menu-bar / tray app, a browser dashboard, a full-screen TUI          | a WSL distro has no tray; one user does not need a web app; `flakelab accounts` in a terminal and the statusline cover the glance                       |
+| a menu-bar / tray app, a full-screen TUI                               | a WSL distro has no tray; the dashboard is `flakelab web` (remote-sessions.md), and a terminal and the statusline cover the glance                      |
 | self-update, release manifests, install bootstraps, signed binaries    | nix delivers the script; `flakelab update` is the update                                                                                                |
 | macOS Keychain and Windows credential-store backends, console handling | the targets are `wsl` and `proxmox-vm`, both x86_64-linux, both file-based                                                                              |
 | byte-compatibility with the Python tool's roster, cache, export, log   | nothing here has ever run it; a fresh schema needs no float-formatting shims or migrations                                                              |
@@ -135,7 +135,6 @@ with the reason.
 | directory-to-account mappings                                          | `flakelab accounts env` in the shell that needs it; the audited tool had already removed the writer                                                     |
 | API-key entries in the roster, and an automatic fallback onto one      | conclusion 3 above                                                                                                                                      |
 | an eight-way classifier of the outgoing credential at switch time      | it guards slot reuse and recycled identities; ids here never recycle and the account id is recorded at add, so the rule is one comparison               |
-| a settings store with its own `config get/set` command                 | thresholds are flake options with per-run flags, like every other knob in this repo                                                                     |
 | a PTY wrapper that watches the tool's output for a limit message       | codexctl's spend-cap recovery; usage is read from the tool's own API instead, and a limit that only shows in the TUI is on the verify list, not scraped |
 
 The audited fork's own additions are proprietary to its owner and are neither
@@ -206,6 +205,7 @@ accounts.json            the roster
 usage.json               per-account usage, poll plan and failure backoff
 auto.json                engine state: cooldown, unhealthy ticks, idle hold, quarantine
 auto.log                 the engine's events, one JSON object per line, size-rotated
+settings.json            run-time overrides of the engine's settings (config set); never carried by backup
 unclaimed/<ts>-...       a live credential the switch could not attribute, or not identify (see below)
 profiles/<id>/           a private home per account, for run / env
 lock                     flock; every writer takes it first
@@ -277,18 +277,20 @@ flakelab accounts disable|enable ID        hold an account out of rotation (stil
 flakelab accounts remove ID --yes
 flakelab accounts run ID [-- ARGS]         the tool as ID in this terminal only
 flakelab accounts env ID | --unset <tool>  eval-able export of the tool's home variable for this shell
-flakelab accounts auto [--once] [--dry-run] [--json] [--tool T] [--five-hour N] [--seven-day N] [--model-week N]
+flakelab accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N] [--week-threshold N]
+                       [--model-threshold N] [--interval S] [--cooldown S]
 flakelab accounts status [--json]          per tool: active account and cached headroom; cache only, for hooks
+flakelab accounts auto on|off              auto-switch on or off at run time, no rebuild
+flakelab accounts config [--json]          each engine setting with its value and its source
+flakelab accounts config set KEY VALUE     a run-time override over the flake option; unset KEY|--all drops it
 ```
 
 Exit codes follow the sibling scripts: 0, 1 for a failure, 2 for a refusal or
 usage error. `--json` prints one document on stdout and every notice on
 stderr, so a caller parses stdout alone.
 
-Implemented so far: the listing with its usage column and `--fetch`, `add`
-and `add --login`, `switch <entry>`, `switch --next`, `--soonest` and `--best`, `alias`,
-`disable`, `enable`, `remove` and `status` with the cached windows, with the
-Claude Code adapter. `run`, `env` and `auto` come with their phases below.
+Implemented: every verb above, with the Claude Code and Codex
+adapters; the phases below say what each one brought.
 
 ### Adding a login
 
@@ -475,22 +477,22 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
    costs days across every model, a model week costs days for one model, the
    session window costs a wait.
 3. Trigger: `proactive` when the deciding axis crossed its bar; `at-limit`
-   when any counted window is at 100; `failover` after three consecutive
-   ticks whose read of the active account says the login itself is dead
-   (unauthorized, 401 or 403, a credential missing or expired, a refused
-   refresh, a revoked seat). A figure that is
+   when any counted window is at 100; `failover` after `unhealthyTicks`
+   (three) consecutive ticks whose read of the active account says the login
+   itself is dead (unauthorized, 401 or 403, a credential missing or expired,
+   a refused refresh, a revoked seat). A figure that is
    only stale is read at once rather than counted, and a failing usage read
    (429, 5xx, the network, an answer that does not parse) leaves the login
    working. The exception to counting is an idle hold: the active token is
    expired on disk and no session is using it, which is the tool idle rather
    than dead, held for up to thirty minutes before the count resumes.
-4. A cooldown of five minutes since the last switch stops a `proactive`
-   trigger and nothing else.
+4. A cooldown (`cooldownSeconds`, five minutes) since the last switch stops
+   a `proactive` trigger and nothing else.
 5. Candidates: every enabled, non-quarantined entry of the tool other than
    the active one that has no live `run` session, whose weekly budget (the
    week, or a counted model week) is not spent, and whose usage is known. For
    `proactive` a candidate must also land under the bar on the deciding axis
-   and beat the active account there by ten points, so two accounts hovering
+   and beat the active account there by `hysteresis` (ten) points, so two accounts hovering
    at the line cannot ping-pong. A `proactive` candidate must also carry a
    window for every model the active account has one for: a plan without
    that model's window does not serve it (Fable on Pro needs usage credits).
@@ -539,13 +541,55 @@ so the reactive case does not wait for the timer, and the timer keeps the
 proactive case. Both go through the same engine and the same transaction.
 
 The timer is `flakelab-accounts-autoswitch` (`nix/home/accounts.nix`, in
-`nix/home/backup.nix`'s style):
-`flakelab.accounts.autoSwitchInterval`, default `null` (off), runs
-`flakelab accounts auto --once --json` every interval. Its state between
+`nix/home/backup.nix`'s style), on every box: it runs
+`flakelab accounts auto --once --json` every
+`flakelab.accounts.autoSwitchInterval`, or every two minutes when that is
+`null`. Auto-switch itself is on or off (below): on by default when the
+interval is set, off when it is not, and off, a tick does nothing, so the
+timer costs one short process. Its state between
 ticks is `auto.json`, which is why the unhealthy count and the idle hold are
 persisted rather than kept in a process; there is no process. Two minutes is a
 sensible interval: the poll plan, not the timer, decides who is fetched when,
 so a short timer costs nothing against the budget.
+
+### On and off
+
+`flakelab accounts auto on` and `auto off` switch auto-switch at run time, on
+any box, with no rebuild: the timer is there either way. Off, a tick makes no
+store, polls nothing, switches nothing and logs nothing, and the
+`quota_auto_resume_fired` hook's tick is the same; `switch` by hand and the
+listing work as ever, and `auto --dry-run` still shows what the engine would
+do. The switch is the `autoSwitch` key below, so it outlives an update, and
+`config unset autoSwitch` goes back to the flake's default (on exactly when
+`autoSwitchInterval` is set). `status` and the dashboard say which it is and
+where that came from.
+
+### Run-time overrides
+
+The bars and the rest of the engine's settings are flake options, and the
+timer runs with the values the last `flakelab update` wrote into its wrapper,
+so moving a bar for the timer would cost a rebuild; a flag moves it for one
+tick run by hand. `accounts config set KEY VALUE` writes the value, typed and
+under the lock, to `settings.json` in the store, and every later `accounts`
+command reads it over the wrapper's value: a flag, then the override, then
+the flake option, then the script's default. `config` lists each setting with
+its value and its source (`runtime`, `flake` or `default`), and for an
+override the value under it; `config unset KEY`, or `--all` (which keeps on or
+off), goes back.
+
+The keys are `autoSwitch` (true or false, above), the options' names
+`sessionThreshold`, `weekThreshold`, `modelThreshold`, `modelWindows` (a
+comma list) and `strategy`, and the engine's gates, which have no option:
+`cooldownSeconds`, `hysteresis` and `unhealthyTicks`. The interval is not a key: it is the timer's own `OnUnitActiveSec`, and the
+poll plan, not the timer, sets the fetch rate. A key the file carries that is
+unknown or out of range is skipped and named by `config`, never refused, so a
+hand edit cannot stop the timer.
+
+The file stays on the box. `flakelab backup` does not carry it, and
+`flakelab doctor` warns while it holds an override other than `autoSwitch`,
+since the flake's value is then not the one in use; on or off it reports.
+The dashboard (remote-sessions.md) drives all of it: an on/off button, a
+slider per bar and the other settings, each change one `config` call.
 
 ### A second account in a second terminal
 
@@ -607,7 +651,7 @@ revoked seats, and reports the timer.
 
 ```nix
 flakelab.accounts = {
-  autoSwitchInterval = null;          # systemd span; null schedules no timer
+  autoSwitchInterval = null;          # set: on by default, ticking at it; null: off, ticking every 2min
   autoSwitchTools    = [ "claude" ];  # which tools the timer decides for; add "codex" once verify 6/7 pass
   sessionThreshold   = 85;            # the 5h window, Claude and Codex alike
   weekThreshold      = 97;
@@ -619,7 +663,8 @@ flakelab.accounts = {
 
 Exported to the script as `FLAKELAB_ACCOUNTS_*` by its wrapper in
 `nix/scripts.nix`, the way `FLAKELAB_STATE_ROOT` reaches `claude-sessions`;
-the `auto` flags override per run.
+`accounts config set` overrides them at run time and the `auto` flags per run
+(Run-time overrides, above).
 
 ### Implementation
 

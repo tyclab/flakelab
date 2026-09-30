@@ -177,6 +177,7 @@ rec {
     export FLAKELAB_ACCOUNTS_MODEL_THRESHOLD=${toString cfg.accounts.modelThreshold}
     export FLAKELAB_ACCOUNTS_MODEL_WINDOWS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.modelWindows)}
     export FLAKELAB_ACCOUNTS_STRATEGY=${cfg.accounts.strategy}
+    export FLAKELAB_ACCOUNTS_AUTO_SWITCH=${lib.boolToString (cfg.accounts.autoSwitchInterval != null)}
     export PATH=${
       bin [
         pkgs.zsh

@@ -478,14 +478,18 @@ in beside it (the tool's own login in a scratch profile, nothing logged out),
 live login under Claude Code's own lock protocol, and running sessions carry
 on with their next message. The listing shows each login's cached windows,
 `switch --soonest claude` takes the one whose week renews first, and
-`accounts.autoSwitchInterval = "2min";` runs `flakelab accounts auto` on a
-timer that moves the live login before it hits a limit (`--dry-run` shows
+`accounts.autoSwitchInterval = "2min";` has `flakelab accounts auto` on by
+default: a timer that moves the live login before it hits a limit (`--dry-run` shows
 what it would do). `flakelab accounts run work` runs a second account in a
 second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
 pins a shell to it. Codex logins work the same way (`add codex`; a switch
 waits for the tool's running sessions or goes past them with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
 `flakelab backup` and checked by `flakelab doctor`; the design and what is
 still to verify on a box are in [`accounts.md`](accounts.md).
+`flakelab accounts auto on` turns auto-switch on with no rebuild (`auto off`
+turns it off again), `flakelab accounts config set weekThreshold 92` moves a
+bar at run time, over the flake's value, until `config unset`, and the
+dashboard does both.
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`) runs it in a window of the `agents` tmux session

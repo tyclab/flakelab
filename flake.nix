@@ -1221,8 +1221,9 @@
             touch $out
           '';
 
-        # The accounts overview at shell start is a file read that needs the timer
-        # writing the file, and the global compinit stays off (oh-my-zsh runs one).
+        # The accounts overview at shell start is a file read, the timer that writes
+        # it is on every box (auto-switch on or off), and the global compinit stays
+        # off (oh-my-zsh runs one).
         shell-overview =
           let
             inherit (nixpkgs) lib;
@@ -1230,20 +1231,28 @@
               accounts:
               self.nixosConfigurations.default.extendModules { modules = [ { flakelab.accounts = accounts; } ]; };
             hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
-            withTimer = ext {
-              shellOverview = true;
-              autoSwitchInterval = "2min";
-            };
-            noTimer = ext { shellOverview = true; };
-            failed = builtins.filter (a: !a.assertion) (hmOf noTimer).assertions;
+            overview = ext { shellOverview = true; };
+            timerOf = sys: (hmOf sys).systemd.user.timers.flakelab-accounts-autoswitch.Timer.OnUnitActiveSec;
+            wrapperOf =
+              sys:
+              (import ./nix/scripts.nix {
+                inherit (sys) pkgs;
+                cfg = sys.config.flakelab;
+              }).accounts;
+            on = ext { autoSwitchInterval = "5min"; };
           in
           assert lib.hasInfix "/.local/state/flakelab/accounts/overview.txt"
-            (hmOf withTimer).programs.zsh.initContent;
+            (hmOf overview).programs.zsh.initContent;
           assert
             !(lib.hasInfix "overview.txt" (hmOf self.nixosConfigurations.default).programs.zsh.initContent);
-          assert builtins.any (a: lib.hasInfix "shellOverview needs" a.message) failed;
+          assert timerOf self.nixosConfigurations.default == "2min";
+          assert timerOf on == "5min";
           assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
-          pkgs.runCommandLocal "flakelab-check-shell-overview" { } "touch $out";
+          pkgs.runCommandLocal "flakelab-check-shell-overview" { } ''
+            grep -q '^export FLAKELAB_ACCOUNTS_AUTO_SWITCH=false$' ${wrapperOf self.nixosConfigurations.default}/bin/accounts
+            grep -q '^export FLAKELAB_ACCOUNTS_AUTO_SWITCH=true$' ${wrapperOf on}/bin/accounts
+            touch $out
+          '';
 
         # The prompt's git segment is oh-my-zsh's git_prompt_info, which a theme
         # colours: rendered here with the configured one (synchronously; the prompt

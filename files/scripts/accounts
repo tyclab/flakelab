@@ -29,6 +29,7 @@ set -uo pipefail
 #   accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
 #                 [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
 #                                            switch before the live entry hits a limit
+#   accounts auto on|off                     auto-switch on or off, at run time
 #   accounts status [--json]                 per tool: the active entry, whether the
 #                                            live login still matches it, its cached
 #                                            windows; reads no network
@@ -40,6 +41,9 @@ set -uo pipefail
 #                                            for eval; --unset the one that unpins
 #   accounts ingest [--tool T]               the statusline's rate_limits (stdin) for
 #                                            the live login into the cache; silent
+#   accounts config [--json]                 the engine's settings, each with its source
+#   accounts config set KEY VALUE            override one at run time, over the flake option
+#   accounts config unset KEY|--all          back to the flake's value
 #
 # The store:
 #   accounts.json        the roster: version, active per tool, next id, entries
@@ -48,6 +52,7 @@ set -uo pipefail
 #                        failure backoff; the quarantine of dead lineages
 #   auto.json            the engine's state: cooldown, unhealthy ticks, idle hold
 #   auto.log             the engine's events, one JSON object per line, rotated at 1 MiB
+#   settings.json        run-time overrides of the engine's settings (config)
 #   unclaimed/<ts>/      a live credential a switch could not attribute
 #   profiles/<id>/       a private home per entry for run / env: the login, and
 #                        links into the real home for everything shared
@@ -97,6 +102,25 @@ STRATEGY="${FLAKELAB_ACCOUNTS_STRATEGY:-soonest-reset}"
 AUTO_INTERVAL="${FLAKELAB_ACCOUNTS_INTERVAL:-120}"
 AUTO_COOLDOWN="${FLAKELAB_ACCOUNTS_COOLDOWN:-300}"
 AUTO_HYSTERESIS=10; AUTO_UNHEALTHY=3; AUTO_IDLE_HOLD=1800
+# Off, a tick does nothing: no poll, no switch, no event. The wrapper says on
+# when the flake sets autoSwitchInterval.
+AUTO_SWITCH="${FLAKELAB_ACCOUNTS_AUTO_SWITCH:-false}"
+# The engine's settings a person may override at run time (`config`), in
+# listing order: each key's variable, and the wrapper's variable carrying its
+# flake option where it has one. The override file sits in the store; the
+# order is flag, override, flake option, default.
+SETTINGS="${STORE}/settings.json"
+typeset -a SETTING_KEYS=(autoSwitch sessionThreshold weekThreshold modelThreshold modelWindows strategy cooldownSeconds hysteresis unhealthyTicks)
+typeset -A SETTING_VAR=(
+  autoSwitch AUTO_SWITCH sessionThreshold SESSION_THRESHOLD weekThreshold WEEK_THRESHOLD modelThreshold MODEL_THRESHOLD
+  modelWindows MODEL_WINDOWS strategy STRATEGY cooldownSeconds AUTO_COOLDOWN
+  hysteresis AUTO_HYSTERESIS unhealthyTicks AUTO_UNHEALTHY
+)
+typeset -A SETTING_ENV=(
+  autoSwitch FLAKELAB_ACCOUNTS_AUTO_SWITCH sessionThreshold FLAKELAB_ACCOUNTS_SESSION_THRESHOLD weekThreshold FLAKELAB_ACCOUNTS_WEEK_THRESHOLD
+  modelThreshold FLAKELAB_ACCOUNTS_MODEL_THRESHOLD modelWindows FLAKELAB_ACCOUNTS_MODEL_WINDOWS
+  strategy FLAKELAB_ACCOUNTS_STRATEGY cooldownSeconds FLAKELAB_ACCOUNTS_COOLDOWN
+)
 # The tools the engine decides for: a comma list, default every adapter that
 # reads usage.
 AUTO_TOOLS="${FLAKELAB_ACCOUNTS_TOOLS:-claude}"
@@ -133,11 +157,15 @@ Usage: accounts [--json] [--fetch]
        accounts remove <ID|ALIAS|LABEL> [--yes]
        accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
                      [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
+       accounts auto on|off
        accounts status [--json]
        accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
        accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
        accounts env --unset <tool> [--shell sh|fish|pwsh]
        accounts ingest [--tool claude]
+       accounts config [--json]
+       accounts config set KEY VALUE
+       accounts config unset KEY|--all
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
               plan is due first; --json for one document
@@ -158,7 +186,9 @@ Usage: accounts [--json] [--fetch]
   auto        switch before the live entry hits a limit: one tick per tool with
               usage (--once, the timer's form; --dry-run decides but never
               switches; --json prints the events as JSON lines), else a loop
-              every --interval seconds until Ctrl-C
+              every --interval seconds until Ctrl-C. Off (auto off, or the
+              flake without autoSwitchInterval), a tick does nothing; a dry
+              run still shows what it would do. auto on|off sets autoSwitch
   status      per tool: the active entry, whether the live login is still the
               one the roster thinks, and its cached windows; reads no network
   run         the tool on the entry's own profile (profiles/<id>/, seeded from
@@ -172,6 +202,17 @@ Usage: accounts [--json] [--fetch]
               login's cached session and week windows, so the endpoint is
               asked for the active entry only for its per-model week, at the
               candidate cadence; prints nothing and exits 0 whatever happens
+  config      the engine's settings, each with its value and where it came
+              from: runtime (settings.json in the store), flake (the
+              flakelab.accounts option) or default. set overrides one until
+              unset, taking effect on the next auto tick; an auto flag still
+              beats it. Keys: autoSwitch (true|false, on or off),
+              sessionThreshold weekThreshold modelThreshold (50-100),
+              modelWindows (all or display names, comma-separated), strategy
+              (soonest-reset|best), cooldownSeconds (0-86400), hysteresis
+              (0-50 points), unhealthyTicks (1-100)
+  log         the engine's last --lines (20) events from auto.log, oldest
+              first; --json prints them as the JSON lines the log holds
 
 Adapters present: the tools with a lib/accounts-<tool>.zsh; others refuse
 with exit 2. The store is ~/.local/state/flakelab/accounts (FLAKELAB_ACCOUNTS_ROOT).
@@ -864,6 +905,136 @@ cmd_remove() {
   return 0
 }
 
+# --- run-time settings -------------------------------------------------------------
+#
+# settings.json holds what `config set` wrote, one key each, typed. It is read
+# once, before dispatch, over the wrapper's flake values; an auto flag is
+# parsed later and still wins. A key it does not know or a value out of range
+# is left out and named by `config`, never a refusal: a hand edit must not
+# stop the timer.
+
+typeset -A SETTING_BASE=() SETTING_OVERRIDE=()
+typeset -a SETTING_IGNORED=()
+
+# setting_valid KEY VALUE: 0 when KEY takes VALUE, else prints the rule.
+setting_valid() {
+  case "$1" in
+    sessionThreshold|weekThreshold|modelThreshold)
+      [[ "$2" == <50-100> ]] || { print -r -- "$1 must be an integer between 50 and 100 (100: never move proactively on that window)"; return 1 } ;;
+    modelWindows) [[ -n "$2" && "$2" != *[[:cntrl:]]* ]] || { print -r -- "modelWindows must be all or display names, comma-separated"; return 1 } ;;
+    strategy) [[ "$2" == (soonest-reset|best) ]] || { print -r -- "strategy must be soonest-reset or best"; return 1 } ;;
+    cooldownSeconds) [[ "$2" == <0-86400> ]] || { print -r -- "cooldownSeconds must be between 0 and 86400"; return 1 } ;;
+    hysteresis) [[ "$2" == <0-50> ]] || { print -r -- "hysteresis must be between 0 and 50 points"; return 1 } ;;
+    unhealthyTicks) [[ "$2" == <1-100> ]] || { print -r -- "unhealthyTicks must be between 1 and 100"; return 1 } ;;
+    autoSwitch) [[ "$2" == (true|false) ]] || { print -r -- "autoSwitch must be true or false"; return 1 } ;;
+    *) print -r -- "unknown setting '$1' (${(j:, :)SETTING_KEYS})"; return 1 ;;
+  esac
+}
+
+# setting_json KEY VALUE: VALUE as the JSON the file and --json carry.
+setting_json() {
+  case "$1" in
+    # Anything but true is off to cmd_auto, so a hand-set variable reads so.
+    autoSwitch) [[ "$2" == true ]] && print true || print false ;;
+    *) if [[ "$1" != (modelWindows|strategy) && "$2" == <-> ]]; then print -r -- $(( 10#$2 )); else jq -cn --arg v "$2" '$v'; fi ;;
+  esac
+}
+
+# Where KEY's value comes from without an override: flake or default.
+setting_base_source() { [[ -n "${SETTING_ENV[$1]-}" && -n "${(P)SETTING_ENV[$1]+x}" ]] && print flake || print default }
+
+settings_doc() { jq -c 'select(type == "object")' "$SETTINGS" 2>/dev/null }
+
+apply_settings() {
+  local key val doc
+  for key in "${SETTING_KEYS[@]}"; do SETTING_BASE[$key]="${(P)SETTING_VAR[$key]}"; done
+  [[ -f "$SETTINGS" ]] || return 0
+  doc="$(settings_doc)"
+  [[ -n "$doc" ]] || { SETTING_IGNORED+=("settings.json is not a JSON object"); return 0 }
+  while IFS="$US" read -r key val; do
+    if [[ -z "${SETTING_VAR[$key]-}" ]] || ! setting_valid "$key" "$val" >/dev/null; then
+      SETTING_IGNORED+=("${key}=${val}"); continue
+    fi
+    SETTING_OVERRIDE[$key]="$val"
+    typeset -g "${SETTING_VAR[$key]}=${val}"
+  done < <(print -r -- "$doc" | jq -r --arg us "$US" 'to_entries[] | "\(.key)\($us)\(.value | if type == "string" then . else tojson end)"')
+}
+
+# {path, settings: {KEY: {value, source, base, baseSource}}, ignored}: source
+# is runtime, flake or default; base is the value under an override.
+config_doc() {
+  local key doc='{}'
+  for key in "${SETTING_KEYS[@]}"; do
+    doc="$(print -r -- "$doc" | jq -c --arg k "$key" --arg src "${${SETTING_OVERRIDE[$key]+runtime}:-$(setting_base_source "$key")}" \
+      --arg bsrc "$(setting_base_source "$key")" --argjson v "$(setting_json "$key" "${(P)SETTING_VAR[$key]}")" \
+      --argjson b "$(setting_json "$key" "${SETTING_BASE[$key]}")" '.[$k] = {value: $v, source: $src, base: $b, baseSource: $bsrc}')"
+  done
+  jq -cn --arg path "$SETTINGS" --argjson s "$doc" '{path: $path, settings: $s, ignored: $ARGS.positional}' --args "${SETTING_IGNORED[@]}"
+}
+
+config_set() {
+  (( $# == 2 )) || refuse "usage: accounts config set KEY VALUE"
+  local key="$1" val="$2" why doc
+  # The engine splits the list on bare commas and knows "all" in lower case
+  # only: "Fable, Opus" or "All" would count no model window.
+  [[ "$key" == modelWindows ]] && val="$(jq -rn --arg v "$val" '$v | split(",") | map(sub("^\\s+"; "") | sub("\\s+$"; "") | select(. != "")) | if map(ascii_downcase) == ["all"] then "all" else join(",") end')"
+  why="$(setting_valid "$key" "$val")" || refuse "$why"
+  take_lock
+  doc="$(settings_doc)"
+  doc="$(print -r -- "${doc:-{\}}" | jq -c --arg k "$key" --argjson v "$(setting_json "$key" "$val")" '.[$k] = $v')"
+  write_atomic "$SETTINGS" "$doc" || die "cannot write ${SETTINGS}"
+  print -r -- "${key} = ${val} (runtime; $(setting_base_source "$key") ${SETTING_BASE[$key]}); the next auto tick uses it"
+}
+
+config_unset() {
+  (( $# == 1 )) || refuse "usage: accounts config unset KEY|--all"
+  local key="$1" doc
+  take_lock
+  # --all drops the overrides and keeps on or off, which is not one of them.
+  if [[ "$key" == --all ]]; then
+    if [[ -n "${SETTING_OVERRIDE[autoSwitch]+x}" ]]; then
+      write_atomic "$SETTINGS" "{\"autoSwitch\": ${AUTO_SWITCH}}" || die "cannot write ${SETTINGS}"
+    else
+      rm -f -- "$SETTINGS" || die "cannot remove ${SETTINGS}"
+    fi
+    print -r -- "no overrides; the flake's values apply"
+    return 0
+  fi
+  doc="$(settings_doc)"
+  if [[ -n "$doc" ]] && print -r -- "$doc" | jq -e --arg k "$key" 'has($k)' >/dev/null; then
+    doc="$(print -r -- "$doc" | jq -c --arg k "$key" 'del(.[$k])')"
+    if [[ "$doc" == '{}' ]]; then rm -f -- "$SETTINGS"; else write_atomic "$SETTINGS" "$doc" || die "cannot write ${SETTINGS}"; fi
+    if [[ -n "${SETTING_VAR[$key]-}" ]]; then print -r -- "${key} = ${SETTING_BASE[$key]} again ($(setting_base_source "$key"))"
+    else print -r -- "${key} removed from ${SETTINGS}"; fi
+    return 0
+  fi
+  [[ -n "${SETTING_VAR[$key]-}" ]] || refuse "unknown setting '${key}' (${(j:, :)SETTING_KEYS})"
+  note "${key} is not overridden"
+}
+
+cmd_config() {
+  case "${1:-}" in
+    set) shift; config_set "$@"; return ;;
+    unset) shift; config_unset "$@"; return ;;
+  esac
+  local json=false key val src base bsrc
+  while (( $# > 0 )); do
+    case $1 in
+      --json) json=true ;;
+      *) refuse "unknown option for config: $1 (set KEY VALUE, unset KEY|--all)" ;;
+    esac
+    shift
+  done
+  if $json; then config_doc | jq .; return; fi
+  printf '%-18s %-16s %s\n' KEY VALUE SOURCE
+  while IFS="$US" read -r key val src base bsrc; do
+    [[ "$src" == runtime ]] && src="runtime (${bsrc} ${base})"
+    printf '%-18s %-16s %s\n' "$key" "$val" "$src"
+  done < <(config_doc | jq -r --arg us "$US" '.settings | to_entries[] | [.key, (.value.value | tostring), .value.source, (.value.base | tostring), .value.baseSource] | join($us)')
+  (( ${#SETTING_IGNORED} )) && note "ignored in ${SETTINGS}: ${(j:, :)SETTING_IGNORED}; accounts config unset KEY (or --all) clears it"
+  return 0
+}
+
 # --- auto-switch -----------------------------------------------------------------
 
 read_auto_state() {
@@ -991,6 +1162,14 @@ tick() {
 
 cmd_auto() {
   local once=false tool="" tools rc=0 outcome t
+  case "${1:-}" in
+    on|off)
+      (( $# == 1 )) || refuse "usage: accounts auto on|off"
+      config_set autoSwitch "${${1:#off}:+true}${${(M)1:#off}:+false}" >/dev/null
+      if [[ "$1" == on ]]; then print -r -- "auto-switch on: the timer's next tick switches before a limit"
+      else print -r -- "auto-switch off: ticks do nothing until accounts auto on; a switch by hand still works"; fi
+      return 0 ;;
+  esac
   while (( $# > 0 )); do
     case $1 in
       --once) once=true ;;
@@ -1022,6 +1201,16 @@ cmd_auto() {
   if [[ -n "$tool" ]]; then need_adapter "$tool"; tools=("$tool"); else tools=("${(s:,:)AUTO_TOOLS}"); fi
   for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
   [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
+  # Off, a tick touches nothing: no store, no network, not the overview either,
+  # which only a switch changes while off, and a switch rewrites it. A dry run
+  # is asked for by hand, so it runs.
+  if [[ "$AUTO_SWITCH" != true ]]; then
+    if ! $AUTO_DRY; then
+      $AUTO_JSON || note "auto-switch is off (flakelab accounts auto on)"
+      return 0
+    fi
+    note "note: auto-switch is off; this dry run shows what it would do"
+  fi
   ensure_store
   local -i sleep_s
   while true; do
@@ -1408,6 +1597,11 @@ cmd_status() {
     fi
   done
   $json && print -r -- "$out" | jq .
+  if ! $json; then
+    local k; local -a o=()
+    for k in "${(@)SETTING_KEYS:#autoSwitch}"; do [[ -n "${SETTING_OVERRIDE[$k]+x}" ]] && o+=("${k} ${SETTING_OVERRIDE[$k]}"); done
+    print -r -- "auto-switch: ${${AUTO_SWITCH:#true}:+off}${${(M)AUTO_SWITCH:#true}:+on} (${${SETTING_OVERRIDE[autoSwitch]+runtime}:-$(setting_base_source autoSwitch)})${o:+; overrides (accounts config): ${(j:, :)o}}"
+  fi
   return 0
 }
 
@@ -1426,6 +1620,7 @@ esac
   return 0
 } "$@"
 check_roster
+apply_settings
 case "${1:-}" in
   ""|--json|--fetch)  cmd_list "$@" ;;
   add)        shift; cmd_add "$@" ;;
@@ -1439,6 +1634,7 @@ case "${1:-}" in
   run)        shift; cmd_run "$@" ;;
   env)        shift; cmd_env "$@" ;;
   ingest)     shift; cmd_ingest "$@" ;;
+  config)     shift; cmd_config "$@" ;;
   --help|-h|help) usage ;;
   *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;
 esac

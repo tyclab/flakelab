@@ -120,8 +120,12 @@ The page shows every stored login with its windows as bars, an active or
 profile or quarantined tag and a switch button, drift when a login was made
 by hand, the running sessions with their tmux window and directory, a form
 that starts one in tmux (`--start <tool> <dir> --detach`), "poll usage now",
-"what would auto do?" (the engine's dry run, its events in the log), and a
-link to the terminal when one is on. Every write is one CLI call, so the
+"what would auto do?" (the engine's dry run, its events in the log), the
+auto-switch settings with where each comes from (an on/off button, a slider
+per bar, the rest as fields, a reset per run-time override; each change one
+`accounts config` call, accounts.md "Run-time overrides"), and a link to the
+terminal when one is on. It
+reloads every 15 seconds while the tab is visible. Every write is one CLI call, so the
 CLI's locks, refusals and exit codes hold (a refusal comes back as 409 with
 the CLI's reason); the server never reads a token file of a tool and never
 touches the network itself.

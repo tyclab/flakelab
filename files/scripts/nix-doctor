@@ -361,6 +361,21 @@ else
       log_hint "log in with the tool again, then: flakelab accounts add <tool>"
     fi
   fi
+  # A run-time override (`accounts config set`) outlives every switch and
+  # update: the flake's value is not what the engine uses until it is unset.
+  # On or off (`accounts auto on|off`) is what the switch is for, so it is
+  # reported, not warned about.
+  if [[ -f "${ACCT_STORE}/settings.json" ]]; then
+    _acct_o="$(jq -r 'del(.autoSwitch) | to_entries | map("\(.key)=\(.value)") | join(" ")' "${ACCT_STORE}/settings.json" 2> /dev/null)" || _acct_o="settings.json is not a JSON object"
+    if [[ -n "${_acct_o}" ]]; then
+      log_warn "auto-switch settings overridden at run time: ${_acct_o}"
+      log_hint "flakelab accounts config shows each beside the flake's value; flakelab accounts config unset --all returns to it"
+    fi
+    case "$(jq -r 'if has("autoSwitch") then .autoSwitch else empty end' "${ACCT_STORE}/settings.json" 2> /dev/null)" in
+      true) log_ok "auto-switch turned on at run time (flakelab accounts auto off)" ;;
+      false) log_ok "auto-switch turned off at run time (flakelab accounts auto on)" ;;
+    esac
+  fi
   if command -v flakelab > /dev/null 2>&1; then
     _acct_st="$(flakelab accounts status --json 2> /dev/null)"
     if [[ -n "${_acct_st}" ]]; then
@@ -383,7 +398,7 @@ else
   elif command -v systemctl > /dev/null 2>&1 && [[ "$(systemctl --user list-timers --all 2> /dev/null)" == *flakelab-accounts-autoswitch* ]]; then
     log_ok "auto-switch timer scheduled (flakelab-accounts-autoswitch.timer)"
   else
-    log_ok "note: no auto-switch timer (flakelab.accounts.autoSwitchInterval)"
+    log_ok "note: no auto-switch timer (flakelab update installs it)"
   fi
 fi
 

@@ -69,6 +69,8 @@ the private overlay `flakelab-config`, which imports this flake via
     contract, usage and the engine's rules are in `accounts.md`. The store
     rides `flakelab backup` (`accounts/`); `flakelab doctor` has an
     `Accounts` section; `ingest` takes the statusline's `rate_limits`.
+    `auto on|off` and `config [set|unset]` switch it and override its
+    settings at run time, over the flake options.
   - `notify` (new, `notify`): a push to an ntfy topic when a session waits
     on you; the Claude Code `Notification` hook (`flakelab.notify.enable`)
     and Codex's `notify` hook call it, `--message` sends one by hand.
@@ -79,7 +81,7 @@ the private overlay `flakelab-config`, which imports this flake via
   - `web` (new, `web`): the dashboard in a browser (`lib/web.py`, python3
     stdlib; `files/config/web/index.html`): the logins with their windows
     and a switch button, the sessions, a start form, the engine's dry run,
-    over `accounts` and `claude-sessions` as CLI calls. 127.0.0.1:8321 and
+    its settings and events, over `accounts` and `claude-sessions` as CLI calls. 127.0.0.1:8321 and
     a bearer token from `~/.local/state/flakelab/web/token` (`--print-token`);
     `flakelab.web.*` runs it as a user service, `web.terminal` adds ttyd on
     the `agents` tmux session with the same token.

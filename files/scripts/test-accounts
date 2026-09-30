@@ -96,6 +96,9 @@ STUB
 chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
 export FLAKELAB_ACCOUNTS_NO_JITTER=1
+# What the wrapper says on a box whose flake sets autoSwitchInterval; the
+# config section below takes it away to test the default.
+export FLAKELAB_ACCOUNTS_AUTO_SWITCH=true
 
 # Claude Code's files for a login: the identity block beside keys the switch
 # must leave alone, and the OAuth blob.
@@ -1398,6 +1401,118 @@ check "the entry holds it" "$(jq -r '.tokens.refresh_token' "${S2}/3/auth.json")
 contains "the login ran in a scratch CODEX_HOME with the key scrubbed" "$(grep '^codex login' "${FAKE_LOGIN_LOG}" | tail -1)" "OPENAI_API_KEY=unset args="
 check "not the real one" "$(grep '^codex login' "${FAKE_LOGIN_LOG}" | tail -1 | grep -c "CODEX_HOME=${HOME}/.codex ")" "0"
 unset FLAKELAB_ACCOUNTS_ROOT
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "config: run-time overrides over the flake's values; auto on|off"
+rm -rf "${STORE}"
+unset FLAKELAB_ACCOUNTS_AUTO_SWITCH
+: > "${FAKE_CURL}/requests.log"
+run auto --once --json
+check "without the flake's interval auto-switch is off: a tick exits 0" "${RC}" "0"
+check "printing nothing" "${OUT}" ""
+check "making no store" "$([[ -e "${STORE}" ]] && print there || print none)" "none"
+check "and asking the network nothing" "$(grep -c . "${FAKE_CURL}/requests.log")" "0"
+run auto --once
+contains "the human form says it is off and how to turn it on" "${ERR}" "auto-switch is off (flakelab accounts auto on)"
+login alice@example.com "${UUID_A}" personal tok-a
+run add claude --alias home
+login bob@example.com "${UUID_B}" "Example GmbH" tok-b
+run add claude --alias work
+export FLAKELAB_NOW=1758800000
+usage_answer tok-b 90 50
+usage_answer tok-a 20 60
+run config --json
+check "config lists every setting, each from its default outside the wrapper" "$(print -r -- "$OUT" | jq -r '(.settings | length), ([.settings[].source] | unique | join(","))' | paste -sd ' ')" "9 default"
+check "autoSwitch first, off" "$(print -r -- "$OUT" | jq -r '.settings | keys_unsorted[0] as $k | "\($k) \(.[$k].value)"')" "autoSwitch false"
+FLAKELAB_ACCOUNTS_WEEK_THRESHOLD=97 run config --json
+check "the wrapper's variable is the flake's value" "$(print -r -- "$OUT" | jq -r '.settings.weekThreshold.source')" "flake"
+: > "${FAKE_CURL}/requests.log"
+run auto --once --json
+check "off with stored logins, a tick still switches nothing" "$(live_email)" "bob@example.com"
+check "and polls nothing" "$(grep -c . "${FAKE_CURL}/requests.log")" "0"
+run auto --once --json --dry-run
+check "a dry run shows what it would do all the same" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.to, .dryRun] | join(" ")')" "1 true"
+contains "and says auto-switch is off" "${ERR}" "auto-switch is off; this dry run shows what it would do"
+run auto on
+check "auto on exits 0" "${RC}" "0"
+contains "and says what the next tick does" "${OUT}" "auto-switch on"
+check "stored as autoSwitch true" "$(jq -c '.autoSwitch' "${STORE}/settings.json")" "true"
+run status
+contains "status says on, from the run-time switch" "${OUT}" "auto-switch: on (runtime)"
+run config set sessionThreshold 95
+check "set exits 0" "${RC}" "0"
+check "the override is stored typed, and private" "$(jq -c '.sessionThreshold' "${STORE}/settings.json") $(stat -c %a "${STORE}/settings.json")" "95 600"
+run config --json
+check "and listed as runtime over the value under it" "$(print -r -- "$OUT" | jq -r '.settings.sessionThreshold | [.value, .source, .base, .baseSource] | join(" ")')" "95 runtime 85 default"
+run config
+contains "the human form says the same" "${OUT}" "runtime (default 85)"
+run auto --once --json --dry-run
+check "the engine reads it: bob's 5h 90% is under a bar of 95" "$(print -r -- "$OUT" | jq -r 'select(.event == "no-switch") | .reason')" "below-threshold"
+run auto --once --json --dry-run --session-threshold 85
+check "a flag still beats it" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | .to')" "1"
+run config set sessionThreshold 40
+check "a value out of range refuses with exit 2" "${RC}" "2"
+contains "naming the range" "${ERR}" "between 50 and 100"
+check "and leaves the file as it was" "$(jq -c . "${STORE}/settings.json")" '{"autoSwitch":true,"sessionThreshold":95}'
+run config set bogus 1
+check "an unknown key refuses with exit 2" "${RC}" "2"
+run config set autoSwitch yes
+check "autoSwitch takes true or false only" "${RC}" "2"
+run auto maybe
+check "auto takes on or off, nothing else, as a verb" "${RC}" "2"
+run config set strategy worst
+check "strategy its two orders only" "${RC}" "2"
+run config set hysteresis 60
+check "hysteresis 0 to 50 points" "${RC}" "2"
+run status
+contains "status names the other overrides" "${OUT}" "auto-switch: on (runtime); overrides (accounts config): sessionThreshold 95"
+run config unset sessionThreshold
+contains "unset names the value it returns to" "${OUT}" "sessionThreshold = 85 again (default)"
+run config unset sessionThreshold
+check "unsetting what is not overridden is no error" "${RC}" "0"
+run auto --once --json
+check "on, the tick switches" "$(print -r -- "$OUT" | jq -r 'select(.event == "switch") | [.to, .trigger] | join(" ")')" "1 proactive"
+check "for real" "$(live_email)" "alice@example.com"
+run auto off
+contains "auto off says a switch by hand still works" "${OUT}" "a switch by hand still works"
+run auto --once --json
+check "and the next tick does nothing" "${OUT}" ""
+run switch work
+check "while a switch by hand does" "$(live_email)" "bob@example.com"
+FLAKELAB_ACCOUNTS_AUTO_SWITCH=true run auto --once --json
+check "a run-time off beats the flake's on" "${OUT}" ""
+run config unset autoSwitch
+FLAKELAB_ACCOUNTS_AUTO_SWITCH=true run status
+contains "unset, the flake's value is back" "${OUT}" "auto-switch: on (flake)"
+
+print -r -- '{"weekThreshold": 10, "hysteresis": 5, "x": 1}' > "${STORE}/settings.json"
+run auto --once --json --dry-run
+check "a hand edit with bad keys does not stop a tick" "${RC}" "0"
+run config --json
+check "its valid key applies" "$(print -r -- "$OUT" | jq -r '.settings.hysteresis | [.value, .source] | join(" ")')" "5 runtime"
+check "the rest are named as ignored" "$(print -r -- "$OUT" | jq -r '.ignored | join(" ")')" "weekThreshold=10 x=1"
+run config unset x
+contains "unset also clears a key it does not know" "${OUT}" "x removed from"
+print -r -- 'not json' > "${STORE}/settings.json"
+run config
+check "a file that is no object is ignored, not fatal" "${RC}" "0"
+contains "and named" "${ERR}" "settings.json is not a JSON object"
+run config set weekThreshold 92
+check "set starts it over" "$(jq -c . "${STORE}/settings.json")" '{"weekThreshold":92}'
+run config unset --all
+check "unset --all removes the file" "$([[ -e "${STORE}/settings.json" ]] && print there || print gone)" "gone"
+run auto on
+run config set weekThreshold 92
+run config unset --all
+check "and keeps on or off, which is no override" "$(jq -c . "${STORE}/settings.json")" '{"autoSwitch":true}'
+run auto off
+run config set modelWindows ' Fable , Opus ,'
+check "a model list is stored without the spaces around its commas" "$(jq -r '.modelWindows' "${STORE}/settings.json")" "Fable,Opus"
+run config set modelWindows All
+check "and all, in any case, as all" "$(jq -r '.modelWindows' "${STORE}/settings.json")" "all"
+run config unset --all
+unset FLAKELAB_NOW
 
 # ---------------------------------------------------------------------------
 print -r -- ""
