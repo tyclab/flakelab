@@ -24,6 +24,7 @@
 
   installClaude = true;
   installCodex = true;
+  installTycswap = true;
   claudeAutoUpdatesChannel = "stable";
 
   cloneExclude = [ "flakelab" ];

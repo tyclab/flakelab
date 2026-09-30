@@ -81,6 +81,33 @@
       # Used only by devShells, which must hand out the same pre-commit the distro runs.
       pkgsDev = pkgs.extend (nixpkgs.lib.composeExtensions unstableOverlay preCommitOverlay);
 
+      # tycswap: the account switcher for Claude Code and Codex logins, one static
+      # Go binary named `cswap`. Pinned to a release tag; bump the tag and both
+      # hashes together (a build with a stale hash prints the new one).
+      tycswap = pkgs.buildGoModule {
+        pname = "tycswap";
+        version = "0.2.0";
+        src = pkgs.fetchFromGitHub {
+          owner = "tyclab";
+          repo = "tycswap";
+          tag = "v0.2.0";
+          hash = "sha256-Hu3WqYf0Oekb5iMeU+Y4gu+zEiycyBQHVt/3XrwaFUY=";
+        };
+        vendorHash = "sha256-jLuFFHT+aLdTiMaxrYl0fRgRHH2s8gIoDSVP2+vZO30=";
+        subPackages = [ "cmd/cswap" ];
+        env.CGO_ENABLED = 0;
+        ldflags = [
+          "-s"
+          "-w"
+          "-X git.dpemmons.com/dpemmons/cswap/internal/version.Version=v0.2.0"
+        ];
+        # The upstream suite wants a writable HOME and minutes of wall clock; the
+        # release is tested there, CI here builds the binary only.
+        doCheck = false;
+        meta.mainProgram = "cswap";
+      };
+      tycswapOverlay = _final: _prev: { inherit tycswap; };
+
       # One flake check per offline suite, so CI runs them; `make test` runs the same
       # scripts against the working tree. The shebang rewrite is required because the
       # sandbox has no /usr/bin/env, and the suites emit that shebang themselves.
@@ -271,6 +298,7 @@
                       nixpkgs.overlays = [
                         unstableOverlay
                         preCommitOverlay
+                        tycswapOverlay
                       ];
                     }
                     {
@@ -320,6 +348,9 @@
       # The offline suites, the nix linters, and the eval-time assertions. `targets`
       # instantiates both systems and builds neither.
       checks.${system} = {
+        # The pinned switcher builds: a tag bump with a stale hash fails here, not
+        # on a box's `flakelab update`.
+        inherit tycswap;
         clone-repos = suiteCheck "clone-repos";
         gitchecker = suiteCheck "gitchecker";
         gitcleaner = suiteCheck "gitcleaner";
@@ -1379,6 +1410,9 @@
         # The history scan CI runs, from the pinned revision so a new upstream rule
         # arrives with a reviewed lock bump.
         inherit (pkgs) gitleaks;
+
+        # `nix run .#tycswap -- --version` builds the switcher the distro installs.
+        inherit tycswap;
       };
 
       # The fork-and-edit path; the overlay template below is the recommended one.

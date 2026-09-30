@@ -491,6 +491,12 @@ turns it off again), `flakelab accounts config set weekThreshold 92` moves a
 bar at run time, over the flake's value, until `config unset`, and the
 dashboard does both.
 
+`cswap` is installed beside it: tycswap, the account switcher for Claude Code
+and Codex logins in one static binary (`cswap --add-account`, `cswap codex add`,
+`cswap switch`, `cswap auto`, bare `cswap` for the dashboard), pinned to a
+release in `flake.nix`; `installTycswap = false;` leaves it out. Its store is
+its own (`cswap --help` names it) and is not yet carried by `flakelab backup`.
+
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`) runs it in a window of the `agents` tmux session
 and attaches; close the tab, drop the SSH connection, and
