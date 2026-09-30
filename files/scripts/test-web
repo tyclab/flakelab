@@ -45,7 +45,6 @@ case "$1" in
       set) [[ "$3" == bogus ]] && { print -ru2 -- "Error: unknown setting 'bogus'"; exit 2 }; print -r -- "$3 = $4 (runtime; flake 97); the next auto tick uses it" ;;
       unset) print -r -- "$3 = 97 again (flake)" ;;
     esac ;;
-  log) print -r -- '{"event":"poll","tool":"claude","ts":"2025-09-25T11:33:20Z"}'; print -r -- '{"event":"no-switch","tool":"claude","reason":"cooldown","ts":"2025-09-25T11:33:20Z"}' ;;
   *) exit 2 ;;
 esac
 STUB
@@ -207,10 +206,7 @@ check "an unknown tool is 400" "${CODE}" "400"
 get /api/state "${TOKEN}"
 check "state carries the engine's settings" "$(print -r -- "$BODY" | jq -r '.config.settings.weekThreshold | [.value, .source] | join(" ")')" "92 runtime"
 check "on or off among them" "$(print -r -- "$BODY" | jq -r '.config.settings.autoSwitch.value')" "true"
-check "and its last events, parsed" "$(print -r -- "$BODY" | jq -r '.events[1].reason')" "cooldown"
-ST_CALLS="$(calls)"
-contains "read with config --json" "${ST_CALLS}" "accounts config --json"
-contains "and log --json" "${ST_CALLS}" "accounts log --json --lines 30"
+contains "read with config --json" "$(calls)" "accounts config --json"
 post /api/config '{"key":"weekThreshold","value":92}' "${TOKEN}"
 check "config set runs the CLI" "${CODE}" "200"
 contains "with the key and the value" "$(calls)" "accounts config set weekThreshold 92"

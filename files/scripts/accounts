@@ -44,7 +44,6 @@ set -uo pipefail
 #   accounts config [--json]                 the engine's settings, each with its source
 #   accounts config set KEY VALUE            override one at run time, over the flake option
 #   accounts config unset KEY|--all          back to the flake's value
-#   accounts log [--json] [--lines N]        the engine's last events from auto.log
 #
 # The store:
 #   accounts.json        the roster: version, active per tool, next id, entries
@@ -103,16 +102,14 @@ MODEL_THRESHOLD="${FLAKELAB_ACCOUNTS_MODEL_THRESHOLD:-95}"
 STRATEGY="${FLAKELAB_ACCOUNTS_STRATEGY:-soonest-reset}"
 AUTO_INTERVAL="${FLAKELAB_ACCOUNTS_INTERVAL:-120}"
 AUTO_COOLDOWN="${FLAKELAB_ACCOUNTS_COOLDOWN:-300}"
-AUTO_HYSTERESIS="${FLAKELAB_ACCOUNTS_HYSTERESIS:-10}"
-AUTO_UNHEALTHY="${FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS:-3}"
-AUTO_IDLE_HOLD=1800
-# Off, a tick does nothing but rewrite the overview: no poll, no switch, no
-# event. The wrapper says on when the flake sets autoSwitchInterval.
+AUTO_HYSTERESIS=10; AUTO_UNHEALTHY=3; AUTO_IDLE_HOLD=1800
+# Off, a tick does nothing: no poll, no switch, no event. The wrapper says on
+# when the flake sets autoSwitchInterval.
 AUTO_SWITCH="${FLAKELAB_ACCOUNTS_AUTO_SWITCH:-false}"
 # The engine's settings a person may override at run time (`config`), in
-# listing order: each key's variable, and the wrapper's variable carrying the
-# flake option. The override file sits in the store; the order is flag,
-# override, flake option, default.
+# listing order: each key's variable, and the wrapper's variable carrying its
+# flake option where it has one. The override file sits in the store; the
+# order is flag, override, flake option, default.
 SETTINGS="${STORE}/settings.json"
 typeset -a SETTING_KEYS=(autoSwitch sessionThreshold weekThreshold modelThreshold modelWindows strategy cooldownSeconds hysteresis unhealthyTicks)
 typeset -A SETTING_VAR=(
@@ -124,7 +121,6 @@ typeset -A SETTING_ENV=(
   autoSwitch FLAKELAB_ACCOUNTS_AUTO_SWITCH sessionThreshold FLAKELAB_ACCOUNTS_SESSION_THRESHOLD weekThreshold FLAKELAB_ACCOUNTS_WEEK_THRESHOLD
   modelThreshold FLAKELAB_ACCOUNTS_MODEL_THRESHOLD modelWindows FLAKELAB_ACCOUNTS_MODEL_WINDOWS
   strategy FLAKELAB_ACCOUNTS_STRATEGY cooldownSeconds FLAKELAB_ACCOUNTS_COOLDOWN
-  hysteresis FLAKELAB_ACCOUNTS_HYSTERESIS unhealthyTicks FLAKELAB_ACCOUNTS_UNHEALTHY_TICKS
 )
 # The tools the engine decides for: a comma list, default every adapter that
 # reads usage.
@@ -171,7 +167,6 @@ Usage: accounts [--json] [--fetch]
        accounts config [--json]
        accounts config set KEY VALUE
        accounts config unset KEY|--all
-       accounts log [--json] [--lines N]
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
               plan is due first; --json for one document
@@ -1114,28 +1109,8 @@ emit() {
   (umask 077; print -r -- "$line" >> "$AUTO_LOG")
   if $AUTO_JSON; then print -r -- "$line"
   # Display in local time; the log and --json keep UTC.
-  else print -r -- "$line" | jq -r --arg lt "$(date -d "@$(now)" +%H:%M:%S)" '"\($lt)  " + ('"${EVENT_TEXT}"')'
+  else print -r -- "$line" | jq -r --arg lt "$(date -d "@$(now)" +%H:%M:%S)" '"\($lt)  \(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
   fi
-}
-
-# An event as one line after its time, for emit and log.
-EVENT_TEXT='"\(.tool)  \(.event)" + (if .reason then ": \(.reason)" else "" end) + (if .detail then " (\(.detail))" else "" end) + (if .event == "switch" then ": \(.from // "?") -> \(.to) [\(.trigger)\(if .axis then " on \(.axis)" else "" end)]" else "" end)'
-
-# log: the last events of auto.log, oldest first; a line that does not parse
-# is skipped.
-cmd_log() {
-  local json=false n=20
-  while (( $# > 0 )); do
-    case $1 in
-      --json) json=true ;;
-      --lines) [[ "${2:-}" == <1-1000> ]] || refuse "--lines takes 1 to 1000"; n="$2"; shift ;;
-      *) refuse "unknown option for log: $1" ;;
-    esac
-    shift
-  done
-  [[ -s "$AUTO_LOG" ]] || { $json || note "no events yet (${AUTO_LOG})"; return 0 }
-  if $json; then tail -n "$n" -- "$AUTO_LOG" | jq -cR 'fromjson? // empty'; return 0; fi
-  tail -n "$n" -- "$AUTO_LOG" | jq -rR 'fromjson? // empty | "\(.ts | fromdateiso8601 | strflocaltime("%m-%d %H:%M:%S"))  " + ('"${EVENT_TEXT}"') + (if .dryRun then "  (dry run)" else "" end)'
 }
 
 # The engine's settings document.
@@ -1277,8 +1252,6 @@ cmd_auto() {
   done
   [[ "$AUTO_INTERVAL" == <15-3600> ]] || refuse "--interval must be between 15 and 3600 seconds"
   [[ "$AUTO_COOLDOWN" == <0-86400> ]] || refuse "--cooldown must be between 0 and 86400 seconds"
-  local why
-  for t in hysteresis unhealthyTicks; do why="$(setting_valid "$t" "${(P)SETTING_VAR[$t]}")" || refuse "$why"; done
   [[ "$STRATEGY" == best || "$STRATEGY" == soonest-reset ]] || refuse "strategy must be best or soonest-reset"
   if [[ -n "$tool" ]]; then need_adapter "$tool"; tools=("$tool"); else tools=("${(s:,:)AUTO_TOOLS}"); fi
   for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
@@ -1717,7 +1690,6 @@ case "${1:-}" in
   env)        shift; cmd_env "$@" ;;
   ingest)     shift; cmd_ingest "$@" ;;
   config)     shift; cmd_config "$@" ;;
-  log)        shift; cmd_log "$@" ;;
   --help|-h|help) usage ;;
   *) print -ru2 -- "Unknown verb: $1"; usage >&2; exit 2 ;;
 esac

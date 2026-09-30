@@ -44,7 +44,6 @@
   pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
   .mut { color: var(--mut); } .err { color: var(--bad); }
   #log { max-height: 240px; overflow: auto; }
-  #events { margin-top: 10px; max-height: 200px; overflow: auto; }
   #settings input[type="range"] { width: 140px; padding: 0; vertical-align: middle; }
   #settings input[type="number"] { width: 90px; }
   .tag.runtime { background: var(--warn); color: #fff; }
@@ -80,7 +79,6 @@
     <button id="reset-all" hidden>back to the flake's values</button>
   </p>
   <table id="settings"><thead><tr><th>setting</th><th>value</th><th>from</th><th></th></tr></thead><tbody></tbody></table>
-  <pre id="events" class="mut">—</pre>
 </div>
 
 <h2>sessions</h2>
@@ -134,8 +132,6 @@
     const reset = w.resetsAtEpoch == null ? "" : `<span class="mut"> · resets in ${left(w.resetsAtEpoch - now)}</span>`;
     return `<span class="bar ${cls}"><i style="width:${p}%"></i></span>${esc(w.label)} ${p}%${reset}`;
   };
-  // An engine event as one line, as `accounts log` prints it.
-  const evText = (e) => `${e.tool || ""} ${e.event}${e.reason ? ": " + e.reason : ""}${e.detail ? " (" + e.detail + ")" : ""}${e.event === "switch" ? `: ${e.from} -> ${e.to} [${e.trigger}]` : ""}`;
 
   // The engine's settings (`accounts config`). The CLI holds the rules and
   // refuses a value out of range; these bounds only shape the controls.
@@ -183,7 +179,7 @@
     controls[s.key] = { el, shown, from: tr.children[2], reset, kind: s.kind };
     $("#settings tbody").appendChild(tr);
   }
-  const renderConfig = (cfg, events) => {
+  const renderConfig = (cfg) => {
     const set = (cfg && cfg.settings) || {};
     for (const [key, c] of Object.entries(controls)) {
       const s = set[key];
@@ -207,9 +203,6 @@
       + (ignored.length ? ` · ignored in settings.json: ${ignored.join(", ")}` : "");
     // Back to the flake's values leaves on or off alone, as unset --all does.
     $("#reset-all").hidden = !ignored.length && !Object.entries(set).some(([k, s]) => k !== "autoSwitch" && s.source === "runtime");
-    const lines = (events || []).slice().reverse()
-      .map((e) => `${e.ts ? new Date(e.ts).toLocaleString() : ""}  ${evText(e)}${e.dryRun ? "  (dry run)" : ""}`);
-    $("#events").textContent = lines.join("\n") || "no engine events yet";
   };
 
   const render = (st) => {
@@ -248,7 +241,7 @@
       tr.innerHTML = `<td>${esc(s.tool)}</td><td>${esc(s.pid)}</td><td>${esc(s.age)}</td><td><code>${esc(s.session || "—")}</code></td><td>${esc(host)}</td><td class="wrap">${esc(s.dir || s.cwd)}</td>`;
       sb.appendChild(tr);
     }
-    renderConfig(st.config, st.events);
+    renderConfig(st.config);
     $("#terminal").hidden = !st.terminal;
     $("#clock").textContent = new Date().toLocaleTimeString();
   };
@@ -291,7 +284,8 @@
     $("#dry").disabled = true;
     try {
       const r = await api("/api/auto", { dryRun: true });
-      log(r.events.map(evText).join("\n") || "no events");
+      const lines = r.events.map((e) => `${e.tool || ""} ${e.event}${e.reason ? ": " + e.reason : ""}${e.detail ? " (" + e.detail + ")" : ""}${e.event === "switch" ? `: ${e.from} -> ${e.to} [${e.trigger}]` : ""}`);
+      log(lines.join("\n") || "no events");
     } catch (e) { log(`auto: ${e.message}`, true); }
     $("#dry").disabled = false;
   };

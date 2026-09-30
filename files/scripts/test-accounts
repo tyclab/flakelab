@@ -1591,7 +1591,7 @@ unset FAKE_KIRO_WHOAMI FLAKELAB_ACCOUNTS_ROOT
 
 # ---------------------------------------------------------------------------
 print -r -- ""
-print -r -- "config: run-time overrides over the flake's values; auto on|off; log: the engine's events"
+print -r -- "config: run-time overrides over the flake's values; auto on|off"
 rm -rf "${STORE}"
 unset FLAKELAB_ACCOUNTS_AUTO_SWITCH
 : > "${FAKE_CURL}/requests.log"
@@ -1699,18 +1699,6 @@ check "a model list is stored without the spaces around its commas" "$(jq -r '.m
 run config set modelWindows All
 check "and all, in any case, as all" "$(jq -r '.modelWindows' "${STORE}/settings.json")" "all"
 run config unset --all
-
-run log --json --lines 2
-check "log --json prints the last events as JSON lines" "$(print -r -- "$OUT" | jq -s 'length')" "2"
-check "oldest first, the newest last" "$(print -r -- "$OUT" | tail -1)" "$(tail -1 "${STORE}/auto.log")"
-TZ=XYZ-2 run log --lines 1
-contains "the human form stamps each event in local time" "${OUT}" "$(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" '+%m-%d %H:%M:%S')  claude"
-contains "and marks a dry run" "${OUT}" "(dry run)"
-run log --lines 0
-check "--lines outside 1 to 1000 refuses" "${RC}" "2"
-print -r -- 'garbage' >> "${STORE}/auto.log"
-run log --json --lines 1
-check "a line that does not parse is skipped" "${OUT}" ""
 unset FLAKELAB_NOW
 
 # ---------------------------------------------------------------------------

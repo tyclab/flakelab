@@ -71,8 +71,7 @@ that defaults to off, because every activation here runs on every adopter's box:
   names the tools it decides for; `sessionThreshold` (85), `weekThreshold`
   (97) and `modelThreshold` (95) are the bars, `modelWindows` (`[ "all" ]`)
   which per-model weeks count, `strategy` (`soonest-reset` or `best`) the
-  target order, `cooldownSeconds` (300), `hysteresis` (10) and
-  `unhealthyTicks` (3) the engine's gates. The wrapper exports them as
+  target order. The wrapper exports them as
   `FLAKELAB_ACCOUNTS_*`; `flakelab accounts config set` overrides any of them
   at run time from `settings.json` in the store (`flakelab doctor` warns
   while one is set), and an `auto` flag overrides both. With the

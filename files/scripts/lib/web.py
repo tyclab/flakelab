@@ -37,8 +37,8 @@ Without the token: GET / (the page), GET /logo (the configured image, 404
 without one), GET /api/health {ok, logo}.
 
 API (all JSON, the bearer required):
-  GET  /api/state                {accounts, status, config, events, sessions, terminal}
-                                 (config: accounts config --json; events: accounts log --json)
+  GET  /api/state                {accounts, status, config, sessions, terminal}
+                                 (config: accounts config --json)
   POST /api/fetch                accounts --fetch --json         -> {accounts}
   POST /api/switch {entry}       accounts switch <entry> [--force]
   POST /api/auto {dryRun}        accounts auto --once --json [--dry-run] -> {events}
@@ -94,8 +94,6 @@ LOGO_TYPES = {
 }
 TIMEOUT = int(os.environ.get("FLAKELAB_WEB_TIMEOUT", "60"))
 TOOLS = ("claude", "codex", "kiro")
-# The engine's last events the page shows.
-EVENTS = 30
 # A connection that sends nothing for this long is dropped: an idle
 # connection holds a thread, and a peer on the tunnel can open any number.
 IDLE_S = 30
@@ -238,14 +236,13 @@ def json_lines(text):
 def state():
     # Read-only calls, none takes the store's lock: side by side, so a
     # refresh costs the slowest of them.
-    with ThreadPoolExecutor(5) as pool:
-        acc, st, cfg, ev, se = pool.map(
+    with ThreadPoolExecutor(4) as pool:
+        acc, st, cfg, se = pool.map(
             run,
             [
                 [ACCOUNTS, "--json"],
                 [ACCOUNTS, "status", "--json"],
                 [ACCOUNTS, "config", "--json"],
-                [ACCOUNTS, "log", "--json", "--lines", str(EVENTS)],
                 [SESSIONS, "--json"],
             ],
         )
@@ -253,10 +250,9 @@ def state():
         "accounts": parse(acc["stdout"], {}),
         "status": parse(st["stdout"], {}),
         "config": parse(cfg["stdout"], {}),
-        "events": json_lines(ev["stdout"]),
         "sessions": parse(se["stdout"], []),
         "terminal": bool(TERMINAL_SOCKET),
-        "calls": {"accounts": acc, "status": st, "config": cfg, "events": ev, "sessions": se},
+        "calls": {"accounts": acc, "status": st, "config": cfg, "sessions": se},
     }
 
 

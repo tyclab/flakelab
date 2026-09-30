@@ -316,7 +316,6 @@ flakelab accounts status [--json]          per tool: active account and cached h
 flakelab accounts auto on|off              auto-switch on or off at run time, no rebuild
 flakelab accounts config [--json]          each engine setting with its value and its source
 flakelab accounts config set KEY VALUE     a run-time override over the flake option; unset KEY|--all drops it
-flakelab accounts log [--json] [--lines N] the engine's last events, from auto.log
 ```
 
 Exit codes follow the sibling scripts: 0, 1 for a failure, 2 for a refusal or
@@ -622,20 +621,19 @@ its value and its source (`runtime`, `flake` or `default`), and for an
 override the value under it; `config unset KEY`, or `--all` (which keeps on or
 off), goes back.
 
-The keys are `autoSwitch` (true or false, above) and the options' names,
+The keys are `autoSwitch` (true or false, above), the options' names
 `sessionThreshold`, `weekThreshold`, `modelThreshold`, `modelWindows` (a
-comma list), `strategy`, `cooldownSeconds`, `hysteresis` and
-`unhealthyTicks`. The interval is not a key: it is the timer's own `OnUnitActiveSec`, and the
+comma list) and `strategy`, and the engine's gates, which have no option:
+`cooldownSeconds`, `hysteresis` and `unhealthyTicks`. The interval is not a key: it is the timer's own `OnUnitActiveSec`, and the
 poll plan, not the timer, sets the fetch rate. A key the file carries that is
 unknown or out of range is skipped and named by `config`, never refused, so a
 hand edit cannot stop the timer.
 
 The file stays on the box. `flakelab backup` does not carry it, and
 `flakelab doctor` warns while it holds an override other than `autoSwitch`,
-since the flake's value is then not the one in use; on or off it reports. `accounts log` prints the engine's last events from
-`auto.log`. The dashboard (remote-sessions.md) drives all of it: an on/off
-button, a slider per bar, the other settings and the event log, each change
-one `config` call.
+since the flake's value is then not the one in use; on or off it reports.
+The dashboard (remote-sessions.md) drives all of it: an on/off button, a
+slider per bar and the other settings, each change one `config` call.
 
 ### A second account in a second terminal
 
@@ -704,9 +702,6 @@ flakelab.accounts = {
   modelThreshold     = 95;
   modelWindows       = [ "all" ];     # display names, or "all"
   strategy           = "soonest-reset";  # or "best"
-  cooldownSeconds    = 300;           # a proactive move waits this long after a switch
-  hysteresis         = 10;            # points a proactive target must beat the live entry by
-  unhealthyTicks     = 3;             # dead reads of the live login before a failover
 };
 ```
 

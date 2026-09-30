@@ -73,7 +73,7 @@ the private overlay `flakelab-config`, which imports this flake via
     rides `flakelab backup` (`accounts/`); `flakelab doctor` has an
     `Accounts` section; `ingest` takes the statusline's `rate_limits`.
     `auto on|off` and `config [set|unset]` switch it and override its
-    settings at run time, over the flake options; `log` prints its events.
+    settings at run time, over the flake options.
   - `notify` (new, `notify`): a push to an ntfy topic when a session waits
     on you; the Claude Code `Notification` hook (`flakelab.notify.enable`)
     and Codex's `notify` hook call it, `--message` sends one by hand.
