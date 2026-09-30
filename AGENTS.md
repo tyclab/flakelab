@@ -94,14 +94,11 @@ the private overlay `flakelab-config`, which imports this flake via
     `lib/test-mcp.py`, run by `test-mcp`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
-  - Seven deprecation shims still answer to the old names — `nix-update`,
-    `nix-doctor`, `nix-backup`, `nix-provision`, `nix-clone-repos`,
-    `build-dev-wsl-nix`, `test-provision-nix`: one line to stderr, then exec.
-    They go away next release. Write the `flakelab` form in
-    new code. The other seven old names are simply gone.
+  - The old per-command names (`nix-update`, `nix-doctor`, `nix-backup`,
+    `nix-provision`, `nix-clone-repos`, `build-dev-wsl-nix`,
+    `test-provision-nix`) are gone from PATH; only the `flakelab` form exists.
   - Each subcommand's own `--help`, flags, exit codes and `--json` output are
-    unchanged, including the script name the usage text prints
-    (`flakelab update --help` still says `nix-update [--all]`).
+    unchanged.
   - At a terminal only, a person is asked instead of refused
     (`lib/prompt.zsh`, `ARCHITECTURE.md#at-a-terminal`): a bare `flakelab`
     opens `flakelab-menu`, and a missing tool, session or login is picked from

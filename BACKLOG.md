@@ -18,7 +18,6 @@ opting in. Three of four items are now gated behind options that default off:
 | ---------------------------------------------------------------------------------------- | ------------------------------ |
 | `cc` = `claude --dangerously-skip-permissions`                                           | `flakelab.claudeTrustAll`      |
 | `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`, `remoteControlAtStartup` | `flakelab.claudeAgentDefaults` |
-| the Playwright MCP server                                                                | `flakelab.mcpPlaywright`       |
 
 `claudeSettings` is gated on `installClaude` like every sibling activation,
 and `@jarahkon/hass-mcp-server` is version-pinned like the other MCP servers.

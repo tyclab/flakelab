@@ -177,7 +177,7 @@ while (( $# > 0 )); do
     --from)    SRC_FROM="$2"; shift ;;
     --instance) SRC_INSTANCE="$2"; shift ;;
     --help|-h)
-      echo "Usage: nix-backup [options]"
+      echo "Usage: flakelab backup [options]"
       echo ""
       echo "Options:"
       echo "  --force              overwrite existing backups without prompting"
@@ -213,7 +213,7 @@ while (( $# > 0 )); do
       echo "Exits non-zero if any file failed to copy or failed verification."
       echo ""
       echo "Migrate a wslkube environment into this distro:"
-      echo "  nix-backup --restore --from /mnt/c/Users/<you>/git/wslkube --instance <distro>"
+      echo "  flakelab backup --restore --from /mnt/c/Users/<you>/git/wslkube --instance <distro>"
       exit 0
       ;;
     *)

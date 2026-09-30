@@ -62,6 +62,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 - `wsl-open` from the `wsl` target's packages: the flake's `xdg-open` is the opener, and `BROWSER` names it.
 - The `cwsl` alias.
+- The deprecation shims for the old command names (`nix-update`, `nix-doctor`, `nix-backup`, `nix-provision`, `nix-clone-repos`, `build-dev-wsl-nix`, `test-provision-nix`); `flakelab <verb>` is the only form.
 - Kiro CLI support, whole: the installer, plugin checkout, `k`/`kk`/`kwsl` aliases, the MCP merge, its `sessions` and `accounts` adapters, doctor and health sections, and the `kiro-cli-json`/`kiro-mcp-merge` checks. An overlay still setting `installKiro`, `kiroPluginRepo`, `kiroTrustAll` or `mcpPlaywright` fails to evaluate until the line goes; `~/.kiro` is not touched.
 
 ### Fixed
