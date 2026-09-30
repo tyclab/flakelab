@@ -32,7 +32,7 @@ while (( $# > 0 )); do
     --strict) STRICT=true ;;
     --quiet)  QUIET=true ;;
     --help|-h)
-      echo "Usage: nix-doctor [options]"
+      echo "Usage: flakelab doctor [options]"
       echo ""
       echo "Checks a provisioned flakelab distro and reports every finding."
       echo ""

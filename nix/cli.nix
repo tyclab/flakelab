@@ -3,7 +3,6 @@
 # gitchecker, gitcleaner and gitpublisher stay standalone: other repos invoke them.
 { pkgs, cfg }:
 let
-  inherit (pkgs) lib;
   scripts = import ./scripts.nix { inherit pkgs cfg; };
   s = ../files/scripts;
   zsh = "${pkgs.zsh}/bin/zsh";
@@ -45,25 +44,7 @@ let
     exec ${zsh} ${s}/flakelab "$@"
   '';
 
-  # Deprecation shims for the old command names; warn on stderr only, so a shim in
-  # a pipeline behaves as the old command did. Delete these next release.
-  mkShim =
-    old: new:
-    pkgs.writeShellScriptBin old ''
-      printf '%s\n' "${old}: renamed to 'flakelab ${new}', this shim goes away next release" >&2
-      exec ${flakelab}/bin/flakelab ${new} "$@"
-    '';
-
-  shims = lib.mapAttrsToList mkShim {
-    nix-update = "update";
-    nix-doctor = "doctor";
-    nix-backup = "backup";
-    nix-provision = "provision";
-    nix-clone-repos = "clone";
-    build-dev-wsl-nix = "build-distro";
-    test-provision-nix = "test-provision";
-  };
 in
 {
-  inherit flakelab shims;
+  inherit flakelab;
 }

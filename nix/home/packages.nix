@@ -76,8 +76,7 @@ in
       # the nixpkgs builds lag upstream.
     ]
     ++ [
-      # The one entrypoint for the distro commands; the old per-command names
-      # survive only as cli.shims.
+      # The one entrypoint for the distro commands.
       cli.flakelab
 
       # Standalone on purpose: other repos and skills invoke them by name.
@@ -85,7 +84,6 @@ in
       scripts.gitcleaner
       scripts.gitpublisher
     ]
-    ++ cli.shims
     # Codex's Linux sandbox runs the first bwrap on PATH; without one it warns at
     # every start and falls back to a bundled helper.
     ++ lib.optional cfg.installCodex pkgs.bubblewrap
