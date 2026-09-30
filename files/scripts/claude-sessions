@@ -4,14 +4,14 @@ set -uo pipefail
 
 #
 # claude-sessions — the agent sessions running in this distro (Claude Code,
-# Codex, Kiro CLI): list them, host them in tmux so they outlive their
+# Codex): list them, host them in tmux so they outlive their
 # terminal, save the list, print what brings each one back after a restart.
 #
 # A `wsl --shutdown` or a reboot kills every shell, and each tool keeps its
 # conversation on disk — Claude Code under ~/.claude/projects/<slug>/<id>.jsonl,
-# Codex under ~/.codex/sessions/<date>/rollout-<stamp>-<id>.jsonl, Kiro in its
-# own store — so the sessions survive, but only if the session ids are known.
-# That is what this command records before the restart.
+# Codex under ~/.codex/sessions/<date>/rollout-<stamp>-<id>.jsonl — so the
+# sessions survive, but only if the session ids are known. That is what this
+# command records before the restart.
 #
 # A session is the tool's process itself: pgrep -x, because -f would also match
 # its helper shells, tails and subagents. Claude Code registers each one in
@@ -22,11 +22,7 @@ set -uo pipefail
 # back to the transcript it holds open in /proc/<pid>/fd; a Codex process is
 # identified the same way, by the rollout file it holds open, whose name
 # carries the id. The newest transcript in the project directory is never the
-# answer — two sessions in one directory share it. Kiro keeps a registry of
-# its own, ~/.kiro/sessions/cli/<id>.json (id, cwd, state) beside the
-# transcript and a <id>.lock held while a process owns the session: a live
-# kiro-cli process is matched to the locked session in its directory, newest
-# first, when it holds no session file open itself.
+# answer — two sessions in one directory share it.
 #
 # The host: a session started with --start runs in a window of the `agents`
 # tmux session, and the table says so. A terminal — local, a Windows Terminal
@@ -39,7 +35,7 @@ set -uo pipefail
 # Usage:
 #   claude-sessions                    table: tool, pid, age, session id, host, directory
 #   claude-sessions --start <tool> [dir] [--detach] [-- args...]
-#                                      a new session of claude|codex|kiro in dir
+#                                      a new session of claude|codex in dir
 #                                      (default: here) in its own tmux window,
 #                                      attached unless --detach or no terminal
 #   claude-sessions --attach [id|window]
@@ -97,7 +93,6 @@ REGISTRY="${HOME}/.claude/sessions"
 # A session on an accounts profile (flakelab accounts run) keeps its registry
 # entry, and with the history unshared its transcript, under that profile.
 ACCOUNTS_PROFILES="${FLAKELAB_ACCOUNTS_ROOT:-${HOME}/.local/state/flakelab/accounts}/profiles"
-KIRO_SESSIONS="${HOME}/.kiro/sessions/cli"
 # The tmux session every --start window lands in, and the prefix of the view
 # sessions --attach and --open create on it.
 TMUX_SESSION="${FLAKELAB_TMUX_SESSION:-agents}"
@@ -114,10 +109,10 @@ START_ASK=false
 typeset -a START_ARGS=()
 ATTACH_TARGET=""
 
-typeset -a TOOLS=(claude codex kiro)
+typeset -a TOOLS=(claude codex)
 # The process name each tool runs as, and the command that starts a session.
-typeset -A TOOL_PROC=(claude claude codex codex kiro kiro-cli)
-typeset -A TOOL_CMD=(claude claude codex codex kiro 'kiro-cli chat')
+typeset -A TOOL_PROC=(claude claude codex codex)
+typeset -A TOOL_CMD=(claude claude codex codex)
 
 usage() {
   cat <<'USAGE'
@@ -125,9 +120,9 @@ Usage: claude-sessions [--start <tool> [dir] [--detach] [-- args...]]
                        [--attach [id|window]] [--save [file]] [--resume [file]]
                        [--open [file]] [--autosave] [--recent [hours]] [--json]
 
-  (no flag)         list the running agent sessions (Claude Code, Codex, Kiro)
+  (no flag)         list the running agent sessions (Claude Code, Codex)
   --start <tool> [dir] [--detach] [-- args...]
-                    start claude|codex|kiro in dir (default: here) in its own
+                    start claude|codex in dir (default: here) in its own
                     window of the `agents` tmux session, and attach to it —
                     unless --detach, or there is no terminal. At a terminal,
                     with no tool, the tool and the directory are asked for
@@ -313,9 +308,8 @@ attach_window() {
 # whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
 # into its place): <tool> US <pid> US <age-seconds> US <session-id> US <cwd>
 # US <window id> US <window name>. A process with no id from any source
-# (still starting, on an older Claude Code, a Kiro chat whose registry entry
-# is not written yet) gets an empty id and a stderr note — it has nothing to
-# resume by id.
+# (still starting, on an older Claude Code) gets an empty id and a stderr
+# note — it has nothing to resume by id.
 typeset -a ROWS=()
 US=$'\x1f'
 
@@ -328,21 +322,6 @@ open_uuid() {
     grep -E "$pattern" |
     grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
     sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
-}
-
-# The Kiro session a process in cwd owns: the newest locked registry entry
-# whose cwd is that directory. Two chats in one directory are told apart only
-# by an open file, which the caller tries first.
-kiro_locked_session() {
-  local cwd="$1" lock id
-  for lock in "${KIRO_SESSIONS}"/*.lock(N.om); do
-    id="${lock:t:r}"
-    [[ -r "${KIRO_SESSIONS}/${id}.json" ]] || continue
-    [[ "$(jq -r '.cwd // empty' "${KIRO_SESSIONS}/${id}.json" 2>/dev/null)" == "$cwd" ]] || continue
-    print -r -- "$id"
-    return 0
-  done
-  return 0
 }
 
 gather() {
@@ -365,10 +344,6 @@ gather() {
           [[ -n "$sid" ]] || sid="$(open_uuid "$p" '\.jsonl$')"
           ;;
         codex) sid="$(open_uuid "$p" '/rollout-[^/]*\.jsonl$')" ;;
-        kiro)
-          sid="$(open_uuid "$p" '/sessions/cli/[^/]*\.(jsonl|lock|json)$')"
-          [[ -n "$sid" ]] || sid="$(kiro_locked_session "$cwd")"
-          ;;
       esac
       [[ -n "$age" ]] || age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
       [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no session id yet: listed, but nothing to save or resume it by"
@@ -577,7 +552,6 @@ resume_cmd() {
   case "$1" in
     claude) print -r -- "claude --resume $2" ;;
     codex)  print -r -- "codex resume $2" ;;
-    kiro)   print -r -- "kiro-cli chat --resume-id $2" ;;
   esac
 }
 
@@ -642,8 +616,7 @@ open_tabs() {
 # deeper. The cwd is the last one the session recorded — where it was working
 # when it stopped — read from the tail, never the whole transcript. A Codex
 # rollout names its id in the file name and its cwd in the session_meta line
-# at its head. A Kiro session is its registry entry, skipped while its lock
-# exists.
+# at its head.
 # print_recent collects "<mtime> US <resume line>" here and sorts it, so the
 # list is newest first across all tools.
 typeset -a RECENT=()
@@ -700,13 +673,6 @@ print_recent() {
       recent_add "$f" codex "$cwd" "$sid" "${pull}"
     done
   fi
-  for f in "${KIRO_SESSIONS}"/*.json(N.mh-${RECENT_HOURS}om); do
-    sid="${f:t:r}"
-    [[ -n "${live[kiro${US}${sid}]:-}" ]] && continue
-    [[ -e "${KIRO_SESSIONS}/${sid}.lock" ]] && continue
-    cwd="$(jq -r '.cwd // empty' "$f" 2>/dev/null)"
-    recent_add "$f" kiro "$cwd" "$sid"
-  done
   for row in "${(@On)RECENT}"; do print -r -- "${row#*${US}}"; done
   (( ${#RECENT} > 0 )) || print -ru2 -- "no stopped session changed in the last ${RECENT_HOURS}h"
   return 0
@@ -721,7 +687,7 @@ tilde() { [[ "$1" == "$HOME" || "$1" == "$HOME"/* ]] && print -r -- "~${1#$HOME}
 ask_start() {
   local t
   local -a labels=()
-  typeset -A name=(claude 'Claude Code' codex 'Codex' kiro 'Kiro CLI')
+  typeset -A name=(claude 'Claude Code' codex 'Codex')
   have_tmux || { print -ru2 -- "Error: --start needs tmux on PATH"; return 2 }
   for t in "${TOOLS[@]}"; do
     if command -v "${TOOL_PROC[$t]}" >/dev/null 2>&1; then

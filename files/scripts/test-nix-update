@@ -786,7 +786,7 @@ mkdir -p "${DEFER_LOG:h}"
 
 print -r -- "a unit the switch left alone gets the activation re-run for its deferred steps"
 d="$(mk_local rerun)"
-print -r -- "kiro-plugin not cloned: no key yet" > "${DEFER_LOG}"
+print -r -- "claude marketplaces not installed: no key yet" > "${DEFER_LOG}"
 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it says the switch left the unit alone" "${OUT}" "the switch left home-manager-"
@@ -794,7 +794,7 @@ contains "and names what it re-runs for"    "${OUT}" "retry the 1 step(s)"
 excludes "claiming nothing about the generation" "${OUT}" "generation unchanged"
 contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
 contains "the deferred count is named"      "${OUT}" "activation deferred"
-contains "and the step is listed"           "${OUT}" "kiro-plugin not cloned"
+contains "and the step is listed"           "${OUT}" "claude marketplaces not installed"
 
 print -r -- "a unit the switch left alone with nothing deferred is not restarted"
 rm -f "${DEFER_LOG}"
@@ -812,14 +812,14 @@ contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl rest
 print -r -- 100 > "${STAMP_FILE}"
 
 print -r -- "a unit the switch restarted is left alone, deferred steps or not"
-print -r -- "kiro-plugin not cloned: no key yet" > "${DEFER_LOG}"
+print -r -- "claude marketplaces not installed: no key yet" > "${DEFER_LOG}"
 export STAMP_BUMP=1
 run_update "${d}"
 unset STAMP_BUMP
 check    "it switches"                      "${RC}" "0"
 excludes "with no restart line"             "${OUT}" "restarting it"
 excludes "and no restart"                   "$(< "${SUDO_LOG}")" "systemctl restart"
-contains "but the deferred step is still listed" "${OUT}" "kiro-plugin not cloned"
+contains "but the deferred step is still listed" "${OUT}" "claude marketplaces not installed"
 rm -f "${DEFER_LOG}"
 
 # The health check fails the unit on anything flakelab-warn recorded and on its
@@ -841,7 +841,7 @@ contains "it says why"                      "${OUT}" "because it is inactive"
 contains "and restarts the unit"            "$(< "${SUDO_LOG}")" "systemctl restart home-manager-"
 
 print -r -- "recorded failures are retried behind a unit that did not fail"
-print -r -- "kiro-cli install failed" > "${FAIL_LOG}"
+print -r -- "Claude Code install failed" > "${FAIL_LOG}"
 run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it names what it retries"         "${OUT}" "retry the 1 step(s) the last activation reported failed"
@@ -852,7 +852,7 @@ rm -f "${FAIL_LOG}"
 # move, and the gate would re-run what the switch had just run and seen fail —
 # for its deferred steps, or as never activated when it has not succeeded yet.
 print -r -- "a unit the switch restarted into a failure is not run a second time"
-print -r -- "kiro-plugin not cloned: no key yet" > "${DEFER_LOG}"
+print -r -- "claude marketplaces not installed: no key yet" > "${DEFER_LOG}"
 STAMP_BUMP=1 UNIT_STATE=failed run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 excludes "with no restart line"             "${OUT}" "restarting it"

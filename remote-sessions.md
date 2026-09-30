@@ -1,7 +1,7 @@
 # Remote sessions
 
 How to reach, keep and continue the agent sessions on this box (Claude Code,
-Codex, Kiro CLI) from somewhere else: another window, another machine, a
+Codex) from somewhere else: another window, another machine, a
 phone. Every phase is on this branch; what remains is the list of things to
 verify on a real box before relying on each.
 
@@ -41,10 +41,10 @@ option, with the dashboard beside it.
 
 ## What is implemented
 
-`flakelab sessions` hosts sessions in tmux and knows all three tools:
+`flakelab sessions` hosts sessions in tmux and knows both tools:
 
 ```
-flakelab sessions --start <tool> [dir] [--detach] [-- args...]   claude|codex|kiro in dir, in its own window of the `agents` session, attached
+flakelab sessions --start <tool> [dir] [--detach] [-- args...]   claude|codex in dir, in its own window of the `agents` session, attached
 flakelab sessions --attach [id|window]                           join the window holding a session id, or a window by name; none: the server (at a terminal, a list of the windows first)
 flakelab sessions                                                the table, with TOOL and HOST columns
 flakelab sessions --open [file]                                  WSL: each tab attaches a window that outlives it (tmux on PATH), else as before
@@ -73,14 +73,11 @@ Mechanics worth knowing:
   that starts it, which is what carries `secrets.env`, `PATH` and the agent
   socket into every later window. A server started from a shell without them
   keeps lacking them until it is restarted.
-- **Codex and Kiro.** A `codex` process is identified by the rollout file it
-  holds open under `~/.codex/sessions/`; a `kiro-cli` process by the locked
-  entry in Kiro's registry, `~/.kiro/sessions/cli/<id>.json` with its `.lock`,
-  in the process's directory. Saves carry a tool column and `--resume` prints
-  `codex resume <id>` and `kiro-cli chat --resume-id <id>`; `--recent` reads
-  both tools' stores.
-- **Nothing forces tmux.** The aliases `c`, `cc`, `codex`, `k`, `kk` stay
-  bare; a session that finishes in a minute does not need a host.
+- **Codex.** A `codex` process is identified by the rollout file it holds
+  open under `~/.codex/sessions/`. Saves carry a tool column and `--resume`
+  prints `codex resume <id>`; `--recent` reads both tools' stores.
+- **Nothing forces tmux.** The aliases `c`, `cc`, `codex` stay bare; a
+  session that finishes in a minute does not need a host.
   `--start` is the deliberate form for the ones that should outlive a tab.
 - **A profile session is a session.** One started by `flakelab accounts run`
   keeps its registry entry under the profile; the table finds it there and
@@ -93,7 +90,7 @@ and the one line that answers it (`flakelab sessions --attach <id>`,
 `codex resume <id>`). The topic URL and token are `NTFY_URL` and `NTFY_TOKEN`
 in `secrets.env`, read at use time; a hook run never fails its caller, so an
 unconfigured or offline box costs nothing. `--dry-run` shows the request,
-`--title`/`--message` send one by hand. Kiro has no such event. For Codex, the
+`--title`/`--message` send one by hand. For Codex, the
 line in `~/.codex/config.toml` is:
 
 ```toml
@@ -203,18 +200,12 @@ Discord into a running session) are the other vendor route for steering.
 `config.toml` that runs a command when a turn completes. No remote control of
 a local session.
 
-**Kiro** has `kiro-cli chat --resume-id <id>`, `--resume-picker` and
-`--list-sessions`; its hooks (`SessionStart`, `Stop`, `UserPromptSubmit`,
-`PreToolUse`, `PostToolUse`, and the file and task events) fire on turns,
-never on a permission prompt or a wait for input, which is visible only in
-its TUI.
-
 ## The plan
 
 Phases, each shippable on its own. All five are on this branch.
 
 1. **tmux as the session host** — done: `--start`, `--attach`, the host
-   column, `--open` attaching, Codex and Kiro in the registry, saves with a
+   column, `--open` attaching, Codex in the registry, saves with a
    tool column.
 2. **Remote Control on its own switch** — done: `flakelab.claudeRemoteControl`,
    default off, writes `remoteControlAtStartup` and clears the four variables
@@ -275,16 +266,13 @@ flakelab = {
    list running sessions from it with `pid`, `sessionId`, `cwd` and `name`,
    but say interactive sessions in other terminals may not appear until
    backgrounded; if they do appear, the `/proc` walk becomes a fallback.
-5. **Kiro's lock file contents** (a pid would let two chats in one directory
-   be told apart without an open file) and whether a headless
-   `kiro-cli chat --no-interactive` writes a registry entry at all.
-6. **The ntfy payload on the phone**: that a `Title:` of `claude - <dir>` and
+5. **The ntfy payload on the phone**: that a `Title:` of `claude - <dir>` and
    the three-line body read well, and whether `permission_prompt` at priority
    4 should be 5 (urgent, overrides do-not-disturb).
-7. **Codex's `notify` payload fields** on the installed version: `cwd` and
+6. **Codex's `notify` payload fields** on the installed version: `cwd` and
    `thread-id` are taken when present, `turn-id` otherwise; the body degrades
    to the type alone if neither is there.
-8. **The dashboard from a phone** on the tunnel: that the page renders at
+7. **The dashboard from a phone** on the tunnel: that the page renders at
    phone width, that a switch from it lands (the CLI's transaction, the
    engine's refusals), that "terminal ↗" opens ttyd through the dashboard's
    session cookie, and that tmux under it is usable on a touch keyboard.

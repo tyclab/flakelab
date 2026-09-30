@@ -461,7 +461,7 @@ typeset -a _profiles=() _groups=() _sshkeys=()
 typeset -a _skipped_secrets=()
 # Keys only a wslkube-written config carries.
 typeset -a _claude_plugins=() _clone_exclude_extra=()
-_mkt_name="" _mkt_url="" _kiro_repo="" _whatsapp_dir=""
+_mkt_name="" _mkt_url="" _whatsapp_dir=""
 
 # Names only: a custom_env_vars entry named here is dropped rather than written to the
 # world-readable store. Keep in step with setup-wsl-nix.ps1's $SecretKeyNames.
@@ -542,9 +542,8 @@ if [[ -n "${_config}" ]]; then
   _as_list claude_mcp_plugins; _claude_plugins+=("${reply[@]}")
   _claude_plugins=("${(@u)_claude_plugins}")
 
-  # Config keys, not constants: both name a private repo path. A wslkube config
-  # carries neither, so a migrated one must add them.
-  _kiro_repo="${YS[kiro_plugin_repo]:-}"
+  # A config key, not a constant: it names a private checkout path. A wslkube
+  # config does not carry it, so a migrated one must add it.
   _whatsapp_dir="${YS[whatsapp_mcp_dir]:-}"
   [[ -z "${_overlay_url}" ]] && _overlay_url="${YS[overlay_url]:-}"
   if [[ -z "${_whatsapp_dir}" ]] && (( ${_claude_plugins[(Ie)mcp-whatsapp]} )); then
@@ -561,7 +560,7 @@ if [[ -n "${_config}" ]]; then
   typeset -A _shape=(
     user s target s gitfullname s gitmail s userlocale s windows_username s
     backupautostart s state_root s state_transcripts s giteditor s dockerautostart s
-    kiro_plugin_repo s whatsapp_mcp_dir s overlay_url s
+    whatsapp_mcp_dir s overlay_url s
     profiles l teams l team l gitlab_groups l sshkeyautoadd l
     claude_plugins l claude_mcp_plugins l clone_exclude l extra_task_files l
     custom_env_vars m claude_plugin_marketplace m repos i custom_aliases i
@@ -856,11 +855,6 @@ _generated_flake() {
     print -r -- ''
     print -r -- '        # claude_plugins (always on) + claude_mcp_plugins (opt-in MCP servers).'
     _nix_list claudePlugins '        ' "${_claude_plugins[@]}"
-  fi
-  if [[ -n "${_kiro_repo}" ]]; then
-    print -r -- ''
-    print -r -- '        # Cloned and `make install-global`-ed into ~/.kiro on activation.'
-    print -r -- "        kiroPluginRepo = $(_nix_str "${_kiro_repo}");"
   fi
   if [[ -n "${_whatsapp_dir}" ]]; then
     print -r -- ''

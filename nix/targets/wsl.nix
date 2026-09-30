@@ -27,6 +27,20 @@ in
   # The shim runs this before systemd: known-issues.md, "No user manager".
   system.activationScripts.flakelab-wsl-init-cgroup.text = "${scripts.wsl-init-cgroup}/bin/flakelab-wsl-init-cgroup";
 
+  # WSL generates this shutdown guard with ExecStart=/bin/true, which NixOS
+  # does not provide. Keep the generated ordering, mount condition and ExecStop
+  # (including WSL's chosen automount root); only replace the startup command.
+  systemd.services.wsl-mnt-guard = {
+    overrideStrategy = "asDropin";
+    # Restarting an active guard during a switch would run its shutdown action
+    # and change /mnt/wsl mount propagation before the distro actually stops.
+    restartIfChanged = false;
+    serviceConfig.ExecStart = [
+      ""
+      "${pkgs.coreutils}/bin/true"
+    ];
+  };
+
   # Do not terminate a distro from in here: it wipes WSLInterop for every distro
   # and only `wsl --shutdown` from Windows recovers it (known-issues.md).
 

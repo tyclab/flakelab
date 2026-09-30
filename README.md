@@ -282,8 +282,8 @@ only deferred is in
 failing check with `touch ~/.local/state/flakelab/skip-healthcheck`.
 
 `gitchecker`, `gitcleaner` and `gitpublisher` are **not** subcommands — they stay
-standalone. AI CLIs: `k`/`kk`/`kwsl` (Kiro: base / full-trust / in-repo),
-`c`/`cc` (Claude Code: base / full-trust) and `codex` (Codex, no alias).
+standalone. AI CLIs: `c`/`cc` (Claude Code: base / full-trust) and `codex`
+(Codex, no alias).
 
 Codex uses native permission profiles, automatic review and exact MCP tool
 grants when `codexAutoReview` is enabled. Setup and verification:
@@ -348,7 +348,7 @@ with your own rather than reading them as defaults.
 | `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record                              |
 | `nix/configuration.nix`               | system, every target: locale, native Docker, nix-ld                                               |
 | `nix/targets/`                        | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
-| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, kiro, claude, codex, tooling, health, backup                   |
+| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, claude, codex, tooling, health, backup                         |
 | `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)                                     |
 | `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs                        |
 | `nix/cli.nix`                         | assembles those wrappers into the `flakelab` CLI                                                  |
@@ -465,7 +465,7 @@ run the daily payload pass still converges its state, and while it is scheduled
 a closing Claude Code session is pushed at once.
 
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
-snapshots the running agent sessions (Claude Code, Codex, Kiro) every
+snapshots the running agent sessions (Claude Code, Codex) every
 `sessionsAutosaveInterval` (default 5 min), one file per boot. After a crash,
 `flakelab sessions --resume` prints — and on WSL `--open` reopens — every
 session that was open; `flakelab sessions --recent` lists the ones closed in
@@ -482,9 +482,8 @@ on with their next message. The listing shows each login's cached windows,
 default: a timer that moves the live login before it hits a limit (`--dry-run` shows
 what it would do). `flakelab accounts run work` runs a second account in a
 second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
-pins a shell to it. Codex and Kiro logins work the same way (`add codex`,
-`add kiro`; a switch waits for the tool's running sessions or goes past them
-with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
+pins a shell to it. Codex logins work the same way (`add codex`; a switch
+waits for the tool's running sessions or goes past them with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
 `flakelab backup` and checked by `flakelab doctor`; the design and what is
 still to verify on a box are in [`accounts.md`](accounts.md).
 `flakelab accounts auto on` turns auto-switch on with no rebuild (`auto off`
@@ -493,7 +492,7 @@ bar at run time, over the flake's value, until `config unset`, and the
 dashboard does both.
 
 A session need not die with its terminal either: `flakelab sessions --start
-claude` (or `codex`, `kiro`) runs it in a window of the `agents` tmux session
+claude` (or `codex`) runs it in a window of the `agents` tmux session
 and attaches; close the tab, drop the SSH connection, and
 `flakelab sessions --attach` from any terminal joins it again. The table's
 `HOST` column names the window. `notify.enable = true;` sends a push (ntfy,

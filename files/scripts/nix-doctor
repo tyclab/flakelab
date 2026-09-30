@@ -43,8 +43,7 @@ while (( $# > 0 )); do
       echo ""
       echo "Blocking checks cover: the WSLInterop handler, systemd as PID 1 and the cgroup"
       echo "it runs in (WSL target only), the AI CLIs"
-      echo "the overlay installs (kiro-cli, Claude Code, Codex), the kiro-plugin checkout,"
-      echo "~/.kiro agents/skills/steering, mcp.json,"
+      echo "the overlay installs (Claude Code, Codex),"
       echo "which git config file wins, secrets.env (mode + CRLF), glab config"
       echo "modes (global and repo-local), glab auth, the ssh-agent and its keys,"
       echo "GitLab SSH, cloned repos, a writable npm prefix, and the activation"
@@ -54,8 +53,8 @@ while (( $# > 0 )); do
       echo "held back from the state root (with the transcripts held back whole)."
       echo ""
       echo "The GitLab checks (token, glab auth, the git@gitlab.com SSH probe)"
-      echo "are skipped when the overlay configures no gitlabGroups, repos or"
-      echo "kiroPluginRepo — nothing on such a box ever talks to GitLab."
+      echo "are skipped when the overlay configures no gitlabGroups or repos —"
+      echo "nothing on such a box ever talks to GitLab."
       exit 0
       ;;
     *)
@@ -75,34 +74,23 @@ log_fail() { print -rP -- "  ${RED}[FAIL]${RESET} ${1//\%/%%}" >&2; FAIL=$(( FAI
 log_warn() { print -rP -- "  ${YELLOW}[WARN]${RESET} ${1//\%/%%}" >&2; WARN=$(( WARN + 1 )) }
 log_hint() { print -rP -- "         ${1//\%/%%}" >&2 }
 
-# Where the kiro-plugin checkout is expected, and the substring its `origin`
-# remote must contain. The wrapper in nix/scripts.nix exports BOTH, derived from
-# the kiroPluginRepo option (nix/scripts.nix takes the flakelab option set as `cfg`)
-# exactly as nix/home/default.nix derives the clone path, so an overlay that
-# overrides the repo is not measured against someone else's default. When plugins
-# are disabled (kiroPluginRepo = null) the wrapper exports them empty and these
-# checks skip — hence `-` and not `:-`, which would resurrect a default that does
-# not apply.
-KIRO_PLUGIN_DIR="${FLAKELAB_KIRO_PLUGIN_DIR-}"
-KIRO_PLUGIN_REMOTE="${FLAKELAB_KIRO_PLUGIN_REMOTE-}"
-
-# How much GitLab this box is configured for, exported by the same wrapper from
-# gitlabGroups and repos. An overlay that sets neither never calls glab and never
-# clones over git@gitlab.com, so a missing GITLAB_TOKEN, an unauthenticated glab
-# and a failing SSH probe are all "not configured", not findings — the same
-# distinction the kiro-plugin block above draws. Unset means 0 for the same
-# reason those two default to empty: run outside the wrapper, the doctor knows
-# nothing about this box's options and must not invent a requirement.
+# How much GitLab this box is configured for, exported by the wrapper in
+# nix/scripts.nix (which takes the flakelab option set as `cfg`) from gitlabGroups
+# and repos. An overlay that sets neither never calls glab and never clones over
+# git@gitlab.com, so a missing GITLAB_TOKEN, an unauthenticated glab and a failing
+# SSH probe are all "not configured", not findings. Unset means 0: run outside the
+# wrapper, the doctor knows nothing about this box's options and must not invent
+# a requirement.
 GITLAB_GROUPS="${FLAKELAB_GITLAB_GROUPS-0}"
 GITLAB_REPOS="${FLAKELAB_GITLAB_REPOS-0}"
-# The AI CLIs activation installs (installKiro, installClaude, installCodex),
+# The AI CLIs activation installs (installClaude, installCodex),
 # exported by the same wrapper; unset checks none, for the same reason.
 AI_CLIS=(${=FLAKELAB_AI_CLIS-})
 installs() { (( ${AI_CLIS[(Ie)$1]} )) }
 # Group discovery is the only thing that drives glab; any git@ clone — the groups,
-# the explicit repos, the kiro-plugin checkout — needs the SSH identity.
+# the explicit repos — needs the SSH identity.
 needs_glab() { (( GITLAB_GROUPS > 0 )) }
-needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) || [[ -n "${KIRO_PLUGIN_REMOTE}" ]] }
+needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) }
 SECRETS="${HOME}/.config/tyc/secrets.env"
 SOPS_RENDER="/run/secrets/tyc-env"
 WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
@@ -320,23 +308,6 @@ if (( ${#AI_CLIS} == 0 )); then
   log_ok "no AI CLI installed by this overlay - nothing to check"
 fi
 
-if installs kiro-cli; then
-  if [[ -x "${HOME}/.local/bin/kiro-cli" ]]; then
-    log_ok "kiro-cli present (~/.local/bin/kiro-cli)"
-  elif command -v kiro-cli > /dev/null 2>&1; then
-    log_ok "kiro-cli on PATH ($(command -v kiro-cli))"
-  else
-    log_fail "kiro-cli not installed"
-    log_hint "curl -fsSL https://cli.kiro.dev/install | bash"
-  fi
-
-  # `which kiro` is a decoy on WSL: interop resolves it to the Windows IDE under
-  # /mnt/c/.../Programs/Kiro/bin/kiro, which is not the CLI.
-  if command -v kiro > /dev/null 2>&1 && [[ "$(command -v kiro)" == /mnt/* ]]; then
-    log_ok "note: \`kiro\` resolves to the Windows IDE via interop, not the CLI"
-  fi
-fi
-
 if installs claude; then
   if [[ -x "${HOME}/.local/bin/claude" ]]; then
     log_ok "claude present ($(${HOME}/.local/bin/claude --version 2>/dev/null || echo 'version unknown'))"
@@ -429,56 +400,6 @@ else
   else
     log_ok "note: no auto-switch timer (flakelab update installs it)"
   fi
-fi
-
-# Kiro plugins — agents / skills / steering / hooks / mcp.json
-log_head "Kiro plugins"
-if [[ -z "${KIRO_PLUGIN_DIR}" ]]; then
-  # kiroPluginRepo = null: there is no checkout to find and ~/.kiro is whatever
-  # the operator put there, so every finding here would be a false FAIL.
-  log_ok "kiro plugins disabled for this user — skipping checkout and ~/.kiro checks"
-else
-  if [[ -d "${KIRO_PLUGIN_DIR}/.git" ]]; then
-    local remote
-    remote="$(git -C "${KIRO_PLUGIN_DIR}" remote get-url origin 2>/dev/null || true)"
-    if [[ "${remote}" == *"${KIRO_PLUGIN_REMOTE}"* ]]; then
-      log_ok "kiro-plugin checkout on the configured remote (${KIRO_PLUGIN_DIR})"
-    else
-      log_fail "kiro-plugin checkout is not the configured repo: origin=${remote:-<none>}"
-      log_hint "expected a remote containing ${KIRO_PLUGIN_REMOTE}"
-    fi
-  else
-    log_fail "no kiro-plugin checkout at ${KIRO_PLUGIN_DIR}"
-    log_hint "git clone git@gitlab.com:${KIRO_PLUGIN_REMOTE}.git ${KIRO_PLUGIN_DIR}"
-    log_hint "then: make -C ${KIRO_PLUGIN_DIR} install-global"
-  fi
-
-  # `make install-global` is what copies these out of the checkout; an empty dir
-  # means the clone failed on SSH and the Makefile guard skipped the install.
-  local kdir count
-  for kdir in agents skills steering hooks; do
-    count=$(print -rl -- "${HOME}/.kiro/${kdir}"/*(N) | grep -c . || true)
-    if (( count > 0 )); then
-      log_ok "~/.kiro/${kdir}: ${count} entr(y|ies)"
-    else
-      log_fail "~/.kiro/${kdir} is empty"
-      log_hint "make -C ${KIRO_PLUGIN_DIR} install-global"
-    fi
-  done
-fi
-
-MCP="${HOME}/.kiro/settings/mcp.json"
-if [[ -f "${MCP}" ]] && jq -e . "${MCP}" > /dev/null 2>&1; then
-  local servers nservers
-  servers="$(jq -r '(.mcpServers // {}) | keys | join(", ")' "${MCP}" 2>/dev/null)"
-  nservers="$(jq -r '(.mcpServers // {}) | length' "${MCP}" 2>/dev/null)"
-  if (( nservers > 0 )); then
-    log_ok "mcp.json: ${nservers} server(s) — ${servers}"
-  else
-    log_fail "mcp.json parses but declares no MCP servers"
-  fi
-else
-  log_fail "~/.kiro/settings/mcp.json missing or not valid JSON"
 fi
 
 # Which file git actually reads the flake's keys from.
@@ -707,7 +628,7 @@ else
   # The probe cannot tell a missing key from an unreachable host, so it names
   # both: offline this fails with a key that is loaded and working.
   log_fail "git@gitlab.com does NOT authenticate non-interactively"
-  log_hint "every git clone and the kiro-plugin clone depend on this. Either the"
+  log_hint "every git clone depends on this. Either the"
   log_hint "host is unreachable or no key is loaded: ssh-add ~/.ssh/id_ed25519"
 fi
 

@@ -86,8 +86,8 @@
 
 .PARAMETER SshPassphrase
     Passphrase of the private key(s) under <overlay>-payload\shared\ssh\keys. The
-    SSH-dependent home-manager activation steps (kiro-plugin clone, Claude
-    marketplace + plugins, the statusline that follows them) run from a systemd
+    SSH-dependent home-manager activation steps (the Claude marketplace +
+    plugins, the statusline that follows them) run from a systemd
     unit with no SSH_AUTH_SOCK, so without a loaded agent they can only DEFER.
     Pass this to load the key into the distro's ssh-agent with no prompt; passing
     it (even empty) suppresses the interactive prompt entirely, which is what
@@ -824,7 +824,7 @@ function Read-WslkubeConfig([string]$udPath, [string]$wslkubeRoot) {
 $ConfigShape = @{
     user = 's'; target = 's'; gitfullname = 's'; gitmail = 's'; userlocale = 's'; windows_username = 's'
     backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'; dockerautostart = 's'
-    kiro_plugin_repo = 's'; whatsapp_mcp_dir = 's'; overlay_url = 's'
+    whatsapp_mcp_dir = 's'; overlay_url = 's'
     profiles = 'l'; teams = 'l'; team = 'l'; gitlab_groups = 'l'; sshkeyautoadd = 'l'
     claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'; extra_task_files = 'l'
     custom_env_vars = 'm'; claude_plugin_marketplace = 'm'; repos = 'i'; custom_aliases = 'i'
@@ -1146,23 +1146,16 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += Format-NixList 'claudePlugins' $claudePlugins '        '
     }
 
-    # wslkube hardcodes both of these in its TASK files - the kiro repo in
-    # tasks/kiro.yaml, the whatsapp server dir in tasks/claude.yaml - so a migrated
-    # config carries neither and regeneration silently drops them. They are config
-    # keys here instead of constants because both name a private repo path, which
-    # has no place in a shareable template.
-    $kiroRepo = [string](Get-UserDataValue $ud 'kiro_plugin_repo')
-    if ($kiroRepo) {
-        $body += ''
-        $body += '        # Cloned and `make install-global`-ed into ~/.kiro on activation.'
-        $body += ("        kiroPluginRepo = {0};" -f (ConvertTo-NixString $kiroRepo))
-    }
     if ($overlayUrl) {
         $body += ''
         $body += "        # This overlay's own remote: origin here, the bootstrap's OVERLAY_URL"
         $body += '        # default on a proxmox-vm seed built from it.'
         $body += ("        overlayUrl = {0};" -f (ConvertTo-NixString $overlayUrl))
     }
+    # wslkube hardcodes this in its TASK files (the whatsapp server dir in
+    # tasks/claude.yaml), so a migrated config does not carry it and regeneration
+    # silently drops it. It is a config key here instead of a constant because it
+    # names a private checkout path, which has no place in a shareable template.
     $whatsappDir = [string](Get-UserDataValue $ud 'whatsapp_mcp_dir')
     if ($whatsappDir) {
         $body += ''
@@ -2022,8 +2015,8 @@ function Invoke-Bootstrap {
     }
 
     # TWO switches, deliberately. The SSH-dependent home-manager activation steps
-    # (kiro-plugin clone, the Claude marketplaces and plugins, and the statusline
-    # that runs after them) need a loaded ssh-agent, and the key can only be copied
+    # (the Claude marketplaces and plugins, and the statusline that runs after
+    # them) need a loaded ssh-agent, and the key can only be copied
     # into ~ AFTER the Linux user exists - which is what the FIRST switch creates.
     # One switch therefore always runs those steps before any key is present and
     # they DEFER (non-fatally, and silently as far as the operator is concerned).
@@ -2082,7 +2075,7 @@ function Invoke-Bootstrap {
         Warn "second switch skipped (-SkipSecondSwitch). If SSH steps are still deferred, run in the distro: flakelab update"
     }
     elseif ($DryRun -or $agentLoaded) {
-        Invoke-NixosRebuild 'switch 2/2: complete the deferred SSH steps (kiro-plugin, Claude marketplaces + plugins, statusline)'
+        Invoke-NixosRebuild 'switch 2/2: complete the deferred SSH steps (Claude marketplaces + plugins, statusline)'
         if (-not $DryRun) {
             # That switch restarts home-manager-<user>.service only when the
             # generation changed, and switch 1/2 already built this one - so on its

@@ -93,7 +93,7 @@ LOGO_TYPES = {
     ".webp": "image/webp",
 }
 TIMEOUT = int(os.environ.get("FLAKELAB_WEB_TIMEOUT", "60"))
-TOOLS = ("claude", "codex", "kiro")
+TOOLS = ("claude", "codex")
 # A connection that sends nothing for this long is dropped: an idle
 # connection holds a thread, and a peer on the tunnel can open any number.
 IDLE_S = 30

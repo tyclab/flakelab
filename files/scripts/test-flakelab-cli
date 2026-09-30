@@ -191,6 +191,10 @@ contains "and prints it" "${OUT}" "→ flakelab doctor --quiet"
 at_tty 'acc\rswitch the\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "an action the command completes runs without its argument" "${OUT}" "ran:accounts switch"
 excludes "and leaves the full command to the command" "${OUT}" "→ flakelab accounts switch"
+at_tty 'acc\radd\e[B\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "an action is found by the flags it adds, not only by its wording" "${OUT}" "ran:accounts add --login"
+at_tty 'acc\r\e\e' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "which the list shows beside each action, to copy next time" "${OUT}" "add --login"
 at_tty 'update\rn\e' "${MENUENV[@]}" zsh "${ROUTER}"
 excludes "a declined rebuild runs nothing" "${OUT}" "ran:nix-update"
 check "and Esc then leaves with 130" "${RC}" "130"
@@ -292,7 +296,7 @@ print -r -- "every command's own --help: exit 0, its help, and nothing run"
 # python3 is left real: it is `mcp`'s interpreter, not a tool it calls.
 HELPBIN="${BASE}/helpbin"
 mkdir -p "${HELPBIN}" "${BASE}/helphome"
-for b in flakelab git glab gh nix nixos-rebuild wsl.exe wt.exe tmux curl sudo systemctl pgrep ssh jq sqlite3 claude codex kiro-cli; do
+for b in flakelab git glab gh nix nixos-rebuild wsl.exe wt.exe tmux curl sudo systemctl pgrep ssh jq claude codex; do
   print -rl -- '#!/usr/bin/env zsh' "print -r -- \"ran:${b} \$*\" >> ${(q)BASE}/help-ran.log; exit 1" > "${HELPBIN}/${b}"
   chmod +x "${HELPBIN}/${b}"
 done

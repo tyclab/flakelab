@@ -13,7 +13,9 @@ set -uo pipefail
 # path (FLAKELAB_ROUTER) and the commands this target offers
 # (FLAKELAB_MENU_COMMANDS); a choice re-enters the router, so the target gate
 # and the per-command wrappers apply exactly as they do to a typed command.
-# The `→` line printed before it runs is that typed command, to copy next time.
+# An action is listed with the flags it adds, so typing `add` or `--fetch`
+# finds it as its wording does, and the `→` line printed before it runs is
+# that typed command, to copy next time.
 #
 # In the menu's own lists Esc goes back one level, and at the top it leaves
 # (130), as Ctrl-C does anywhere. Once a command runs the menu is gone: a
@@ -92,12 +94,21 @@ run() {
 
 # One command's actions, until one runs or Esc goes back (return 1).
 choose_action() {
-  local cmd="$1" line label args flag
-  local -a labels=() argvs=() flags=()
+  local cmd="$1" line label args flag verb
+  local -a labels=() argvs=() flags=() verbs=()
+  local -i width=0 i
   for line in "${(f)ACTIONS[$cmd]}"; do
     IFS="$US" read -r label args flag <<<"$line"
     [[ "$flag" == wsl && -z "${WSL_DISTRO_NAME:-}" ]] && continue
-    labels+=("$label"); argvs+=("$args"); flags+=("$flag")
+    verb="${${args#"${cmd}"}# }"
+    (( ${#verb} > width )) && width=${#verb}
+    labels+=("$label"); argvs+=("$args"); flags+=("$flag"); verbs+=("$verb")
+  done
+  # What each action adds to the command, in a column before its wording, as
+  # the top level shows the command name: the list then filters on `add` or
+  # `--fetch` as well, and the typed form is in sight before the `→` line.
+  for (( i = 1; i <= ${#labels}; i++ )); do
+    (( width )) && labels[i]="$(printf "%-${width}s %s" "${verbs[i]}" "${labels[i]}")"
   done
   while true; do
     if (( ${#labels} == 1 )); then

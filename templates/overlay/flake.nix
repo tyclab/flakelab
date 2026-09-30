@@ -73,8 +73,6 @@
 
         # customAliases = { proxmox-ssh = "ssh root@pve.example.lan"; };
 
-        # Private kiro plugin repo to clone and install.
-        # kiroPluginRepo = "git@gitlab.com:you/kiro-plugin.git";
         # Claude plugin marketplaces to register.
         # claudePluginMarketplaces = [
         #   {

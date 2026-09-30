@@ -12,15 +12,6 @@ let
   cfg = osConfig.flakelab;
   inherit (flakelab) isWsl;
 
-  # The checked-in baseline stays the place to edit every key but the trust-all
-  # confirmation suppressor, which is gated on flakelab.kiroTrustAll.
-  kiroCliBase = builtins.fromJSON (builtins.readFile ../../files/config/kiro/cli.json);
-  kiroCliJson = (pkgs.formats.json { }).generate "kiro-cli.json" (
-    kiroCliBase
-    // lib.optionalAttrs cfg.kiroTrustAll {
-      "chat.disableTrustAllConfirmation" = true;
-    }
-  );
   inherit (flakelabMcp) whatsappMcpDir;
 
   scripts = import ../scripts.nix { inherit pkgs cfg; };
@@ -81,8 +72,8 @@ in
       statix
       deadnix
       yq-go
-      # claude, kiro-cli and codex come from their own installers (kiro.nix,
-      # claude.nix, codex.nix): the nixpkgs builds lag upstream.
+      # claude and codex come from their own installers (claude.nix, codex.nix):
+      # the nixpkgs builds lag upstream.
     ]
     ++ [
       # The one entrypoint for the distro commands; the old per-command names
@@ -100,7 +91,7 @@ in
     ++ lib.optional cfg.installCodex pkgs.bubblewrap
     ++ profilePkgs;
 
-  # ~/.local/bin for the Kiro CLI, Claude Code, Codex, and `uv tool` installs.
+  # ~/.local/bin for Claude Code, Codex, and `uv tool` installs.
   home.sessionPath = [ "$HOME/.local/bin" ];
 
   home.sessionVariables = {
@@ -144,17 +135,7 @@ in
     extraConfig = builtins.readFile ../../files/config/tmux/tmux.conf;
   };
 
-  # Do not add ~/.kiro/settings/mcp.json here: a plugin repo's `make install-global`
-  # copies over that path, which fails on a read-only store symlink and silently
-  # drops every server it ships. kiro.nix merges onto it instead.
   home.file = {
-    # force: kiro-cli saves this file by rename, replacing the link; see the
-    # kiro-cli-json check in flake.nix.
-    ".kiro/settings/cli.json" = {
-      source = kiroCliJson;
-      force = true;
-    };
-    ".kiro/settings/kiro_cli_theme.json".source = ../../files/config/kiro/kiro_cli_theme.json;
     # NPM_CONFIG_PREFIX only covers processes inheriting the session env; ~/.npmrc
     # covers every npm invocation, and must name the same directory.
     ".npmrc".text = "prefix=${config.home.homeDirectory}/.npm-global\n";

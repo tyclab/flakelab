@@ -30,7 +30,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|kiro-cli|codex|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
+    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -134,15 +134,13 @@ print -r -- "no lock is not read as any input"
 contains "it warns"      "$(input_line '')" "[WARN] could not read the flakelab input from the lock"
 
 print -r -- "the AI CLIs checked are the ones the overlay installs"
-out="$(ai_clis 'kiro-cli claude codex')"
-contains "all three"           "${out}" "[FAIL] Codex CLI not installed"
-contains "kiro-cli among them" "${out}" "[FAIL] kiro-cli not installed"
+out="$(ai_clis 'claude codex')"
+contains "both"                "${out}" "[FAIL] Codex CLI not installed"
 contains "claude among them"   "${out}" "[FAIL] Claude Code not installed"
-lacks    "one switched off"    "$(ai_clis 'kiro-cli claude')" "Codex CLI"
+lacks    "one switched off"    "$(ai_clis claude)" "Codex CLI"
 out="$(ai_clis codex)"
 contains "only codex"          "${out}" "[FAIL] Codex CLI not installed"
-lacks    "not kiro-cli then"   "${out}" "kiro-cli"
-lacks    "nor claude"          "${out}" "Claude Code"
+lacks    "not claude then"     "${out}" "Claude Code"
 contains "none"                "$(ai_clis '')" "[ OK ] no AI CLI installed by this overlay"
 contains "unset is none"       "$(ai_clis)" "[ OK ] no AI CLI installed by this overlay"
 

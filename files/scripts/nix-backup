@@ -1136,7 +1136,7 @@ do_restore() {
     # marketplace add`), and the payload carries no plugin cache to go with it.
     # A copy from another box therefore registers marketplaces whose clones are
     # not here, and the next activation takes the update path for a clone it
-    # never made — the same reason ~/.kiro/settings/mcp.json is not restored.
+    # never made.
     # Rewritten from claudePlugins on every activation: local wins.
     restore_file "${BACKUP_CLAUDE}/plugins/installed_plugins.json"  "${HOME_DIR}/.claude/plugins/installed_plugins.json" true
     restore_file "${BACKUP_CLAUDE}/plugins/blocklist.json"          "${HOME_DIR}/.claude/plugins/blocklist.json"

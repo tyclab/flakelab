@@ -1,7 +1,7 @@
 # The flakelab option facade: every per-user value an overlay may set, declared
 # once with a type and a description.
 #
-# Declaring them makes a typo (`instalKiro`) an error instead of a silently kept
+# Declaring them makes a typo (`instalClaude`) an error instead of a silently kept
 # fallback, and puts the schema in one place instead of in the read sites.
 # The descriptions below ARE the adopter documentation — `mkSystem`'s legacy
 # attrset call form and the private overlay template both name these keys, and
@@ -148,7 +148,7 @@ in
     sshKeys = mkOption {
       type = types.nonEmptyListOf types.str;
       default = [ "id_ed25519" ];
-      description = "Private keys under ~/.ssh that the TTY-gated zsh hook loads into the agent. The FIRST entry is the git/clone identity the kiro and claude activations pass with `ssh -i`.";
+      description = "Private keys under ~/.ssh that the TTY-gated zsh hook loads into the agent. The FIRST entry is the git/clone identity the claude activations pass with `ssh -i`.";
     };
 
     repos = mkOption {
@@ -157,34 +157,16 @@ in
       description = "Extra repos beyond group discovery, as `{ relPath; url; }`; relPath is relative to ~/git. These bypass cloneExclude.";
     };
 
-    kiroPluginRepo = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Kiro plugin repo (agents/steering/hooks/skills via `make install-global`); null skips it. The checkout path is derived from the remote so it lands under the GitLab group structure `flakelab clone` already uses.";
-    };
-
     overlayUrl = mkOption {
       type = types.nullOr types.str;
       default = null;
       description = "Git URL of this overlay's own remote; null means it has none. The generators add it as `origin` (nothing is pushed for you), `flakelab clone` excludes the repository it names instead of guessing from the overlay's folder name, and a proxmox-vm seed built from this overlay uses it as the bootstrap's OVERLAY_URL default. `flakelab update` checks drift against whatever `origin` the checkout has.";
     };
 
-    installKiro = mkOption {
-      type = types.bool;
-      default = true;
-      description = "Install the Kiro CLI via its official installer into ~/.local/bin.";
-    };
-
     claudeTrustAll = mkOption {
       type = types.bool;
       default = false;
-      description = "Opt in to the `cc` alias (`claude --dangerously-skip-permissions`), which auto-approves every tool with no permission prompts. The Claude-side twin of kiroTrustAll, and off for the same reason: the permission prompt is the only thing standing between an agent and an unreviewed command, so an adopter should not inherit its removal. `c` (plain `claude`) is unaffected.";
-    };
-
-    kiroTrustAll = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Opt in to the operator's full-trust Kiro surface: the `kk` alias (`kiro-cli chat --trust-all-tools`) and `chat.disableTrustAllConfirmation` in cli.json. Trust-all auto-approves every tool and OUTRANKS the agent's deniedCommands, so the destructive floor (force-push, reset --hard, clean -f, branch -D, rm -rf) does not apply under it — only the write.deniedPaths secret gates remain. Off by default so an adopter cannot inherit that surface without asking for it; `k` (plain `kiro-cli chat`) is unaffected either way.";
+      description = "Opt in to the `cc` alias (`claude --dangerously-skip-permissions`), which auto-approves every tool with no permission prompts. Off by default: the permission prompt is the only thing standing between an agent and an unreviewed command, so an adopter should not inherit its removal. `c` (plain `claude`) is unaffected.";
     };
 
     installClaude = mkOption {
@@ -335,13 +317,7 @@ in
     mcpBrowsers.headless = mkOption {
       type = types.bool;
       default = false;
-      description = "Register `playwright-headless` in Claude and Codex: Playwright's MCP server with a headless Chromium from nixpkgs, a fresh in-memory profile per server process, on any target. It sits beside the Windows Chrome bridge (the `mcp-playwright` plugin, `mcpPlaywright` for Kiro) and changes nothing about it.";
-    };
-
-    mcpPlaywright = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Register the Playwright MCP server. Off by default: it is a browser-driving server with no config predicate of its own — every other server here appears only when its endpoint variable is set — so registering it unconditionally hands an adopter browser automation they never asked for. Extension mode also assumes a Windows Chrome at the path in nix/home/mcp.nix, which is meaningless off WSL.";
+      description = "Register `playwright-headless` in Claude and Codex: Playwright's MCP server with a headless Chromium from nixpkgs, a fresh in-memory profile per server process, on any target. It sits beside the Windows Chrome bridge (the `mcp-playwright` plugin) and changes nothing about it.";
     };
 
     claudeMcpServers = mkOption {
@@ -402,11 +378,10 @@ in
           types.enum [
             "claude"
             "codex"
-            "kiro"
           ]
         );
         default = [ "claude" ];
-        description = "The tools the engine decides for. Only a tool whose adapter reads usage can be listed; Kiro's monthly allowance never steers a switch.";
+        description = "The tools the engine decides for. Only a tool whose adapter reads usage can be listed.";
       };
       sessionThreshold = mkOption {
         type = types.ints.between 50 100;

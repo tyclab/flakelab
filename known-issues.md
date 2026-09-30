@@ -1,5 +1,23 @@
 # Known Issues
 
+## WSL mount guard fails to start on NixOS (worked around)
+
+WSL generates `wsl-mnt-guard.service` with `ExecStart=/bin/true`. That path
+does not exist on NixOS, so the guard fails with `203/EXEC` and
+`flakelab update` exits 4 even after activating the new generation.
+
+The WSL target supplies a systemd drop-in that resets only `ExecStart` to
+the Nix-store `true` executable. WSL still owns the mount condition,
+ordering and shutdown action, including its configured automount root.
+An already-active guard is not restarted during a switch: its `ExecStop`
+changes mount propagation and belongs at shutdown. The Proxmox target
+does not receive this drop-in.
+
+After updating, `systemctl status wsl-mnt-guard.service` should show
+`active (exited)` and `flakelab update` should finish successfully. No
+WSL shutdown is needed to apply the workaround. The generated unit comes
+from [WSL's init](https://github.com/microsoft/WSL/blob/master/src/linux/init/init.cpp).
+
 ## WSL interop break when provisioning the NixOS distro (unfixed on stable through 2.7.12)
 
 **Provisioning wipes host interop.** A full `build-dev-wsl-nix` run on **WSL
@@ -239,7 +257,7 @@ Any operation that expects interactive input hangs when run without a TTY. The i
 replaced the agent** — it bypasses the agent and forces SSH to read the raw key
 file. Without a TTY it cannot prompt for the passphrase, so it does not hang: it
 fails outright with `Permission denied (publickey)`. The activation steps in
-`nix/home/kiro.nix` and `nix/home/claude.nix` that clone over SSH pass `-i`
+`nix/home/claude.nix` that clone over SSH pass `-i`
 **and** point at the agent
 (`sshAgentPreamble`) for exactly that reason — the `-i` alone authenticates
 nothing.

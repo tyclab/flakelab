@@ -41,12 +41,7 @@ let
         "flakelab.backupRoot (${cfg.backupRoot}) is inside repoPath (${cfg.repoPath}): nix copies the overlay directory whole into the world-readable store, so the payload - keys, cleartext secrets - must live outside it. Leave it null for ${cfg.repoPath}-payload."
         cfg.backupRoot;
   # Exported only when set: unset means "everything stays in the payload" to
-  # nix-backup and "no held-findings check" to nix-doctor. The kiro-plugin path comes
-  # from the same derivation activation clones into, so a doctor cannot diagnose a
-  # path nothing writes.
-  kiroPlugin = import ./kiro-plugin.nix { inherit lib cfg; };
-  kiroPluginPath = kiroPlugin.path;
-  kiroPluginDir = kiroPlugin.dir;
+  # nix-backup and "no held-findings check" to nix-doctor.
 in
 # `rec` for one self-reference: the nix-update wrappers pin `nix-clone-repos`, which
 # the CLI keeps off PATH under its own name, so `--all` would trip its guard.
@@ -150,7 +145,7 @@ rec {
   # transcripts it names. tmux is the session host --start / --attach / --open
   # use; the same package the user's shell has, so a view and the server agree.
   # ~/.local/bin holds the tools a --start window runs (the native installs of
-  # Claude Code, Codex and Kiro); the window gets this PATH, so a caller with
+  # Claude Code and Codex); the window gets this PATH, so a caller with
   # no login environment (the dashboard's service) still starts them.
   claude-sessions = pkgs.writeShellScriptBin "claude-sessions" ''
     ${lib.optionalString (cfg.stateRoot != null) ''
@@ -192,7 +187,6 @@ rec {
         pkgs.gnugrep
         pkgs.gawk
         pkgs.curl
-        pkgs.sqlite
         pkgs.jq
       ]
     }:$PATH
@@ -455,16 +449,10 @@ rec {
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
     ''}
-    export FLAKELAB_KIRO_PLUGIN_DIR="${kiroPluginDir}"
-    export FLAKELAB_KIRO_PLUGIN_REMOTE="${kiroPluginPath}"
     export FLAKELAB_GITLAB_GROUPS="${toString (builtins.length cfg.gitlabGroups)}"
     export FLAKELAB_GITLAB_REPOS="${toString (builtins.length cfg.repos)}"
     export FLAKELAB_AI_CLIS="${
-      toString (
-        lib.optional cfg.installKiro "kiro-cli"
-        ++ lib.optional cfg.installClaude "claude"
-        ++ lib.optional cfg.installCodex "codex"
-      )
+      toString (lib.optional cfg.installClaude "claude" ++ lib.optional cfg.installCodex "codex")
     }"
     export PATH=${
       bin [
