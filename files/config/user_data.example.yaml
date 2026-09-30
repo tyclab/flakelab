@@ -41,9 +41,6 @@ gitlab_groups:
 # claude_mcp_plugins:
 #   - mcp-playwright
 
-# Kiro plugin repo, cloned and installed into ~/.kiro on activation.
-# kiro_plugin_repo: 'git@gitlab.com:your-group/plugins/kiro-plugin.git'
-
 # Second directory for the shareable backup state; a sync folder, never a git checkout.
 # state_transcripts adds the Claude and Codex session transcripts (large).
 # state_root: /mnt/d/sync/flakelab-state
@@ -76,10 +73,10 @@ giteditor: 'code'
 
 # Personal shell aliases, merged with the profile ones.
 custom_aliases:
-  - name: k
-    command: kiro-cli chat
-  - name: kk
-    command: kiro-cli chat --trust-all-tools
+  - name: proxmox-ssh
+    command: ssh root@pve.example.lan
+  - name: gs
+    command: git status
 
 # Known secret names go to ~/.config/tyc/secrets.env, the rest become sessionVariables.
 custom_env_vars:

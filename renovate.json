@@ -43,18 +43,6 @@
       "matchDatasources": ["git-refs"],
       "automerge": false,
       "minimumReleaseAge": "14 days"
-    },
-    {
-      "description": [
-        "@playwright/mcp runs in --extension mode: the Playwright MCP Bridge Chrome extension auto-updates and cannot be pinned, so a server lagging behind it is rejected with 'unsupported protocol version' and the browser bridge simply stops working.",
-        "minimumReleaseAge is waived here because a 3-day hold is a guaranteed 3-day outage window, while the risk it buys down is a hypothetical malicious publish from the Playwright team. automerge is the operative half: an exempted PR that still waits on a human reproduces exactly the lag the exemption removes. CI (lint/test/gitleaks) still gates the merge.",
-        "This is the ONLY package with either waiver. Everything else keeps the repo-wide 3-day hold."
-      ],
-      "matchDatasources": ["npm"],
-      "matchPackageNames": ["@playwright/mcp"],
-      "minimumReleaseAge": null,
-      "automerge": true,
-      "automergeType": "pr"
     }
   ]
 }

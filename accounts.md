@@ -1,7 +1,7 @@
 # Accounts
 
 A design for `flakelab accounts`: several logins per agent CLI on one box, for
-the three this flake installs (Claude Code, Codex, Kiro CLI). One login per
+the two this flake installs (Claude Code, Codex). One login per
 tool is live at a time, switched by hand or, where the tool exposes its rate
 limits, by a timer before the live one hits them, and any stored login is
 runnable in a second terminal beside the live one. Phase 1 (the store, the
@@ -13,12 +13,12 @@ here.
 
 Each subscription is rate-limited on its own clock: Claude over a rolling
 five hours, a rolling week and a weekly window per model on the plans that
-have one; Codex over a five-hour and a weekly window, with per-model buckets;
-Kiro over a monthly credit allowance. Each CLI holds exactly one login. With
+have one; Codex over a five-hour and a weekly window, with per-model buckets.
+Each CLI holds exactly one login. With
 two subscriptions for one tool the only way from one to the other is a logout,
 a login, a browser round trip, and a lost turn for whatever agent was running.
-Nothing shows how much of a window is left before that happens, and the three
-tools keep their logins in three unrelated places, so every switch is a
+Nothing shows how much of a window is left before that happens, and the two
+tools keep their logins in two unrelated places, so every switch is a
 different manual procedure.
 
 What we want is small and specific:
@@ -100,38 +100,6 @@ to `https://chatgpt.com/backend-api/wham/usage` with the bearer and a
 exits 0 when a credential is present. Sessions live under
 `$CODEX_HOME/sessions/` and `codex resume <id>` reopens one.
 
-**Kiro CLI.** `~/.kiro` holds agents, skills, steering, settings and sessions
-and `KIRO_HOME` moves it. The login is elsewhere:
-`~/.local/share/kiro-cli/data.sqlite3`, the SQLite store the CLI inherited
-from the Amazon Q Developer CLI, table `auth_kv` (`key`, `value`): the row
-`kirocli:odic:token` for a Builder ID or IAM Identity Center login (a JSON
-`{access_token, expires_at, refresh_token, region, start_url, oauth_flow,
-scopes}`; `kirocli:social:token` and `kirocli:external-idp:token` for the
-other sign-in methods) and `kirocli:odic:device-registration`, the SSO-OIDC
-client registration a refresh needs; beside them the `state` table holds
-`api.codewhisperer.profile` (the profile ARN), `auth.idc.start-url` and
-`auth.idc.region`. `start_url` tells a Builder ID login
-(`https://view.awsapps.com/start`) from an IAM Identity Center one. The CLI
-refreshes through SSO-OIDC `CreateToken` at
-`https://oidc.<region>.amazonaws.com` itself; one open report says it keeps a
-refreshed token in memory without writing it back, which a stored copy would
-inherit as staleness. No variable moves the store (`KIRO_HOME` moves only
-`~/.kiro`; `XDG_DATA_HOME` may, by inheritance from the Amazon Q code, and is
-unverified). `kiro-cli login` takes `--license pro|free`,
-`--identity-provider <start url>`, `--region`, `--use-device-flow` and
-`--social google|github`; `kiro-cli logout` clears the rows;
-`kiro-cli whoami --format json` prints the account type, email, region and
-start URL (followed by a plain-text profile trailer, so the JSON has to be cut
-out); `KIRO_API_KEY` authenticates a non-interactive run. The allowance is
-monthly credits, and it is readable: the same `GetUsageLimits` call the CLI's
-own `/usage` makes, `POST https://codewhisperer.<region>.amazonaws.com/` with
-`X-Amz-Target: AmazonCodeWhispererService.GetUsageLimits`, the bearer from
-the token row and `{"profileArn": …}` from the profile row, answering the
-current usage, the cap, overage settings and `nextDateReset`; the call spends
-no credits. Sessions are `~/.kiro/sessions/cli/<id>.json` (id, cwd, state)
-with a `.lock` while a process owns one, reopened with `kiro-cli chat
---resume-id <id>`, `--resume` or `--resume-picker`.
-
 The conclusions, each learned the hard way upstream:
 
 1. **One bar per window.** A five-hour window is a rate limit that bursts: a
@@ -190,7 +158,7 @@ which are facts about the tools and their APIs rather than anyone's code.
 - **One roster, one adapter per tool.** The roster, the commands, the profile
   machinery, the engine and the tests are shared. Everything a tool does
   differently sits behind one contract (below), in one file per tool, so a
-  fourth tool is a fourth file.
+  third tool is a third file.
 - **One decision function.** The auto-switch engine is a pure function from
   one JSON document (roster, usage cache, engine state, settings, now) to a
   decision, an event list and the next state. It does no I/O and does not know
@@ -210,23 +178,22 @@ Each tool answers the same ten questions; the roster and the commands never
 ask anything else. Where the answer is "no", the command that needs it says so
 and stops rather than improvising.
 
-| question                                 | Claude Code                                                                                                                                                                                                       | Codex                                                                                                                         | Kiro CLI                                                                                                                                                  |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| identity of the live login               | `oauthAccount` in `~/.claude.json`: uuid, email, the plan below as the org                                                                                                                                        | `id_token` claims in `auth.json`: `chatgpt_account_id`, email, plan                                                           | the token row: `start_url`, region (the email from `kiro-cli whoami` is the label only: it needs the network, an id must not)                             |
-| the plan it is on                        | `subscriptionType` and `rateLimitTier` in the credential (`pro`, `max-5x`, `max-20x`, `team`, `enterprise`), else the config's `organizationType`, else the organisation's name; read from a stored entry's files | `chatgpt_plan_type` from a stored entry's `id_token`                                                                          | `whoami`'s account type when the login was added, else one derived offline from the start URL (`builder-id`, `social`, `external-idp`, `identity-center`) |
-| the credential to store                  | `.credentials.json` + the `oauthAccount` block                                                                                                                                                                    | `auth.json`, whole                                                                                                            | the two secret rows, exported as JSON                                                                                                                     |
-| a lock to hold while swapping            | the two `mkdir` locks                                                                                                                                                                                             | none known: swap only while no `codex` runs, else refuse                                                                      | none known: swap only while no `kiro-cli` runs, else refuse                                                                                               |
-| does a running session follow a switch   | yes on Linux, on its next message (verify 1)                                                                                                                                                                      | no: a new process; running ones keep their token (verify 6)                                                                   | no: a new process (verify 9)                                                                                                                              |
-| usage, and how it is read                | the statusline's `rate_limits` for the live login's session and week, the endpoint for its per-model week and for the rest                                                                                        | `codex app-server` → `account/rateLimits/read` in the account's profile                                                       | `GetUsageLimits` with the stored token and profile ARN: one monthly window                                                                                |
-| may we refresh an inactive stored token  | yes, and must persist first                                                                                                                                                                                       | no: the tool refreshes on first use after a switch                                                                            | no: same                                                                                                                                                  |
-| profile: the env var that moves the home | `CLAUDE_CONFIG_DIR`                                                                                                                                                                                               | `CODEX_HOME`                                                                                                                  | `KIRO_HOME` for `~/.kiro`; the secret store needs its own move (verify 8)                                                                                 |
-| profile: what is shared by symlink       | settings, keybindings, `CLAUDE.md`, skills, commands, agents, projects, `history.jsonl`                                                                                                                           | `config.toml`, `*.config.toml`, `AGENTS*.md`, `hooks.json`, `hooks/`, `rules/`, `memories/`, `sessions/`, `.credentials.json` | agents, skills, steering, settings, sessions                                                                                                              |
-| a login into a profile (`add --login`)   | `claude auth login` under `CLAUDE_CONFIG_DIR`, onboarding marked done first                                                                                                                                       | `codex login` under `CODEX_HOME`                                                                                              | `kiro-cli login` under `KIRO_HOME` and `XDG_DATA_HOME`; whoami asked there for the label                                                                  |
+| question                                 | Claude Code                                                                                                                                                                                                       | Codex                                                                                                                         |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| identity of the live login               | `oauthAccount` in `~/.claude.json`: uuid, email, the plan below as the org                                                                                                                                        | `id_token` claims in `auth.json`: `chatgpt_account_id`, email, plan                                                           |
+| the plan it is on                        | `subscriptionType` and `rateLimitTier` in the credential (`pro`, `max-5x`, `max-20x`, `team`, `enterprise`), else the config's `organizationType`, else the organisation's name; read from a stored entry's files | `chatgpt_plan_type` from a stored entry's `id_token`                                                                          |
+| the credential to store                  | `.credentials.json` + the `oauthAccount` block                                                                                                                                                                    | `auth.json`, whole                                                                                                            |
+| a lock to hold while swapping            | the two `mkdir` locks                                                                                                                                                                                             | none known: swap only while no `codex` runs, else refuse                                                                      |
+| does a running session follow a switch   | yes on Linux, on its next message (verify 1)                                                                                                                                                                      | no: a new process; running ones keep their token (verify 6)                                                                   |
+| usage, and how it is read                | the statusline's `rate_limits` for the live login's session and week, the endpoint for its per-model week and for the rest                                                                                        | `codex app-server` → `account/rateLimits/read` in the account's profile                                                       |
+| may we refresh an inactive stored token  | yes, and must persist first                                                                                                                                                                                       | no: the tool refreshes on first use after a switch                                                                            |
+| profile: the env var that moves the home | `CLAUDE_CONFIG_DIR`                                                                                                                                                                                               | `CODEX_HOME`                                                                                                                  |
+| profile: what is shared by symlink       | settings, keybindings, `CLAUDE.md`, skills, commands, agents, projects, `history.jsonl`                                                                                                                           | `config.toml`, `*.config.toml`, `AGENTS*.md`, `hooks.json`, `hooks/`, `rules/`, `memories/`, `sessions/`, `.credentials.json` |
+| a login into a profile (`add --login`)   | `claude auth login` under `CLAUDE_CONFIG_DIR`, onboarding marked done first                                                                                                                                       | `codex login` under `CODEX_HOME`                                                                                              |
 
 Never shared, per tool: what carries the identity or is instance-scoped,
 `.claude.json`, `.credentials.json`, `plugins/`, `sessions/`, `ide/` for
-Claude Code; `auth.json`, `log/`, `packages/` and the SQLite state for Codex;
-the secret store for Kiro.
+Claude Code; `auth.json`, `log/`, `packages/` and the SQLite state for Codex.
 
 ### On disk
 
@@ -249,7 +216,7 @@ lock                     flock; every writer takes it first
 ```json
 {
   "version": 1,
-  "active": { "claude": 2, "codex": 3, "kiro": null },
+  "active": { "claude": 2, "codex": 3 },
   "next": 4,
   "accounts": {
     "1": {
@@ -281,10 +248,10 @@ lock                     flock; every writer takes it first
 
 An id is `next` at the time of `add` and is never handed out twice; `id` is
 the tool's own identifier for the account (Claude's `accountUuid`, Codex's
-`chatgpt_account_id`, Kiro's `start_url` plus region), the identity every later
+`chatgpt_account_id`), the identity every later
 comparison uses; `label` is what the listing shows; `org` is the plan the
 adapter read at `add` (Claude's `max-20x`, `pro`, … or else the organisation's
-name, Codex's `chatgpt_plan_type`, Kiro's account type), which the listing
+name, Codex's `chatgpt_plan_type`), which the listing
 reads afresh from a Claude or Codex entry's stored files. Every command that
 names an account takes the id, the alias or the label, and the alias is unique
 across tools so `switch work` is unambiguous.
@@ -327,14 +294,14 @@ Claude Code adapter. `run`, `env` and `auto` come with their phases below.
 
 `add <tool>` asks the adapter for the live identity and credential. A login
 that is an API key (Claude's `primaryApiKey`, Codex's `OPENAI_API_KEY` with no
-tokens, Kiro's `KIRO_API_KEY`) is refused with the shell-variable hint
+tokens) is refused with the shell-variable hint
 (conclusion 3). An `id` already in the roster for that tool is refreshed in
 place: the credential is rewritten, a quarantine on it is lifted, the roster id
 stays. Anything else takes `next`. Either way the entry becomes that tool's
 `active`, since it is the live login.
 
 `add <tool> --login` gets a second account in without touching the first:
-the tool's own login (`claude auth login`, `codex login`, `kiro-cli login`;
+the tool's own login (`claude auth login`, `codex login`;
 the arguments after `--` are the tool's, `--email` and the like) runs pinned
 to a scratch profile, a 0700 directory under the store named by the tool's home
 variable, with the override variables scrubbed, outside our lock (it waits on
@@ -342,10 +309,8 @@ a browser, and the engine's tick must not wait with it). What it made is read
 with the adapter's `login_identity` and `login_snapshot` and stored exactly as
 a live login would be, the scratch removed; the entry is not `active`, since
 the live login is still the live login, unless `--switch`, which then runs
-the switch transaction. An abandoned login stores nothing; a Kiro login that
-shares its id with a stored entry and cannot be told apart offline is kept
-under `unclaimed/` and refused; an alias already taken refuses after the
-login, the store as it was. Nothing is ever logged out: the one-account
+the switch transaction. An abandoned login stores nothing; an alias already
+taken refuses after the login, the store as it was. Nothing is ever logged out: the one-account
 sequence (log in with the tool, `add`, log out, log in as the next) is no
 longer needed for any tool. A second `codex login` on an account that is
 already stored invalidates the stored seat, so that account's entry is
@@ -368,7 +333,7 @@ One transaction, under our `flock` and then whatever the adapter names:
    to be overwritten and may hold the only current refresh token of its
    lineage.
 3. Write the target's credential where the adapter says (temp file beside it,
-   0600, rename; for Kiro two `UPDATE`s in one SQLite transaction), splice the
+   0600, rename), splice the
    identity where the tool keeps it beside other state (Claude's
    `oauthAccount`, leaving every other key of `~/.claude.json` as it was), set
    `active`.
@@ -386,12 +351,11 @@ so. Verify 1 checks that claim before anything relies on it, and the fallback
 is already in the repo: print the `flakelab sessions --resume` lines for the
 sessions that must restart.
 
-Codex and Kiro have no lock we know of and no live pickup, so their adapters
-refuse the swap while a process of the tool is running (the same registry
-`flakelab sessions` reads for Claude, and the process table for the other two)
-unless `--force` says the running ones may keep their old token, and the
-command then prints the `codex resume <id>` or `kiro-cli chat --resume-id <id>`
-lines for them.
+Codex has no lock we know of and no live pickup, so its adapter refuses the
+swap while a process of the tool is running (the same registry
+`flakelab sessions` reads for Claude, and the process table for Codex) unless
+`--force` says the running ones may keep their old token, and the command
+then prints the `codex resume <id>` lines for them.
 
 A target that has a live `run` session gets a warning on a manual switch: the
 same lineage in two homes means whichever refreshes first strands the other.
@@ -432,14 +396,6 @@ its own lock, and a copy refreshed elsewhere and written back would leave the
 running process holding a consumed refresh token. The server answers the read
 after its own round trip and exits as soon as stdin closes, so the adapter
 holds its end open until the answer arrives (verify 7).
-
-**Kiro** asks `GetUsageLimits` with the stored token and the profile ARN
-from the same store, one call per stored account, cached like the others.
-The answer is one window of class `month` (the credits used against the cap,
-resetting on `nextDateReset`); it never steers a switch, because a monthly
-allowance that is out is out until the first of the month and a burst cannot
-change that between two polls, but the listing shows it, which is what a
-switch by hand needs.
 
 For **Claude Code** the live login's session and week figures come from the
 statusline: its command gets `rate_limits` with every refresh, teed into
@@ -521,8 +477,8 @@ backoff (a 429, a failing read) is never in the plan. Its rules, in order:
 3. Trigger: `proactive` when the deciding axis crossed its bar; `at-limit`
    when any counted window is at 100; `failover` after three consecutive
    ticks whose read of the active account says the login itself is dead
-   (unauthorized, 401 or 403, a credential missing or expired, a Kiro login
-   without its profile, a refused refresh, a revoked seat). A figure that is
+   (unauthorized, 401 or 403, a credential missing or expired, a refused
+   refresh, a revoked seat). A figure that is
    only stale is read at once rather than counted, and a failing usage read
    (429, 5xx, the network, an answer that does not parse) leaves the login
    working. The exception to counting is an idle hold: the active token is
@@ -611,13 +567,13 @@ copy of a shared item keeps it; a manifest lists the links this command made,
 and only those are ever removed.
 
 A reused profile is validated the tool's way (`claude auth status --json`,
-exit 0 logged in; `codex login status`; `kiro-cli whoami`; ten-second
+exit 0 logged in; `codex login status`; ten-second
 timeout, skipped when the tool is not on PATH) and reseeded when that fails,
 when its identity is not the entry's, or when the store's credential is newer
 than the profile's (the entry was refreshed or written back since the seed).
 `run` scrubs the tool's auth-override variables from the environment
 (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
-`ANTHROPIC_PROFILE`; `OPENAI_API_KEY`; `KIRO_API_KEY`), then execs the tool
+`ANTHROPIC_PROFILE`; `OPENAI_API_KEY`), then execs the tool
 with the arguments after `--`. `env` prints the export and the matching
 `unset` lines (`--shell sh|fish|pwsh`), notices on stderr, for
 `eval "$(flakelab accounts env work)"`; `env --unset <tool>` prints the one
@@ -667,7 +623,7 @@ the `auto` flags override per run.
 
 ### Implementation
 
-zsh, `jq`, `curl`, `flock` and `sqlite3` (for the Kiro adapter), the toolset
+zsh, `jq`, `curl` and `flock`, the toolset
 of the twelve scripts already in `files/scripts/`, with a pinned PATH in the
 wrapper and a dispatch entry in `nix/cli.nix`. One file per adapter under
 `files/scripts/lib/accounts-<tool>.zsh`, each defining the same eight
@@ -681,9 +637,8 @@ tool.
 
 `test-accounts` joins `make test` and `checks.<system>`: a fake `HOME`, a
 `curl` stub on PATH answering the token and usage URLs from canned files,
-stubs for `claude`, `codex` and `kiro-cli` answering their status and
-rate-limit calls, a throwaway SQLite secret store in the Kiro layout, a fake
-proc tree through `FLAKELAB_PROC_ROOT` as `test-claude-sessions` already
+stubs for `claude` and `codex` answering their status and rate-limit calls,
+a fake proc tree through `FLAKELAB_PROC_ROOT` as `test-claude-sessions` already
 does, and a frozen `FLAKELAB_NOW` so the engine's fixtures are deterministic.
 The transaction is tested for the rollback path by making the second write
 fail, per adapter. The engine's rules above are its fixture list, one document
@@ -719,26 +674,7 @@ Phases, each shippable on its own:
    passed over by the engine, profiles on `CODEX_HOME` with a live one found
    through its environment. Verify 6 and 7 still stand: until they are
    checked on the box, `autoSwitchTools` keeps its default of `[ "claude" ]`.
-6. The Kiro adapter: `add`, `switch` through the secret store, profiles once
-   verify 8 says how; no usage until verify 10. **Done**, ahead of both
-   verifications: `files/scripts/lib/accounts-kiro.zsh` exports the token
-   row (whichever sign-in method), the device registration and the three
-   `state` rows as one JSON document, values verbatim, and writes them back
-   in one SQLite transaction with the other methods' token rows removed;
-   the identity is the start URL and the region (`whoami`'s email, when it
-   answers, is the label: an id must be the same offline, for a profile
-   check or a tick without network); usage reports a token past its expiry
-   as `expired` and a refusal as `unauthorized`, an error with backoff, never
-   a quarantine, since nothing in this adapter refreshes a token and nothing
-   proves a seat gone; a switch is refused while a `kiro-cli` runs unless `--force`,
-   which prints `kiro-cli chat --resume-id` for each locked session; usage
-   is `GetUsageLimits` as one `month` window that the engine never counts
-   (an entry with only that window is known, not unhealthy); profiles set
-   `KIRO_HOME` to the profile and `XDG_DATA_HOME` to its `share/`, a copy
-   of the live store with the entry's rows in it. Until verify 8 and 9 are
-   checked on the box, treat `run`/`env` for Kiro as experimental and keep
-   `autoSwitchTools` without it.
-7. `flakelab backup` category, `doctor` checks, README and CHANGELOG, and the
+6. `flakelab backup` category, `doctor` checks, README and CHANGELOG, and the
    statusline plugin reading `status --json`. **Done** on this side: the
    `accounts` payload category (the roster and the entries, 0700 and 0600,
    local wins on a restore; the cache, the engine state, the profiles and the
@@ -751,7 +687,7 @@ Phases, each shippable on its own:
 
 ## Verify before building
 
-Items 1 to 5 are Claude Code, 6 and 7 Codex, 8 to 10 Kiro.
+Items 1 to 5 are Claude Code, 6 and 7 Codex.
 
 1. **A switched credential reaches a running session.** Switch under a
    running `claude`, send a message, watch the new account's 5h figure move.
@@ -795,20 +731,8 @@ Items 1 to 5 are Claude Code, 6 and 7 Codex, 8 to 10 Kiro.
    answering, so the request's end must stay open. `codex login status` has
    no `--json`.
 
-8. **What moves the secret store.** `KIRO_HOME` moves only `~/.kiro`; test
-   whether `XDG_DATA_HOME` moves `~/.local/share/kiro-cli/` (the Amazon Q
-   code resolves it through `dirs::data_local_dir`, which honours it). Without
-   a way to move it, `run`/`env` for Kiro is a swap, not a profile.
-9. **Whether a running `kiro-cli` re-reads the token row** after a swap, and
-   whether it writes a refreshed token back (one report says it does not,
-   the inherited code says it does). A stored copy that never receives the
-   refreshed generation dies at the next expiry.
-10. **`GetUsageLimits` from outside the CLI**: the request shape above is
-    what two monitoring tools use; confirm the region routing for an EU
-    profile (`q.eu-central-1.amazonaws.com` in one of them) and that the
-    profile ARN in the `state` table is the one the token is entitled to.
-11. **Whether `plugins/` can be shared into a profile.** The design keeps it
-    per instance, so a profile session starts without the marketplace
-    plugins (the statusline among them) until `claude plugin install` in
-    that profile; if two processes on one `plugins/` prove harmless, the
-    shared list gains it.
+8. **Whether `plugins/` can be shared into a profile.** The design keeps it
+   per instance, so a profile session starts without the marketplace
+   plugins (the statusline among them) until `claude plugin install` in
+   that profile; if two processes on one `plugins/` prove harmless, the
+   shared list gains it.

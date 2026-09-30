@@ -14,14 +14,12 @@ def least(a; b): if a == null then b elif b == null then a elif b < a then b els
 # The headroom on each axis (100 - the fullest window of the class), the
 # weekly budget (week and counted model), the binding one, the age of the
 # figure and whether it is trustworthy: fetched within five minutes with at
-# least one window. A tool whose only window is a month (Kiro) is known and
-# is never steered on, not unhealthy.
+# least one window.
 def headroom($now; $mw):
   (.fetchedAt // null) as $f
   | ([.windows[]?] | length) as $nw
   | { session: ([.windows[]? | select(.class == "session") | .pct] | if length == 0 then null else (100 - max) end),
       week:    ([.windows[]? | select(.class == "week")    | .pct] | if length == 0 then null else (100 - max) end),
-      month:   ([.windows[]? | select(.class == "month")   | .pct] | if length == 0 then null else (100 - max) end),
       model:   ([.windows[]? | select(.class == "model") | counted($mw) | .pct] | if length == 0 then null else (100 - max) end) }
   | .weekly = least(.week; .model)
   | .binding = least(.session; .weekly)

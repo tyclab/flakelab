@@ -104,19 +104,18 @@ Since Windows→WSL localhost auto-forwards, no admin, portproxy, or firewall
 rules are needed, and existing Chrome sessions (including OAuth logins) are
 reused. Extension mode still resolves a Chrome binary to open the extension's
 connect URL, and WSL has no Linux Chrome, so the Windows path must be supplied:
-`nix/home/mcp.nix` passes `--executable-path` and `--browser chrome` into
-`~/.kiro/settings/mcp.json`, and `nix/home/claude.nix` writes the equivalent
-`PLAYWRIGHT_MCP_EXECUTABLE_PATH` / `_EXTENSION` / `_BROWSER` env vars into
-`~/.claude/settings.json` for the plugin. Without either, the server throws
+`nix/home/claude.nix` writes the `PLAYWRIGHT_MCP_EXECUTABLE_PATH` /
+`_EXTENSION` / `_BROWSER` env vars into `~/.claude/settings.json` for the
+plugin. Without them, the server throws
 `"chrome" executable not found` before the extension can attach.
 
 The extension auto-updates from the Chrome Web Store and cannot be pinned, so
 the server has to keep pace with it — a server behind the extension's bridge
 protocol is rejected with "The client uses an unsupported protocol version".
-Two pins feed this host: `playwrightMcpVersion` in `nix/home/mcp.nix` (kiro) and
-the pin inside the `mcp-playwright` plugin's `.mcp.json` (Claude), which
-reaches the host only when a rebuild updates the installed plugin. Renovate
-raises both; a host that has not rebuilt since the bump gets the error.
+One pin feeds this host: the one inside the `mcp-playwright` plugin's
+`.mcp.json`, which reaches the host only when a rebuild updates the installed
+plugin. Renovate raises it; a host that has not rebuilt since the bump gets
+the error.
 
 **Prerequisite:** install the [Playwright MCP Bridge](https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm)
 extension in Chrome.

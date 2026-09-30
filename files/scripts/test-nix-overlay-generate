@@ -185,8 +185,8 @@ contains "and the comment states the mechanism" "${f}" \
 contains "naming what it installs" "${f}" 'installs its gitlabGroups and profileCliTools.'
 contains "the personal group" "${f}" 'gitlabGroups = [ "family-recipes" ];'
 contains "the ssh identity"   "${f}" 'sshKeys = [ "id_ed25519" ];'
-contains "an alias"           "${f}" 'k = "kiro-cli chat";'
-contains "and the second one" "${f}" 'kk = "kiro-cli chat --trust-all-tools";'
+contains "an alias"           "${f}" 'proxmox-ssh = "ssh root@pve.example.lan";'
+contains "and the second one" "${f}" 'gs = "git status";'
 contains "a non-secret endpoint" "${f}" 'HASS_URL = "http://homeassistant.example.lan:8123";'
 # A trailing comment is not part of the value: carrying one gives a URL nix accepts
 # and nothing on the box can reach.
@@ -497,7 +497,6 @@ claude_plugin_marketplace:
 claude_plugins:
   - agents
   - skills
-kiro_plugin_repo: 'git@example.com:group/kiro-plugin.git'
 userlocale: de_DE.UTF-8
 YAML
 cat > "${WK}/files/config/user_data.yaml" <<'YAML'
@@ -525,7 +524,6 @@ excludes "not the legacy singular"          "${f}" 'claudePluginMarketplace ='
 # mkSystem takes one list, so the two files' plugin sets concatenate.
 contains "always-on plugins from variables.yaml" "${f}" '"agents"'
 contains "opt-in MCP plugins from user_data.yaml" "${f}" '"mcp-whatsapp"'
-contains "kiro_plugin_repo, which wslkube hardcodes in tasks/" "${f}" 'kiroPluginRepo = "git@example.com:group/kiro-plugin.git";'
 contains "an enabled mcp-whatsapp with no dir warns" "${OUT}" "whatsapp_mcp_dir is unset"
 excludes "and no whatsappMcpDir is invented" "${f}" 'whatsappMcpDir'
 
@@ -916,7 +914,7 @@ profiles: [example]
 giteditor:
   - code
 custom_aliases:
-  k: kiro-cli chat
+  k: htop
 repos:
   - git@example.com:group/alpha.git
 gitlab_groups:
@@ -952,7 +950,7 @@ claude_plugin_marketplace:
   ref: main
 custom_aliases:
   - name: k
-    command: kiro-cli chat
+    command: htop
     shell: fish
 YAML
 o="$(out fields)"
@@ -1063,7 +1061,7 @@ bare_cfg item-nested <<'YAML'
 profiles: [example]
 custom_aliases:
   - name: k
-    command: kiro-cli chat
+    command: htop
     extra:
       nested: nested-value-1
       - name: deeper
@@ -1088,7 +1086,7 @@ contains "under repos too"                     "${OUT}" "1 line(s) under 'repos'
 excludes "no nested value is printed"          "${OUT}" "nested-value"
 excludes "nor written"                         "${f}" "nested-value"
 excludes "a nested list starts no entry"       "${f}" 'phantom'
-contains "the entry it sits in is kept"        "${f}" 'k = "kiro-cli chat";'
+contains "the entry it sits in is kept"        "${f}" 'k = "htop";'
 contains "the next entry is still read"        "${f}" 'g = "git status";'
 contains "a field after the map is still read" "${f}" 'tools/alpha'
 

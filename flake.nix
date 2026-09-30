@@ -329,8 +329,7 @@
         # The --help sweep runs `mcp`, a python3 program.
         flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
-        # The Kiro adapter swaps rows in a SQLite store; the suite builds one.
-        accounts = suiteCheckWith [ pkgs.sqlite ] "accounts";
+        accounts = suiteCheck "accounts";
         notify = suiteCheck "notify";
         # The suite; the launcher as installed, against a fixture account; the
         # account and the headless browser registered in both clients' rendered
@@ -600,7 +599,7 @@
             # A generation that renders no server at all.
             none = rendered "claude-mcp-none-activation" self.nixosConfigurations.default;
           in
-          assert nixpkgs.lib.hasInfix "whatsapp" hm.home.activation.kiroMcpMerge.data;
+          assert nixpkgs.lib.hasInfix "whatsapp" hm.home.activation.claudeMcpMerge.data;
           pkgs.runCommandLocal "flakelab-check-claude-mcp-exclusion"
             {
               nativeBuildInputs = [
@@ -886,10 +885,9 @@
             touch $out
           '';
 
-        # Claude, its marketplaces and Kiro update themselves; nothing here pins them,
-        # so the switches that could stop them are asserted. The rendered
-        # claudeAutoUpdates entry runs against absent, populated and malformed state,
-        # and Kiro's baseline must not opt out of its own updater.
+        # Claude and its marketplaces update themselves; nothing here pins them, so
+        # the switches that could stop them are asserted. The rendered
+        # claudeAutoUpdates entry runs against absent, populated and malformed state.
         claude-auto-updates =
           let
             fixture = self.nixosConfigurations.default.extendModules {
@@ -906,9 +904,7 @@
             };
             hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
             entry = pkgs.writeText "claude-auto-updates-activation" hm.home.activation.claudeAutoUpdates.data;
-            kiroCli = builtins.fromJSON (builtins.readFile ./files/config/kiro/cli.json);
           in
-          assert (kiroCli."app.disableAutoupdates" or null) == false;
           pkgs.runCommandLocal "flakelab-check-claude-auto-updates"
             {
               nativeBuildInputs = [
@@ -983,20 +979,6 @@
             # the entry's inner bash takes it over the store curl on its PATH.
             offline() { curl() { return 6; }; export -f curl; }
             offline
-
-            echo "kiro-cli: an offline first install is deferred"
-            fresh kiro-absent
-            activate ${entry "installKiroCli"}
-            test ! -e "$HOME/.local/bin/kiro-cli"
-            deferred "kiro-cli not installed"
-            noWarn
-
-            echo "kiro-cli: an offline update is deferred, not a warning"
-            fresh kiro-stale
-            stub kiro-cli 'exit 1'
-            activate ${entry "installKiroCli"}
-            deferred "kiro-cli not updated"
-            noWarn
 
             echo "claude: an offline first install is deferred"
             fresh claude-absent
@@ -1179,19 +1161,6 @@
             touch $out
           '';
 
-        # kiro-cli rewrites ~/.kiro/settings/cli.json itself (`kiro-cli settings` saves
-        # by rename), which turns the store link into a regular file. Unforced, Home
-        # Manager moves that aside to cli.json.hm-bak once, then fails the next
-        # activation that finds the backup name taken. Forced, the checked-in baseline
-        # simply wins again on every switch.
-        kiro-cli-json =
-          let
-            sys = self.nixosConfigurations.default.config;
-            hm = sys.home-manager.users.${sys.flakelab.username};
-          in
-          assert hm.home.file.".kiro/settings/cli.json".force;
-          pkgs.runCommandLocal "flakelab-check-kiro-cli-json" { } "touch $out";
-
         # Keys, cleartext secrets and the backup payload live BESIDE the overlay: nix
         # copies the overlay directory whole into the world-readable store on every
         # command it is given, and no .gitignore stops that. The default has to stay
@@ -1371,142 +1340,6 @@
           assert !hasInfix "/run/secrets/tyc-env" zshOff;
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
 
-        # kiroMcpMerge reads the Claude marketplace clone, which is runtime data, under
-        # Home Manager's `set -eu -o pipefail`. So the rendered entry itself runs here
-        # against each state that clone can be in: absent (every first switch, where
-        # installClaudePlugins defers until provisioning seeds a key), empty, valid and
-        # malformed. A flakelab-warn entry fails the rebuild through flakelabHealthCheck,
-        # so the three benign states also assert that none was written. Then across two
-        # generations, the earlier one rendering whatsapp too, against each state of the
-        # record of names it wrote: present, missing, unreadable, and kept by a failed merge.
-        kiro-mcp-merge =
-          let
-            fixture = self.nixosConfigurations.default.extendModules {
-              modules = [
-                # synology: the one server kiroMcpMerge single-sources from the clone.
-                { flakelab.sessionVariables.SYNOLOGY_URL = "https://nas.example.invalid"; }
-              ];
-            };
-            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
-            entry = pkgs.writeText "kiro-mcp-merge-activation" hm.home.activation.kiroMcpMerge.data;
-            # The generation before: whatsapp rendered too.
-            earlier = fixture.extendModules {
-              modules = [
-                {
-                  flakelab = {
-                    sessionVariables.WHATSAPP_BRIDGE_HOST = "bridge.example.invalid:8180";
-                    whatsappMcpDir = "/example/whatsapp-mcp-server";
-                  };
-                }
-              ];
-            };
-            hmEarlier = earlier.config.home-manager.users.${earlier.config.flakelab.username};
-            entryEarlier = pkgs.writeText "kiro-mcp-merge-earlier-activation" hmEarlier.home.activation.kiroMcpMerge.data;
-          in
-          pkgs.runCommandLocal "flakelab-check-kiro-mcp-merge"
-            {
-              nativeBuildInputs = [
-                pkgs.bash
-                pkgs.jq
-              ];
-            }
-            ''
-              export HOME="$TMPDIR/home" DRY_RUN_CMD=
-              mkdir -p "$HOME"
-              mcp="$HOME/.kiro/settings/mcp.json"
-              root="$HOME/.claude/plugins/marketplaces"
-              warnLog="$HOME/.local/state/flakelab/activation-failures"
-              activate() { bash -euo pipefail ${entry}; }
-
-              echo "absent marketplace root"
-              activate
-              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
-              test ! -e "$warnLog"
-
-              echo "empty marketplace root"
-              rm "$mcp"
-              mkdir -p "$root"
-              activate
-              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
-              test ! -e "$warnLog"
-
-              echo "a valid plugin definition wins, minus its env block"
-              manifest="$root/fixture/plugins/mcp-synology/.mcp.json"
-              mkdir -p "$(dirname "$manifest")"
-              echo '{"mcpServers":{"synology":{"command":"market","args":["a"],"env":{"X":"''${X}"}}}}' > "$manifest"
-              activate
-              jq -e '.mcpServers.synology | .command == "market" and (has("env") | not)' "$mcp" > /dev/null
-              test ! -e "$warnLog"
-
-              echo "a malformed manifest warns and keeps the flakelab definition"
-              echo 'not-json' > "$manifest"
-              activate
-              jq -e '.mcpServers.synology.command == "sh"' "$mcp" > /dev/null
-              grep -q 'could not read the Claude marketplace MCP definitions' "$warnLog"
-
-              # fresh <name>: an empty HOME with the same paths under it.
-              fresh() {
-                export HOME="$TMPDIR/$1"
-                mkdir -p "$HOME/.kiro/settings"
-                mcp="$HOME/.kiro/settings/mcp.json"
-                record="$HOME/.local/state/flakelab/activation-rendered/kiro-mcp-servers.json"
-                warnLog="$HOME/.local/state/flakelab/activation-failures"
-              }
-              activateEarlier() { bash -euo pipefail ${entryEarlier}; }
-
-              echo "a server one generation rendered and the next does not is removed, a hand-added one survives both"
-              fresh generations
-              echo '{"mcpServers":{"mine":{"command":"user"}}}' > "$mcp"
-              activateEarlier
-              jq -e '.mcpServers | .whatsapp.command == "sh" and .mine.command == "user"' "$mcp" > /dev/null
-              activate
-              jq -e '.mcpServers | (has("whatsapp") | not) and .synology.command == "sh" and .mine.command == "user"' "$mcp" > /dev/null
-              test ! -e "$warnLog"
-
-              echo "the record holds the rendered names, no values, mode 600"
-              jq -e '. == ["synology"]' "$record" > /dev/null
-              test "$(stat -c %a "$record")" = 600
-              activateEarlier
-              jq -e '. == ["synology", "whatsapp"]' "$record" > /dev/null
-              if grep -q -e whatsapp-mcp-server -e bridge.example.invalid -e '"sh"' "$record"; then exit 1; fi
-              activate
-
-              echo "a server added by hand after flakelab stopped rendering it survives"
-              jq '.mcpServers.whatsapp = {"command":"hand"}' "$mcp" > mcp.tmp
-              mv mcp.tmp "$mcp"
-              activate
-              jq -e '.mcpServers.whatsapp.command == "hand"' "$mcp" > /dev/null
-
-              echo "a missing record removes nothing"
-              fresh no-record
-              echo '{"mcpServers":{"whatsapp":{"command":"earlier"}}}' > "$mcp"
-              activate
-              jq -e '.mcpServers.whatsapp.command == "earlier"' "$mcp" > /dev/null
-              jq -e '. == ["synology"]' "$record" > /dev/null
-
-              echo "an unreadable record removes nothing and is rewritten"
-              fresh bad-record
-              activateEarlier
-              echo 'not-json' > "$record"
-              activate
-              jq -e '.mcpServers.whatsapp.command == "sh"' "$mcp" > /dev/null
-              jq -e '. == ["synology"]' "$record" > /dev/null
-              test ! -e "$warnLog"
-
-              echo "a merge that fails keeps the record, so the next one still removes"
-              fresh failed-merge
-              activateEarlier
-              cp "$mcp" earlier.json
-              echo 'not-json' > "$mcp"
-              activate
-              grep -q 'could not merge MCP overrides' "$warnLog"
-              jq -e '. == ["synology", "whatsapp"]' "$record" > /dev/null
-              cp earlier.json "$mcp"
-              activate
-              jq -e '.mcpServers | has("whatsapp") | not' "$mcp" > /dev/null
-
-              touch $out
-            '';
       };
 
       # The tooling this repo's gates need, at the versions flake.lock pins.

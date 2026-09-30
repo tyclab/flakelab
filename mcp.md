@@ -1,8 +1,7 @@
 # Shared MCP accounts and the headless browser
 
 `mcpShared.servers` registers OAuth MCP accounts in Claude and Codex under the
-same names, and both clients use one authorization per account. Kiro keeps its
-own registry.
+same names, and both clients use one authorization per account.
 
 ```nix
 mcpShared = {
@@ -101,8 +100,8 @@ references, so the server adds only `playwright-core` and the Node.js build it
 was packaged with.
 
 The Windows Chrome bridge is separate and unchanged: the `mcp-playwright`
-Claude plugin, whatever Playwright server a `codexMcpSources` manifest gives
-Codex, and Kiro's `mcpPlaywright`. The
+Claude plugin and whatever Playwright server a `codexMcpSources` manifest
+gives Codex. The
 headless server drops every `PLAYWRIGHT_MCP_*` variable it inherits, because
 the bridge's extension settings reach all servers through the clients'
 environment. Snapshots and screenshots land in `.playwright-mcp/` under the
