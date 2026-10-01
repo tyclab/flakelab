@@ -86,24 +86,14 @@ config fixes it properly. Worth a line in CONTRIBUTING.md.
 
 ## Account switching for the agent CLIs
 
-`enhancement` · built; the box-side verifications remain
+`enhancement` · done another way: tycswap
 
-Several logins per tool on one box, for Claude Code and Codex: a
-roster of stored logins, a switch of the live one without a logout, headroom
-on every window the tool reports in the listing and the statusline, a timer
-that switches before the live account hits its limit where the tool exposes
-its usage, and a second account runnable in a second terminal. The design, the
-adapter contract per tool, the cut list and the questions to verify first are
-in [accounts.md](accounts.md). Done: the store, the Claude Code adapter,
-`add`, `switch`, `alias`, `disable`, `enable`, `remove`, `status`, usage in
-the listing and `status`, `switch --soonest`/`--best`, the engine behind
-`auto` with its timer and the quota hook, `run`/`env` profiles, the Codex
-adapter, the backup category, the `doctor` section, the statusline
-`ingest`, the suite. Open: the eight verifications on a box that
-[accounts.md](accounts.md) lists (a switched credential reaching a running
-session, the usage endpoint's shape and limit, Codex live pickup), and the
-statusline plugin in the
-marketplace rendering `status --json`.
+Account switching is tycswap's (`installTycswap`); flakelab keeps the glue —
+the `flakelab-tycswap-autoswitch` timer, the `tycswap` backup category, the
+doctor's `Switcher` section, `claude-sessions` reading its profiles, the
+dashboard over `tycswap list --json`. The zsh engine (`flakelab accounts`) and
+`accounts.md` were removed before a release carried them; README, "Migrating
+from flakelab accounts", moves a stored login over.
 
 ## Remote sessions
 

@@ -184,7 +184,7 @@ in
     installTycswap = mkOption {
       type = types.bool;
       default = true;
-      description = "Install tycswap's `cswap`: the account switcher for Claude Code and Codex logins (numbered slots, switch without a logout, auto-switch before a rate limit, a dashboard), pinned to a release in flake.nix. `flakelab accounts` stays available beside it with a store of its own; the tools' live login files are the source of truth for both, and `flakelab accounts` is retired verb by verb as cswap covers them (accounts.md, \"cswap beside flakelab accounts\").";
+      description = "Install tycswap, the account switcher for Claude Code and Codex logins: numbered slots, a switch without a logout, auto-switch before a rate limit (`tycswapAutoSwitchInterval`), a TUI. Pinned to a release in flake.nix; its store is `~/.local/share/tycswap`, carried by `flakelab backup` and read by `flakelab doctor` and `flakelab web`.";
     };
     tycswapAutoSwitchInterval = mkOption {
       type = types.nullOr types.str;

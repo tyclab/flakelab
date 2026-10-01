@@ -250,9 +250,9 @@ them all, and the table has the daily ones.
 | `flakelab doctor`         | diagnose a provisioned distro                                   |
 | `flakelab backup`         | payload + optional shared state root                            |
 | `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
-| `flakelab accounts`       | stored logins per agent CLI; `switch` without a logout          |
+| `tycswap`                 | the account switcher: stored logins per agent CLI; a switch without a logout |
 | `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
-| `flakelab web`            | the dashboard in a browser: accounts, sessions, switch, start   |
+| `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start   |
 | `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)              |
 | `flakelab overlay-gen`    | write the private overlay from a config                         |
 | `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
@@ -350,7 +350,7 @@ with your own rather than reading them as defaults.
 | `nix/options.nix`                         | `flakelab.*` option schema — the names, types and defaults of record                              |
 | `nix/configuration.nix`                   | system, every target: locale, native Docker, nix-ld                                               |
 | `nix/targets/`                            | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
-| `nix/home/`                               | user: packages, zsh, git/ssh, claude, codex, accounts, web, tooling, health, backup               |
+| `nix/home/`                               | user: packages, zsh, git/ssh, claude, codex, tycswap, web, tooling, health, backup               |
 | `nix/secrets.nix`                         | the optional sops-nix enrolment (`sopsSecretsFile`)                                               |
 | `nix/state-syncthing.nix`                 | the state root replicated by Syncthing through an untrusted hub (`stateSyncthing`)                |
 | `nix/mcp-clients.nix`                     | the servers registered in both Claude and Codex (`mcpShared`, `mcpBrowsers`)                      |
@@ -488,37 +488,53 @@ snapshots the running agent sessions (Claude Code, Codex) every
 session that was open; `flakelab sessions --recent` lists the ones closed in
 the last day.
 
-More than one claude.ai login on the box: `flakelab accounts add claude`
-stores the live one, `flakelab accounts add claude --login` logs the next one
-in beside it (the tool's own login in a scratch profile, nothing logged out),
-`flakelab accounts switch <alias>` makes another one the
-live login under Claude Code's own lock protocol, and running sessions carry
-on with their next message. The listing shows each login's cached windows,
-`switch --soonest claude` takes the one whose week renews first, and
-`accounts.autoSwitchInterval = "2min";` has `flakelab accounts auto` on by
-default: a timer that moves the live login before it hits a limit (`--dry-run` shows
-what it would do). `flakelab accounts run work` runs a second account in a
-second terminal on a profile of its own, `eval "$(flakelab accounts env work)"`
-pins a shell to it. Codex logins work the same way (`add codex`; a switch
-waits for the tool's running sessions or goes past them with `--force`). The store is `~/.local/state/flakelab/accounts`, carried by
-`flakelab backup` and checked by `flakelab doctor`; the design and what is
-still to verify on a box are in [`accounts.md`](accounts.md).
-`flakelab accounts auto on` turns auto-switch on with no rebuild (`auto off`
-turns it off again), `flakelab accounts config set weekThreshold 92` moves a
-bar at run time, over the flake's value, until `config unset`, and the
-dashboard does both.
+### Account switcher
 
-`cswap` is installed beside it: tycswap, the account switcher for Claude Code
-and Codex logins in one static binary (`cswap --add-account`, `cswap codex add`,
-`cswap switch`, `cswap auto`, bare `cswap` for the dashboard), pinned to a
-release in `flake.nix`; `installTycswap = false;` leaves it out. The two
-coexist like this today: each keeps a store of its own (cswap's is named by
-`cswap --help`, and only the `flakelab accounts` store rides `flakelab backup`),
-both write the same live login files, and those files are the source of truth —
-whichever tool switched last is what the CLI runs with, and
-`flakelab accounts status` reports a switch made by cswap as drift, like a hand
-login. Run one auto-switcher at a time (`flakelab accounts auto` stays off until
-`auto on`). `flakelab accounts` is retired verb by verb as cswap covers them.
+More than one claude.ai or ChatGPT login on the box is tycswap's job: the
+account switcher for Claude Code and Codex logins in one static binary, pinned
+to a release in `flake.nix` (`installTycswap = false;` leaves it out).
+`tycswap add` stores the live login, `tycswap add --login` logs the next one in
+beside it (the tool's own login in a scratch profile, nothing logged out),
+`tycswap switch <n|email|alias>` makes another one live and a running Claude
+Code session carries on with its next message; `tycswap list` shows every
+login's windows, `tycswap switch --strategy best` takes the one with the most
+headroom, `tycswap run 2` runs a second account in a second terminal on a
+profile of its own and `eval "$(tycswap env 2)"` pins a shell to it;
+`tycswap codex …` does the same for Codex. `flakelab.tycswapAutoSwitchInterval
+= "2min";` installs a user timer that runs `tycswap auto --once`, moving the
+live login before it hits a limit; the thresholds, the strategy and the
+cooldown are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
+by `flakelab backup` (`tycswap/`) and read by `flakelab doctor` (`Switcher`),
+`flakelab web` and `flakelab sessions`.
+
+#### Migrating from flakelab accounts
+
+`flakelab accounts`, the zsh switcher this flake carried before tycswap, is
+gone; its store at `~/.local/state/flakelab/accounts` is read by nothing and
+`flakelab doctor` warns while it is there. Each stored login goes into tycswap
+once, then the store can be removed:
+
+```zsh
+store=~/.local/state/flakelab/accounts
+for d in "$store"/<->(N/); do
+  t="$(mktemp -d)"; chmod 700 "$t"
+  if [[ -f "$d/credentials.json" ]]; then            # a Claude Code login
+    cp "$d/credentials.json" "$t/.credentials.json"
+    jq '{oauthAccount: .oauthAccount, hasCompletedOnboarding: true}' "$d/identity.json" > "$t/.claude.json"
+    CLAUDE_CONFIG_DIR="$t" tycswap add
+  elif [[ -f "$d/auth.json" ]]; then                  # a Codex login
+    cp "$d/auth.json" "$t/auth.json"
+    CODEX_HOME="$t" tycswap codex add
+  fi
+  rm -rf "$t"
+done
+tycswap list && rm -rf "$store"
+```
+
+A payload archived by an earlier `flakelab backup` keeps its `accounts/`
+directory; it is not restored and can be deleted by hand. A box that still
+holds a cswap store at `~/.local/share/claude-swap` copies it once with
+`tycswap migrate`.
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`) runs it in a window of the `agents` tmux session
