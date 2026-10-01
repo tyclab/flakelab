@@ -58,8 +58,9 @@
         # the git/clone identity.
         # sshKeys = [ "id_ed25519" ];
 
-        # Non-secret config only - these land in the Nix store - and each entry
-        # gates its MCP server in flakelab/nix/home/mcp.nix.
+        # Non-secret config only - these land in the Nix store. GRAFANA_URL and
+        # WHATSAPP_BRIDGE_HOST also gate a Claude MCP server (flakelab/nix/home/claude.nix);
+        # the rest is plain environment the marketplace MCP plugins read.
         # sessionVariables = {
         #   HASS_URL = "http://homeassistant.example.lan:8123";
         #   PROXMOX_API_URL = "https://pve.example.lan:8006"; # no /api2/json

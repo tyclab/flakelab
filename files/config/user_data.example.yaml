@@ -97,3 +97,5 @@ custom_env_vars:
   SYNOLOGY_PASSWORD: '<your-dsm-password>'
   SYNOLOGY_DEVICE_ID: '<dsm-trusted-device-id, required on a 2FA account>'
   GRAFANA_SERVICE_ACCOUNT_TOKEN: '<your-grafana-service-account-token>'
+  NTFY_URL: 'https://ntfy.example.com/agents' # the topic `flakelab notify` posts to
+  NTFY_TOKEN: '<your-ntfy-access-token>'

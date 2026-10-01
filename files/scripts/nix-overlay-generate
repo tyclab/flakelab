@@ -22,6 +22,9 @@ set -uo pipefail
 _self="${0:t}"
 
 die() { print -ru2 -- "${_self}: $*"; exit 1 }
+# A usage error (an unknown flag, a flag without its value, no --out) exits 2;
+# failed work exits 1 through die.
+usage_error() { print -ru2 -- "${_self}: $*"; exit 2 }
 warn() { print -ru2 -- "${_self}: warning: $*" }
 _dropped() { warn "'$1' in the config maps to nothing in the overlay - dropped; it needs a hand-written overlay entry if this box still wants it" }
 say() { print -r -- "> $*" }
@@ -42,9 +45,10 @@ _url_path() {
 
 usage() {
   cat <<EOF
-${_self} - scaffold a private flakelab overlay (Linux and macOS; no PowerShell)
+flakelab overlay-gen - scaffold a private flakelab overlay (Linux and macOS; no PowerShell)
 
-  ${_self} --out <dir> [--config <user_data.yaml>] [value flags] [options]
+  flakelab overlay-gen --out <dir> [--config <user_data.yaml>] [value flags] [options]
+  (from a checkout: ./files/scripts/nix-overlay-generate, the same flags)
 
 With a --config (or any value flag) the overlay's flake.nix is GENERATED from
 those values. With neither, templates/overlay/flake.nix is scaffolded as-is,
@@ -142,7 +146,7 @@ _sshkeys_given=false
 
 # Commas become spaces and splitting drops the empties, so `--profiles 'a, b'` and
 # `--profiles 'a b'` are one request and neither yields a phantom blank entry.
-_need() { [[ -n "${2:-}" ]] || die "$1 needs a value" }
+_need() { [[ -n "${2:-}" ]] || usage_error "$1 needs a value" }
 
 while (( $# )); do
   case "$1" in
@@ -169,12 +173,12 @@ while (( $# )); do
     --gitlab-groups)     shift; _need --gitlab-groups "${1:-}"; _groups_flag=(${=${1//,/ }}); _groups_given=true; _have_values=true ;;
     --ssh-keys)          shift; _need --ssh-keys "${1:-}"; _sshkeys_flag=(${=${1//,/ }}); _sshkeys_given=true; _have_values=true ;;
     -h|--help)           usage; exit 0 ;;
-    *)                   die "unknown argument '$1' - see --help" ;;
+    *)                   usage_error "unknown argument '$1' - see --help" ;;
   esac
   shift
 done
 
-[[ -n "${_out}" ]] || { usage >&2; exit 1 }
+[[ -n "${_out}" ]] || { usage >&2; exit 2 }
 
 # `:A` resolves symlinks and `..` without requiring the directory to exist yet.
 _out="${_out:A}"
@@ -470,6 +474,7 @@ typeset -a _secret_names=(
   PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET
   SYNOLOGY_PASSWORD SYNOLOGY_DEVICE_ID
   GRAFANA_SERVICE_ACCOUNT_TOKEN WHATSAPP_API_KEY
+  NTFY_URL NTFY_TOKEN
 )
 
 typeset -a _session_lines=()
@@ -909,7 +914,7 @@ _generated_flake() {
   if (( ${#_session_lines} > 0 )); then
     print -r -- ''
     print -r -- '        # NON-SECRET custom_env_vars only - the tokens are not in this file.'
-    print -r -- '        # Each entry here is what GATES its MCP server in nix/home/mcp.nix.'
+    print -r -- '        # GRAFANA_URL and WHATSAPP_BRIDGE_HOST also gate a Claude MCP server (nix/home/claude.nix).'
     print -r -- '        sessionVariables = {'
     print -rl -- "${_session_lines[@]}"
     print -r -- '        };'

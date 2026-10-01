@@ -196,9 +196,15 @@ excludes "so no comment text leaks into a value" "${f}" 'no /api2/json"'
 # custom_env_vars is split by name and the secret half dropped, not written anywhere.
 print -r -- "no secret from the config reaches the flake"
 for k in GITLAB_TOKEN GH_TOKEN HASS_TOKEN PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET \
-         SYNOLOGY_PASSWORD SYNOLOGY_DEVICE_ID GRAFANA_SERVICE_ACCOUNT_TOKEN WHATSAPP_API_KEY; do
+         SYNOLOGY_PASSWORD SYNOLOGY_DEVICE_ID GRAFANA_SERVICE_ACCOUNT_TOKEN WHATSAPP_API_KEY \
+         NTFY_URL NTFY_TOKEN; do
   excludes "${k} is not in the flake" "${f}" "${k}"
 done
+# The ntfy pair is what `flakelab notify` reads from secrets.env, so both are
+# withheld like a token: the list must match files/config/secrets.env.example.
+contains "the ntfy token is among the ones it dropped" "${OUT}" "NTFY_TOKEN"
+contains "and so is the topic URL" "${OUT}" "NTFY_URL"
+excludes "neither value reaches the flake" "${f}" 'ntfy.example.com'
 excludes "nor is a token VALUE from the config" "${f}" 'your-gitlab-personal-access-token'
 contains "and the run says which ones it dropped" "${OUT}" "GITLAB_TOKEN"
 contains "saying where they belong instead"       "${OUT}" ".config/tyc/secrets.env"
@@ -390,7 +396,7 @@ check    "a missing config fails"  "${RC}" "1"
 contains "naming the file"         "${OUT}" "does-not-exist.yaml"
 
 run_gen --out "$(out badflag)" --frobnicate
-check    "an unknown flag fails"   "${RC}" "1"
+check    "an unknown flag is a usage error, exit 2" "${RC}" "2"
 contains "naming it"               "${OUT}" "frobnicate"
 
 # With nothing selected the build still succeeds and the box gets nothing, so it is an
@@ -500,7 +506,7 @@ claude_plugins:
 userlocale: de_DE.UTF-8
 YAML
 cat > "${WK}/files/config/user_data.yaml" <<'YAML'
-user: tycorc
+user: wkuser
 gitfullname: Wslkube Person
 gitmail: wk@example.com
 claude_mcp_plugins:
@@ -531,7 +537,7 @@ excludes "and no whatsappMcpDir is invented" "${f}" 'whatsappMcpDir'
 # arrays, so an inline override would leave the losing value for _as_list to find.
 print -r -- "user_data.yaml overrides variables.yaml, across shapes"
 cat > "${WK}/files/config/user_data.yaml" <<'YAML'
-user: tycorc
+user: wkuser
 gitfullname: Wslkube Person
 gitmail: wk@example.com
 userlocale: en_GB.UTF-8
@@ -811,7 +817,7 @@ contains "and it names the step"         "${OUT}" "git: not found"
 # the branch tracks nothing yet.
 print -r -- "overlay_url is emitted, excluded by repo name and added as origin"
 cat > "${BASE}/ovl.yaml" <<'YAML'
-user: tycorc
+user: ovluser
 gitfullname: Overlay Person
 gitmail: ovl@example.com
 profiles:
