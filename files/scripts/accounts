@@ -100,7 +100,9 @@ WEEK_THRESHOLD="${FLAKELAB_ACCOUNTS_WEEK_THRESHOLD:-97}"
 MODEL_THRESHOLD="${FLAKELAB_ACCOUNTS_MODEL_THRESHOLD:-95}"
 STRATEGY="${FLAKELAB_ACCOUNTS_STRATEGY:-soonest-reset}"
 AUTO_INTERVAL="${FLAKELAB_ACCOUNTS_INTERVAL:-120}"
-AUTO_COOLDOWN="${FLAKELAB_ACCOUNTS_COOLDOWN:-300}"
+# No flake option behind it: a run-time setting (`config set cooldownSeconds`)
+# or the --cooldown flag, else this.
+AUTO_COOLDOWN=300
 AUTO_HYSTERESIS=10; AUTO_UNHEALTHY=3; AUTO_IDLE_HOLD=1800
 # Off, a tick does nothing: no poll, no switch, no event. The wrapper says on
 # when the flake sets autoSwitchInterval.
@@ -119,10 +121,11 @@ typeset -A SETTING_VAR=(
 typeset -A SETTING_ENV=(
   autoSwitch FLAKELAB_ACCOUNTS_AUTO_SWITCH sessionThreshold FLAKELAB_ACCOUNTS_SESSION_THRESHOLD weekThreshold FLAKELAB_ACCOUNTS_WEEK_THRESHOLD
   modelThreshold FLAKELAB_ACCOUNTS_MODEL_THRESHOLD modelWindows FLAKELAB_ACCOUNTS_MODEL_WINDOWS
-  strategy FLAKELAB_ACCOUNTS_STRATEGY cooldownSeconds FLAKELAB_ACCOUNTS_COOLDOWN
+  strategy FLAKELAB_ACCOUNTS_STRATEGY
 )
-# The tools the engine decides for: a comma list, default every adapter that
-# reads usage.
+# The tools the engine decides for: a comma list. The default is the Claude
+# adapter alone: the Codex adapter reads usage too, but stays out until its
+# box-side verifications pass (accounts.md, "Verify on a box").
 AUTO_TOOLS="${FLAKELAB_ACCOUNTS_TOOLS:-claude}"
 AUTO_STATE="${STORE}/auto.json"
 AUTO_LOG="${STORE}/auto.log"
@@ -148,31 +151,31 @@ unset _t
 
 usage() {
   cat <<'USAGE'
-Usage: accounts [--json] [--fetch]
-       accounts add <tool> [--alias NAME] [--login [--switch] [-- args...]]
-       accounts switch <ID|ALIAS|LABEL> [--force]
-       accounts switch --next|--soonest|--best <tool> [--force]
-       accounts alias <ID|ALIAS|LABEL> NAME|--unset
-       accounts disable|enable <ID|ALIAS|LABEL>
-       accounts remove <ID|ALIAS|LABEL> [--yes]
-       accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
-                     [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
-       accounts auto on|off
-       accounts status [--json]
-       accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
-       accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
-       accounts env --unset <tool> [--shell sh|fish|pwsh]
-       accounts ingest [--tool claude]
-       accounts config [--json]
-       accounts config set KEY VALUE
-       accounts config unset KEY|--all
+Usage: flakelab accounts [--json] [--fetch]
+       flakelab accounts add <tool> [--alias NAME] [--login [--switch] [-- args...]]
+       flakelab accounts switch <ID|ALIAS|LABEL> [--force]
+       flakelab accounts switch --next|--soonest|--best <tool> [--force]
+       flakelab accounts alias <ID|ALIAS|LABEL> NAME|--unset
+       flakelab accounts disable|enable <ID|ALIAS|LABEL>
+       flakelab accounts remove <ID|ALIAS|LABEL> [--yes]
+       flakelab accounts auto [--once] [--dry-run] [--json] [--tool T] [--session-threshold N]
+                              [--week-threshold N] [--model-threshold N] [--interval S] [--cooldown S]
+       flakelab accounts auto on|off
+       flakelab accounts status [--json]
+       flakelab accounts run <ID|ALIAS|LABEL> [--no-share-history] [--reseed] [-- args...]
+       flakelab accounts env <ID|ALIAS|LABEL> [--shell sh|fish|pwsh] [--no-share-history] [--reseed]
+       flakelab accounts env --unset <tool> [--shell sh|fish|pwsh]
+       flakelab accounts ingest [--tool claude]
+       flakelab accounts config [--json]
+       flakelab accounts config set KEY VALUE
+       flakelab accounts config unset KEY|--all
 
   (no verb)   the roster with cached usage; --fetch polls the entries whose
               plan is due first; --json for one document
   add         snapshot <tool>'s live login (claude|codex) into the store;
               a login already stored is refreshed in place. --login runs the
               tool's own login in a scratch profile instead (the arguments
-              after -- are the tool's: --email, --license ...) and stores what
+              after -- are the tool's own, --email for claude say) and stores what
               it made, the live login untouched; --switch then makes it live
   switch      make a stored account the live login of its tool; --next <tool>
               rotates to the next enabled entry in id order; --soonest picks
@@ -640,6 +643,7 @@ cmd_add() {
       | (if $live then .active[$tool] = ($k | tonumber) else . end)')"
     write_roster "$roster" || die "cannot write ${ROSTER}"
     lift_quarantine "$existing"
+    write_overview
     print -r -- "Refreshed ${tool} ${existing}: ${label} [${org}]"
     if $then_switch; then do_switch "$existing"; return $?; fi
     return 0
@@ -654,6 +658,7 @@ cmd_add() {
     | .next = (($k | tonumber) + 1)
     | (if $live then .active[$tool] = ($k | tonumber) else . end)')"
   write_roster "$roster" || { rm -rf -- "$dir"; die "cannot write ${ROSTER}" }
+  write_overview
   print -r -- "Added ${tool} ${new}: ${label} [${org}]${alias:+ as ${alias}}$($do_login && ! $then_switch && print -r -- " (stored; the live login is unchanged: flakelab accounts switch ${alias:-${new}})")"
   if $then_switch; then do_switch "$new"; return $?; fi
   return 0
@@ -828,6 +833,7 @@ cmd_alias() {
   if [[ "$name" == --unset ]]; then
     roster="$(print -r -- "$roster" | jq --arg id "$id" 'del(.accounts[$id].alias)')"
     write_roster "$roster" || die "cannot write ${ROSTER}"
+    write_overview
     print -r -- "Removed the alias of entry ${id}"
     return 0
   fi
@@ -836,6 +842,7 @@ cmd_alias() {
   [[ -z "$taken" ]] || refuse "alias '${name}' already names entry ${taken}"
   roster="$(print -r -- "$roster" | jq --arg id "$id" --arg a "$name" '.accounts[$id].alias = $a')"
   write_roster "$roster" || die "cannot write ${ROSTER}"
+  write_overview
   print -r -- "Entry ${id} is now '${name}'"
 }
 
@@ -856,6 +863,7 @@ cmd_disabled() {
   id="$(resolve "$target")" || exit $?
   roster="$(print -r -- "$(read_roster)" | jq --arg id "$id" --argjson v "$flag" '.accounts[$id].disabled = $v | if $v then . else del(.accounts[$id].disabled) end')"
   write_roster "$roster" || die "cannot write ${ROSTER}"
+  write_overview
   if [[ "$flag" == true ]]; then
     print -r -- "Disabled $(entry_name "$id"): held out of rotation, still switchable by hand"
   else
@@ -899,6 +907,7 @@ cmd_remove() {
     del(.accounts[$id]) | if (.active[$tool] // null) == ($id | tonumber) then .active[$tool] = null else . end')"
   write_roster "$roster" || die "cannot write ${ROSTER}"
   rm -rf -- "${STORE:?}/${id:?}" "${PROFILES:?}/${id:?}"
+  write_overview
   print -r -- "Removed ${name}"
   [[ "$(print -r -- "$roster" | jq -r --arg tool "$tool" '.active[$tool]')" == null ]] &&
     note "${tool}'s live login is no longer in the roster; add it again with: flakelab accounts add ${tool}"
@@ -1202,7 +1211,7 @@ cmd_auto() {
   for t in "${tools[@]}"; do has_adapter "$t" || refuse "no adapter for ${t}"; done
   [[ -n "${CLAUDE_CONFIG_DIR:-}" ]] && note "note: CLAUDE_CONFIG_DIR is set in this shell; accounts operates on the default login under \$HOME."
   # Off, a tick touches nothing: no store, no network, not the overview either,
-  # which only a switch changes while off, and a switch rewrites it. A dry run
+  # which every roster change and every switch rewrites on its own. A dry run
   # is asked for by hand, so it runs.
   if [[ "$AUTO_SWITCH" != true ]]; then
     if ! $AUTO_DRY; then
@@ -1550,14 +1559,15 @@ cmd_list() {
   return 0
 }
 
-# The listing as a file, for flakelab.accounts.shellOverview: every auto tick
-# and every switch rewrite it, so a new shell prints it without running this
-# script. No stored login, no file.
+# The listing as a file, for flakelab.accounts.shellOverview: every roster
+# change (add, remove, alias, disable, enable), every switch and every auto
+# tick rewrite it, so a new shell prints it without running this script and
+# never prints an entry that is gone. No stored login, no file.
 OVERVIEW="${STORE}/overview.txt"
 write_overview() {
   local tmp="${OVERVIEW}.flakelab-tmp.$$"
   if [[ -z "$(rows)" ]]; then rm -f -- "$OVERVIEW"; return 0; fi
-  if (umask 077; { print -r -- "flakelab accounts, as of $(date -d "@$(now)" +%H:%M)"; cmd_list } > "$tmp" 2>/dev/null); then
+  if (umask 077; { print -r -- "flakelab accounts, as of $(date -d "@$(now)" '+%Y-%m-%d %H:%M')"; cmd_list } > "$tmp" 2>/dev/null); then
     mv -f -- "$tmp" "$OVERVIEW"
   else
     rm -f -- "$tmp"
