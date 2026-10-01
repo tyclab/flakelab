@@ -12,15 +12,14 @@ the repository, alongside the code it describes.
 `security` · mostly closed
 
 Every adopter used to inherit the operator's full-trust agent setup without
-opting in. Three of four items are now gated behind options that default off:
+opting in. The agent-surface items are now gated behind options that default off:
 
 | surface                                                                                  | option                         |
 | ---------------------------------------------------------------------------------------- | ------------------------------ |
 | `cc` = `claude --dangerously-skip-permissions`                                           | `flakelab.claudeTrustAll`      |
 | `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`, `remoteControlAtStartup` | `flakelab.claudeAgentDefaults` |
 
-`claudeSettings` is gated on `installClaude` like every sibling activation,
-and `@jarahkon/hass-mcp-server` is version-pinned like the other MCP servers.
+`claudeSettings` is gated on `installClaude` like every sibling activation.
 
 **Still open:** the marketplace `recommended-permissions.json` assertion
 (`files/scripts/nix-update`) is neither validated nor pinned. It searches the
@@ -36,13 +35,13 @@ whether the source should be pinned rather than discovered.
 Two halves of the same cleanup.
 
 **The code path.** `setup-wsl-nix.ps1 migrate`, the wslkube-reading half of
-`provision`, `nix-backup --from/--instance`, and the migration/parity/drift
+`provision`, `flakelab backup --from/--instance`, and the migration/parity/drift
 prose all exist to move off wslkube. Both machines are provisioned on flakelab,
 so wslkube is read-only DR for one release cycle and then the code path goes.
 
 **The docs.** wslkube is a private repository that will not be published, but
 the public tree explains its own config schema in terms of it —
-`files/config/user_data.example.yaml` (11 mentions), plus help text in
+`files/config/user_data.example.yaml`, plus help text in
 `files/scripts/nix-overlay-generate` and `files/scripts/nix-backup`. A reader
 hits references they cannot resolve. The example config should describe the
 schema on its own terms regardless of when the code path is retired.
@@ -71,13 +70,10 @@ only make sense to the original author:
 - "overlay is missing SSH key ... built but unconfigured"
 - a wslkube "`migrate` seeds both" hint, naming an unpublished repository
 - it runs `flakelab clone`, which fails with "GITLAB_TOKEN not set — source
-  ~/.config/tyc/secrets.env (from OpenBao)"
-- the doctor says "populate it from OpenBao" and reports "nix-doctor: N
-  problem(s)" under a command now named `flakelab doctor`
+  ~/.config/tyc/secrets.env"
 
-Skip the clone when there is no token, drop OpenBao and wslkube wording from
-anything a first-time user sees, and have the doctor banner match its own
-command name.
+Skip the clone when there is no token, and drop the wslkube wording from
+anything a first-time user sees.
 
 ## Clone hygiene for consumers
 

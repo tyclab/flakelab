@@ -4,10 +4,10 @@ A design for `flakelab accounts`: several logins per agent CLI on one box, for
 the two this flake installs (Claude Code, Codex). One login per
 tool is live at a time, switched by hand or, where the tool exposes its rate
 limits, by a timer before the live one hits them, and any stored login is
-runnable in a second terminal beside the live one. Phase 1 (the store, the
-Claude Code adapter, `add`, `switch`, `alias`, `disable`, `enable`, `remove`,
-`status`) is implemented; the rest is the plan, and the backlog entry points
-here.
+runnable in a second terminal beside the live one. Every phase below is built
+(the Claude Code and Codex adapters, the engine and its timer, the profiles,
+the backup category and the doctor section); what remains is the list of
+things to verify on a box at the end, and the backlog entry points here.
 
 ## The problem
 
@@ -37,13 +37,13 @@ What we want is small and specific:
 
 For Claude Code the idea is
 [claude-swap](https://github.com/realiti4/claude-swap) (Python, MIT) and its Go
-port cswap (MIT). A downstream fork of cswap was audited feature by feature for
-this design; the cut list below is that audit's outcome. For Codex,
+port cswap (MIT); both were read for the facts about Claude Code's files and
+its usage API. For Codex,
 [codexctl](https://github.com/Sawmills/codexctl) (Rust) does the same job with
 a per-alias `CODEX_HOME` in which only `auth.json` is private and everything
 else is a symlink, which is the profile shape this design uses for every tool.
 Nothing is ported from any of them: the store is written fresh, in this repo's
-shape. What the audits contribute is a set of facts and four conclusions.
+shape. What the reading contributes is a set of facts and four conclusions.
 
 The facts are external contracts, not code. Per tool:
 
@@ -118,28 +118,25 @@ The conclusions, each learned the hard way upstream:
 
 ## What is deliberately not built
 
-Everything below exists in the audited Claude Code tool and is left out here,
-with the reason.
+The capabilities the switcher work here targets, and the limit it keeps on
+each, so a feature request can be checked against them:
 
-| left out                                                               | because                                                                                                                                                 |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| a corporate LLM-gateway client, its SSO login, key minting, budget     | there is no gateway on this box; a proxy is `ANTHROPIC_BASE_URL` in a shell if it is ever wanted                                                        |
-| a plugin-usage telemetry reporter and OTLP header helper               | nobody is collecting; flakelab's Claude settings turn reporting off, not on                                                                             |
-| fleet-published "mandatory" `settings.json` keys fetched at start      | the flake is the fleet: `nix/home/claude.nix` asserts settings, reviewed, at every switch                                                               |
-| a menu-bar / tray app, a full-screen TUI                               | a WSL distro has no tray; the dashboard is `flakelab web` (remote-sessions.md), and a terminal and the statusline cover the glance                      |
-| self-update, release manifests, install bootstraps, signed binaries    | nix delivers the script; `flakelab update` is the update                                                                                                |
-| macOS Keychain and Windows credential-store backends, console handling | the targets are `wsl` and `proxmox-vm`, both x86_64-linux, both file-based                                                                              |
-| byte-compatibility with the Python tool's roster, cache, export, log   | nothing here has ever run it; a fresh schema needs no float-formatting shims or migrations                                                              |
-| `export` / `import` files                                              | `flakelab backup` carries the store like it carries the Codex tokens, and `--restore` puts it back                                                      |
-| numbered slots that move and swap, sparse and reusable                 | an id is assigned once and never reused; an alias is the name; there is nothing to move                                                                 |
-| directory-to-account mappings                                          | `flakelab accounts env` in the shell that needs it; the audited tool had already removed the writer                                                     |
-| API-key entries in the roster, and an automatic fallback onto one      | conclusion 3 above                                                                                                                                      |
-| an eight-way classifier of the outgoing credential at switch time      | it guards slot reuse and recycled identities; ids here never recycle and the account id is recorded at add, so the rule is one comparison               |
-| a PTY wrapper that watches the tool's output for a limit message       | codexctl's spend-cap recovery; usage is read from the tool's own API instead, and a limit that only shows in the TUI is on the verify list, not scraped |
+| capability                                                          | here                                                                                                                                  |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| several stored logins per tool, one live, switched without a logout | the roster and the transaction below; an id is assigned once and never reused, an alias is the name, and nothing moves or swaps       |
+| usage per window, and a switch before a limit                       | read from the tool's own usage API; a limit that only shows in the TUI is on the verify list, not scraped from a PTY                  |
+| a second account beside the live one                                | `run` / `env` profiles; the shell `env` pins is the mapping of a place to an account, not a table of directories                      |
+| the roster surviving a rebuild and moving between boxes             | `flakelab backup` carries the store like it carries the Codex tokens, and `--restore` puts it back; no export/import files of its own |
+| the glance                                                          | the listing, the statusline and `flakelab web`; no tray app or full-screen TUI, since a WSL distro has no tray                        |
+| delivery and updates                                                | nix delivers the script and `flakelab update` is the update; no self-update, release manifests or signed binaries                     |
+| where credentials live                                              | files, on both targets (`wsl`, `proxmox-vm`); no OS keychain backends                                                                 |
+| a proxy, a gateway, an API key                                      | not an account to rotate onto (conclusion 3): `ANTHROPIC_BASE_URL` or a key is a shell variable, and stays out of the roster          |
+| telemetry                                                           | none; flakelab's Claude settings turn reporting off, not on                                                                           |
+| settings for a fleet of boxes                                       | the flake is the fleet: `nix/home/claude.nix` asserts settings, reviewed, at every switch, and nothing is fetched at start            |
+| the outgoing credential at switch time                              | one comparison against the account id recorded at `add`; ids never recycle, so no classifier of the credential is needed              |
 
-The audited fork's own additions are proprietary to its owner and are neither
-needed nor consulted. The MIT projects may be read for the contracts above,
-which are facts about the tools and their APIs rather than anyone's code.
+The MIT projects above may be read for the contracts — facts about the tools
+and their APIs rather than anyone's code.
 
 ## Design
 
@@ -259,8 +256,7 @@ across tools so `switch work` is unambiguous.
 ### The commands
 
 `flakelab accounts` is one script (`files/scripts/accounts`) with verbs,
-because a dozen operations as flags is what the audited tool's legacy grammar
-looked like and what it spent a release retiring. The router passes the
+because a dozen operations as flags is a grammar that stops growing. The router passes the
 argument list through unchanged, so a verb costs the router nothing.
 
 ```
@@ -603,7 +599,7 @@ the entry's `oauthAccount`, `hasCompletedOnboarding: true`, the theme from
 `~/.claude.json`, and `mcpServers` mirrored from it, the one user-scoped key
 that file holds). Everything in the adapter's shared list is a symlink into
 the real home. History is shared by default and `--no-share-history` opts out,
-the reverse of the audited tool, because on Linux two processes on one
+deliberately, because on Linux two processes on one
 `projects/` or `sessions/` directory is exactly what two plain sessions
 already are, and it keeps every transcript where `flakelab sessions`, the
 memory sync and the transcript sync look. A profile that already has its own
@@ -646,6 +642,19 @@ window. `flakelab doctor` checks the store's modes, that each tool's `active`
 names the entry whose `id` is the live one (drift means someone logged in by
 hand: "run `flakelab accounts add <tool>`"), names quarantined entries and
 revoked seats, and reports the timer.
+
+### cswap beside flakelab accounts
+
+`installTycswap` (default `true`) puts tycswap's `cswap` on the same box. The
+two coexist like this today: each keeps a store of its own (cswap's is named
+by `cswap --help`; only this one rides `flakelab backup`), both write the same
+live login files (`~/.claude.json`, `~/.claude/.credentials.json`, Codex's
+`auth.json`), and those files are the source of truth — whichever tool switched
+last is what the CLI runs with, and `status` reports a switch made by cswap as
+drift, like a hand login. Run one auto-switcher at a time: the engine here
+stays off until `auto on`, so a box running `cswap auto` leaves it there.
+`flakelab accounts` is retired verb by verb as cswap covers them; a verb goes
+when cswap's equivalent is verified on a box, not before.
 
 ### Options
 
@@ -730,7 +739,7 @@ Phases, each shippable on its own:
    the active entry at the candidate cadence, for its per-model window only. The statusline plugin rendering the account
    from `status --json` lives in the marketplace, not here.
 
-## Verify before building
+## Verify on a box
 
 Items 1 to 5 are Claude Code, 6 and 7 Codex.
 

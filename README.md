@@ -16,6 +16,8 @@ for that system and no other, so an `aarch64` Windows box or an Apple Silicon
 host cannot build or run this system.
 Design and internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 Planned work: [`BACKLOG.md`](BACKLOG.md).
+Driving a Windows browser from inside WSL (Chrome DevTools across the WSL2 NAT):
+[`browser-debugging-from-wsl.md`](browser-debugging-from-wsl.md).
 
 > ⚠️ **Provisioning wipes host interop, and the stable channel has no
 > protection.** Building a NixOS distro removes `WSLInterop` for every distro in
@@ -41,13 +43,13 @@ configuration builds a WSL tarball or a Proxmox seed image, picked by
 flowchart LR
     subgraph priv["flakelab-config — private overlay"]
         UD["userData { … }<br/>+ modules / homeModules"]
-        SEC["OpenBao → secrets.env<br/>sourced at shell start,<br/>never in repo or store"]
+        SEC["sops render / secrets.env<br/>sourced at shell start,<br/>never in repo or store"]
     end
     subgraph pub["flakelab — this repo"]
         MK["lib.mkSystem"] --> PROF["profiles/merge.nix"]
         PROF --> OPT["options.flakelab.*<br/>typed schema"]
         OPT --> SYS["configuration.nix + nix/targets/<br/>system layer"]
-        OPT --> HOME["nix/home/*<br/>9 concern modules"]
+        OPT --> HOME["nix/home/*<br/>one module per concern"]
         OPT --> SCR["scripts"]
     end
     UD --> MK
@@ -238,7 +240,7 @@ place to **generate** from, not to run this system: the flake's outputs are
 ## Daily commands
 
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
-all nineteen.
+them all, and the table has the daily ones.
 
 | Command                   | Action                                                          |
 | ------------------------- | --------------------------------------------------------------- |
@@ -342,24 +344,28 @@ with your own rather than reading them as defaults.
 
 ### Layout
 
-| Path                                  | Purpose                                                                                           |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `flake.nix`                           | inputs, `nixosConfigurations.{default,proxmox-vm}`, `lib.mkSystem`, `.#wslImage`/`.#proxmoxImage` |
-| `nix/options.nix`                     | `flakelab.*` option schema — the names, types and defaults of record                              |
-| `nix/configuration.nix`               | system, every target: locale, native Docker, nix-ld                                               |
-| `nix/targets/`                        | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
-| `nix/home/`                           | user: packages, zsh, git/ssh, mcp, claude, codex, tooling, health, backup                         |
-| `nix/users/default.nix`               | per-user values (placeholders here; real ones in the overlay)                                     |
-| `nix/scripts.nix`                     | the per-command wrappers (pinned PATH + exported env) each subcommand runs                        |
-| `nix/cli.nix`                         | assembles those wrappers into the `flakelab` CLI                                                  |
-| `files/scripts/flakelab`              | the router: subcommand table, `--help`, did-you-mean                                              |
-| `profiles/`                           | profile registry + merge (`example`)                                                              |
-| `templates/overlay/`                  | scaffold for the private overlay flake (`init`, `flake new`, `overlay-gen`)                       |
-| `files/`                              | scripts + config consumed by the flake                                                            |
-| `files/config/user_data.example.yaml` | provisioning config for `provision -Config` / `overlay-gen`                                       |
-| `files/config/claude/target-*.md`     | per-target facts appended into the managed `~/.claude/CLAUDE.md`                                  |
-| `setup-wsl-nix.ps1`                   | Windows provisioning: status / generate / init / bootstrap / provision                            |
-| `.github/workflows/release.yml`       | tag push → builds and publishes the `.#proxmoxImage` seed asset                                   |
+| Path                                      | Purpose                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `flake.nix`                               | inputs, `nixosConfigurations.{default,proxmox-vm}`, `lib.mkSystem`, `.#wslImage`/`.#proxmoxImage` |
+| `nix/options.nix`                         | `flakelab.*` option schema — the names, types and defaults of record                              |
+| `nix/configuration.nix`                   | system, every target: locale, native Docker, nix-ld                                               |
+| `nix/targets/`                            | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
+| `nix/home/`                               | user: packages, zsh, git/ssh, claude, codex, accounts, web, tooling, health, backup               |
+| `nix/secrets.nix`                         | the optional sops-nix enrolment (`sopsSecretsFile`)                                               |
+| `nix/state-syncthing.nix`                 | the state root replicated by Syncthing through an untrusted hub (`stateSyncthing`)                |
+| `nix/mcp-clients.nix`                     | the servers registered in both Claude and Codex (`mcpShared`, `mcpBrowsers`)                      |
+| `nix/codex-config.nix`, `codex-rules.nix` | Codex's fleet config in `/etc/codex` and its command rules                                        |
+| `nix/users/default.nix`                   | per-user values (placeholders here; real ones in the overlay)                                     |
+| `nix/scripts.nix`                         | the per-command wrappers (pinned PATH + exported env) each subcommand runs                        |
+| `nix/cli.nix`                             | assembles those wrappers into the `flakelab` CLI                                                  |
+| `files/scripts/flakelab`                  | the router: subcommand table, `--help`, did-you-mean                                              |
+| `profiles/`                               | profile registry + merge (`example`)                                                              |
+| `templates/overlay/`                      | scaffold for the private overlay flake (`init`, `flake new`, `overlay-gen`)                       |
+| `files/`                                  | scripts + config consumed by the flake                                                            |
+| `files/config/user_data.example.yaml`     | provisioning config for `provision -Config` / `overlay-gen`                                       |
+| `files/config/claude/target-*.md`         | per-target facts appended into the managed `~/.claude/CLAUDE.md`                                  |
+| `setup-wsl-nix.ps1`                       | Windows provisioning: status / generate / init / bootstrap / provision                            |
+| `.github/workflows/release.yml`           | tag push → builds and publishes the `.#proxmoxImage` seed asset                                   |
 
 ## Secrets
 
@@ -376,7 +382,9 @@ Nothing moves them for you - `flakelab update`, `flakelab doctor` and
 Afterwards `nix-collect-garbage` drops the store copies already made; if the
 box is shared, rotate a key that was in them.
 
-Two sources, tried in this order at shell start:
+Two sources, of which the shell reads exactly one — chosen at build time by
+whether the overlay sets `sopsSecretsFile`, with no fallback from one to the
+other:
 
 1. **sops-nix (opt-in)** — the overlay sets
    `sopsSecretsFile = ./secrets/secrets.env;`, an age-encrypted sops **dotenv**
@@ -395,8 +403,8 @@ Two sources, tried in this order at shell start:
    on PATH for every rotation after that.
    Rotation: `sops <file>` edits values; `.sops.yaml` + `sops updatekeys`
    changes recipients.
-2. **Legacy fallback** — `~/.config/tyc/secrets.env` (git-ignored), populated
-   from a vault (`bao kv get …`) or by hand;
+2. **Without sops** — `~/.config/tyc/secrets.env` (git-ignored), populated
+   from your secret store or by hand;
    `files/config/secrets.env.example` is a copyable skeleton.
 
 `provision` writes the fallback file
@@ -422,6 +430,8 @@ by `flakelab backup --restore`, which `provision` runs for you.
 | `SYNOLOGY_PASSWORD`             | synology MCP                                     |
 | `SYNOLOGY_DEVICE_ID`            | synology MCP (the only way to log in with 2FA)   |
 | `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki) |
+| `NTFY_URL`                      | `flakelab notify` (the topic it posts to)        |
+| `NTFY_TOKEN`                    | `flakelab notify` (a protected topic)            |
 
 The non-secret half of each pair (`HASS_URL`, `PROXMOX_API_URL`, …) lives in
 `sessionVariables`; the MCP servers inherit both halves from the shell, so a
@@ -464,6 +474,13 @@ timer. It needs `stateRoot` but not `backupAutostart`, so a box that should not
 run the daily payload pass still converges its state, and while it is scheduled
 a closing Claude Code session is pushed at once.
 
+`stateSyncthing = { hubDeviceId = "…"; hubName = "hub"; passwordEnvKey = "STATE_PASSWORD"; };`
+makes the box its own sync client: Syncthing with one folder, the state root,
+shared with an untrusted hub that holds it Receive Encrypted under a password
+read from the sops render, so the hub never sees plaintext. It needs a Linux
+`stateRoot` (not a `/mnt` mount) and `sopsSecretsFile`; `nix/options.nix` has
+the rest (`hubAddresses`, `folderId`, `configDir`, `guiAddress`).
+
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
 snapshots the running agent sessions (Claude Code, Codex) every
 `sessionsAutosaveInterval` (default 5 min), one file per boot. After a crash,
@@ -494,8 +511,14 @@ dashboard does both.
 `cswap` is installed beside it: tycswap, the account switcher for Claude Code
 and Codex logins in one static binary (`cswap --add-account`, `cswap codex add`,
 `cswap switch`, `cswap auto`, bare `cswap` for the dashboard), pinned to a
-release in `flake.nix`; `installTycswap = false;` leaves it out. Its store is
-its own (`cswap --help` names it) and is not yet carried by `flakelab backup`.
+release in `flake.nix`; `installTycswap = false;` leaves it out. The two
+coexist like this today: each keeps a store of its own (cswap's is named by
+`cswap --help`, and only the `flakelab accounts` store rides `flakelab backup`),
+both write the same live login files, and those files are the source of truth —
+whichever tool switched last is what the CLI runs with, and
+`flakelab accounts status` reports a switch made by cswap as drift, like a hand
+login. Run one auto-switcher at a time (`flakelab accounts auto` stays off until
+`auto on`). `flakelab accounts` is retired verb by verb as cswap covers them.
 
 A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`) runs it in a window of the `agents` tmux session
@@ -529,7 +552,7 @@ into it:
 ```ini
 OVERLAY_URL=git@gitlab.example.com:you/flakelab-config.git
 OVERLAY_REF=main
-OVERLAY_ATTR=tycdev
+OVERLAY_ATTR=devbox
 BOOTSTRAP_USER=you
 REPO_PATH=~/git/flakelab-config
 OVERLAY_SSH_IDENTITY=~/.ssh/flakelab_deploy
@@ -571,12 +594,12 @@ The overlay declares the box on the `proxmox-vm` target, and `flakeAttr` is the
 attribute `OVERLAY_ATTR` and `flakelab update` both switch into:
 
 ```nix
-nixosConfigurations.tycdev = flakelab.lib.mkSystem {
+nixosConfigurations.devbox = flakelab.lib.mkSystem {
   target = "proxmox-vm";
   userData = base // {
-    hostName = "tycdev";
-    flakeAttr = "tycdev";
-    repoPath = "/home/tycorc/git/flakelab-config";
+    hostName = "devbox";
+    flakeAttr = "devbox";
+    repoPath = "/home/you/git/flakelab-config";
     sshKeys = [ "id_ed25519" "flakelab_deploy" ];
     extraReposDirs = [ ];
     stateRoot = null;

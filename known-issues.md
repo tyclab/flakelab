@@ -20,7 +20,7 @@ from [WSL's init](https://github.com/microsoft/WSL/blob/master/src/linux/init/in
 
 ## WSL interop break when provisioning the NixOS distro (unfixed on stable through 2.7.12)
 
-**Provisioning wipes host interop.** A full `build-dev-wsl-nix` run on **WSL
+**Provisioning wipes host interop.** A full `flakelab build-distro` run on **WSL
 2.7.10 / kernel 6.18** (imports a NixOS-WSL distro and applies the flake)
 completes `nixos-rebuild switch` **successfully**, and the host distro's
 `WSLInterop` handler is **gone** from `/proc/sys/fs/binfmt_misc/` afterward —
@@ -67,7 +67,7 @@ known way to provision the NixOS distro from a sibling without wiping host inter
 **Practical guidance — treat every provisioning run as costing at least one
 interop wipe:**
 
-- Run `build-dev-wsl-nix` / `test-provision-nix` **only from an expendable
+- Run `flakelab build-distro` / `flakelab test-provision` **only from an expendable
   session** you can afford to `wsl --shutdown` — never from a session doing other
   work. Both are host-side and are on PATH: their wrappers export
   `FLAKELAB_REPO_ROOT` from `repoPath`, so neither derives its repo root from its
@@ -75,10 +75,10 @@ interop wipe:**
   checkout, where `files/scripts/<name>` still works). Automation/agents must
   **not** run these from a session that needs interop, and must **not** run
   `wsl --shutdown` themselves.
-- `build-dev-wsl-nix` still avoids `wsl --terminate` (so it does not add a
+- `flakelab build-distro` still avoids `wsl --terminate` (so it does not add a
   _second_ wipe), and derives the expected user/locale from
   `nix/users/default.nix` for its checks.
-- `test-provision-nix` hard-fails its precheck when interop is already broken.
+- `flakelab test-provision` hard-fails its precheck when interop is already broken.
 - **Recovery:** `wsl --shutdown` from a Windows terminal, then re-enter the host
   distro (`/init` re-registers the handler on VM boot). The heal holds only until
   the next stop of a systemd distro in the VM wipes the handler again, so it goes
@@ -129,7 +129,7 @@ distro-**termination** wipe; the wipe documented here persists on 2.7.11.0, and
 the observation above shows it is not tied to a rebuild either). The issue still
 open is [#8203](https://github.com/microsoft/WSL/issues/8203) — `binfmt_misc`
 namespacing, which would isolate the registry per distro and close the whole
-class rather than one trigger. That is what `nix-doctor` links when it reports a
+class rather than one trigger. That is what `flakelab doctor` links when it reports a
 missing handler.
 
 ---
@@ -207,9 +207,9 @@ After `test-provision` calls `wsl.exe` (directly or via `powershell.exe`), subse
 
 ### Fix (applied)
 
-**build-dev-wsl-nix / test-provision-nix:**
+**`flakelab build-distro` / `flakelab test-provision`:**
 
-1. **`setsid -w`** wraps the long `wsl.exe` calls that redirect to a log file (the `nixos-rebuild` step in `build-dev-wsl-nix`). Creates a new session with no controlling terminal — null bytes are written to the log file and never reach the host terminal.
+1. **`setsid -w`** wraps the long `wsl.exe` calls that redirect to a log file (the `nixos-rebuild` step in `build-distro`). Creates a new session with no controlling terminal — null bytes are written to the log file and never reach the host terminal.
 2. **`tail -f` with `< /dev/null`** runs in the background reading from the log file (not a pipe). Provides real-time output. `< /dev/null` prevents stdin inheritance that could reintroduce pipe hangs.
 3. **`tr -d '\0\r'`** wherever `wsl.exe` output must go directly to the terminal: the `wsl_clean()` helper in both scripts, plus temp file + `tr` for the `--import` output. Strips null bytes and carriage returns before display.
 
@@ -239,7 +239,7 @@ Any operation that expects interactive input hangs when run without a TTY. The i
 
 | Pattern                                   | Why it hangs                                                          |
 | ----------------------------------------- | --------------------------------------------------------------------- |
-| `zsh -ilc 'nix-update'` in test           | OMZ ssh-agent plugin calls `ssh-add` → passphrase prompt → no TTY     |
+| `zsh -ilc 'flakelab update'` in test      | OMZ ssh-agent plugin calls `ssh-add` → passphrase prompt → no TTY     |
 | `git+ssh://` in Ansible (uv, git archive) | SSH needs key auth → no agent, no TTY for passphrase                  |
 | `\| tee` / `\| Tee-Object` with `wsl.exe` | ssh-agent inherits pipe FDs, keeps pipe open after main process exits |
 | `read -q` in aliases                      | Blocks on stdin when not a terminal                                   |
@@ -249,9 +249,9 @@ Any operation that expects interactive input hangs when run without a TTY. The i
 
 ### Fix Patterns
 
-**For in-distro checks and re-runs:** invoke with non-interactive `zsh -lc` (as `test-provision-nix` does throughout), never `zsh -ilc` — interactive shells load OMZ, whose ssh-agent plugin blocks on a passphrase prompt without a TTY.
+**For in-distro checks and re-runs:** invoke with non-interactive `zsh -lc` (as `flakelab test-provision` does throughout), never `zsh -ilc` — interactive shells load OMZ, whose ssh-agent plugin blocks on a passphrase prompt without a TTY.
 
-**For steps that reach `git+ssh://`** (plugin clones in `home.activation`, `nix-clone-repos`): keep them idempotent — guard on the artifact already existing so re-runs never touch SSH at all.
+**For steps that reach `git+ssh://`** (plugin clones in `home.activation`, `flakelab clone`): keep them idempotent — guard on the artifact already existing so re-runs never touch SSH at all.
 
 **Do NOT use `GIT_SSH_COMMAND` with `-i` for passphrase-protected keys as if it
 replaced the agent** — it bypasses the agent and forces SSH to read the raw key
@@ -274,7 +274,7 @@ fatal: reported loudly, but it must not fail the rebuild — the alternative is 
 distro that cannot be rebuilt offline or before its first interactive login. The
 health check treats a post-condition that an already-recorded deferral explains
 as `[DEFER]`, not `[FAIL]`. What fills the agent is the TTY-gated `ssh-add` hook
-in `programs.zsh.initContent`, so the first `nix-update` after an interactive
+in `programs.zsh.initContent`, so the first `flakelab update` after an interactive
 login completes the deferred steps.
 
 **For interactive prompts:** guard with `[[ -t 0 ]]` before any `read` or interactive command.

@@ -8,7 +8,7 @@ How flakelab is put together, and why. Usage lives in
 1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
    the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
    `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
-   `zsh`, `git-ssh`, `mcp`, `claude`, `codex`, `tooling`, `health`,
+   `zsh`, `git-ssh`, `claude`, `codex`, `accounts`, `web`, `tooling`, `health`,
    `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
    whose nixpkgs builds lag upstream (Claude Code, Codex) and SSH key
@@ -46,69 +46,32 @@ while `sessionVariables`, `customAliases` and `claudeMcpServers` merge per key �
 replacing one of those wholesale needs `lib.mkForce`.
 
 Anything that describes the **operator** rather than the distro is an option
-that defaults to off, because every activation here runs on every adopter's box:
+that defaults to off, because every activation here runs on every adopter's box.
+The options themselves — names, types, defaults, what each one does — are
+declared once in `nix/options.nix`, and that file is the reference; what follows
+is only the reasoning a description has no room for:
 
-- `claudeAgentDefaults` (bool, default `false`) — the agent-box bundle written
-  into `~/.claude/settings.json`: `permissions.defaultMode = "auto"` with the
-  consent flag that must accompany it, `remoteControlAtStartup`, and the removal
-  of the four env vars (`DISABLE_TELEMETRY`, `DO_NOT_TRACK`,
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`) that would
-  defeat it. Off, those keys and those vars are left exactly as the user has
-  them. Everything else `claudeSettings` asserts — attribution, the classifier
-  rules, `installMethod`, `autoUpdatesChannel`, the deny floor — is
-  unconditional, and the whole activation is gated on `installClaude`.
-- `claudeRemoteControl` (bool, default `false`) — `remoteControlAtStartup`
-  on its own, with the same four env vars removed, so every interactive
-  session is steerable from the Claude app without the trust bundle above;
-  `claudeAgentDefaults` implies it. Off, the key and the vars are left as the
-  user has them.
-- `accounts.*` — the account switcher's knobs (`accounts.md`):
-  `autoSwitchInterval` (nullable string, default `null`) is the span of the
-  `flakelab-accounts-autoswitch` user timer running
-  `flakelab accounts auto --once` (every 2 minutes when `null`; the timer is on
-  every box) and, set, turns auto-switch on by default, where
-  `flakelab accounts auto on|off` switches it at run time; `autoSwitchTools` (default `[ "claude" ]`)
-  names the tools it decides for; `sessionThreshold` (85), `weekThreshold`
-  (97) and `modelThreshold` (95) are the bars, `modelWindows` (`[ "all" ]`)
-  which per-model weeks count, `strategy` (`soonest-reset` or `best`) the
-  target order. The wrapper exports them as
-  `FLAKELAB_ACCOUNTS_*`; `flakelab accounts config set` overrides any of them
-  at run time from `settings.json` in the store (`flakelab doctor` warns
-  while one is set), and an `auto` flag overrides both. With the
-  timer on for Claude Code, a `Notification` hook on
-  `quota_auto_resume_fired` runs one tick at once.
-- `notify.enable` (bool, default `false`) and `notify.events` (list) — the
-  Claude Code `Notification` hook that runs `flakelab notify`, a push to an
-  ntfy topic named in `secrets.env` (`remote-sessions.md`); owned by its
-  command, removed again when off.
-- `mosh.enable` (bool, default `false`) — proxmox-vm only: `programs.mosh`
-  beside sshd, its UDP range opened by the module.
-- `web.*` — `enable` (default `false`) runs `flakelab web` as the user
-  service `flakelab-web` on `bind` (default `127.0.0.1`) and `port` (8321),
-  the dashboard behind the token in `~/.local/state/flakelab/web/token`; on
-  the proxmox-vm target a `bind` off loopback opens `port` in the NixOS
-  firewall. `terminal` (default `false`) adds ttyd on a Unix socket attached
-  to the `tmuxSession` (`agents`), reached only through the dashboard's
-  `/terminal/` behind a session it issues against the same token. `logo`
-  (nullable path, default `null`) is the page's heading mark and tab icon,
-  served at `/logo` without the token.
-- `mcpShared.*` — `servers` (attrset of `{ url; callbackPort; }`, default
-  `{}`) registers each OAuth MCP account in Claude and Codex as
-  `flakelab-mcp connect <name>`; `gateway` (nullable string, default `null`)
-  is the SSH destination of the host holding the credentials, `null` on that
-  host itself (`mcp.md`).
-- `mcpBrowsers.headless` (bool, default `false`) — registers
-  `playwright-headless` in Claude and Codex: Playwright's MCP server and the
-  Chromium headless shell from one nixpkgs `playwright-driver`, an in-memory
-  profile per process, beside the Windows Chrome bridge (`mcp.md`).
-- `claudeMdExtra` (lines, default `""`) — appended inside the managed block of
-  `~/.claude/CLAUDE.md`, after the text `files/config/claude/CLAUDE.md` ships.
-  That shipped half stays limited to facts about the distro; personal workflow
-  rules (which forge CLI for which remote, agent preferences, post-merge
-  housekeeping) go here, from the private overlay.
-- `bitwardenServer` (nullable string, default `null`) — `null` skips the
-  `bw config server` activation entirely rather than rewriting someone's region
-  on every rebuild.
+- `claudeAgentDefaults` and `claudeRemoteControl` default off because each
+  trades something of the operator's away — the permission prompts, or the
+  transcript staying on the box — and the trade is the adopter's to make.
+  Everything else `claudeSettings` asserts (attribution, the classifier rules,
+  `installMethod`, `autoUpdatesChannel`, the deny floor) is unconditional, and
+  the whole activation is gated on `installClaude`.
+- `accounts.*` sets the auto-switch engine's bars (`accounts.md`). The timer runs
+  on every box so `flakelab accounts auto on` needs no rebuild; the flake options
+  are the baseline, `flakelab accounts config set` overrides one at run time (the
+  doctor warns while one is set), and an `auto` flag overrides both for that
+  run.
+- `notify.*`, `mosh.enable` and `web.*` reach outside the box — a push, an open
+  port, a dashboard — so each is its own switch. `web.bind` off loopback opens
+  the port in the proxmox-vm firewall, and ttyd is reached only through the
+  dashboard, never on a port of its own.
+- `mcpShared.*` and `mcpBrowsers.headless` register their servers in Claude and
+  Codex from one definition (`mcp.md`), so the two clients cannot drift.
+- `claudeMdExtra` keeps the shipped half of `~/.claude/CLAUDE.md` limited to
+  facts about the distro; personal workflow rules go there, from the overlay.
+- `bitwardenServer = null` skips the `bw config server` activation entirely
+  rather than rewriting someone's region on every rebuild.
 
 `profiles/` is resolved **before** the module system runs: `profiles/merge.nix`
 turns the selected `profiles` into effective `gitlabGroups`, `profileCliTools`,

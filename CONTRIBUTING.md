@@ -53,7 +53,7 @@ they would be linted by nothing.
 Tag `vX.Y.Z` on `main` and `.github/workflows/release.yml` builds
 `.#proxmoxImage` and publishes `flakelab-proxmox-vm-<tag>.qcow2` plus its
 `.sha256` to the GitHub release — the tag is what an adopter's `tofu`
-(tycpve's `vm_tycdev.tf`, say) pins its asset URL to, so a release exists
+(a Proxmox host's `vm_devbox.tf`, say) pins its asset URL to, so a release exists
 before anything downstream can point at one.
 
 ## Opening a pull request
