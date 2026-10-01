@@ -65,6 +65,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab backup` and `--restore` skipped tycswap's Claude credential and config snapshots: the store names them with a leading dot and the glob did not match dotfiles (#179). The Codex snapshots, named without one, were carried; the fixture now uses the real names.
 - Activation removes `env` keys in `~/.claude/settings.json` and `mcpServers` in `~/.claude.json` it no longer renders, recorded in `~/.local/state/flakelab/activation-rendered/`.
 - `flakelab update` fetches the overlay's inputs as the caller before the switch, so a collected private `git+ssh` input no longer fails the rebuild.
 - The overlay generators name every key, field or line they drop (never an empty top-level key) instead of misreading or ignoring it; `setup-wsl-nix.ps1` refuses a `target:` other than `wsl`.
