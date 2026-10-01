@@ -82,14 +82,14 @@
       pkgsDev = pkgs.extend (nixpkgs.lib.composeExtensions unstableOverlay preCommitOverlay);
 
       # tycswap: the account switcher for Claude Code and Codex logins, one static
-      # Go binary named `cswap`. Pinned to a release tag: `version` is the one
+      # Go binary named `tycswap`. Pinned to a release tag: `version` is the one
       # place it is written (the tag and the ldflag derive from it), and a bump
       # needs both hashes with it - a build with a stale hash prints the new one,
       # and checks.tycswap fails in CI rather than on a box's update.
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
-          version = "0.2.0";
+          version = "0.3.0";
         in
         pkgs.buildGoModule {
           pname = "tycswap";
@@ -98,20 +98,20 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-Hu3WqYf0Oekb5iMeU+Y4gu+zEiycyBQHVt/3XrwaFUY=";
+            hash = "sha256-i+Hi5f0DoTYdmucD1jEQewj7dPpsZgRgti9x8coenAk=";
           };
-          vendorHash = "sha256-jLuFFHT+aLdTiMaxrYl0fRgRHH2s8gIoDSVP2+vZO30=";
-          subPackages = [ "cmd/cswap" ];
+          vendorHash = "sha256-jn6YYJLyFhDCy5LnareJ/mGpFQrQymzvg2LugIhKQ/o=";
+          subPackages = [ "cmd/tycswap" ];
           env.CGO_ENABLED = 0;
           ldflags = [
             "-s"
             "-w"
-            "-X git.dpemmons.com/dpemmons/cswap/internal/version.Version=v${version}"
+            "-X github.com/tyclab/tycswap/internal/version.Version=v${version}"
           ];
           # The upstream suite wants a writable HOME and minutes of wall clock; the
           # release is tested there, CI here builds the binary only.
           doCheck = false;
-          meta.mainProgram = "cswap";
+          meta.mainProgram = "tycswap";
         };
       tycswapOverlay = _final: _prev: { inherit tycswap; };
 
