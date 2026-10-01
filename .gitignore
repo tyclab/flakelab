@@ -9,20 +9,19 @@ id_rsa
 
 files/config/instances/
 
-# nix-backup rollback snapshots: whole-payload tarballs, secrets included.
+# `flakelab backup` rollback snapshots: whole-payload tarballs, secrets included.
 files/config/snapshots/
 files/config/.backup.lock
 
 files/config/shared/gitconfig/
 files/config/shared/shell/
-# Cleartext tokens copied here by `nix-backup`.
+# Cleartext tokens copied here by `flakelab backup`.
 files/config/shared/secrets/
 # A filled-in provisioning config carries the same tokens in cleartext.
 files/config/user_data.yaml
-files/config/shared/ssh/*
-!files/config/shared/ssh/keys/
-files/config/shared/ssh/keys/*
-!files/config/shared/ssh/keys/.gitkeep
+# Keys live in <overlay>-payload/shared/ssh/keys now; this is for a checkout
+# still in the old layout.
+files/config/shared/ssh/
 
 # Claude Code agent scratch.
 .claude/

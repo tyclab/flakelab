@@ -119,7 +119,7 @@ in
     sessionVariables = mkOption {
       type = types.attrsOf types.str;
       default = { };
-      description = "NON-SECRET session environment. Each entry also GATES its MCP server (nix/home/mcp.nix) — a missing endpoint means a missing server. Token halves belong in ~/.config/tyc/secrets.env, never here: this lands in the world-readable Nix store.";
+      description = "NON-SECRET session environment, exported to every shell. Token halves belong in ~/.config/tyc/secrets.env, never here: this lands in the world-readable Nix store. Two names also gate a Claude MCP server (nix/home/claude.nix): GRAFANA_URL the grafana server, and WHATSAPP_BRIDGE_HOST, together with whatsappMcpDir, the whatsapp server — each unless a marketplace plugin already provides it. The other endpoints (HASS_URL, PROXMOX_*, SYNOLOGY_*) are plain environment the marketplace MCP plugins read.";
     };
 
     # strMatching, not str: an invalid hostname is rejected AS
@@ -184,7 +184,7 @@ in
     installTycswap = mkOption {
       type = types.bool;
       default = true;
-      description = "Install tycswap's `cswap`: the account switcher for Claude Code and Codex logins (numbered slots, switch without a logout, auto-switch before a rate limit, a dashboard), pinned to a release in flake.nix. `flakelab accounts` stays available beside it.";
+      description = "Install tycswap's `cswap`: the account switcher for Claude Code and Codex logins (numbered slots, switch without a logout, auto-switch before a rate limit, a dashboard), pinned to a release in flake.nix. `flakelab accounts` stays available beside it with a store of its own; the tools' live login files are the source of truth for both, and `flakelab accounts` is retired verb by verb as cswap covers them (accounts.md, \"cswap beside flakelab accounts\").";
     };
 
     # The tiering is the whole point, and it is easy to get backwards:
@@ -329,7 +329,7 @@ in
     claudeMcpServers = mkOption {
       type = types.attrsOf types.attrs;
       default = { };
-      description = "Extra Claude user-scope MCP servers, merged into ~/.claude.json on every rebuild and removed from it again once dropped from here. Same shape as that file's own `mcpServers` entries. The servers this flake defines are already declared in nix/home/mcp.nix; this is where per-developer ones go.";
+      description = "Extra Claude user-scope MCP servers, merged into ~/.claude.json on every rebuild and removed from it again once dropped from here. Same shape as that file's own `mcpServers` entries. The servers this flake defines are already declared in nix/home/claude.nix; this is where per-developer ones go.";
     };
 
     claudeMcpDisabledServers = mkOption {
@@ -551,7 +551,7 @@ in
     sopsAgeKeyFile = mkOption {
       type = types.str;
       default = "/var/lib/sops-nix/key.txt";
-      description = "Absolute path of this host's age identity (the ONE plaintext-at-rest sops leaves), read by sops-nix at activation; generate it with `age-keygen -o <path>` and enrol the printed recipient. The default sits on the root filesystem — fine for a box whose disk image is never captured whole; a guest that IS image-backed points this at its excluded secrets disk instead (tycdev: /var/lib/tyc-secrets/age.key on scsi2, backup=false). Only read when `sopsSecretsFile` is set.";
+      description = "Absolute path of this host's age identity (the ONE plaintext-at-rest sops leaves), read by sops-nix at activation; generate it with `age-keygen -o <path>` and enrol the printed recipient. The default sits on the root filesystem — fine for a box whose disk image is never captured whole; a guest that IS image-backed points this at its excluded secrets disk instead (say /var/lib/secrets/age.key on a second virtual disk with backup=false). Only read when `sopsSecretsFile` is set.";
     };
 
     stateSyncInterval = mkOption {
@@ -584,8 +584,10 @@ in
               description = "Syncthing folder ID of the state root; the same on every box and on the hub.";
             };
             passwordEnvKey = mkOption {
-              type = types.str;
-              description = "Key in the sops render /run/secrets/tyc-env that holds the folder's encryption password. The same password on every box; losing it leaves the hub copy unreadable.";
+              # An environment variable name and nothing else: nix/state-syncthing.nix
+              # puts it into a sed pattern unescaped, which this shape keeps literal.
+              type = types.strMatching "^[A-Za-z_][A-Za-z0-9_]*$";
+              description = "Key in the sops render /run/secrets/tyc-env that holds the folder's encryption password: an environment variable name (letters, digits, underscores). The same password on every box; losing it leaves the hub copy unreadable.";
             };
             configDir = mkOption {
               type = types.nullOr types.str;

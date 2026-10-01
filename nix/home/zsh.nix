@@ -106,6 +106,12 @@ in
             fi
           ''
       }
+
+      # The Claude mcp-homeassistant plugin expands HA_URL/HA_TOKEN, not HASS_*.
+      # Here, after the secrets and in .zshenv, so a non-interactive start - an
+      # agent's `zsh -c`, a session the dashboard starts - carries them too.
+      [[ -n "''${HASS_URL:-}" ]] && export HA_URL="$HASS_URL"
+      [[ -n "''${HASS_TOKEN:-}" ]] && export HA_TOKEN="$HASS_TOKEN"
     '';
     initContent = ''
       export GPG_TTY="$(tty)"
@@ -144,10 +150,6 @@ in
         done
         unset _key _fp _loaded
       fi
-
-      # The Claude mcp-homeassistant plugin expands HA_URL/HA_TOKEN, not HASS_*.
-      [[ -n "''${HASS_URL:-}" ]] && export HA_URL="$HASS_URL"
-      [[ -n "''${HASS_TOKEN:-}" ]] && export HA_TOKEN="$HASS_TOKEN"
 
       export KUBECONFIG="$HOME/.kube/config:"
       for file in $HOME/.kube/*.yaml(N); do

@@ -32,6 +32,7 @@ body:
       label: Where
       options:
         - WSL2 distro (setup-wsl-nix.ps1 / provision)
+        - Proxmox VM (the proxmox-vm target / flakelab-bootstrap)
         - The flakelab CLI in a running distro
         - The flake itself (nix build / nix flake check)
         - Overlay generation (flakelab overlay-gen)

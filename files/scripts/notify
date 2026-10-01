@@ -40,10 +40,10 @@ SECRETS="${FLAKELAB_SECRETS_ENV:-${HOME}/.config/tyc/secrets.env}"
 
 usage() {
   cat <<'USAGE'
-Usage: notify                       (a Claude Code Notification hook: JSON on stdin)
-       notify --codex JSON          (Codex's notify hook: the JSON it appends)
-       notify --title T --message M [--priority 1-5] [--tags a,b]
-       notify --dry-run ...         print the request, send nothing
+Usage: flakelab notify                       (a Claude Code Notification hook: JSON on stdin)
+       flakelab notify --codex JSON          (Codex's notify hook: the JSON it appends)
+       flakelab notify --title T --message M [--priority 1-5] [--tags a,b]
+       flakelab notify --dry-run ...         print the request, send nothing
 
 Posts to the ntfy topic NTFY_URL (NTFY_TOKEN for a protected one), from the
 environment or ~/.config/tyc/secrets.env at use time. A hook run exits 0

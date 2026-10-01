@@ -2,7 +2,7 @@
 
 How to reach, keep and continue the agent sessions on this box (Claude Code,
 Codex) from somewhere else: another window, another machine, a
-phone. Every phase is on this branch; what remains is the list of things to
+phone. Every phase is built; what remains is the list of things to
 verify on a real box before relying on each.
 
 ## The question underneath
@@ -202,7 +202,7 @@ a local session.
 
 ## The plan
 
-Phases, each shippable on its own. All five are on this branch.
+Phases, each shippable on its own. All five are built.
 
 1. **tmux as the session host** — done: `--start`, `--attach`, the host
    column, `--open` attaching, Codex in the registry, saves with a

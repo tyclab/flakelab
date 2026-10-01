@@ -82,30 +82,37 @@
       pkgsDev = pkgs.extend (nixpkgs.lib.composeExtensions unstableOverlay preCommitOverlay);
 
       # tycswap: the account switcher for Claude Code and Codex logins, one static
-      # Go binary named `cswap`. Pinned to a release tag; bump the tag and both
-      # hashes together (a build with a stale hash prints the new one).
-      tycswap = pkgs.buildGoModule {
-        pname = "tycswap";
-        version = "0.2.0";
-        src = pkgs.fetchFromGitHub {
-          owner = "tyclab";
-          repo = "tycswap";
-          tag = "v0.2.0";
-          hash = "sha256-Hu3WqYf0Oekb5iMeU+Y4gu+zEiycyBQHVt/3XrwaFUY=";
+      # Go binary named `cswap`. Pinned to a release tag: `version` is the one
+      # place it is written (the tag and the ldflag derive from it), and a bump
+      # needs both hashes with it - a build with a stale hash prints the new one,
+      # and checks.tycswap fails in CI rather than on a box's update.
+      tycswap =
+        let
+          # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
+          version = "0.2.0";
+        in
+        pkgs.buildGoModule {
+          pname = "tycswap";
+          inherit version;
+          src = pkgs.fetchFromGitHub {
+            owner = "tyclab";
+            repo = "tycswap";
+            tag = "v${version}";
+            hash = "sha256-Hu3WqYf0Oekb5iMeU+Y4gu+zEiycyBQHVt/3XrwaFUY=";
+          };
+          vendorHash = "sha256-jLuFFHT+aLdTiMaxrYl0fRgRHH2s8gIoDSVP2+vZO30=";
+          subPackages = [ "cmd/cswap" ];
+          env.CGO_ENABLED = 0;
+          ldflags = [
+            "-s"
+            "-w"
+            "-X git.dpemmons.com/dpemmons/cswap/internal/version.Version=v${version}"
+          ];
+          # The upstream suite wants a writable HOME and minutes of wall clock; the
+          # release is tested there, CI here builds the binary only.
+          doCheck = false;
+          meta.mainProgram = "cswap";
         };
-        vendorHash = "sha256-jLuFFHT+aLdTiMaxrYl0fRgRHH2s8gIoDSVP2+vZO30=";
-        subPackages = [ "cmd/cswap" ];
-        env.CGO_ENABLED = 0;
-        ldflags = [
-          "-s"
-          "-w"
-          "-X git.dpemmons.com/dpemmons/cswap/internal/version.Version=v0.2.0"
-        ];
-        # The upstream suite wants a writable HOME and minutes of wall clock; the
-        # release is tested there, CI here builds the binary only.
-        doCheck = false;
-        meta.mainProgram = "cswap";
-      };
       tycswapOverlay = _final: _prev: { inherit tycswap; };
 
       # One flake check per offline suite, so CI runs them; `make test` runs the same
@@ -451,6 +458,10 @@
         switch-result = suiteCheck "switch-result";
         wsl-init-cgroup = suiteCheck "wsl-init-cgroup";
         xdg-open = suiteCheck "xdg-open";
+        # The hook installer drives `make install-hooks` where a repo has the target.
+        activate-hooks = suiteCheckWith [ pkgs.gnumake ] "activate-hooks";
+        report-stale-repos = suiteCheck "report-stale-repos";
+        nix-provision = suiteCheck "nix-provision";
         codex-config =
           let
             manifest = builtins.toFile "codex-mcp-fixture.json" (
@@ -1152,7 +1163,7 @@
             == "/run/flakelab-syncthing/flakelab-state.password";
           assert builtins.elem "syncthing-init.service" pw.requiredBy;
           assert builtins.elem "syncthing-init.service" pw.before;
-          assert nixpkgs.lib.hasInfix "CHECK_STATE_PASSWORD=" pw.script;
+          assert nixpkgs.lib.hasInfix "flakelab-syncthing-password-read /run/secrets/tyc-env" pw.script;
           assert !plain.services.syncthing.enable;
           assert
             syncthing.configDir
@@ -1165,7 +1176,21 @@
             offHome.config.systemd.tmpfiles.rules;
           assert builtins.elem "/var/lib/check-secrets/syncthing"
             offHome.config.systemd.services.syncthing.unitConfig.RequiresMountsFor;
-          pkgs.runCommandLocal "flakelab-check-state-syncthing" { } "touch $out";
+          # The reader the unit runs, against a render shaped like sops writes it:
+          # CRLF endings, a key that is a prefix of the wanted one, two definitions.
+          pkgs.runCommandLocal "flakelab-check-state-syncthing"
+            {
+              inherit (pw) script;
+              passAsFile = [ "script" ];
+            }
+            ''
+              reader="$(grep -o '/nix/store/[^ ]*-flakelab-syncthing-password-read' "$scriptPath" | head -n 1)"
+              printf 'OTHER=x\r\nCHECK_STATE_PASSWORD_OLD=stale\r\nCHECK_STATE_PASSWORD=first=value\r\nCHECK_STATE_PASSWORD=second\r\n' > render
+              test "$("$reader" render)" = 'first=value'
+              printf 'OTHER=x\n' > empty
+              test -z "$("$reader" empty)"
+              touch "$out"
+            '';
 
         # A program's OSC 52 copy inside a nested tmux, the session on a box reached
         # over ssh from another tmux, lands in the outer tmux, which passes it on to

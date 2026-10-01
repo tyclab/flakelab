@@ -40,11 +40,10 @@ let
       lib.throwIf (cfg.backupRoot == cfg.repoPath || lib.hasPrefix "${cfg.repoPath}/" cfg.backupRoot)
         "flakelab.backupRoot (${cfg.backupRoot}) is inside repoPath (${cfg.repoPath}): nix copies the overlay directory whole into the world-readable store, so the payload - keys, cleartext secrets - must live outside it. Leave it null for ${cfg.repoPath}-payload."
         cfg.backupRoot;
-  # Exported only when set: unset means "everything stays in the payload" to
-  # nix-backup and "no held-findings check" to nix-doctor.
 in
-# `rec` for one self-reference: the nix-update wrappers pin `nix-clone-repos`, which
-# the CLI keeps off PATH under its own name, so `--all` would trip its guard.
+# `rec`, because wrappers pin sibling wrappers: nix-update and nix-update-all pin
+# nix-clone-repos (the CLI keeps it off PATH under its own name, so a bare `--all`
+# would trip its guard) and switch-result; web pins accounts and claude-sessions.
 rec {
   mcp = (import ./mcp-clients.nix { inherit pkgs cfg; }).launcher;
 
@@ -474,6 +473,7 @@ rec {
     let
       groups = cfg.gitlabGroups;
       inherit (cfg) repos sshKeys;
+      cloneKeyResolve = import ./clone-key.nix { inherit lib sshKeys; };
       hasWork = groups != [ ] || repos != [ ];
 
       # --include-subgroups also returns projects shared INTO the group, and the "/"
@@ -492,7 +492,7 @@ rec {
       # The exclusion grep stays outside that fence, because under pipefail filtering
       # everything out looks like a failed glab call.
       discoveryBlock = lib.optionalString (groups != [ ]) ''
-        : "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/tyc/secrets.env (from OpenBao)}"
+        : "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/tyc/secrets.env}"
         set -e
         {
         ${lib.concatMapStringsSep "\n        " listGroup groups}
@@ -563,7 +563,13 @@ rec {
           }:$PATH
           # No `set -e`: one failed clone must not skip activate-hooks.
           set -uo pipefail
-          _key="$HOME/.ssh/${builtins.head sshKeys}"
+          # The same first-key-on-disk rule the activation steps use (nix/clone-key.nix).
+          ${cloneKeyResolve}
+          if [ -z "$_cloneKey" ]; then
+            echo "nix-clone-repos: none of the configured sshKeys (${lib.concatStringsSep ", " sshKeys}) exists under ~/.ssh — drop one there (flakelab backup --restore puts the payload's keys back), then re-run flakelab clone." >&2
+            exit 1
+          fi
+          _key="$_cloneKey"
           _repos="$HOME/git"
           # ERE-escaped then shell-quoted: a repo called `c++` would otherwise be an
           # alternation of metacharacters, over-matching or emptying the clone list.

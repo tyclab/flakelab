@@ -7,7 +7,6 @@
   pkgs,
   osConfig,
   flakelab,
-  flakelabMcp,
   ...
 }:
 let
@@ -25,12 +24,31 @@ let
     cloneKeyResolve
     sshKeys
     ;
-  inherit (flakelabMcp)
-    grafanaServer
-    whatsappServer
-    whatsappMcpDir
-    windowsChromePath
-    ;
+  inherit (cfg) whatsappMcpDir;
+  # The Windows Chrome the Playwright plugin attaches to, from the one place
+  # Codex's config (nix/codex-config.nix) reads it too.
+  inherit (sharedMcp) windowsChromePath;
+
+  # Pins live in variables so renovate.json's customManagers can see them; an inline
+  # pin in an args list has no manager watching it.
+  # renovate: datasource=pypi depName=mcp-grafana
+  grafanaMcpVersion = "1.6.0";
+
+  # One server covering Grafana, Prometheus and Loki; GRAFANA_* is inherited.
+  grafanaServer = {
+    command = "uvx";
+    args = [ "mcp-grafana==${grafanaMcpVersion}" ];
+  };
+
+  # Run from the cloned repo, talking REST to the bridge at WHATSAPP_BRIDGE_HOST.
+  # It can send messages as the user, so it stays gated on that host being set.
+  whatsappServer = {
+    command = "sh";
+    args = [
+      "-c"
+      ''BRIDGE_HOST="$WHATSAPP_BRIDGE_HOST" WHATSAPP_MCP_TOOLSETS="''${WHATSAPP_MCP_TOOLSETS:-core,send,media}" exec uv run --directory "${whatsappMcpDir}" python main.py''
+    ];
+  };
 
   inherit (cfg) claudeAutoUpdatesChannel claudeAutoMode claudePlugins;
 

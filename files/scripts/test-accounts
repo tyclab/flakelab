@@ -179,6 +179,10 @@ login bob@example.com "${UUID_B}" "Example GmbH" tok-b1
 run add claude --alias work
 check "a second login gets the next id" "${OUT}" "Added claude 2: bob@example.com [Example GmbH] as work"
 check "and becomes active" "$(active_id)" "2"
+# The shell-start overview (flakelab.accounts.shellOverview) follows every roster
+# change, not only a switch: a new shell must never print a stale roster.
+contains "add writes the overview file" "$(<"${STORE}/overview.txt")" "bob@example.com"
+contains "with the first entry too" "$(<"${STORE}/overview.txt")" "alice@example.com"
 run add claude --alias home
 check "a taken alias is refused" "${RC}" "2"
 run add claude --alias 42
@@ -259,7 +263,7 @@ run switch
 check "no entry exits 2" "${RC}" "2"
 run switch --help
 check "a verb's --help is the usage, exit 0" "${RC}" "0"
-contains "not an unknown option" "${OUT}" "Usage: accounts"
+contains "not an unknown option" "${OUT}" "Usage: flakelab accounts"
 
 # A live login that is there but cannot be identified (the account block
 # gone from ~/.claude.json) is copied aside before the switch overwrites it.
@@ -285,6 +289,7 @@ check "--next from 2 wraps to 1" "$(active_id)" "1"
 run disable work
 check "disable exits 0" "${RC}" "0"
 contains "disable says it is still switchable by hand" "${OUT}" "still switchable by hand"
+contains "and the overview shows the entry disabled" "$(<"${STORE}/overview.txt")" "disabled"
 run switch --next claude
 check "--next skips the disabled entry and stays on 1" "$(active_id)" "1"
 contains "as a no-op" "${OUT}" "Already on claude 1"
@@ -292,6 +297,7 @@ run switch work
 check "a disabled entry is still switchable by hand" "$(active_id)" "2"
 run enable work
 check "enable exits 0" "${RC}" "0"
+excludes "and the overview no longer shows it disabled" "$(<"${STORE}/overview.txt")" "disabled"
 run switch --next gemini
 check "--next with an unknown tool exits 2" "${RC}" "2"
 
@@ -343,6 +349,7 @@ check "the alias is gone" "$(jq -r '.accounts["1"].alias // "none"' "${STORE}/ac
 run alias 1 home-2
 check "alias exits 0" "${RC}" "0"
 check "alias reports the name" "${OUT}" "Entry 1 is now 'home-2'"
+contains "and the overview carries the new alias" "$(<"${STORE}/overview.txt")" "home-2"
 run alias 1 work
 check "a taken alias is refused" "${RC}" "2"
 run alias 1 "bad name"
@@ -425,6 +432,8 @@ run remove work --yes
 check "remove --yes exits 0" "${RC}" "0"
 check "remove reports the entry" "${OUT}" "Removed 2 (work) bob@example.com"
 [[ -d "${STORE}/2" ]] && bad "the stored login is still there" || ok "the stored login is gone"
+excludes "the overview no longer lists it" "$(<"${STORE}/overview.txt")" "bob@example.com"
+contains "but still the other entry" "$(<"${STORE}/overview.txt")" "alice@example.com"
 check "the active pointer is cleared" "$(jq -r '.active.claude' "${STORE}/accounts.json")" "null"
 contains "and the caller is told the live login is now unlisted" "${ERR}" "no longer in the roster"
 check "next is never reused" "$(jq -r '.next' "${STORE}/accounts.json")" "3"
@@ -841,7 +850,7 @@ check "but changes nothing" "$(live_email)" "alice@example.com"
 # UTC+2 as a POSIX TZ (needs no zoneinfo).
 TZ=XYZ-2 run auto --once
 check "the human form exits 0" "${RC}" "0"
-contains "an auto tick rewrites the overview, stamped with the tick's time" "$(<"${STORE}/overview.txt")" "flakelab accounts, as of $(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" +%H:%M)"
+contains "an auto tick rewrites the overview, stamped with the tick's date and time" "$(<"${STORE}/overview.txt")" "flakelab accounts, as of $(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" '+%Y-%m-%d %H:%M')"
 contains "and prints one line per event" "${OUT}" "claude  switch: 1 -> 2 [proactive on session]"
 contains "stamped with the local clock, not UTC's" "${OUT}" "$(TZ=XYZ-2 date -d "@${FLAKELAB_NOW}" +%H:%M:%S)  claude  switch"
 contains "while the log keeps UTC" "$(tail -1 "${STORE}/auto.log")" "\"ts\":\"$(date -u -d "@${FLAKELAB_NOW}" +%Y-%m-%dT%H:%M:%SZ)\""

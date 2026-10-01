@@ -321,10 +321,10 @@ function Invoke-Wsl([string]$dn, [string]$asUser, [string[]]$cmd, [int[]]$AllowE
 # only, and whichever branch runs owns the exit status.
 #
 # The reverse direction - a pre-CLI copy of THIS script against a current distro
-# - is covered by the deprecation shims in nix/cli.nix, which is why that list
-# includes `nix-clone-repos` even though nobody types it: Invoke-CloneRepos only
-# Warns on a non-zero exit, so a missing command there would report a successful
-# provision over an empty ~/git.
+# - is NOT covered any more: the deprecation shims for the old names are gone, so
+# such a copy calls `nix-clone-repos`, finds nothing, and Invoke-CloneRepos only
+# Warns on a non-zero exit. Update the checkout before provisioning a current
+# distro with it.
 function DistroCmd([string]$Sub, [string]$Legacy, [string]$CmdArgs = '') {
     $a = if ($CmdArgs) { " $CmdArgs" } else { '' }
     "if command -v flakelab >/dev/null 2>&1; then flakelab $Sub$a; else $Legacy$a; fi"
@@ -631,16 +631,18 @@ else {
 $SecretKeyNames = @('GITLAB_TOKEN', 'GH_TOKEN', 'HASS_TOKEN',
     'PROXMOX_TOKEN_ID', 'PROXMOX_TOKEN_SECRET',
     'SYNOLOGY_PASSWORD', 'SYNOLOGY_DEVICE_ID',
-    'GRAFANA_SERVICE_ACCOUNT_TOKEN')
+    'GRAFANA_SERVICE_ACCOUNT_TOKEN',
+    'NTFY_URL', 'NTFY_TOKEN')
 # Secret NAMES no longer harvested or asked for (the feature behind them is not
 # shipped), but still never allowed into the flake: a config that carries one
 # must not see it land in the world-readable store just because it left the list.
 $RetiredSecretKeyNames = @('WHATSAPP_API_KEY')
 
 # Non-secret counterparts of the above. They belong in the overlay's
-# sessionVariables (declarative, in the shell env), NOT in secrets.env - each one
-# is what GATES its MCP server in nix/home/mcp.nix, so a missing endpoint
-# silently means a missing server.
+# sessionVariables (declarative, in the shell env), NOT in secrets.env. Two of
+# them also gate a Claude MCP server in flakelab's nix/home/claude.nix
+# (GRAFANA_URL the grafana server, WHATSAPP_BRIDGE_HOST the whatsapp one); the
+# rest are plain environment the marketplace MCP plugins read.
 $NonSecretKeyNames = @('HASS_URL', 'PROXMOX_API_URL', 'PROXMOX_VERIFY_SSL',
     'SYNOLOGY_URL', 'SYNOLOGY_VERIFY_SSL', 'SYNOLOGY_USERNAME',
     'GRAFANA_URL', 'WHATSAPP_BRIDGE_HOST')
@@ -1191,7 +1193,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     if ($session.Keys.Count -gt 0) {
         $body += ''
         $body += '        # NON-SECRET custom_env_vars only - the tokens went to secrets.env.'
-        $body += '        # Each entry here is what GATES its MCP server in nix/home/mcp.nix.'
+        $body += '        # GRAFANA_URL and WHATSAPP_BRIDGE_HOST also gate a Claude MCP server (nix/home/claude.nix).'
         $body += Format-NixAttrs 'sessionVariables' $session '        '
     }
 
@@ -2327,9 +2329,10 @@ function Set-OverlaySecretsAndKey([string]$udPath) {
             Do-Step "write secrets.env" { Write-LfFile $SecretsWin $lines }
         }
 
-        # The non-secret endpoints are NOT secrets.env material: each one GATES its
-        # MCP server in nix/home/mcp.nix, and they belong in the overlay flake's
-        # `sessionVariables` (declarative, rebuilt into the shell). A flake GENERATED
+        # The non-secret endpoints are NOT secrets.env material: they belong in the
+        # overlay flake's `sessionVariables` (declarative, rebuilt into the shell;
+        # GRAFANA_URL and WHATSAPP_BRIDGE_HOST also gate a Claude MCP server there,
+        # nix/home/claude.nix). A flake GENERATED
         # from this config already carries them by construction, so the reminder is
         # for the hand-written overlay only, and only for what that flake does not
         # define. NAMES ONLY.

@@ -1,0 +1,136 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for nix-provision (files/scripts/nix-provision, `flakelab
+# provision`): a `powershell.exe` stand-in that records what it was handed, a
+# `wslpath` stand-in over a fake Windows drive, and the two kernel trees the
+# script reads behind FLAKELAB_PROC_ROOT and FLAKELAB_BINFMT_ROOT. No WSL
+# interop is touched, so this runs on any box and in the build sandbox.
+#
+# Usage: files/scripts/test-nix-provision
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/nix-provision"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the pre-increment value, so an
+# `&& ok || bad` chain would run both arms on the first call.
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+STUBS="${BASE}/bin"
+export CALLS="${BASE}/powershell.log"
+# The fake drive: what wslpath maps to C:\git\…, with the checkout and the
+# overlay side by side the way provision lays them out.
+export FAKE_DRIVE="${BASE}/mnt/c/git"
+mkdir -p "${STUBS}" "${FAKE_DRIVE}/flakelab" "${FAKE_DRIVE}/flakelab-config" "${BASE}/elsewhere/flakelab" "${BASE}/proc" "${BASE}/binfmt"
+: > "${FAKE_DRIVE}/flakelab/setup-wsl-nix.ps1"
+: > "${BASE}/elsewhere/flakelab/setup-wsl-nix.ps1"
+print -r -- "Linux version 6.6.87.2-microsoft-standard-WSL2 (gcc) #1 SMP" > "${BASE}/proc/version"
+: > "${BASE}/binfmt/WSLInterop"
+
+cat > "${STUBS}/powershell.exe" <<'STUB'
+#!/usr/bin/env zsh
+print -rl -- "$@" > "${CALLS}"
+STUB
+cat > "${STUBS}/wslpath" <<'STUB'
+#!/usr/bin/env zsh
+case "$1" in
+  -w) [[ "$2" == "${FAKE_DRIVE}"/* ]] || exit 1; p="${2#${FAKE_DRIVE}/}"; print -r -- "C:\\git\\${p//\//\\}" ;;
+  -u) p="${2#C:\\git\\}"; print -r -- "${FAKE_DRIVE}/${p//\\//}" ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "${STUBS}"/*
+
+typeset -i RC=0
+OUT="" ERR=""
+# run [VAR=value]... [args]: the script under the stand-ins, with the overlay as
+# FLAKELAB_REPO_ROOT the way the nix wrapper exports it.
+run() {
+  rm -f "${CALLS}"
+  OUT="$(env PATH="${STUBS}:${PATH}" FLAKELAB_PROC_ROOT="${BASE}/proc" FLAKELAB_BINFMT_ROOT="${BASE}/binfmt" \
+    FLAKELAB_REPO_ROOT="${FAKE_DRIVE}/flakelab-config" "$@" 2>"${BASE}/err")"; RC=$?
+  ERR="$(<"${BASE}/err")"
+}
+calls() { [[ -f "${CALLS}" ]] && print -r -- "${(j: :)${(f)$(<"${CALLS}")}}" }
+
+print -r -- "test-nix-provision"
+
+print -r -- "read-only commands run here, in the foreground"
+run "${CMD}"
+check    "no command is status"                 "${RC}" "0"
+check    "handed to the .ps1 by its Windows path" "$(calls)" '-NoProfile -ExecutionPolicy Bypass -File C:\git\flakelab\setup-wsl-nix.ps1 status'
+run "${CMD}" generate -- -Config '..\wslkube\user_data.yaml'
+check    "generate runs"                         "${RC}" "0"
+contains "with the .ps1's arguments after it"    "$(calls)" 'setup-wsl-nix.ps1 generate -Config ..\wslkube\user_data.yaml'
+run "${CMD}" generate -Config x.yaml
+contains "a single-dash switch passes through without --" "$(calls)" 'generate -Config x.yaml'
+
+print -r -- ""
+print -r -- "the commands that restart this distro are printed, not run"
+run "${CMD}" provision
+check    "provision exits 1"                     "${RC}" "1"
+check    "and runs nothing"                      "$(calls)" ""
+contains "says why"                              "${ERR}" "'provision' restarts this distro, so it has to be started from Windows."
+contains "and prints the line to paste"          "${ERR}" "& 'C:\\git\\flakelab\\setup-wsl-nix.ps1' provision"
+run "${CMD}" bootstrap -- -Config "it's here.yaml"
+contains "a quote in an argument is doubled for PowerShell" "${ERR}" "bootstrap -Config 'it''s here.yaml'"
+run "${CMD}" provision -- -DryRun
+check    "-DryRun never restarts, so it runs here" "${RC}" "0"
+contains "with the switch"                       "$(calls)" "provision -DryRun"
+run "${CMD}" --foreground migrate
+check    "--foreground runs it here regardless"  "${RC}" "0"
+contains "as asked"                              "$(calls)" "setup-wsl-nix.ps1 migrate"
+
+print -r -- ""
+print -r -- "finding the checkout"
+run "${CMD}" --repo "${BASE}/elsewhere/flakelab" status
+check    "a checkout off the Windows drives is refused" "${RC}" "1"
+contains "naming the fix"                        "${ERR}" "is not on a Windows drive - keep the checkout under"
+run "${CMD}" --repo "${BASE}/nowhere" status
+check    "a directory without the script is refused" "${RC}" "1"
+contains "naming it"                             "${ERR}" "no setup-wsl-nix.ps1 in ${BASE}/nowhere"
+run "${CMD}" --repo 'C:\git\flakelab' status
+check    "a Windows path is accepted"            "${RC}" "0"
+contains "and converted"                         "$(calls)" 'C:\git\flakelab\setup-wsl-nix.ps1 status'
+run env -u FLAKELAB_REPO_ROOT "${CMD}" status
+check    "no overlay and no --repo is a refusal" "${RC}" "1"
+contains "that says to pass one"                 "${ERR}" "no checkout with setup-wsl-nix.ps1 found - pass --repo <path>"
+
+print -r -- ""
+print -r -- "what the box must be"
+print -r -- "Linux version 6.12.0 (gcc) #1 SMP" > "${BASE}/proc/version"
+run "${CMD}" status
+check    "outside WSL it refuses"                "${RC}" "1"
+contains "saying so"                             "${ERR}" "this only runs inside WSL"
+print -r -- "Linux version 6.6.87.2-microsoft-standard-WSL2 (gcc) #1 SMP" > "${BASE}/proc/version"
+rm -f "${BASE}/binfmt/WSLInterop"
+run "${CMD}" status
+check    "a wiped interop handler refuses"       "${RC}" "1"
+contains "and names the heal"                    "${ERR}" "wsl --shutdown"
+: > "${BASE}/binfmt/WSLInterop-late"
+run "${CMD}" status
+check    "the -late spelling counts"             "${RC}" "0"
+
+print -r -- ""
+print -r -- "usage"
+run "${CMD}" --bogus
+check    "an unknown double-dash flag is a usage error" "${RC}" "2"
+contains "pointing at the .ps1's own switches"   "${ERR}" "the .ps1's switches are single-dash, or go after --"
+run "${CMD}" --repo
+check    "--repo without a path is a usage error" "${RC}" "2"
+run "${CMD}" --help
+check    "--help exits 0"                        "${RC}" "0"
+contains "naming the flakelab form"              "${OUT}" "flakelab provision [options] [command]"
+check    "and runs nothing"                      "$(calls)" ""
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

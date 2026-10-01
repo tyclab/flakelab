@@ -5,7 +5,8 @@
 # which errexit would turn into silent aborts.
 set -uo pipefail
 
-_self="${0:t}"
+# The command as the user runs it: the script's own name is not on PATH.
+_self="flakelab update"
 
 # print -P prompt-expands the whole string, so a `%` in a path, a branch or a
 # URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r
@@ -62,7 +63,7 @@ while (( $# )); do
       print -r -- "  made a repository first - git init, one commit, no remote - unless that"
       print -r -- "  commit would carry what the template .gitignore keeps out of git."
       print -r -- ""
-      print -r -- "  --all   also run nix-clone-repos after an applied switch"
+      print -r -- "  --all   also run the clone sweep (flakelab clone) after an applied switch"
       print -r -- ""
       print -r -- "  FLAKELAB_STALE_OK=1  rebuild the checkout as it is: behind, dirty, unverified,"
       print -r -- "                       or a plain directory that is to stay one"
@@ -636,7 +637,7 @@ fi
 (( _run_clone )) || exit "${_result_rc}"
 
 if ! command -v nix-clone-repos > /dev/null 2>&1; then
-  _say red "✗ --all: nix-clone-repos is not on PATH — the switch is applied, the clone sweep did not run"
+  _say red "✗ --all: flakelab clone is not available (its wrapper nix-clone-repos is not on PATH) — the switch is applied, the clone sweep did not run"
   exit 1
 fi
 nix-clone-repos || exit $?

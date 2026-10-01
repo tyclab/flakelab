@@ -31,18 +31,18 @@ while (( $# > 0 )); do
       echo "Reads repo specs from stdin (one per line): ssh_url [dest_path]"
       exit 0 ;;
     *)
-      print -r -- "Unknown option: $1" >&2; exit 1 ;;
+      print -r -- "Unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 if [[ -z "${KEY_FILE}" ]]; then
   echo "Error: --key-file is required" >&2
-  exit 1
+  exit 2
 fi
 if [[ -z "${REPOS_DIR}" ]]; then
   echo "Error: --repos-dir is required" >&2
-  exit 1
+  exit 2
 fi
 
 # Shared network-facing git plumbing (ssh hardening, retry shape). Sibling
@@ -66,6 +66,13 @@ export GIT_SSH_COMMAND="ssh -i ${KEY_FILE} -o BatchMode=yes -o StrictHostKeyChec
 # at a fixed path (nix/home/git-ssh.nix), the same fallback activation uses.
 if [[ -z "${SSH_AUTH_SOCK:-}" && -S "/run/user/$(id -u)/ssh-agent" ]]; then
   export SSH_AUTH_SOCK="/run/user/$(id -u)/ssh-agent"
+fi
+# A key that is not there is its own finding: the sweep's caller (nix/scripts.nix)
+# picks the first configured key on disk, so this is a direct call with a wrong
+# name, not a passphrase problem.
+if [[ ! -f "${KEY_FILE}" ]]; then
+  print -ru2 -- "${KEY_FILE} does not exist. Drop the key there, or pass --key-file the one that is."
+  exit 1
 fi
 # An unencrypted key needs no agent; an encrypted one with an empty agent cannot
 # authenticate at all, so say so once instead of forking workers that each fail.

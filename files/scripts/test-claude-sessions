@@ -552,7 +552,7 @@ check "a transcript reached through a profile's projects link is listed once" "$
 run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus
-check "an unknown flag exits 1" "${RC}" "1"
+check "an unknown flag exits 2" "${RC}" "2"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

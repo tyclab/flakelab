@@ -14,7 +14,7 @@ set -uo pipefail
 #
 # Usage: flakelab doctor [--strict] [--quiet] [--help]  (script name: nix-doctor)
 #
-# Exit status: 0 all blocking checks passed, 1 at least one failed.
+# Exit status: 0 all blocking checks passed, 1 at least one failed, 2 a usage error.
 #
 
 # Colors (print -P)
@@ -41,16 +41,18 @@ while (( $# > 0 )); do
       echo "  --quiet    print only FAIL/WARN lines and the summary"
       echo "  --help     show this help message"
       echo ""
-      echo "Blocking checks cover: the WSLInterop handler, systemd as PID 1 and the cgroup"
-      echo "it runs in (WSL target only), the AI CLIs"
-      echo "the overlay installs (Claude Code, Codex),"
-      echo "which git config file wins, secrets.env (mode + CRLF), glab config"
-      echo "modes (global and repo-local), glab auth, the ssh-agent and its keys,"
-      echo "GitLab SSH, cloned repos, a writable npm prefix, and the activation"
-      echo "warning log."
+      echo "Blocking checks cover: the activation (its failure log and the system's"
+      echo "recorded result), the flakelab input in the overlay's lock, the WSLInterop"
+      echo "handler, systemd as PID 1 and the cgroup it runs in (WSL target only), the"
+      echo "AI CLIs the overlay installs (Claude Code, Codex), the accounts store and"
+      echo "its auto-switch timer, which git config file wins, secrets.env (mode +"
+      echo "CRLF), glab config modes (global and repo-local), glab auth, the ssh-agent"
+      echo "and its keys, GitLab SSH, cloned repos, and a writable npm prefix."
       echo ""
-      echo "Non-blocking (WARN): Claude plugins installed; secret-gate findings"
-      echo "held back from the state root (with the transcripts held back whole)."
+      echo "Non-blocking (WARN): deferred activation steps, a skip-healthcheck marker,"
+      echo "run-time overrides of the auto-switch settings, Claude plugins installed,"
+      echo "and the secret-gate findings held back from the shared state root (with"
+      echo "the transcripts held back whole)."
       echo ""
       echo "The GitLab checks (token, glab auth, the git@gitlab.com SSH probe)"
       echo "are skipped when the overlay configures no gitlabGroups or repos —"
@@ -59,7 +61,7 @@ while (( $# > 0 )); do
       ;;
     *)
       print -r -- "Unknown option: $1" >&2
-      exit 1
+      exit 2
       ;;
   esac
   shift
@@ -145,6 +147,14 @@ if [[ -s "${DEFER_LOG}" ]]; then
   log_hint "Complete them: flakelab update — with a passphrase-unlocked key in the ssh-agent for the git@ steps"
 else
   log_ok "no activation steps deferred"
+fi
+
+# The marker that turns the activation health check off (nix/home/health.nix)
+# has no expiry: left behind after the fix, every later switch skips the check.
+HEALTH_SKIP_MARKER="${HOME}/.local/state/flakelab/skip-healthcheck"
+if [[ -e "${HEALTH_SKIP_MARKER}" ]]; then
+  log_warn "the activation health check is skipped: ${HEALTH_SKIP_MARKER} exists"
+  log_hint "once the check it was placed for passes, remove it: rm ${HEALTH_SKIP_MARKER}"
 fi
 
 # The system's own activation - the last switch's, or this boot's, whose status stage
@@ -398,7 +408,9 @@ else
   elif command -v systemctl > /dev/null 2>&1 && [[ "$(systemctl --user list-timers --all 2> /dev/null)" == *flakelab-accounts-autoswitch* ]]; then
     log_ok "auto-switch timer scheduled (flakelab-accounts-autoswitch.timer)"
   else
-    log_ok "note: no auto-switch timer (flakelab update installs it)"
+    # Every box schedules it (nix/home/accounts.nix), so its absence is a defect.
+    log_fail "no flakelab-accounts-autoswitch timer, which every box schedules"
+    log_hint "the running generation predates it, or the user manager lost it: flakelab update, then systemctl --user list-timers"
   fi
 fi
 
@@ -480,7 +492,7 @@ if [[ -r "${SOPS_RENDER}" ]]; then
   fi
 elif [[ ! -f "${SECRETS}" ]]; then
   log_fail "no ${SECRETS} and no ${SOPS_RENDER}"
-  log_hint "populate it from OpenBao, or: flakelab backup --restore"
+  log_hint "populate it from your secret store, or: flakelab backup --restore"
   log_hint "see files/config/secrets.env.example for the expected keys"
   log_hint "on a sops-enrolled box the render is missing: systemctl status sops-install-secrets.service"
 else
@@ -509,7 +521,7 @@ else
     log_ok "secrets.env defines ${keys} key(s)"
   else
     log_fail "secrets.env defines no keys"
-    log_hint "populate it from OpenBao; see files/config/secrets.env.example"
+    log_hint "populate it from your secret store; see files/config/secrets.env.example"
   fi
 fi
 
@@ -759,12 +771,12 @@ if ${STRICT} && (( WARN > 0 )); then
   print -P "${YELLOW}--strict: ${WARN} warning(s) counted as failures${RESET}" >&2
 fi
 if (( FAIL > 0 )); then
-  print -P "${RED}nix-doctor: ${FAIL} problem(s), ${WARN} warning(s).${RESET}" >&2
+  print -P "${RED}flakelab doctor: ${FAIL} problem(s), ${WARN} warning(s).${RESET}" >&2
   exit 1
 fi
 if (( WARN > 0 )); then
-  print -P "${GREEN}nix-doctor: no blocking problems${RESET} (${WARN} warning(s))."
+  print -P "${GREEN}flakelab doctor: no blocking problems${RESET} (${WARN} warning(s))."
 else
-  print -P "${GREEN}nix-doctor: all checks passed.${RESET}"
+  print -P "${GREEN}flakelab doctor: all checks passed.${RESET}"
 fi
 exit 0

@@ -11,7 +11,7 @@
 - [ ] `make lint` passes (the pre-commit suite — CI runs the same target).
 - [ ] `nix flake check` passes, or I have said below why it cannot run here.
 - [ ] I ran the offline suite for anything I touched under `files/scripts/`
-      (`make test` runs all five).
+      (`make test` runs every offline suite).
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` if this is
       user-visible.
 - [ ] No secrets, tokens, private hostnames or personal paths in the diff.

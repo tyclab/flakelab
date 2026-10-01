@@ -3,7 +3,7 @@
 This is a **NixOS** box provisioned from the `flakelab` flake — not managed by `apt`.
 Tools come from the flake, so `/usr/bin` holds almost nothing and shebangs other than `/usr/bin/env` are unreliable: resolve binaries with `command -v`.
 Change the environment by editing the flake and running `flakelab update`, never by installing into the system.
-Secrets are not in the flake in plaintext: the shell env carries them, sourced from the sops-nix render at `/run/secrets/tyc-env` when this box is enrolled, else from OpenBao via `~/.config/tyc/secrets.env`.
+Secrets are not in the flake in plaintext: the shell env carries them, sourced from the sops-nix render at `/run/secrets/tyc-env` when this box is enrolled, else from `~/.config/tyc/secrets.env`, which the operator fills from their secret store.
 
 ## Permissions and auto mode
 

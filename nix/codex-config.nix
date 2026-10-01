@@ -73,7 +73,7 @@ let
   environment =
     lib.optionalAttrs (cfg.whatsappMcpDir != null) { WHATSAPP_MCP_DIR = cfg.whatsappMcpDir; }
     // lib.optionalAttrs (cfg.target == "wsl") {
-      PLAYWRIGHT_MCP_EXECUTABLE_PATH = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe";
+      PLAYWRIGHT_MCP_EXECUTABLE_PATH = shared.windowsChromePath;
       PLAYWRIGHT_MCP_BROWSER = "chrome";
     };
 in
