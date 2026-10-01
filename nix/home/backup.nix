@@ -11,22 +11,17 @@
   lib,
   pkgs,
   osConfig,
+  flakelab,
   ...
 }:
 let
   cfg = osConfig.flakelab;
   scripts = import ../scripts.nix { inherit pkgs cfg; };
+  inherit (flakelab) neverRestartedByActivation;
   # Only --state-only is safe sub-daily: a full pass re-snapshots the payload and
   # would burn the snapshot ring down to hours of rollback.
   stateSync = cfg.stateRoot != null && cfg.stateSyncInterval != null;
   autosave = cfg.sessionsAutosaveInterval != null;
-  # Activation must never restart these oneshots: it would block on a running
-  # pass until home-manager times out, or kill a sync mid-copy. Both sections,
-  # because sd-switch reads [Unit] and switch-to-configuration reads [Service].
-  neverRestartedByActivation = {
-    Unit."X-RestartIfChanged" = false;
-    Service."X-RestartIfChanged" = false;
-  };
 in
 {
   systemd.user.services =

@@ -1,5 +1,7 @@
 # Folds userData.profiles into effective gitlabGroups, profileCliTools,
-# customAliases and sessionVariables; `teams` / `teamCliTools` are older aliases.
+# customAliases and sessionVariables. `teams` / `teamCliTools` are the pre-rename
+# spellings, still read for an overlay that has not moved (CHANGELOG: deprecated);
+# new overlays write `profiles` / `profileCliTools`.
 { lib }:
 userData:
 let
@@ -22,12 +24,14 @@ let
     lib.warnIf (profiles == [ ])
       "profiles: none selected, so profiles/ contributes nothing (known: ${lib.concatStringsSep ", " known}). Set `profiles = [ ... ]` in the flake that calls mkSystem.";
 
-  collect = attr: alias: lib.concatMap (p: p.${attr} or p.${alias} or [ ]) selected;
-
   userCliTools = userData.profileCliTools or userData.teamCliTools or [ ];
 
-  mergedGroups = lib.unique ((userData.gitlabGroups or [ ]) ++ collect "gitlabGroups" "gitlabGroups");
-  mergedCliTools = lib.unique (userCliTools ++ collect "profileCliTools" "teamCliTools");
+  mergedGroups = lib.unique (
+    (userData.gitlabGroups or [ ]) ++ lib.concatMap (p: p.gitlabGroups or [ ]) selected
+  );
+  mergedCliTools = lib.unique (
+    userCliTools ++ lib.concatMap (p: p.profileCliTools or p.teamCliTools or [ ]) selected
+  );
 
   # User values win on key collision: the overlay is the more specific source.
   mergedAliases = lib.foldl' (acc: p: (p.customAliases or { }) // acc) (userData.customAliases or { }

@@ -72,16 +72,17 @@ let
   sshDefer = what: "${flakelabDefer} ${lib.escapeShellArg what}";
 
   inherit (cfg) sshKeys;
-  firstSshKey = builtins.head sshKeys; # the git/clone key
+  # The clone identity, shared with the `flakelab clone` wrapper (nix/clone-key.nix).
+  cloneKeyResolve = import ../clone-key.nix { inherit lib sshKeys; };
 
-  # The clone identity is the first sshKeys entry that exists on disk, resolved at
-  # activation: gating on the first name would park clones on a box carrying a later one.
-  cloneKeyResolve = ''
-    _cloneKey=""
-    for _k in ${lib.concatMapStringsSep " " lib.escapeShellArg sshKeys}; do
-      if [ -f "$HOME/.ssh/$_k" ]; then _cloneKey="$HOME/.ssh/$_k"; break; fi
-    done
-  '';
+  # Activation must never restart the user units the modules below declare: it
+  # would block on a running pass until home-manager times out, or kill a sync
+  # mid-copy. Both sections, because sd-switch reads [Unit] and
+  # switch-to-configuration reads [Service].
+  neverRestartedByActivation = {
+    Unit."X-RestartIfChanged" = false;
+    Service."X-RestartIfChanged" = false;
+  };
 
   # The one target fact the home modules need: whether there is a Windows side.
   isWsl = cfg.target == "wsl";
@@ -90,7 +91,6 @@ let
 in
 {
   imports = [
-    ./mcp.nix
     ./packages.nix
     ./zsh.nix
     ./backup.nix
@@ -115,8 +115,8 @@ in
       sshDefer
       isWsl
       sshKeys
-      firstSshKey
       cloneKeyResolve
+      neverRestartedByActivation
       installClaude
       installCodex
       ;

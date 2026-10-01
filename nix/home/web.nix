@@ -13,21 +13,19 @@
   lib,
   pkgs,
   osConfig,
+  flakelab,
   ...
 }:
 let
   cfg = osConfig.flakelab;
   scripts = import ../scripts.nix { inherit pkgs cfg; };
+  inherit (flakelab) neverRestartedByActivation;
   web = cfg.web.enable;
   terminal = cfg.web.enable && cfg.web.terminal;
   # %t is the user's runtime directory; the socket sits in a 0700 directory
   # of its own there.
   socketDir = "%t/flakelab";
   socket = "${socketDir}/ttyd.sock";
-  neverRestartedByActivation = {
-    Unit."X-RestartIfChanged" = false;
-    Service."X-RestartIfChanged" = false;
-  };
   # The entrypoint attaches the agents session (creating it when absent),
   # never a bare shell. -b puts ttyd's page and its WebSocket under
   # /terminal, where the dashboard tunnels; -W makes the terminal writable.

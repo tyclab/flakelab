@@ -21,17 +21,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Track commit-SHA pins in the Nix let bindings annotated with `# renovate-digest: ... tag=<release>`: the digest follows the named release tag, so a newer tag moves both the tag in the comment and the SHA. A separate marker keyword from the `# renovate:` one below, because the SHA is a digest, not a currentValue.",
-      "managerFilePatterns": ["/^nix/.*\\.nix$/"],
-      "matchStrings": [
-        "#\\s*renovate-digest:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)\\s+tag=(?<currentValue>\\S+)\\s*\\n[^\\n]*?\"(?<currentDigest>[0-9a-f]{40})\""
-      ],
-      "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
-      "description": "Track version pins in the Nix let bindings annotated with `# renovate: ...` comments",
-      "managerFilePatterns": ["/^nix/.*\\.nix$/"],
+      "description": "Track version pins in the Nix let bindings annotated with `# renovate: ...` comments: the MCP server and npm pins under nix/, and the tycswap release in flake.nix (a bump there fails checks.tycswap until its hashes follow).",
+      "managerFilePatterns": ["/^nix/.*\\.nix$/", "/^flake\\.nix$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+?)(?:\\s+versioning=(?<versioning>\\S+))?(?:\\s+extractVersion=(?<extractVersion>\\S+))?\\s*\\n[^\\n]*?\"(?<currentValue>[^\"\\s]+)\""
       ]
@@ -39,8 +30,8 @@
   ],
   "packageRules": [
     {
-      "description": "A third-party git-SHA pin is never automerged: nothing else vouches for an unreviewed upstream release. The 14-day hold gives a fresh tag time to be pulled or re-cut.",
-      "matchDatasources": ["git-refs"],
+      "description": "A third-party release pin is never automerged: nothing else vouches for an unreviewed upstream release. The 14-day hold gives a fresh tag time to be pulled or re-cut.",
+      "matchDatasources": ["github-releases"],
       "automerge": false,
       "minimumReleaseAge": "14 days"
     }

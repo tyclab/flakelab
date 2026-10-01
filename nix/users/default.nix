@@ -1,6 +1,9 @@
 # Neutral per-user placeholders; a private overlay calling `flakelab.lib.mkSystem`
 # supplies the real values, and nix/options.nix documents every field.
 # Git-tracked because flakes only evaluate tracked files; secrets never live here.
+# Only the options with no default are set: everything else - the installs, the
+# plugin lists, sessionVariables, the aliases - takes its default from
+# nix/options.nix, which is where a reader should look it up.
 {
   username = "youruser";
   gitName = "Your Name";
@@ -13,39 +16,5 @@
 
   backupAutostart = false;
 
-  gitlabGroups = [ ];
-
-  repos = [ ];
-
-  sshKeys = [ "id_ed25519" ];
-
-  profiles = [ ];
-  profileCliTools = [ ];
-
-  installClaude = true;
-  installCodex = true;
-  installTycswap = true;
-  claudeAutoUpdatesChannel = "stable";
-
   cloneExclude = [ "flakelab" ];
-
-  extraReposDirs = [ ];
-
-  bitwardenServer = null;
-
-  customAliases = { };
-
-  # No secrets: this lands in the world-readable Nix store.
-  sessionVariables = { };
-
-  claudePluginMarketplaces = [ ];
-  claudePlugins = [ ];
-
-  claudeAgentDefaults = false;
-
-  claudeMdExtra = "";
-
-  claudeMcpServers = { };
-
-  whatsappMcpDir = null;
 }

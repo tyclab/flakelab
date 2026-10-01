@@ -10,17 +10,15 @@
   lib,
   pkgs,
   osConfig,
+  flakelab,
   ...
 }:
 let
   cfg = osConfig.flakelab;
   scripts = import ../scripts.nix { inherit pkgs cfg; };
+  inherit (flakelab) neverRestartedByActivation;
   interval =
     if cfg.accounts.autoSwitchInterval != null then cfg.accounts.autoSwitchInterval else "2min";
-  neverRestartedByActivation = {
-    Unit."X-RestartIfChanged" = false;
-    Service."X-RestartIfChanged" = false;
-  };
 in
 {
   # A file read, not `flakelab accounts`: that runs ~46 processes and, when an

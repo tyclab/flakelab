@@ -1,8 +1,12 @@
 # Servers registered in both Claude and Codex: the shared OAuth accounts and the
-# headless browser.
+# headless browser; and the one constant both clients' Playwright setup reads.
 { pkgs, cfg }:
 let
   inherit (pkgs) lib;
+  # The Windows Chrome the Playwright MCP server attaches to on the wsl target.
+  # Claude sets it with the mcp-playwright plugin (nix/home/claude.nix), Codex on
+  # every wsl box (nix/codex-config.nix); the path itself lives here alone.
+  windowsChromePath = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe";
   # renovate: datasource=npm depName=mcp-remote
   remoteVersion = "0.14.3";
   settings = pkgs.writeText "flakelab-mcp.json" (
@@ -81,7 +85,7 @@ assert lib.assertMsg (
   !(cfg.mcpBrowsers.headless && cfg.mcpShared.servers ? playwright-headless)
 ) "mcpShared.servers: playwright-headless is the name mcpBrowsers.headless registers";
 {
-  inherit launcher;
+  inherit launcher windowsChromePath;
   servers =
     lib.mapAttrs (name: _: {
       command = "${launcher}/bin/flakelab-mcp";

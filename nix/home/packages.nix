@@ -5,14 +5,12 @@
   pkgs,
   osConfig,
   flakelab,
-  flakelabMcp,
   ...
 }:
 let
   cfg = osConfig.flakelab;
   inherit (flakelab) isWsl;
-
-  inherit (flakelabMcp) whatsappMcpDir;
+  inherit (cfg) whatsappMcpDir;
 
   scripts = import ../scripts.nix { inherit pkgs cfg; };
   cli = import ../cli.nix { inherit pkgs cfg; };
