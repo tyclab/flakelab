@@ -317,7 +317,9 @@ for s in "${HELP_SCRIPTS[@]}"; do
   # The other half of the same bug: an argument ignored instead of refused.
   rm -f "${BASE}/help-ran.log"
   OUT="$(env -u USER -u SUDO_USER -u WSL_DISTRO_NAME HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --no-such-flag </dev/null 2>&1)"; RC=$?
-  check "${s} refuses an unknown flag" "$(( RC != 0 ))" "1"
+  # Exit 2 is the usage-error code on every command (AGENTS.md); 1 would read as
+  # failed work, and on the doctor as a failed check.
+  check "${s} refuses an unknown flag with exit 2" "${RC}" "2"
   check "${s} runs no tool on one" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
 done
 

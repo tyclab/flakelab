@@ -62,7 +62,7 @@ print -r -- "a bare notify on a terminal shows the usage"
 # A hook pipes JSON in; a terminal never would, so it must not wait for it.
 OUT="$(printf '' | TERM=xterm timeout 20 script -qec "${(q)CMD}" /dev/null 2>&1)"; RC=$?
 check "it exits 2" "${RC}" "2"
-contains "with the usage" "${OUT}" "Usage: notify"
+contains "with the usage" "${OUT}" "Usage: flakelab notify"
 
 print -r -- "unconfigured"
 run_in "${CLAUDE_HOOK}"

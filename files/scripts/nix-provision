@@ -17,9 +17,12 @@
 # that restart the distro print the command for a Windows terminal instead.
 set -uo pipefail
 
-_self="${0:t}"
+# The command as the user runs it: the script's own name is not on PATH.
+_self="flakelab provision"
 
 die() { print -ru2 -- "${_self}: $*"; exit 1 }
+# A usage error exits 2; failed work exits 1 through die.
+usage_error() { print -ru2 -- "${_self}: $*"; exit 2 }
 
 usage() {
   cat <<EOF
@@ -34,9 +37,10 @@ provision, bootstrap and migrate restart this distro, so they are not run from
 here: the command to paste into a Windows PowerShell is printed instead.
 
 Only 'generate' and 'init' need Windows at all. To write the overlay WITHOUT
-PowerShell - on Linux, on macOS, or in here - use the flakelab checkout's own
-  files/scripts/nix-overlay-generate --out <dir> --config <user_data.yaml>
-which reads the same user_data.yaml schema and never calls wsl.exe.
+PowerShell - on Linux, on macOS, or in here - use
+  flakelab overlay-gen --out <dir> --config <user_data.yaml>
+(from a checkout: ./files/scripts/nix-overlay-generate), which reads the same
+user_data.yaml schema and never calls wsl.exe.
 
 Options:
   --repo <path>   the flakelab checkout holding setup-wsl-nix.ps1 (WSL or Windows
@@ -59,10 +63,14 @@ _ps_args=()
 
 while (( $# )); do
   case "$1" in
-    --repo)       shift; _repo="${1:-}"; [[ -n "${_repo}" ]] || die "--repo needs a path" ;;
+    --repo)       shift; _repo="${1:-}"; [[ -n "${_repo}" ]] || usage_error "--repo needs a path" ;;
     --foreground) _foreground=true ;;
     -h|--help)    usage; exit 0 ;;
     --)           shift; _ps_args+=("$@"); break ;;
+    # The .ps1's own switches are single-dash (-DryRun, -Config) and pass through;
+    # a double-dash flag can only be meant for this script, so an unknown one is
+    # a usage error rather than something to hand PowerShell.
+    --*)          usage_error "unknown option: $1 (the .ps1's switches are single-dash, or go after --)" ;;
     -*)           _ps_args+=("$1") ;;
     *)            if [[ -z "${_cmd}" ]]; then _cmd="$1"; else _ps_args+=("$1"); fi ;;
   esac
@@ -70,12 +78,15 @@ while (( $# )); do
 done
 [[ -n "${_cmd}" ]] || _cmd='status'
 
-grep -qi microsoft /proc/version 2>/dev/null || die "this only runs inside WSL"
+# FLAKELAB_PROC_ROOT and FLAKELAB_BINFMT_ROOT are test seams (test-nix-provision),
+# as FLAKELAB_PROC_ROOT is for the doctor: unset, the kernel's own trees.
+grep -qi microsoft "${FLAKELAB_PROC_ROOT:-/proc}/version" 2>/dev/null || die "this only runs inside WSL"
 
 # powershell.exe is itself an interop call, so a wiped WSLInterop handler is the
 # first thing to check - otherwise the failure is 'exec format error' from a
 # binary the user never mentioned. known-issues.md covers the wipe.
-if [[ ! -e /proc/sys/fs/binfmt_misc/WSLInterop && ! -e /proc/sys/fs/binfmt_misc/WSLInterop-late ]]; then
+_binfmt="${FLAKELAB_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
+if [[ ! -e "${_binfmt}/WSLInterop" && ! -e "${_binfmt}/WSLInterop-late" ]]; then
   die "WSL interop is broken (no WSLInterop in /proc/sys/fs/binfmt_misc), so .exe calls fail.
   Heal it from a Windows terminal:  wsl --shutdown
   then re-enter this distro and retry."
@@ -85,10 +96,12 @@ _ps="$(command -v powershell.exe || print -- /mnt/c/Windows/System32/WindowsPowe
 [[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
 
 # FLAKELAB_REPO_ROOT is the overlay (nix/scripts.nix exports repoPath); the
-# provisioning script lives in the template checkout beside it.
-if [[ -z "${_repo}" ]]; then
-  _parent="${${FLAKELAB_REPO_ROOT:-}:h}"
-  if [[ -n "${_parent}" && -d "${_parent}" ]]; then
+# provisioning script lives in the template checkout beside it. Only with the
+# variable set: `:h` of an empty string is `.`, which would make an unset
+# variable a search of the current directory's children.
+if [[ -z "${_repo}" && -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
+  _parent="${FLAKELAB_REPO_ROOT:h}"
+  if [[ -d "${_parent}" ]]; then
     for _d in "${_parent}"/*(/N); do
       if [[ -f "${_d}/setup-wsl-nix.ps1" ]]; then _repo="${_d}"; break; fi
     done

@@ -116,9 +116,9 @@ typeset -A TOOL_CMD=(claude claude codex codex)
 
 usage() {
   cat <<'USAGE'
-Usage: claude-sessions [--start <tool> [dir] [--detach] [-- args...]]
-                       [--attach [id|window]] [--save [file]] [--resume [file]]
-                       [--open [file]] [--autosave] [--recent [hours]] [--json]
+Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
+                         [--attach [id|window]] [--save [file]] [--resume [file]]
+                         [--open [file]] [--autosave] [--recent [hours]] [--json]
 
   (no flag)         list the running agent sessions (Claude Code, Codex)
   --start <tool> [dir] [--detach] [-- args...]
@@ -166,7 +166,7 @@ while (( $# > 0 )); do
     --json)   MODE=json ;;
     --) shift; START_ARGS=("$@"); break ;;
     --help|-h) usage; exit 0 ;;
-    *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 1 ;;
+    *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
   esac
   shift
 done
