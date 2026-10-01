@@ -145,6 +145,21 @@ contains "none"                "$(ai_clis '')" "[ OK ] no AI CLI installed by th
 contains "unset is none"       "$(ai_clis)" "[ OK ] no AI CLI installed by this overlay"
 
 
+print -r -- "a usage error exits 2, not 1 like a failed check"
+rc=0
+env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" zsh "${DOCTOR}" --strct > /dev/null 2>&1 || rc=$?
+[[ "${rc}" == 2 ]] && ok "an unknown option exits 2" || bad "an unknown option exits 2 (got ${rc})"
+
+print -r -- "activation: a skip-healthcheck marker left behind warns"
+MARKER="${BASE}/home/.local/state/flakelab/skip-healthcheck"
+mkdir -p "${MARKER:h}"
+touch "${MARKER}"
+out="$(section Activation PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)"
+contains "names the file"        "${out}" "[WARN] the activation health check is skipped: ${MARKER} exists"
+contains "and how to remove it"  "${out}" "rm ${MARKER}"
+rm -f "${MARKER}"
+lacks "without the marker, nothing" "$(section Activation PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "health check is skipped"
+
 print -r -- "accounts: no store"
 contains "says so"      "$(accounts_section)" "[ OK ] no stored logins"
 
@@ -157,7 +172,7 @@ print -r -- '{}' > "${AC}/1/credentials.json"; chmod 600 "${AC}/1/credentials.js
 out="$(accounts_section)"
 contains "the store passes"   "${out}" "[ OK ] store is owner-only"
 contains "the files pass"     "${out}" "[ OK ] stored logins are owner-only (0600)"
-contains "no timer is a note" "${out}" "[ OK ] note: no auto-switch timer"
+contains "no timer is a failed check" "${out}" "[FAIL] no flakelab-accounts-autoswitch timer, which every box schedules"
 
 print -r -- "accounts: loose modes and a quarantine"
 chmod 755 "${AC}"
@@ -188,11 +203,12 @@ print -r -- "accounts: no user manager answers"
 out="$(accounts_section 1)"
 contains "the timer is not read as unconfigured" "${out}" "[WARN] no auto-switch timer can run or be listed"
 contains "names the user manager" "${out}" "no user manager answers, so no user unit runs: systemctl status user@"
-lacks    "no note"                "${out}" "note: no auto-switch timer"
+lacks    "not as a missing timer" "${out}" "no flakelab-accounts-autoswitch timer"
 
 print -r -- "accounts: a user manager with no timer"
 out="$(accounts_section 0)"
-contains "a note"                 "${out}" "[ OK ] note: no auto-switch timer"
+contains "a failed check, since every box schedules it" "${out}" "[FAIL] no flakelab-accounts-autoswitch timer, which every box schedules"
+contains "with the way back"       "${out}" "flakelab update, then systemctl --user list-timers"
 lacks    "no user manager finding" "${out}" "no user manager answers"
 
 print -r -- "systemd cgroup: another target"
