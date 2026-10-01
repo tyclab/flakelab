@@ -44,7 +44,7 @@ while (( $# > 0 )); do
       echo "Blocking checks cover: the activation (its failure log and the system's"
       echo "recorded result), the flakelab input in the overlay's lock, the WSLInterop"
       echo "handler, systemd as PID 1 and the cgroup it runs in (WSL target only), the"
-      echo "AI CLIs the overlay installs (Claude Code, Codex), the accounts store and"
+      echo "AI CLIs the overlay installs (Claude Code, Codex), the switcher (tycswap) and"
       echo "its auto-switch timer, which git config file wins, secrets.env (mode +"
       echo "CRLF), glab config modes (global and repo-local), glab auth, the ssh-agent"
       echo "and its keys, GitLab SSH, cloned repos, and a writable npm prefix."
@@ -114,7 +114,7 @@ if [[ -z "${TARGET}" ]]; then
   fi
 fi
 
-# User units - the ssh-agent, the accounts auto-switch timer - run only under the
+# User units - the ssh-agent, the tycswap auto-switch timer - run only under the
 # user manager, so while none answers a hint that names one of them is no remedy.
 NO_USER_MANAGER=false
 if (( $+commands[systemctl] )) && ! systemctl --user show-environment > /dev/null 2>&1; then
@@ -345,13 +345,16 @@ fi
 log_head "Switcher"
 TYCSWAP_STORE="${FLAKELAB_TYCSWAP_STORE:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}"
 OLD_ACCT_STORE="${HOME}/.local/state/flakelab/accounts"
-if [[ "${FLAKELAB_INSTALL_TYCSWAP:-}" != true ]]; then
+if [[ -z "${FLAKELAB_INSTALL_TYCSWAP:-}" ]]; then
+  log_ok "note: not run through the wrapper; the switcher is not checked"
+elif [[ "${FLAKELAB_INSTALL_TYCSWAP}" != true ]]; then
   log_ok "no switcher installed by this overlay (installTycswap = false)"
-elif ! command -v tycswap > /dev/null 2>&1; then
+# Either name: the release before the rename ships the binary as cswap.
+elif ! _cs_bin="$(command -v tycswap 2> /dev/null || command -v cswap 2> /dev/null)"; then
   log_fail "tycswap not on PATH"
   log_hint "flakelab update installs it (installTycswap)"
 else
-  log_ok "$(tycswap --version 2> /dev/null | tail -n 1)"
+  log_ok "$("${_cs_bin}" --version 2> /dev/null | tail -n 1)"
   if [[ ! -d "${TYCSWAP_STORE}" ]]; then
     log_ok "no stored logins (tycswap add starts the store)"
     # Read-only: the old path may belong to another switcher; migrate copies, never moves.
@@ -377,7 +380,7 @@ else
     # The roster through tycswap itself, so its reading of the store is what is
     # checked; its last stderr line is the finding when it fails.
     _cs_err="$(mktemp)"
-    _cs_list="$(tycswap list --json 2> "${_cs_err}")"
+    _cs_list="$("${_cs_bin}" list --json 2> "${_cs_err}")"
     if [[ -n "${_cs_list}" ]] && print -r -- "${_cs_list}" | jq -e '.schemaVersion' > /dev/null 2>&1; then
       log_ok "$(print -r -- "${_cs_list}" | jq -r '"\(.accounts | length) stored login(s); active: \(([.accounts[] | select(.active == true) | .email][0]) // "none")"')"
     else

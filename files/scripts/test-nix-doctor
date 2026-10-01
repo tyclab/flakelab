@@ -178,6 +178,18 @@ lacks "without the marker, nothing" "$(section Activation PATH="${TOOLS}" HOME="
 print -r -- "switcher: not installed by this overlay"
 contains "says so" "$(section Switcher PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=false)" "[ OK ] no switcher installed by this overlay"
 
+print -r -- "switcher: the wrapper variable absent (a checkout run)"
+contains "is a note, not a verdict" "$(section Switcher PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "[ OK ] note: not run through the wrapper; the switcher is not checked"
+
+print -r -- "switcher: the binary under its old name"
+OLDNAME="${BASE}/oldname"; mkdir -p "${OLDNAME}"
+for f in "${NOTYCSWAP}"/*(N); do ln -s "${f}" "${OLDNAME}/${f:t}"; done
+print -rl -- '#!/usr/bin/env zsh' 'case "$1" in --version) print -r -- "cswap 0.2.0" ;; list) print -r -- "{\"schemaVersion\":1,\"activeAccountNumber\":null,\"accounts\":[]}" ;; *) exit 2 ;; esac' > "${OLDNAME}/cswap"
+chmod +x "${OLDNAME}/cswap"
+out="$(section Switcher PATH="${OLDNAME}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true)"
+contains "is found"                "${out}" "[ OK ] cswap 0.2.0"
+lacks    "and not reported missing" "${out}" "not on PATH"
+
 print -r -- "switcher: installed but not on PATH"
 out="$(section Switcher PATH="${NOTYCSWAP}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true)"
 contains "fails"          "${out}" "[FAIL] tycswap not on PATH"
@@ -234,6 +246,11 @@ out="$(switcher_section 0 FLAKELAB_TYCSWAP_AUTOSWITCH=true)"
 contains "a manager with no timer warns"   "${out}" "[WARN] flakelab.tycswapAutoSwitchInterval is set but no timer is scheduled"
 out="$(switcher_section 0)"
 contains "without an interval it is a note" "${out}" "[ OK ] note: no auto-switch timer (flakelab.tycswapAutoSwitchInterval schedules tycswap auto --once)"
+# A systemctl that answers list-timers with FAKE_TIMERS: the scheduled branch.
+print -rl -- '#!/bin/sh' 'case "$*" in *list-timers*) printf "%s\n" "${FAKE_TIMERS:-}" ;; esac' 'exit 0' > "${UMT}/systemctl"
+chmod +x "${UMT}/systemctl"; ln -sf "${TOOLS}/tycswap" "${UMT}/tycswap"
+out="$(section Switcher PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_AUTOSWITCH=true FAKE_TIMERS='flakelab-tycswap-autoswitch.timer  loaded active waiting')"
+contains "a scheduled timer passes" "${out}" "[ OK ] auto-switch timer scheduled (flakelab-tycswap-autoswitch.timer)"
 
 print -r -- "systemd cgroup: another target"
 contains "no WSL, nothing to check" "$(cgroup_section other)" "[ OK ] target other: systemd starts at the top of its own cgroup tree"
