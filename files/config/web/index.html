@@ -128,8 +128,13 @@
     return ws;
   };
 
+  // A failed roster read is said once per distinct reason, not on every refresh.
+  let lastListError = "";
   const render = (st) => {
     const now = Math.floor(Date.now() / 1000);
+    const listError = st.calls && st.calls.accounts && !st.calls.accounts.ok ? ((st.calls.accounts.stderr || "").trim() || "failed") : "";
+    if (listError && listError !== lastListError) log(`tycswap list: ${listError}`, true);
+    lastListError = listError;
     const tb = $("#accounts tbody"); tb.innerHTML = "";
     for (const a of ((st.accounts && st.accounts.accounts) || [])) {
       const tags = [];

@@ -214,19 +214,6 @@ def parse(text, default):
         return default
 
 
-def json_lines(text):
-    out = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except ValueError:
-            out.append({"event": "text", "line": line})
-    return out
-
-
 def state():
     # Read-only calls, neither takes the store's lock: side by side, so a
     # refresh costs the slower of them.
