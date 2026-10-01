@@ -10,15 +10,13 @@
   lib,
   pkgs,
   osConfig,
+  flakelab,
   ...
 }:
 let
   cfg = osConfig.flakelab;
   on = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
-  neverRestartedByActivation = {
-    Unit."X-RestartIfChanged" = false;
-    Service."X-RestartIfChanged" = false;
-  };
+  inherit (flakelab) neverRestartedByActivation;
 in
 {
   assertions = [
