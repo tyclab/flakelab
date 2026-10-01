@@ -527,9 +527,9 @@ check "a doubled saved file resumes once" "$(print -r -- "$OUT" | grep -c 'claud
 
 # ---------------------------------------------------------------------------
 print -r -- ""
-print -r -- "a session on an accounts profile (flakelab accounts run)"
+print -r -- "a session on a tycswap profile (tycswap run / tycswap env)"
 SID_P=facefeed-0000-0000-0000-000000000009
-PROFILE="${HOME}/.local/state/flakelab/accounts/profiles/2"
+PROFILE="${HOME}/.local/share/tycswap/sessions/2-b_example.com"
 mkdir -p "${PROFILE}/sessions" "${PROFILE}/projects/-other"
 print -r -- "{\"pid\":300,\"sessionId\":\"${SID_P}\",\"cwd\":\"${BASE}/other\",\"startedAt\":${NOW_MS}}" > "${PROFILE}/sessions/300.json"
 run
@@ -542,12 +542,17 @@ print -r -- "{\"type\":\"user\",\"cwd\":\"${BASE}/other\"}" > "${PROFILE}/projec
 run --recent
 contains "--recent reads a transcript a profile kept for itself" "${OUT}" "claude --resume ${SID_Q}  # "
 excludes "and leaves the running profile session out" "${OUT}" "${SID_P}"
-# A profile that shares the history (the default) links projects/ to
+# A profile that shares the history (tycswap's default) links projects/ to
 # ~/.claude's: the same transcript is globbed twice and listed once.
-mkdir -p "${PROFILE:h}/3"
-ln -s "${HOME}/.claude/projects" "${PROFILE:h}/3/projects"
+mkdir -p "${PROFILE:h}/3-c_example.com"
+ln -s "${HOME}/.claude/projects" "${PROFILE:h}/3-c_example.com/projects"
 run --recent
 check "a transcript reached through a profile's projects link is listed once" "$(print -r -- "$OUT" | grep -c "claude --resume ${SID_C}")" "1"
+# The seam: another store root, the registry moved there and gone from the default one.
+mkdir -p "${BASE}/root2/sessions/9-z_example.com/sessions"
+mv "${PROFILE}/sessions/300.json" "${BASE}/root2/sessions/9-z_example.com/sessions/300.json"
+check "FLAKELAB_TYCSWAP_ROOT points the scan at another store" \
+  "$(FLAKELAB_TYCSWAP_ROOT="${BASE}/root2" "${CMD}" 2>/dev/null | grep -E '^claude  300 +[0-9]+[dhm]' | grep -c -- "${SID_P}")" "1"
 
 run --help
 check "--help exits 0" "${RC}" "0"
