@@ -759,7 +759,7 @@
               echo '{"env":{"MY_VAR":"mine"}}' > "$settings"
               bash -euo pipefail ${entryEarlier}
               jq -e '.env | .MY_VAR == "mine" and .WHATSAPP_MCP_DIR == "/example/whatsapp-mcp-server" and .PLAYWRIGHT_MCP_EXTENSION == "true"' "$settings" > /dev/null
-              jq -e '.statusLine.command | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$")' "$settings" > /dev/null
+              jq -e '.statusLine.command | test("/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$")' "$settings" > /dev/null
               bash -euo pipefail ${entryLater}
               jq -e --argjson b "$base" '.env | keys == ($b + ["MY_VAR"] | sort)' "$settings" > /dev/null
               jq -e 'has("statusLine") | not' "$settings" > /dev/null
