@@ -186,6 +186,12 @@ in
       default = true;
       description = "Install tycswap's `cswap`: the account switcher for Claude Code and Codex logins (numbered slots, switch without a logout, auto-switch before a rate limit, a dashboard), pinned to a release in flake.nix. `flakelab accounts` stays available beside it with a store of its own; the tools' live login files are the source of truth for both, and `flakelab accounts` is retired verb by verb as cswap covers them (accounts.md, \"cswap beside flakelab accounts\").";
     };
+    tycswapAutoSwitchInterval = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "2min";
+      description = "systemd time span (OnUnitActiveSec syntax) between ticks of `tycswap auto --once`, the user timer that moves the live Claude Code or Codex login to another stored one before it hits a rate limit. null (the default) installs no timer. Thresholds, strategy and cooldown are tycswap's own settings (`tycswap config`). Needs installTycswap.";
+    };
 
     # The tiering is the whole point, and it is easy to get backwards:
     #   hard_deny  cannot be cleared by anything, including a direct operator

@@ -1277,38 +1277,33 @@
             touch $out
           '';
 
-        # The accounts overview at shell start is a file read, the timer that writes
-        # it is on every box (auto-switch on or off), and the global compinit stays
-        # off (oh-my-zsh runs one).
-        shell-overview =
+        # The auto-switch timer is tycswap's `tycswap auto --once` on a user timer,
+        # present only when an interval is set and the binary is installed; the
+        # quota hook follows the same switch. The global compinit stays off
+        # (oh-my-zsh runs one).
+        tycswap-timer =
           let
             inherit (nixpkgs) lib;
             ext =
-              accounts:
-              self.nixosConfigurations.default.extendModules { modules = [ { flakelab.accounts = accounts; } ]; };
+              attrs: self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; };
             hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
-            overview = ext { shellOverview = true; };
-            timerOf = sys: (hmOf sys).systemd.user.timers.flakelab-accounts-autoswitch.Timer.OnUnitActiveSec;
-            wrapperOf =
-              sys:
-              (import ./nix/scripts.nix {
-                inherit (sys) pkgs;
-                cfg = sys.config.flakelab;
-              }).accounts;
-            on = ext { autoSwitchInterval = "5min"; };
+            timersOf = sys: (hmOf sys).systemd.user.timers;
+            settingsOf = sys: (hmOf sys).home.activation.claudeSettings.data;
+            on = ext { tycswapAutoSwitchInterval = "5min"; };
+            bad = ext {
+              installTycswap = false;
+              tycswapAutoSwitchInterval = "2min";
+            };
           in
-          assert lib.hasInfix "/.local/state/flakelab/accounts/overview.txt"
-            (hmOf overview).programs.zsh.initContent;
-          assert
-            !(lib.hasInfix "overview.txt" (hmOf self.nixosConfigurations.default).programs.zsh.initContent);
-          assert timerOf self.nixosConfigurations.default == "2min";
-          assert timerOf on == "5min";
+          assert !(builtins.hasAttr "flakelab-tycswap-autoswitch" (timersOf self.nixosConfigurations.default));
+          assert (timersOf on).flakelab-tycswap-autoswitch.Timer.OnUnitActiveSec == "5min";
+          assert builtins.match ".*/bin/(cswap|tycswap) auto --once --json" (lib.concatStringsSep " " (lib.toList (hmOf on).systemd.user.services.flakelab-tycswap-autoswitch.Service.ExecStart)) != null;
+          assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAutoSwitchInterval" a.message) (hmOf bad).assertions;
+          assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
+          assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
+          assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
           assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
-          pkgs.runCommandLocal "flakelab-check-shell-overview" { } ''
-            grep -q '^export FLAKELAB_ACCOUNTS_AUTO_SWITCH=false$' ${wrapperOf self.nixosConfigurations.default}/bin/accounts
-            grep -q '^export FLAKELAB_ACCOUNTS_AUTO_SWITCH=true$' ${wrapperOf on}/bin/accounts
-            touch $out
-          '';
+          pkgs.runCommandLocal "flakelab-check-tycswap-timer" { } "touch $out";
 
         # The prompt's git segment is oh-my-zsh's git_prompt_info, which a theme
         # colours: rendered here with the configured one (synchronously; the prompt

@@ -107,20 +107,21 @@ let
   '';
 
   # The reactive half of auto-switch: when Claude Code decides to wait for its
-  # quota window (a Notification of type quota_auto_resume_fired), the engine
-  # ticks at once instead of at the next timer; with auto-switch off the tick
-  # does nothing. Owned by its command, like the SessionEnd hook: a box whose
-  # engine does not decide for Claude drops it again.
-  accountsHook = lib.elem "claude" cfg.accounts.autoSwitchTools;
-  accountsHookCmd = "${scripts.accounts}/bin/accounts auto --once --tool claude --json >/dev/null 2>&1 || true";
-  accountsHookArg = lib.optionalString accountsHook "--arg accountsHook ${lib.escapeShellArg accountsHookCmd}";
-  accountsHookJq = ''
+  # quota window (a Notification of type quota_auto_resume_fired), tycswap ticks
+  # at once instead of at the next timer. Owned by its command, like the
+  # SessionEnd hook: a box without the timer drops it again, and the prune
+  # also recognises the retired engine's command, so a settings.json from an
+  # earlier generation loses a hook that would exec a path no longer there.
+  tycswapHook = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
+  tycswapHookCmd = "${lib.getExe pkgs.tycswap} auto --once --json >/dev/null 2>&1 || true";
+  tycswapHookArg = lib.optionalString tycswapHook "--arg tycswapHook ${lib.escapeShellArg tycswapHookCmd}";
+  tycswapHookJq = ''
     | .hooks = ((.hooks // {})
         | .Notification = (((.Notification // [])
-            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-accounts/bin/accounts auto ")) | not)))
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-accounts/bin/accounts auto |^/nix/store/[^/ ]+/bin/(cswap|tycswap) auto ")) | not)))
             + ${
-              if accountsHook then
-                ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $accountsHook, timeout: 180}]}]''
+              if tycswapHook then
+                ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $tycswapHook, timeout: 180}]}]''
               else
                 "[]"
             })
@@ -393,7 +394,7 @@ in
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
+          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -406,7 +407,7 @@ in
             ${claudeAgentDefaultsJq}
             ${claudeRemoteControlJq}
             ${claudeStatePushJq}
-            ${accountsHookJq}
+            ${tycswapHookJq}
             ${notifyHookJq}
             ${claudeStatuslineJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings"; then
