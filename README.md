@@ -516,19 +516,21 @@ once, then the store can be removed:
 
 ```zsh
 store=~/.local/state/flakelab/accounts
+failed=0
 for d in "$store"/<->(N/); do
   t="$(mktemp -d)"; chmod 700 "$t"
   if [[ -f "$d/credentials.json" ]]; then            # a Claude Code login
     cp "$d/credentials.json" "$t/.credentials.json"
     jq '{oauthAccount: .oauthAccount, hasCompletedOnboarding: true}' "$d/identity.json" > "$t/.claude.json"
-    CLAUDE_CONFIG_DIR="$t" tycswap add
+    CLAUDE_CONFIG_DIR="$t" tycswap add || { print -u2 -- "not migrated: $d"; failed=1 }
   elif [[ -f "$d/auth.json" ]]; then                  # a Codex login
     cp "$d/auth.json" "$t/auth.json"
-    CODEX_HOME="$t" tycswap codex add
+    CODEX_HOME="$t" tycswap codex add || { print -u2 -- "not migrated: $d"; failed=1 }
   fi
   rm -rf "$t"
 done
-tycswap list && rm -rf "$store"
+tycswap list
+(( failed )) || rm -rf "$store"   # the store stays while any login is still to move
 ```
 
 A payload archived by an earlier `flakelab backup` keeps its `accounts/`
