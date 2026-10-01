@@ -340,78 +340,70 @@ if installs codex; then
   fi
 fi
 
-# Accounts — the stored logins of `flakelab accounts`: the store's modes, the
-# quarantined entries, drift between the roster and the live logins, the timer.
-log_head "Accounts"
-ACCT_STORE="${HOME}/.local/state/flakelab/accounts"
-if [[ ! -d "${ACCT_STORE}" ]]; then
-  log_ok "no stored logins (flakelab accounts add <tool> starts the store)"
+# Switcher — tycswap, the account switcher: the binary, its store's modes, the
+# roster as tycswap reads it, the retired engine's store, the timer.
+log_head "Switcher"
+TYCSWAP_STORE="${FLAKELAB_TYCSWAP_STORE:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}"
+OLD_ACCT_STORE="${HOME}/.local/state/flakelab/accounts"
+if [[ "${FLAKELAB_INSTALL_TYCSWAP:-}" != true ]]; then
+  log_ok "no switcher installed by this overlay (installTycswap = false)"
+elif ! command -v tycswap > /dev/null 2>&1; then
+  log_fail "tycswap not on PATH"
+  log_hint "flakelab update installs it (installTycswap)"
 else
-  _acct_mode="$(stat -c %a "${ACCT_STORE}" 2> /dev/null)"
-  if [[ "${_acct_mode}" == 700 ]]; then
-    log_ok "store is owner-only (${ACCT_STORE})"
+  log_ok "$(tycswap --version 2> /dev/null | tail -n 1)"
+  if [[ ! -d "${TYCSWAP_STORE}" ]]; then
+    log_ok "no stored logins (tycswap add starts the store)"
+    # Read-only: the old path may belong to another switcher; migrate copies, never moves.
+    [[ -d "${XDG_DATA_HOME:-${HOME}/.local/share}/claude-swap" ]] && log_hint "a cswap store is at ${XDG_DATA_HOME:-${HOME}/.local/share}/claude-swap; tycswap migrate copies it once and leaves it"
   else
-    log_warn "store is mode ${_acct_mode}, expected 700: ${ACCT_STORE}"
-    log_hint "chmod 700 ${ACCT_STORE}"
-  fi
-  _acct_loose=()
-  for _acct_f in "${ACCT_STORE}"/accounts.json(N.) "${ACCT_STORE}"/<->/*(N.) "${ACCT_STORE}"/profiles/*/.credentials.json(N.) "${ACCT_STORE}"/profiles/*/auth.json(N.); do
-    [[ "$(stat -c %a "${_acct_f}" 2> /dev/null)" == 600 ]] || _acct_loose+=("${_acct_f}")
-  done
-  if (( ${#_acct_loose} == 0 )); then
-    log_ok "stored logins are owner-only (0600)"
-  else
-    log_warn "${#_acct_loose} stored login file(s) are not 0600"
-    for _acct_f in "${_acct_loose[@]}"; do log_hint "chmod 600 ${_acct_f}"; done
-  fi
-  if [[ -f "${ACCT_STORE}/usage.json" ]]; then
-    _acct_q="$(jq -r '.quarantine // {} | to_entries[] | "\(.key) (\(.value.reason))"' "${ACCT_STORE}/usage.json" 2> /dev/null | tr '\n' ' ')"
-    if [[ -n "${_acct_q}" ]]; then
-      log_warn "quarantined entries: ${_acct_q}"
-      log_hint "log in with the tool again, then: flakelab accounts add <tool>"
-    fi
-  fi
-  # A run-time override (`accounts config set`) outlives every switch and
-  # update: the flake's value is not what the engine uses until it is unset.
-  # On or off (`accounts auto on|off`) is what the switch is for, so it is
-  # reported, not warned about.
-  if [[ -f "${ACCT_STORE}/settings.json" ]]; then
-    _acct_o="$(jq -r 'del(.autoSwitch) | to_entries | map("\(.key)=\(.value)") | join(" ")' "${ACCT_STORE}/settings.json" 2> /dev/null)" || _acct_o="settings.json is not a JSON object"
-    if [[ -n "${_acct_o}" ]]; then
-      log_warn "auto-switch settings overridden at run time: ${_acct_o}"
-      log_hint "flakelab accounts config shows each beside the flake's value; flakelab accounts config unset --all returns to it"
-    fi
-    case "$(jq -r 'if has("autoSwitch") then .autoSwitch else empty end' "${ACCT_STORE}/settings.json" 2> /dev/null)" in
-      true) log_ok "auto-switch turned on at run time (flakelab accounts auto off)" ;;
-      false) log_ok "auto-switch turned off at run time (flakelab accounts auto on)" ;;
-    esac
-  fi
-  if command -v flakelab > /dev/null 2>&1; then
-    _acct_st="$(flakelab accounts status --json 2> /dev/null)"
-    if [[ -n "${_acct_st}" ]]; then
-      for _acct_t in $(print -r -- "${_acct_st}" | jq -r 'to_entries[] | select(.value.matches == false) | .key' 2> /dev/null); do
-        log_warn "${_acct_t}: the live login is not the entry the roster calls active (a login by hand)"
-        log_hint "flakelab accounts add ${_acct_t}"
-      done
-      log_ok "$(print -r -- "${_acct_st}" | jq -r '[to_entries[] | select(.value.active != null)] | length' 2> /dev/null || print 0) tool(s) with an active entry; drift checked"
+    _cs_mode="$(stat -c %a "${TYCSWAP_STORE}" 2> /dev/null)"
+    if [[ "${_cs_mode}" == 700 ]]; then
+      log_ok "store is owner-only (${TYCSWAP_STORE})"
     else
-      log_warn "flakelab accounts status --json failed"
+      log_warn "store is mode ${_cs_mode}, expected 700: ${TYCSWAP_STORE}"
+      log_hint "chmod 700 ${TYCSWAP_STORE}"
+    fi
+    _cs_loose=()
+    for _cs_f in "${TYCSWAP_STORE}"/credentials/*(N.) "${TYCSWAP_STORE}"/codex/credentials/*(N.) "${TYCSWAP_STORE}"/sessions/*/.credentials.json(N.); do
+      [[ "$(stat -c %a "${_cs_f}" 2> /dev/null)" == 600 ]] || _cs_loose+=("${_cs_f}")
+    done
+    if (( ${#_cs_loose} == 0 )); then
+      log_ok "stored credentials are owner-only (0600)"
+    else
+      log_warn "${#_cs_loose} stored credential file(s) are not 0600"
+      for _cs_f in "${_cs_loose[@]}"; do log_hint "chmod 600 ${_cs_f}"; done
+    fi
+    # The roster through tycswap itself, so its reading of the store is what is
+    # checked; its last stderr line is the finding when it fails.
+    _cs_err="$(mktemp)"
+    _cs_list="$(tycswap list --json 2> "${_cs_err}")"
+    if [[ -n "${_cs_list}" ]] && print -r -- "${_cs_list}" | jq -e '.schemaVersion' > /dev/null 2>&1; then
+      log_ok "$(print -r -- "${_cs_list}" | jq -r '"\(.accounts | length) stored login(s); active: \(([.accounts[] | select(.active == true) | .email][0]) // "none")"')"
+    else
+      log_warn "tycswap list --json failed: $(tail -n 1 "${_cs_err}" 2> /dev/null)"
+    fi
+    rm -f "${_cs_err}"
+  fi
+  if [[ "${FLAKELAB_TYCSWAP_AUTOSWITCH:-}" == true ]]; then
+    if ${NO_USER_MANAGER}; then
+      log_warn "no auto-switch timer can run or be listed"
+      user_manager_hint
+    # Matched on the whole output, not `| grep -q`: under pipefail a grep that
+    # quits at the first match can leave systemctl a SIGPIPE, and the pipe fails.
+    elif command -v systemctl > /dev/null 2>&1 && [[ "$(systemctl --user list-timers --all 2> /dev/null)" == *flakelab-tycswap-autoswitch* ]]; then
+      log_ok "auto-switch timer scheduled (flakelab-tycswap-autoswitch.timer)"
+    else
+      log_warn "flakelab.tycswapAutoSwitchInterval is set but no timer is scheduled"
+      log_hint "flakelab update installs it"
     fi
   else
-    log_ok "note: flakelab not on PATH; drift not checked"
+    log_ok "note: no auto-switch timer (flakelab.tycswapAutoSwitchInterval schedules tycswap auto --once)"
   fi
-  if ${NO_USER_MANAGER}; then
-    log_warn "no auto-switch timer can run or be listed"
-    user_manager_hint
-  # Matched on the whole output, not `| grep -q`: under pipefail a grep that
-  # quits at the first match can leave systemctl a SIGPIPE, and the pipe fails.
-  elif command -v systemctl > /dev/null 2>&1 && [[ "$(systemctl --user list-timers --all 2> /dev/null)" == *flakelab-accounts-autoswitch* ]]; then
-    log_ok "auto-switch timer scheduled (flakelab-accounts-autoswitch.timer)"
-  else
-    # Every box schedules it (nix/home/accounts.nix), so its absence is a defect.
-    log_fail "no flakelab-accounts-autoswitch timer, which every box schedules"
-    log_hint "the running generation predates it, or the user manager lost it: flakelab update, then systemctl --user list-timers"
-  fi
+fi
+if [[ -d "${OLD_ACCT_STORE}" ]]; then
+  log_warn "the retired flakelab accounts store is still here: ${OLD_ACCT_STORE}"
+  log_hint "move its logins into tycswap, then remove it: README, \"Migrating from flakelab accounts\""
 fi
 
 # Which file git actually reads the flake's keys from.

@@ -1289,6 +1289,12 @@
             hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
             timersOf = sys: (hmOf sys).systemd.user.timers;
             settingsOf = sys: (hmOf sys).home.activation.claudeSettings.data;
+            doctorOf =
+              sys:
+              (import ./nix/scripts.nix {
+                inherit (sys) pkgs;
+                cfg = sys.config.flakelab;
+              }).nix-doctor;
             on = ext { tycswapAutoSwitchInterval = "5min"; };
             bad = ext {
               installTycswap = false;
@@ -1296,14 +1302,26 @@
             };
             # A statusline is rendered only with a statusbar plugin; this system has one.
             statusline = ext {
-              claudePluginMarketplaces = [ { name = "tools"; url = "https://example.invalid/tools.git"; } ];
+              claudePluginMarketplaces = [
+                {
+                  name = "tools";
+                  url = "https://example.invalid/tools.git";
+                }
+              ];
               claudePlugins = [ "statusbar@tools" ];
             };
           in
-          assert !(builtins.hasAttr "flakelab-tycswap-autoswitch" (timersOf self.nixosConfigurations.default));
+          assert
+            !(builtins.hasAttr "flakelab-tycswap-autoswitch" (timersOf self.nixosConfigurations.default));
           assert (timersOf on).flakelab-tycswap-autoswitch.Timer.OnUnitActiveSec == "5min";
-          assert builtins.match ".*/bin/(cswap|tycswap) auto --once --json" (lib.concatStringsSep " " (lib.toList (hmOf on).systemd.user.services.flakelab-tycswap-autoswitch.Service.ExecStart)) != null;
-          assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAutoSwitchInterval" a.message) (hmOf bad).assertions;
+          assert
+            builtins.match ".*/bin/(cswap|tycswap) auto --once --json" (
+              lib.concatStringsSep " " (
+                lib.toList (hmOf on).systemd.user.services.flakelab-tycswap-autoswitch.Service.ExecStart
+              )
+            ) != null;
+          assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAutoSwitchInterval" a.message)
+            (hmOf bad).assertions;
           assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
           assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
           assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
@@ -1311,7 +1329,12 @@
           # script whose text (and its accounts ingest) the activation never carried.
           assert lib.hasInfix "statusline-command.sh" (settingsOf statusline);
           assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
-          pkgs.runCommandLocal "flakelab-check-tycswap-timer" { } "touch $out";
+          pkgs.runCommandLocal "flakelab-check-tycswap-timer" { } ''
+            grep -q '^export FLAKELAB_TYCSWAP_AUTOSWITCH=false$' ${doctorOf self.nixosConfigurations.default}/bin/nix-doctor
+            grep -q '^export FLAKELAB_TYCSWAP_AUTOSWITCH=true$' ${doctorOf on}/bin/nix-doctor
+            grep -q '^export FLAKELAB_INSTALL_TYCSWAP=true$' ${doctorOf on}/bin/nix-doctor
+            touch $out
+          '';
 
         # The prompt's git segment is oh-my-zsh's git_prompt_info, which a theme
         # colours: rendered here with the configured one (synchronously; the prompt

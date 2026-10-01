@@ -453,6 +453,8 @@ rec {
     export FLAKELAB_AI_CLIS="${
       toString (lib.optional cfg.installClaude "claude" ++ lib.optional cfg.installCodex "codex")
     }"
+    export FLAKELAB_INSTALL_TYCSWAP=${lib.boolToString cfg.installTycswap}
+    export FLAKELAB_TYCSWAP_AUTOSWITCH=${lib.boolToString (cfg.tycswapAutoSwitchInterval != null)}
     export PATH=${
       bin [
         pkgs.zsh
@@ -560,7 +562,7 @@ rec {
               pkgs.coreutils
               pkgs.gnugrep
             ]
-          }:$PATH
+          }${lib.optionalString cfg.installTycswap ":${pkgs.tycswap}/bin"}:$PATH
           # No `set -e`: one failed clone must not skip activate-hooks.
           set -uo pipefail
           # The same first-key-on-disk rule the activation steps use (nix/clone-key.nix).
