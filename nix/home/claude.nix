@@ -107,20 +107,21 @@ let
   '';
 
   # The reactive half of auto-switch: when Claude Code decides to wait for its
-  # quota window (a Notification of type quota_auto_resume_fired), the engine
-  # ticks at once instead of at the next timer; with auto-switch off the tick
-  # does nothing. Owned by its command, like the SessionEnd hook: a box whose
-  # engine does not decide for Claude drops it again.
-  accountsHook = lib.elem "claude" cfg.accounts.autoSwitchTools;
-  accountsHookCmd = "${scripts.accounts}/bin/accounts auto --once --tool claude --json >/dev/null 2>&1 || true";
-  accountsHookArg = lib.optionalString accountsHook "--arg accountsHook ${lib.escapeShellArg accountsHookCmd}";
-  accountsHookJq = ''
+  # quota window (a Notification of type quota_auto_resume_fired), tycswap ticks
+  # at once instead of at the next timer. Owned by its command, like the
+  # SessionEnd hook: a box without the timer drops it again, and the prune
+  # also recognises the retired engine's command, so a settings.json from an
+  # earlier generation loses a hook that would exec a path no longer there.
+  tycswapHook = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
+  tycswapHookCmd = "${lib.getExe pkgs.tycswap} auto --once --json >/dev/null 2>&1 || true";
+  tycswapHookArg = lib.optionalString tycswapHook "--arg tycswapHook ${lib.escapeShellArg tycswapHookCmd}";
+  tycswapHookJq = ''
     | .hooks = ((.hooks // {})
         | .Notification = (((.Notification // [])
-            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-accounts/bin/accounts auto ")) | not)))
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+-accounts/bin/accounts auto |^/nix/store/[^/ ]+/bin/(cswap|tycswap) auto ")) | not)))
             + ${
-              if accountsHook then
-                ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $accountsHook, timeout: 180}]}]''
+              if tycswapHook then
+                ''[{matcher: "quota_auto_resume_fired", hooks: [{type: "command", command: $tycswapHook, timeout: 180}]}]''
               else
                 "[]"
             })
@@ -151,23 +152,16 @@ let
   '';
 
   # Written when absent or when it is flakelab's own (an earlier generation's
-  # tee script, or the plain plugin command every box before the tee had), and
+  # tee script into the retired engine, or the plain plugin command), and
   # flakelab's own is removed once the statusbar plugin is not enabled, so a
   # local override survives while a provisioned box follows this flake; the
   # sort -V glob resolves the newest cached plugin version at statusline time.
-  # The stdin Claude Code hands the statusline carries the live login's
-  # rate_limits with every refresh: teed into `accounts ingest` on the way, so
-  # the usage endpoint is asked for the active entry only for its per-model
-  # week, at the candidate cadence (accounts.md, "Usage"). The tee never
-  # delays or fails the statusline.
+  # tycswap reads usage from the endpoint itself, so nothing is teed off stdin.
   statuslineMarketplace = marketplaceOf "statusbar";
   claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
-  claudeStatuslineCmd = pkgs.writeShellScript "flakelab-claude-statusline" ''
-    tee >(${scripts.accounts}/bin/accounts ingest --tool claude > /dev/null 2>&1 || true) | ${claudeStatuslinePlugin}
-  '';
   claudeStatuslineArg = lib.optionalString (
     statuslineMarketplace != null
-  ) "--arg statusline ${lib.escapeShellArg "${claudeStatuslineCmd}"}";
+  ) "--arg statusline ${lib.escapeShellArg claudeStatuslinePlugin}";
   claudeStatuslineOurs = ''((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))'';
   claudeStatuslineJq =
     if statuslineMarketplace != null then
@@ -393,7 +387,7 @@ in
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${accountsHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
+          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -406,7 +400,7 @@ in
             ${claudeAgentDefaultsJq}
             ${claudeRemoteControlJq}
             ${claudeStatePushJq}
-            ${accountsHookJq}
+            ${tycswapHookJq}
             ${notifyHookJq}
             ${claudeStatuslineJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings"; then

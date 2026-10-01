@@ -1,5 +1,5 @@
 # The browser front end (remote-sessions.md): `flakelab web`, the dashboard
-# over the accounts and the sessions, and ttyd, a terminal in a browser tab
+# over the tycswap logins and the sessions, and ttyd, a terminal in a browser tab
 # attached to the `agents` tmux session. Both are user services. The
 # dashboard binds the address flakelab.web.bind names (127.0.0.1 unless it
 # is the box's WireGuard address) and holds the one token; ttyd listens on a

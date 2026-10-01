@@ -20,6 +20,9 @@ fi
 # everywhere (a build sandbox, some service managers), and under set -u a bare
 # one ended the run before --help was even read.
 HOME_DIR="${FLAKELAB_HOME_DIR:-/home/${SUDO_USER:-${USER:-$(id -un)}}}"
+# tycswap's store (`tycswap --help` names it); FLAKELAB_TYCSWAP_STORE is a test seam.
+# HOME_DIR, not XDG_DATA_HOME: under sudo the caller's XDG points elsewhere.
+TYCSWAP_STORE="${FLAKELAB_TYCSWAP_STORE:-${HOME_DIR}/.local/share/tycswap}"
 
 # Configured is not usable: check_state_root decides once, before any write, and
 # an unusable root SKIPS the state categories rather than writing them to the payload.
@@ -106,7 +109,7 @@ sync_artifact_find_args() {
 SHARED_CATEGORIES=(ssh gitconfig secrets)
 # Everything else is per-instance: .gitignore names the shared/ categories one by
 # one, so a new shared category stays committable until .gitignore learns about it.
-INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude codex helm accounts)
+INSTANCE_CATEGORIES=(shell kube k9s glab-cli claude codex helm tycswap)
 
 resolve_backup_path() {
   local category="$1"
@@ -130,7 +133,7 @@ recompute_backup_paths() {
   BACKUP_CLAUDE="$(resolve_backup_path claude)"
   BACKUP_CODEX="$(resolve_backup_path codex)"
   BACKUP_HELM="$(resolve_backup_path helm)"
-  BACKUP_ACCOUNTS="$(resolve_backup_path accounts)"
+  BACKUP_TYCSWAP="$(resolve_backup_path tycswap)"
 }
 
 FORCE=false
@@ -1148,19 +1151,25 @@ do_restore() {
     fix_script_permissions "${HOME_DIR}/.claude"
   fi
 
-  log_info "--- Accounts ---"
-  if [[ -d "${BACKUP_ACCOUNTS}" ]]; then
-    # The stored logins of `flakelab accounts`: the roster and one directory
-    # per entry. local wins: a login refreshed on this box is newer than the
-    # archived copy (the tools rotate tokens in use).
-    local acct_store="${HOME_DIR}/.local/state/flakelab/accounts" acct_entry acct_file
-    mkdir -p "${acct_store:h}" 2> /dev/null
-    ensure_private_dir "${acct_store}"
-    restore_private_file "${BACKUP_ACCOUNTS}/accounts.json" "${acct_store}/accounts.json" true
-    for acct_entry in "${BACKUP_ACCOUNTS}"/<->(N/); do
-      ensure_private_dir "${acct_store}/${acct_entry:t}"
-      for acct_file in "${acct_entry}"/*(N.); do
-        restore_private_file "${acct_file}" "${acct_store}/${acct_entry:t}/${acct_file:t}" true
+  log_info "--- Switcher ---"
+  if [[ -d "${BACKUP_TYCSWAP}" ]]; then
+    # tycswap's store: the rosters, settings, mappings and one snapshot per
+    # account. local wins: a credential refreshed on this box is newer than
+    # the archived copy (the tools rotate tokens in use).
+    local tycswap_d tycswap_f
+    mkdir -p "${TYCSWAP_STORE:h}" 2> /dev/null
+    ensure_private_dir "${TYCSWAP_STORE}"
+    for tycswap_f in sequence.json settings.json mappings.json codex/sequence.json codex/registry.json; do
+      [[ -f "${BACKUP_TYCSWAP}/${tycswap_f}" ]] || continue
+      [[ "${tycswap_f}" == codex/* ]] && ensure_private_dir "${TYCSWAP_STORE}/codex"
+      restore_private_file "${BACKUP_TYCSWAP}/${tycswap_f}" "${TYCSWAP_STORE}/${tycswap_f}" true
+    done
+    for tycswap_d in credentials configs codex/credentials; do
+      [[ -d "${BACKUP_TYCSWAP}/${tycswap_d}" ]] || continue
+      [[ "${tycswap_d}" == codex/* ]] && ensure_private_dir "${TYCSWAP_STORE}/codex"
+      ensure_private_dir "${TYCSWAP_STORE}/${tycswap_d}"
+      for tycswap_f in "${BACKUP_TYCSWAP}/${tycswap_d}"/*(N.); do
+        restore_private_file "${tycswap_f}" "${TYCSWAP_STORE}/${tycswap_d}/${tycswap_f:t}" true
       done
     done
   fi
@@ -1327,26 +1336,32 @@ do_backup() {
   backup_file "${HOME_DIR}/.claude/CLAUDE.md"             "${BACKUP_CLAUDE}/CLAUDE.md"
   backup_file "${HOME_DIR}/.claude/statusline-command.sh" "${BACKUP_CLAUDE}/statusline-command.sh"
 
-  log_info "--- Accounts ---"
-  if [[ -d "${HOME_DIR}/.local/state/flakelab/accounts" ]]; then
-    # The stored logins of `flakelab accounts` (accounts.md, "Carried by
-    # backup, never in the state root"): the roster and one directory per
-    # entry, 0700 and 0600 like ~/.codex/auth.json. The usage cache, the
-    # engine's state and log, the profiles and the unclaimed stash are this
-    # box's own and stay here; an entry gone from the store leaves the payload.
-    local acct_store="${HOME_DIR}/.local/state/flakelab/accounts" acct_entry acct_file
-    ensure_private_dir "${BACKUP_ACCOUNTS}"
-    backup_private_file "${acct_store}/accounts.json" "${BACKUP_ACCOUNTS}/accounts.json"
-    for acct_entry in "${acct_store}"/<->(N/); do
-      ensure_private_dir "${BACKUP_ACCOUNTS}/${acct_entry:t}"
-      for acct_file in "${acct_entry}"/*(N.); do
-        backup_private_file "${acct_file}" "${BACKUP_ACCOUNTS}/${acct_entry:t}/${acct_file:t}"
-      done
+  log_info "--- Switcher ---"
+  if [[ -d "${TYCSWAP_STORE}" ]]; then
+    # tycswap's store (its README, "Data locations"): the Claude and Codex
+    # rosters, the settings, the directory mappings and one credential and
+    # config snapshot per account, 0700 and 0600 like ~/.codex/auth.json. The
+    # usage caches, the switch log and the session profiles are this box's
+    # own and stay here; a snapshot gone from the store leaves the payload.
+    local tycswap_d tycswap_f
+    ensure_private_dir "${BACKUP_TYCSWAP}"
+    for tycswap_f in sequence.json settings.json mappings.json codex/sequence.json codex/registry.json; do
+      [[ -f "${TYCSWAP_STORE}/${tycswap_f}" ]] || continue
+      [[ "${tycswap_f}" == codex/* ]] && ensure_private_dir "${BACKUP_TYCSWAP}/codex"
+      backup_private_file "${TYCSWAP_STORE}/${tycswap_f}" "${BACKUP_TYCSWAP}/${tycswap_f}"
     done
-    for acct_entry in "${BACKUP_ACCOUNTS}"/<->(N/); do
-      [[ -d "${acct_store}/${acct_entry:t}" ]] && continue
-      if ${DRY_RUN}; then log_dry "Would remove archived entry ${acct_entry:t} (gone from the store)"
-      else rm -rf -- "${BACKUP_ACCOUNTS:?}/${acct_entry:t}" && log_info "Removed archived entry ${acct_entry:t} (gone from the store)"; fi
+    for tycswap_d in credentials configs codex/credentials; do
+      [[ -d "${TYCSWAP_STORE}/${tycswap_d}" ]] || continue
+      [[ "${tycswap_d}" == codex/* ]] && ensure_private_dir "${BACKUP_TYCSWAP}/codex"
+      ensure_private_dir "${BACKUP_TYCSWAP}/${tycswap_d}"
+      for tycswap_f in "${TYCSWAP_STORE}/${tycswap_d}"/*(N.); do
+        backup_private_file "${tycswap_f}" "${BACKUP_TYCSWAP}/${tycswap_d}/${tycswap_f:t}"
+      done
+      for tycswap_f in "${BACKUP_TYCSWAP}/${tycswap_d}"/*(N.); do
+        [[ -f "${TYCSWAP_STORE}/${tycswap_d}/${tycswap_f:t}" ]] && continue
+        if ${DRY_RUN}; then log_dry "Would remove archived ${tycswap_d}/${tycswap_f:t} (gone from the store)"
+        else rm -f -- "${tycswap_f}" && log_info "Removed archived ${tycswap_d}/${tycswap_f:t} (gone from the store)"; fi
+      done
     done
   fi
 

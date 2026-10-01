@@ -28,23 +28,14 @@ mkdir -p "${HOME}" "${BASE}/bin" "${BASE}/static"
 LOG="${BASE}/calls.log"
 export FAKE_LOG="${LOG}"
 
-# The accounts stand-in.
-cat > "${BASE}/bin/accounts" <<'STUB'
+# The tycswap stand-in.
+cat > "${BASE}/bin/tycswap" <<'STUB'
 #!/usr/bin/env zsh
-print -r -- "accounts $*" >> "${FAKE_LOG}"
-ROSTER='{"version":1,"active":{"claude":2},"accounts":[{"id":1,"tool":"claude","alias":"home","label":"a@example.com","usage":{"windows":[{"label":"5h","class":"session","pct":20}],"fetchedAt":1}},{"id":2,"tool":"claude","alias":"work","label":"b@example.com","usage":{"windows":[]}}]}'
+print -r -- "tycswap $*" >> "${FAKE_LOG}"
+ROSTER='{"schemaVersion":1,"activeAccountNumber":2,"accounts":[{"number":1,"email":"a@example.com","alias":"home","active":false,"usageStatus":"ok","usage":{"fiveHour":{"pct":20,"resetsAt":"2026-10-01T12:00:00Z"},"sevenDay":{"pct":40}}},{"number":2,"email":"b@example.com","alias":"work","active":true,"usageStatus":"ok","usage":{"fiveHour":{"pct":96},"scoped":[{"name":"Fable","pct":61}]},"atLimit":true,"limitingWindows":["5h"]},{"number":3,"email":"c@example.com","active":false,"disabled":true,"usageStatus":"token_expired","usage":null}]}'
 case "$1" in
-  --json) print -r -- "$ROSTER" ;;
-  --fetch) print -r -- "$ROSTER" ;;
-  status) print -r -- '{"claude":{"active":{"id":2,"alias":"work"},"live":{"account":"x"},"matches":false}}' ;;
-  switch) [[ "$2" == 9 ]] && { print -ru2 -- "Error: entry 9 is running in a profile session"; exit 2 }; print -r -- "Switched claude to $2" ;;
-  auto) print -r -- '{"event":"poll","tool":"claude"}'; print -r -- '{"event":"switch","tool":"claude","from":2,"to":1,"trigger":"proactive","dryRun":true}' ;;
-  config)
-    case "$2" in
-      --json) print -r -- '{"path":"/s/settings.json","settings":{"weekThreshold":{"value":92,"source":"runtime","base":97,"baseSource":"flake"},"autoSwitch":{"value":true,"source":"runtime","base":false,"baseSource":"flake"}},"ignored":[]}' ;;
-      set) [[ "$3" == bogus ]] && { print -ru2 -- "Error: unknown setting 'bogus'"; exit 2 }; print -r -- "$3 = $4 (runtime; flake 97); the next auto tick uses it" ;;
-      unset) print -r -- "$3 = 97 again (flake)" ;;
-    esac ;;
+  list) print -r -- "$ROSTER" ;;
+  switch) [[ "$2" == 9 ]] && { print -ru2 -- "No account found with identifier: 9"; exit 1 }; print -r -- "Switched to Account-$2" ;;
   *) exit 2 ;;
 esac
 STUB
@@ -114,7 +105,7 @@ start_server() {
   local err="$1" i
   shift
   env FLAKELAB_WEB_BIND=127.0.0.1 FLAKELAB_WEB_PORT=0 FLAKELAB_WEB_TOKEN_FILE="${TOKEN_FILE}" FLAKELAB_WEB_STATIC="${BASE}/static" \
-    FLAKELAB_WEB_ACCOUNTS="${BASE}/bin/accounts" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" \
+    FLAKELAB_WEB_TYCSWAP="${BASE}/bin/tycswap" FLAKELAB_WEB_SESSIONS="${BASE}/bin/claude-sessions" \
     PYTHONDONTWRITEBYTECODE=1 "$@" python3 "${SERVER}" 2>"${err}" &
   STARTED_PID=$!
   STARTED_PORT=""
@@ -158,11 +149,11 @@ get /api/state wrong-token
 check "state with the wrong token is 401" "${CODE}" "401"
 get /api/state "${TOKEN}"
 check "state with the token is 200" "${CODE}" "200"
-check "and carries the roster" "$(print -r -- "$BODY" | jq -r '.accounts.accounts[1].alias')" "work"
-check "the status" "$(print -r -- "$BODY" | jq -r '.status.claude.matches')" "false"
+check "and carries tycswap's roster" "$(print -r -- "$BODY" | jq -r '.accounts.accounts[1].alias')" "work"
+check "with the active number" "$(print -r -- "$BODY" | jq -r '.accounts.activeAccountNumber')" "2"
 check "the sessions" "$(print -r -- "$BODY" | jq -r '.sessions[0].host.window')" "claude-work"
 check "and that a terminal is on" "$(print -r -- "$BODY" | jq -r '.terminal')" "true"
-contains "each read was one CLI call" "$(calls)" "accounts --json"
+contains "each read was one CLI call" "$(calls)" "tycswap list --json"
 get /nope "${TOKEN}"
 check "an unknown path is 404" "${CODE}" "404"
 get /api/nope "${TOKEN}"
@@ -173,13 +164,13 @@ check "a write without a token is 401" "${CODE}" "401"
 check "and nothing ran" "$(calls)" ""
 post /api/switch '{"entry":"2"}' "${TOKEN}"
 check "switch runs the CLI" "${CODE}" "200"
-contains "with the entry" "$(calls)" "accounts switch 2"
-check "and returns its output" "$(print -r -- "$BODY" | jq -r '.call.stdout')" "Switched claude to 2"
+contains "with the entry" "$(calls)" "tycswap switch 2"
+check "and returns its output" "$(print -r -- "$BODY" | jq -r '.call.stdout')" "Switched to Account-2"
 post /api/switch '{"entry":"2","force":true}' "${TOKEN}"
-contains "force adds --force" "$(calls)" "accounts switch 2 --force"
+contains "force adds --force" "$(calls)" "tycswap switch 2 --force"
 post /api/switch '{"entry":"9"}' "${TOKEN}"
 check "a CLI refusal is 409" "${CODE}" "409"
-contains "with the reason" "$(print -r -- "$BODY" | jq -r '.call.stderr')" "running in a profile session"
+contains "with the reason" "$(print -r -- "$BODY" | jq -r '.call.stderr')" "No account found with identifier: 9"
 post /api/switch '{"entry":""}' "${TOKEN}"
 check "an empty entry is 400" "${CODE}" "400"
 post /api/switch '{"entry":"--next"}' "${TOKEN}"
@@ -190,53 +181,12 @@ post /api/switch '[1]' "${TOKEN}"
 check "a body that is not an object is 400" "${CODE}" "400"
 : > "${LOG}"
 
-post /api/fetch '{}' "${TOKEN}"
-check "fetch runs the poll" "${CODE}" "200"
-contains "as --fetch --json" "$(calls)" "accounts --fetch --json"
-post /api/auto '{}' "${TOKEN}"
-check "auto is a dry run by default" "${CODE}" "200"
-contains "with --dry-run" "$(calls)" "accounts auto --once --json --dry-run"
-check "and the events parsed" "$(print -r -- "$BODY" | jq -r '.events[1] | [.event, .to] | join(" ")')" "switch 1"
-post /api/auto '{"dryRun":false,"tool":"claude"}' "${TOKEN}"
-contains "a real tick drops --dry-run and names the tool" "$(calls)" "accounts auto --once --json --tool claude"
-post /api/auto '{"tool":"gemini"}' "${TOKEN}"
-check "an unknown tool is 400" "${CODE}" "400"
+for p in /api/fetch /api/auto /api/config; do
+  post "$p" '{}' "${TOKEN}"
+  check "${p} is gone" "${CODE}" "404"
+done
 : > "${LOG}"
 
-get /api/state "${TOKEN}"
-check "state carries the engine's settings" "$(print -r -- "$BODY" | jq -r '.config.settings.weekThreshold | [.value, .source] | join(" ")')" "92 runtime"
-check "on or off among them" "$(print -r -- "$BODY" | jq -r '.config.settings.autoSwitch.value')" "true"
-contains "read with config --json" "$(calls)" "accounts config --json"
-post /api/config '{"key":"weekThreshold","value":92}' "${TOKEN}"
-check "config set runs the CLI" "${CODE}" "200"
-contains "with the key and the value" "$(calls)" "accounts config set weekThreshold 92"
-check "and returns its output" "$(print -r -- "$BODY" | jq -r '.call.stdout')" "weekThreshold = 92 (runtime; flake 97); the next auto tick uses it"
-post /api/config '{"key":"autoSwitch","value":false}' "${TOKEN}"
-contains "a boolean goes as true or false: the on/off switch" "$(calls)" "accounts config set autoSwitch false"
-post /api/config '{"key":"hysteresis","value":5.0}' "${TOKEN}"
-contains "a whole float as an integer" "$(calls)" "accounts config set hysteresis 5"
-post /api/config '{"key":"modelWindows","value":" Fable,Opus "}' "${TOKEN}"
-contains "a string as it came, trimmed" "$(calls)" "accounts config set modelWindows Fable,Opus"
-post /api/config '{"key":"weekThreshold","unset":true}' "${TOKEN}"
-contains "unset one key" "$(calls)" "accounts config unset weekThreshold"
-post /api/config '{"all":true,"unset":true}' "${TOKEN}"
-contains "or every one" "$(calls)" "accounts config unset --all"
-post /api/config '{"key":"bogus","value":1}' "${TOKEN}"
-check "a CLI refusal is 409" "${CODE}" "409"
-contains "with the reason" "$(print -r -- "$BODY" | jq -r '.call.stderr')" "unknown setting"
-: > "${LOG}"
-post /api/config '{"key":"--all","value":1}' "${TOKEN}"
-check "an option as the key is 400" "${CODE}" "400"
-post /api/config '{"value":1}' "${TOKEN}"
-check "no key is 400" "${CODE}" "400"
-post /api/config '{"key":"weekThreshold"}' "${TOKEN}"
-check "no value is 400" "${CODE}" "400"
-post /api/config '{"key":"weekThreshold","value":{"x":1}}' "${TOKEN}"
-check "a value that is no scalar is 400" "${CODE}" "400"
-post /api/config '{"key":"hysteresis","value":2.5}' "${TOKEN}"
-check "nor a fraction" "${CODE}" "400"
-post /api/config '{"unset":true}' "${TOKEN}"
-check "an unset without a key or all is 400" "${CODE}" "400"
 check "and none of them ran" "$(calls)" ""
 
 post /api/sessions/start "{\"tool\":\"codex\",\"dir\":\"${BASE}\"}" "${TOKEN}"

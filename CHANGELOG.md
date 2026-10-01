@@ -9,15 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
-- `flakelab accounts`: several logins per agent CLI, one live per tool, switched without a logout: `add`, `add --login`, `switch`, `alias`, `disable`/`enable`, `remove`, `--fetch`; `<verb> --help` shows the usage.
-- `flakelab accounts switch --next|--soonest|--best <tool>`: rotate in id order, or take the login whose week renews first or has the most weekly headroom.
-- `flakelab accounts status [--json]` reports drift from a hand login and the cached windows; the listing adds `PLAN` and `RESETS` columns; `flakelab.accounts.shellOverview` prints it at shell start.
-- Codex adapter for `flakelab accounts` (`files/scripts/lib/accounts-codex.zsh`); `switch` refuses while a `codex` runs unless `--force`; `auto` fails over from a dead login (`seat-revoked`, `expired`).
-- `flakelab accounts run <entry>` and `env <entry>`: a second account in its own profile (`profiles/<id>/`) beside the live login.
-- `flakelab accounts auto` (`--once`, `--dry-run`): switches a live login before a rate limit, on the `flakelab-accounts-autoswitch` timer (`flakelab.accounts.autoSwitchInterval`); prints local times.
-- `flakelab accounts config [set|unset]` and `auto on|off`: engine settings (`autoSwitch`, `sessionThreshold`, `weekThreshold`, `modelThreshold`, `strategy`, ...) set at run time.
-- `flakelab backup` carries the accounts store as `accounts/`; `flakelab doctor` gains an `Accounts` section; `flakelab accounts ingest` reads the statusline's `rate_limits`.
-- `flakelab web`: a browser dashboard for accounts and sessions on 127.0.0.1:8321 behind a token; `flakelab.web.enable`, `flakelab.web.terminal` (ttyd), `flakelab.web.logo`.
+- `flakelab web`: a browser dashboard for the tycswap logins and the sessions on 127.0.0.1:8321 behind a token; `flakelab.web.enable`, `flakelab.web.terminal` (ttyd), `flakelab.web.logo`.
 - `flakelab.stateSyncthing`: the state root replicated by Syncthing through an untrusted hub; needs a Linux `stateRoot` and `sopsSecretsFile`.
 - A bare `flakelab` opens a menu, and a command missing an argument asks for it at a terminal; `FLAKELAB_NO_PROMPT=1` turns every prompt off.
 - `flakelab.mcpBrowsers.headless`: a `playwright-headless` MCP server in Claude and Codex on any target.
@@ -25,11 +17,11 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `flakelab notify`: an ntfy push when an agent session waits (`NTFY_URL`, `NTFY_TOKEN`); `flakelab.notify.enable` and `flakelab.notify.events` write the hook; a bare run at a terminal prints its usage.
 - `flakelab.mosh.enable` (default `false`, proxmox-vm only) and `files/config/windows/enable-openssh-host.ps1` for OpenSSH Server on a WSL host.
 - `flakelab sessions --start <tool> [dir]` and `--attach [id|window]`: sessions hosted in the `agents` tmux session; `tmux` joins the package set.
-- `flakelab sessions` lists Codex sessions and sessions started by `flakelab accounts run`; saved lines carry a tool column.
+- `flakelab sessions` lists Codex sessions and sessions started by `tycswap run`; saved lines carry a tool column.
 - `flakelab sessions --recent [hours]` (default 24) lists recently changed sessions that are not running, including ones synced from another box.
 - `flakelab sessions --autosave` on the `flakelab-sessions-autosave` timer (`flakelab.sessionsAutosaveInterval`, default `5min`); `--resume`/`--open` read the previous boot's file.
 - `flakelab.claudeRemoteControl` (default `false`): Claude Code's `remoteControlAtStartup` without the `claudeAgentDefaults` bundle.
-- `accounts.md` and `remote-sessions.md`: designs for account switching and remotely reachable sessions.
+- `remote-sessions.md`: the design for remotely reachable sessions.
 - Codex permission profiles under `codexAutoReview`, enforced through managed requirements with `codexEnforcePermissions`; see `CODEX-PERMISSIONS.md`.
 - `flakelab backup` carries Codex config, rules, hooks, skills and token files as `codex/`; `~/.codex/memories/` and, under `stateTranscripts`, `~/.codex/sessions/` sync.
 - The Codex CLI via its official installer into `~/.local/bin` (`flakelab.installCodex`, default `true`), with `bubblewrap`.
@@ -42,7 +34,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `test-nix-update`, `test-nix-doctor`, `test-clone-repos`, `test-activate-hooks`, `test-report-stale-repos` and `test-nix-provision`: offline suites in `make test` and `nix flake check`; `checks.state-syncthing` runs the password reader against a fixture.
 - `GLAB_NO_PROMPT=1` in every login session.
 - The Claude permissions merge installs the marketplace's `recommended-ask.json` as `permissions.ask`, asserted whole.
-- `installTycswap` (default `true`): tycswap's `cswap`, the Claude Code and Codex account switcher, pinned in `flake.nix` and built as a flake check.
+- `installTycswap` (default `true`): tycswap, the Claude Code and Codex account switcher, pinned in `flake.nix` and built as a flake check; `flakelab.tycswapAutoSwitchInterval` schedules `tycswap auto --once` on the `flakelab-tycswap-autoswitch` user timer (the quota hook ticks it too), `flakelab backup` carries its store as `tycswap/`, `flakelab doctor` has a `Switcher` section, `flakelab web` reads `tycswap list --json`, `flakelab sessions` finds its profile sessions.
 
 ### Changed
 
@@ -58,12 +50,13 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The `permissions.deny` floor shrinks to the two `--mirror` rules; retired rules are listed in `claudeDenyStale` and removed from existing settings.
 - `flakelab update` / `update-all` pull a clean overlay checkout that is behind (`git pull --rebase`); a dirty tree refuses unless `FLAKELAB_STALE_OK=1`.
 - A usage error (an unknown flag or argument) exits 2 on every `flakelab` command; failed work exits 1, and the doctor's 1 is a failed check.
-- `flakelab doctor` fails on a missing `flakelab-accounts-autoswitch` timer, warns on a `skip-healthcheck` marker, lists every section in `--help`, and its summary line says `flakelab doctor`.
+- `flakelab doctor` warns on a `skip-healthcheck` marker, lists every section in `--help`, and its summary line says `flakelab doctor`.
 - `teams` / `teamCliTools` in `userData` are deprecated spellings of `profiles` / `profileCliTools`: still read, to go in a later release.
 - `flakelab build-distro` and `flakelab test-provision` share their checks (`files/scripts/lib/distro-check.zsh`) and both accept the `WSLInterop-late` handler.
 
 ### Removed
 
+- `flakelab accounts`, the zsh account switcher (never in a release): tycswap does the job. `flakelab.accounts.*` is gone; a box that stored logins in `~/.local/state/flakelab/accounts` moves them with the loop in README, "Migrating from flakelab accounts", and `flakelab doctor` warns until the old store is removed.
 - `wsl-open` from the `wsl` target's packages: the flake's `xdg-open` is the opener, and `BROWSER` names it.
 - The `cwsl` alias.
 - The deprecation shims for the old command names (`nix-update`, `nix-doctor`, `nix-backup`, `nix-provision`, `nix-clone-repos`, `build-dev-wsl-nix`, `test-provision-nix`); `flakelab <verb>` is the only form.
@@ -78,7 +71,6 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `NTFY_URL` and `NTFY_TOKEN` under `custom_env_vars` are withheld from the generated overlay by both generators, like every other secret.
 - `flakelab test-provision` derives the expected subcommand list from the router's own table instead of a count that had rotted.
 - `flakelab clone` uses the first `sshKeys` entry that exists on disk, as the activation steps do; `clone-repos` names a missing key file as such.
-- The `flakelab accounts` overview file is rewritten on every roster change (add, remove, alias, disable, enable), not only on a switch or an auto tick, and its stamp carries the date.
 - Every `--help` names the `flakelab <verb>` form; no usage text names a retired script name.
 - `HA_URL`/`HA_TOKEN` are derived in `.zshenv`, so a non-interactive shell gets them too.
 - The `sessionVariables` comments in the generators, the template and the option say which names gate a Claude MCP server (`GRAFANA_URL`, `WHATSAPP_BRIDGE_HOST`).
@@ -94,7 +86,6 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The `wsl` target moves its processes into `/flakelab-<id>/init.scope` when PID 1's cgroup denies users; `flakelab doctor` gains a "systemd cgroup" section.
 - `known-issues.md` says the `wsl --shutdown` interop heal holds only until the next stop of a systemd distro.
 - `checks.cli-installers` passes on a builder without the sandbox.
-- `flakelab accounts` reads the live Claude login's per-model week, parses `resets_at` with offsets (`lib/accounts-time.jq`), and labels a Codex single weekly window.
 - Codex fleet settings are in `/etc/codex/config.toml`; the user config stays writable.
 - An offline switch defers the Claude Code and Codex install instead of failing the health check.
 - `flakelab doctor` checks only the AI CLIs the overlay installs (`FLAKELAB_AI_CLIS`).

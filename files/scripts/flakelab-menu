@@ -7,9 +7,8 @@ set -uo pipefail
 # then what to do with it, and it runs as if typed with its flags.
 #
 # A thin tree over the real commands. It asks nothing a command can ask for
-# itself: `sessions --start` asks for the tool and the directory, `accounts
-# switch` for the login, so the menu only chooses the flags and every prompt
-# stays with the command that owns its data. The router hands over its own
+# itself: `sessions --start` asks for the tool and the directory, so the menu
+# only chooses the flags and every prompt stays with the command that owns its data. The router hands over its own
 # path (FLAKELAB_ROUTER) and the commands this target offers
 # (FLAKELAB_MENU_COMMANDS); a choice re-enters the router, so the target gate
 # and the per-command wrappers apply exactly as they do to a typed command.
@@ -36,7 +35,6 @@ typeset -a OFFERED=(${=FLAKELAB_MENU_COMMANDS:-})
 # user service), notify (the hooks' sender) and distro-name.
 typeset -a TOP=(
   sessions    'agent sessions: list, start, attach, resume'
-  accounts    'stored logins: show, switch, add, remove'
   update      'rebuild this distro from the flake and the overlay'
   update-all  'rebuild, then run the clone sweep'
   doctor      'check this distro and say what to fix'
@@ -58,18 +56,6 @@ recently stopped sessions, with the command to resume each${US}sessions --recent
 save the running list (before a restart)${US}sessions --save${US}-
 the resume commands from the last save${US}sessions --resume${US}-
 reopen the last save in Windows Terminal tabs${US}sessions --open${US}wsl"
-  accounts "show the stored logins${US}accounts${US}-
-refresh their usage, then show them${US}accounts --fetch${US}-
-which login is live, per tool${US}accounts status${US}-
-switch the live login${US}accounts switch${US}ask
-switch to the one with the most weekly headroom${US}accounts switch --best${US}ask
-store the live login${US}accounts add${US}ask
-log in another account beside the live one${US}accounts add --login${US}ask
-run a tool on another login's profile${US}accounts run${US}ask
-name a login${US}accounts alias${US}ask
-hold a login out of rotation${US}accounts disable${US}ask
-put a login back in rotation${US}accounts enable${US}ask
-remove a login${US}accounts remove${US}ask"
   update "rebuild this distro${US}update${US}confirm:Rebuild this distro now?"
   update-all "rebuild, then run the clone sweep${US}update-all${US}confirm:Rebuild this distro, then run the clone sweep?"
   doctor "run every check${US}doctor${US}-

@@ -45,34 +45,15 @@ the private overlay `flakelab-config`, which imports this flake via
     tool column is Claude Code. Saves go to the state root's `claude/sessions/`
     when one is set, else `~/.local/state/flakelab/sessions/`, never into
     `~/.claude/sessions`.
-  - `accounts` (new, `accounts`): several logins per agent CLI, one live
-    per tool. `add <tool>` snapshots the live login into
-    `~/.local/state/flakelab/accounts/<id>/` (never reused ids; alias, label
-    or id name an entry), `add <tool> --login` runs the tool's own login in
-    a scratch profile and stores that beside the live one (`--switch` makes
-    it live), `switch <entry>` makes it the live login inside one
-    transaction under our flock and the tool's own locks (Claude Code: the
-    `~/.claude.lock` / `~/.claude.json.lock` mkdir protocol; a held lock
-    refuses with exit 2 and changes nothing), writing the outgoing login back
-    into its entry first (it may hold a rotated refresh token) or into
-    `unclaimed/` when no entry carries it. `--next <tool>` rotates; `alias`,
-    `disable`/`enable`, `remove --yes`, `status [--json]`.
-    `auto [--once] [--dry-run] [--json]` is the engine
-    (`files/scripts/lib/accounts-auto.jq`, pure jq over one document, the
-    headroom defs shared with the script in `lib/accounts-headroom.jq`) that
-    switches before a limit; `flakelab.accounts.autoSwitchInterval` schedules
-    it, the other `flakelab.accounts.*` options set its bars. `run <entry>
-[-- args]` and `env <entry> [--shell sh|fish|pwsh]` give an entry a
-    profile of its own (`profiles/<id>/`, `CLAUDE_CONFIG_DIR`) beside the
-    live login; an entry with a running profile session is never switched
-    onto or targeted. Adapters: Claude Code (`lib/accounts-claude.zsh`) and
-    Codex (`lib/accounts-codex.zsh`: `auth.json` whole, refuses a switch while
-    a `codex` runs unless `--force`, usage through `codex app-server`). The adapter
-    contract, usage and the engine's rules are in `accounts.md`. The store
-    rides `flakelab backup` (`accounts/`); `flakelab doctor` has an
-    `Accounts` section; `ingest` takes the statusline's `rate_limits`.
-    `auto on|off` and `config [set|unset]` switch it and override its
-    settings at run time, over the flake options.
+  - tycswap is the account switcher (`installTycswap`, pinned in
+    `flake.nix`); flakelab carries the glue only: `nix/home/tycswap.nix` (the
+    `flakelab-tycswap-autoswitch` timer behind `tycswapAutoSwitchInterval`, and
+    the quota hook in `claude.nix` that ticks it), the `tycswap` backup
+    category, the doctor's `Switcher` section, `claude-sessions` reading
+    tycswap's session profiles, and `flakelab web` over `tycswap list --json`
+    and `tycswap switch`. The store is `~/.local/share/tycswap`; nothing reads
+    the retired engine's `~/.local/state/flakelab/accounts` except the doctor's
+    warning (README, "Migrating from flakelab accounts").
   - `notify` (new, `notify`): a push to an ntfy topic when a session waits
     on you; the Claude Code `Notification` hook (`flakelab.notify.enable`)
     and Codex's `notify` hook call it, `--message` sends one by hand.
@@ -82,8 +63,8 @@ the private overlay `flakelab-config`, which imports this flake via
     WireGuard (`remote-sessions.md`).
   - `web` (new, `web`): the dashboard in a browser (`lib/web.py`, python3
     stdlib; `files/config/web/index.html`): the logins with their windows
-    and a switch button, the sessions, a start form, the engine's dry run and
-    its settings, over `flakelab accounts` and `flakelab sessions` as CLI calls. 127.0.0.1:8321 and
+    and a switch button, the sessions, a start form, over `tycswap` and
+    `flakelab sessions` as CLI calls. 127.0.0.1:8321 and
     a bearer token from `~/.local/state/flakelab/web/token` (`--print-token`);
     `flakelab.web.*` runs it as a user service, `web.terminal` adds ttyd on
     the `agents` tmux session with the same token.
@@ -99,6 +80,12 @@ the private overlay `flakelab-config`, which imports this flake via
   - Exit codes: a usage error (an unknown flag or argument) exits 2 on every
     command, failed work exits 1, and the doctor's 1 is a failed check
     (`--strict` counts its warnings as failures).
+  - zsh, not bash — and an agent's habits come from bash. In `${VAR:-word}` the
+    word ends at the first unquoted `}` unless that `}` closes a nested
+    `${…}`, so a literal brace in a default (a JSON object, a brace group)
+    truncates the default and leaves the rest as text: branch on the variable
+    instead. Globs are zsh's (`(N.)`, `<->`), arrays are 1-based, `read -A`
+    fills an array (not `-a`), and `$path`/`$fpath` are live arrays.
   - At a terminal only, a person is asked instead of refused
     (`lib/prompt.zsh`, `ARCHITECTURE.md#at-a-terminal`): a bare `flakelab`
     opens `flakelab-menu`, and a missing tool, session or login is picked from

@@ -79,7 +79,7 @@ Mechanics worth knowing:
 - **Nothing forces tmux.** The aliases `c`, `cc`, `codex` stay bare; a
   session that finishes in a minute does not need a host.
   `--start` is the deliberate form for the ones that should outlive a tab.
-- **A profile session is a session.** One started by `flakelab accounts run`
+- **A profile session is a session.** One started by `tycswap run`
   keeps its registry entry under the profile; the table finds it there and
   `--recent` reads the transcripts a profile kept for itself.
 
@@ -115,16 +115,11 @@ titles set by the starter, no key rebinding.
 
 `flakelab web` is the dashboard: one python3 process from the standard
 library serving `files/config/web/index.html` and a small JSON API over the
-two scripts that already know the state, `accounts` and `claude-sessions`.
-The page shows every stored login with its windows as bars, an active or
-profile or quarantined tag and a switch button, drift when a login was made
-by hand, the running sessions with their tmux window and directory, a form
-that starts one in tmux (`--start <tool> <dir> --detach`), "poll usage now",
-"what would auto do?" (the engine's dry run, its events in the log), the
-auto-switch settings with where each comes from (an on/off button, a slider
-per bar, the rest as fields, a reset per run-time override; each change one
-`accounts config` call, accounts.md "Run-time overrides"), and a link to the
-terminal when one is on. It
+two commands that already know the state, `tycswap` and `claude-sessions`.
+The page shows every stored login with its windows as bars, an active,
+disabled or at-limit tag and a switch button, the running sessions with their
+tmux window and directory, a form that starts one in tmux
+(`--start <tool> <dir> --detach`), and a link to the terminal when one is on. It
 reloads every 15 seconds while the tab is visible. Every write is one CLI call, so the
 CLI's locks, refusals and exit codes hold (a refusal comes back as 409 with
 the CLI's reason); the server never reads a token file of a tool and never

@@ -8,7 +8,7 @@ How flakelab is put together, and why. Usage lives in
 1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
    the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
    `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
-   `zsh`, `git-ssh`, `claude`, `codex`, `accounts`, `web`, `tooling`, `health`,
+   `zsh`, `git-ssh`, `claude`, `codex`, `tycswap`, `web`, `tooling`, `health`,
    `backup`.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
    whose nixpkgs builds lag upstream (Claude Code, Codex) and SSH key
@@ -57,11 +57,11 @@ is only the reasoning a description has no room for:
   Everything else `claudeSettings` asserts (attribution, the classifier rules,
   `installMethod`, `autoUpdatesChannel`, the deny floor) is unconditional, and
   the whole activation is gated on `installClaude`.
-- `accounts.*` sets the auto-switch engine's bars (`accounts.md`). The timer runs
-  on every box so `flakelab accounts auto on` needs no rebuild; the flake options
-  are the baseline, `flakelab accounts config set` overrides one at run time (the
-  doctor warns while one is set), and an `auto` flag overrides both for that
-  run.
+- `tycswapAutoSwitchInterval` (nullable string, default `null`) is the span of
+  the `flakelab-tycswap-autoswitch` user timer running `tycswap auto --once`
+  (`nix/home/tycswap.nix`); `null` installs no timer, and the quota hook on
+  `quota_auto_resume_fired` runs one tick at once only with the timer. Needs
+  `installTycswap`. Thresholds, strategy and cooldown are `tycswap config`.
 - `notify.*`, `mosh.enable` and `web.*` reach outside the box — a push, an open
   port, a dashboard — so each is its own switch. `web.bind` off loopback opens
   the port in the proxmox-vm firewall, and ttyd is reached only through the
@@ -199,13 +199,13 @@ Two layers use it. A bare `flakelab` with all three ends a terminal opens
 `flakelab-menu`: a command, then what to do with it, and it re-enters the
 router with those flags, so the target gate and the command's wrapper apply as
 they do to a typed command; its wrapper sets the caller's PATH back first. An
-action is listed with the flags it adds beside its wording, so typing `add`
-finds `add` and `add --login` as typing `store` does. The
+action is listed with the flags it adds beside its wording, so typing `--recent`
+finds `sessions --recent` as typing `recently` does. The
 menu asks nothing a command asks itself: a command that was not given a
 required argument asks for it — `sessions --start` the tool and the
-directory, `--attach` the session, the `accounts` verbs the login or the
-tool — and prints the full command it amounts to (`→ flakelab accounts
-switch 3`), so the flags are there to copy next time.
+directory, `--attach` the session — and prints the full command it amounts
+to (`→ flakelab sessions --attach claude-work`), so the flags are there to
+copy next time.
 
 ## Why two switches
 

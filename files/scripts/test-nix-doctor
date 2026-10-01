@@ -66,13 +66,28 @@ ai_clis() {
   section 'AI CLIs' "${env[@]}"
 }
 
-# accounts_section [<systemctl exit status>]: the doctor's Accounts section for the
-# store as staged; with an argument, under a systemctl that exits as given.
-accounts_section() {
+# switcher_section [<systemctl exit status>] [VAR=value...]: the doctor's Switcher
+# section with tycswap stubbed on PATH (FAKE_TYCSWAP_LIST its list --json answer,
+# FAKE_TYCSWAP_ERR a failure); with a numeric first argument, under a systemctl
+# that exits as given.
+switcher_section() {
   local tools="${TOOLS}"
-  (( $# )) && { stub systemctl "$1"; tools="${UMT}" }
-  section Accounts PATH="${tools}" HOME="${BASE}/home" FLAKELAB_TARGET=other
+  if [[ "${1:-}" == <-> ]]; then stub systemctl "$1"; ln -sf "${TOOLS}/tycswap" "${UMT}/tycswap"; tools="${UMT}"; shift; fi
+  section Switcher PATH="${tools}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true "$@"
 }
+cat > "${TOOLS}/tycswap" <<'STUB'
+#!/usr/bin/env zsh
+case "$1" in
+  --version) print -r -- "tycswap v0.3.0" ;;
+  list) [[ -n "${FAKE_TYCSWAP_ERR:-}" ]] && { print -ru2 -- "${FAKE_TYCSWAP_ERR}"; exit 1 }
+        # No default inside ${:-}: zsh ends the word at the first }, which a JSON default has.
+        [[ -n "${FAKE_TYCSWAP_LIST:-}" ]] && print -r -- "${FAKE_TYCSWAP_LIST}" || print -r -- '{"schemaVersion":1,"activeAccountNumber":null,"accounts":[]}' ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "${TOOLS}/tycswap"
+NOTYCSWAP="${BASE}/notycswap"; mkdir -p "${NOTYCSWAP}"
+for f in "${TOOLS}"/*(N); do [[ "${f:t}" == tycswap ]] || ln -s "${f}" "${NOTYCSWAP}/${f:t}"; done
 
 # cgroup_section <target> [<PID 1 cgroup line> [<PID 1 comm>]]: the doctor's "systemd
 # cgroup" section against the fake tree under ${CGT}, the record at ${CGREC} and the
@@ -160,56 +175,82 @@ contains "and how to remove it"  "${out}" "rm ${MARKER}"
 rm -f "${MARKER}"
 lacks "without the marker, nothing" "$(section Activation PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "health check is skipped"
 
-print -r -- "accounts: no store"
-contains "says so"      "$(accounts_section)" "[ OK ] no stored logins"
+print -r -- "switcher: not installed by this overlay"
+contains "says so" "$(section Switcher PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=false)" "[ OK ] no switcher installed by this overlay"
 
-print -r -- "accounts: a private store with private logins"
-AC="${BASE}/home/.local/state/flakelab/accounts"
-mkdir -p "${AC}/1"
-chmod 700 "${AC}"
-print -r -- '{"version":1}' > "${AC}/accounts.json"; chmod 600 "${AC}/accounts.json"
-print -r -- '{}' > "${AC}/1/credentials.json"; chmod 600 "${AC}/1/credentials.json"
-out="$(accounts_section)"
-contains "the store passes"   "${out}" "[ OK ] store is owner-only"
-contains "the files pass"     "${out}" "[ OK ] stored logins are owner-only (0600)"
-contains "no timer is a failed check" "${out}" "[FAIL] no flakelab-accounts-autoswitch timer, which every box schedules"
+print -r -- "switcher: the wrapper variable absent (a checkout run)"
+contains "is a note, not a verdict" "$(section Switcher PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "[ OK ] note: not run through the wrapper; the switcher is not checked"
 
-print -r -- "accounts: loose modes and a quarantine"
-chmod 755 "${AC}"
-chmod 644 "${AC}/1/credentials.json"
-print -r -- '{"quarantine":{"3":{"reason":"invalid_grant"}}}' > "${AC}/usage.json"
-out="$(accounts_section)"
-contains "a 755 store warns"        "${out}" "[WARN] store is mode 755, expected 700"
-contains "a 644 login warns"        "${out}" "[WARN] 1 stored login file(s) are not 0600"
-contains "with the chmod"           "${out}" "chmod 600 ${AC}/1/credentials.json"
-contains "a quarantined entry warns" "${out}" "[WARN] quarantined entries: 3 (invalid_grant)"
+print -r -- "switcher: the binary under its old name"
+OLDNAME="${BASE}/oldname"; mkdir -p "${OLDNAME}"
+for f in "${NOTYCSWAP}"/*(N); do ln -s "${f}" "${OLDNAME}/${f:t}"; done
+print -rl -- '#!/usr/bin/env zsh' 'case "$1" in --version) print -r -- "cswap 0.2.0" ;; list) print -r -- "{\"schemaVersion\":1,\"activeAccountNumber\":null,\"accounts\":[]}" ;; *) exit 2 ;; esac' > "${OLDNAME}/cswap"
+chmod +x "${OLDNAME}/cswap"
+out="$(section Switcher PATH="${OLDNAME}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true)"
+contains "is found"                "${out}" "[ OK ] cswap 0.2.0"
+lacks    "and not reported missing" "${out}" "not on PATH"
 
-print -r -- "accounts: run-time overrides of the flake's settings"
-print -r -- '{"weekThreshold":92,"hysteresis":5,"autoSwitch":true}' > "${AC}/settings.json"
-out="$(accounts_section)"
-contains "an override warns, naming each" "${out}" "[WARN] auto-switch settings overridden at run time: weekThreshold=92 hysteresis=5"
-contains "with the way back"            "${out}" "flakelab accounts config unset --all"
-contains "on or off is reported, not warned about" "${out}" "[ OK ] auto-switch turned on at run time"
-print -r -- '{"autoSwitch":false}' > "${AC}/settings.json"
-out="$(accounts_section)"
-lacks    "the switch alone warns nothing" "${out}" "overridden at run time"
-contains "and says it is off"             "${out}" "[ OK ] auto-switch turned off at run time (flakelab accounts auto on)"
-print -r -- 'nope' > "${AC}/settings.json"
-contains "a file that does not parse says so" "$(accounts_section)" "overridden at run time: settings.json is not a JSON object"
-rm -f "${AC}/settings.json"
-lacks "no file, no warning" "$(accounts_section)" "overridden at run time"
+print -r -- "switcher: installed but not on PATH"
+out="$(section Switcher PATH="${NOTYCSWAP}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true)"
+contains "fails"          "${out}" "[FAIL] tycswap not on PATH"
+contains "with the fix"   "${out}" "flakelab update installs it"
 
-print -r -- "accounts: no user manager answers"
-out="$(accounts_section 1)"
-contains "the timer is not read as unconfigured" "${out}" "[WARN] no auto-switch timer can run or be listed"
-contains "names the user manager" "${out}" "no user manager answers, so no user unit runs: systemctl status user@"
-lacks    "not as a missing timer" "${out}" "no flakelab-accounts-autoswitch timer"
+print -r -- "switcher: no store"
+out="$(switcher_section)"
+contains "names the binary" "${out}" "[ OK ] tycswap v0.3.0"
+contains "and the empty store" "${out}" "[ OK ] no stored logins (tycswap add starts the store)"
+contains "no timer is a note" "${out}" "[ OK ] note: no auto-switch timer"
 
-print -r -- "accounts: a user manager with no timer"
-out="$(accounts_section 0)"
-contains "a failed check, since every box schedules it" "${out}" "[FAIL] no flakelab-accounts-autoswitch timer, which every box schedules"
-contains "with the way back"       "${out}" "flakelab update, then systemctl --user list-timers"
-lacks    "no user manager finding" "${out}" "no user manager answers"
+print -r -- "switcher: an old cswap store beside no tycswap store"
+mkdir -p "${BASE}/home/.local/share/claude-swap"
+contains "hints at tycswap migrate" "$(switcher_section)" "tycswap migrate copies it once"
+rm -rf "${BASE}/home/.local/share/claude-swap"
+
+print -r -- "switcher: a private store, an empty roster"
+CS="${BASE}/home/.local/share/tycswap"
+mkdir -p "${CS}/credentials" "${CS}/codex/credentials"
+chmod 700 "${CS}"
+print -r -- 'enc' > "${CS}/credentials/account_1.enc"; chmod 600 "${CS}/credentials/account_1.enc"
+out="$(switcher_section)"
+contains "the store passes"      "${out}" "[ OK ] store is owner-only"
+contains "the files pass"        "${out}" "[ OK ] stored credentials are owner-only (0600)"
+contains "an empty roster reads" "${out}" "[ OK ] 0 stored login(s); active: none"
+
+print -r -- "switcher: a roster with an active login"
+out="$(switcher_section FAKE_TYCSWAP_LIST='{"schemaVersion":1,"activeAccountNumber":2,"accounts":[{"number":1,"email":"a@example.com","active":false},{"number":2,"email":"b@example.com","active":true}]}')"
+contains "counts and names it" "${out}" "[ OK ] 2 stored login(s); active: b@example.com"
+
+print -r -- "switcher: loose modes and a failing list"
+chmod 755 "${CS}"
+chmod 644 "${CS}/credentials/account_1.enc"
+out="$(switcher_section FAKE_TYCSWAP_ERR='Error: sequence.json is not valid JSON')"
+contains "a 755 store warns"   "${out}" "[WARN] store is mode 755, expected 700"
+contains "a 644 file warns"    "${out}" "[WARN] 1 stored credential file(s) are not 0600"
+contains "with the chmod"      "${out}" "chmod 600 ${CS}/credentials/account_1.enc"
+contains "a failing list warns with tycswap's last line" "${out}" "[WARN] tycswap list --json failed: Error: sequence.json is not valid JSON"
+chmod 700 "${CS}"; chmod 600 "${CS}/credentials/account_1.enc"
+
+print -r -- "switcher: the retired store warns"
+mkdir -p "${BASE}/home/.local/state/flakelab/accounts/1"
+out="$(switcher_section)"
+contains "names it"          "${out}" "[WARN] the retired flakelab accounts store is still here: ${BASE}/home/.local/state/flakelab/accounts"
+contains "and the way out"   "${out}" "Migrating from flakelab accounts"
+rm -rf "${BASE}/home/.local/state/flakelab/accounts"
+lacks "gone, no warning" "$(switcher_section)" "retired flakelab accounts store"
+
+print -r -- "switcher: the timer"
+out="$(switcher_section 1 FLAKELAB_TYCSWAP_AUTOSWITCH=true)"
+contains "no user manager is a warning"    "${out}" "[WARN] no auto-switch timer can run or be listed"
+contains "that names the user manager"     "${out}" "no user manager answers, so no user unit runs: systemctl status user@"
+out="$(switcher_section 0 FLAKELAB_TYCSWAP_AUTOSWITCH=true)"
+contains "a manager with no timer warns"   "${out}" "[WARN] flakelab.tycswapAutoSwitchInterval is set but no timer is scheduled"
+out="$(switcher_section 0)"
+contains "without an interval it is a note" "${out}" "[ OK ] note: no auto-switch timer (flakelab.tycswapAutoSwitchInterval schedules tycswap auto --once)"
+# A systemctl that answers list-timers with FAKE_TIMERS: the scheduled branch.
+print -rl -- '#!/bin/sh' 'case "$*" in *list-timers*) printf "%s\n" "${FAKE_TIMERS:-}" ;; esac' 'exit 0' > "${UMT}/systemctl"
+chmod +x "${UMT}/systemctl"; ln -sf "${TOOLS}/tycswap" "${UMT}/tycswap"
+out="$(section Switcher PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_AUTOSWITCH=true FAKE_TIMERS='flakelab-tycswap-autoswitch.timer  loaded active waiting')"
+contains "a scheduled timer passes" "${out}" "[ OK ] auto-switch timer scheduled (flakelab-tycswap-autoswitch.timer)"
 
 print -r -- "systemd cgroup: another target"
 contains "no WSL, nothing to check" "$(cgroup_section other)" "[ OK ] target other: systemd starts at the top of its own cgroup tree"

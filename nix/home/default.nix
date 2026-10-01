@@ -97,7 +97,7 @@ in
     ./git-ssh.nix
     ./claude.nix
     ./codex.nix
-    ./accounts.nix
+    ./tycswap.nix
     ./web.nix
     ./tooling.nix
     ./health.nix

@@ -164,34 +164,6 @@ rec {
     exec ${zsh} ${s}/claude-sessions "$@"
   '';
 
-  # The store is the script's own; flock serialises writers, pgrep counts the
-  # tool's running sessions for the post-switch line. Sourced from `s`, so the
-  # adapters under lib/ sit beside it in the store. The user's PATH stays
-  # behind the pinned set: the Codex adapter runs the installed `codex`
-  # (~/.local/bin) for its usage read and profile check.
-  accounts = pkgs.writeShellScriptBin "accounts" ''
-    export FLAKELAB_ACCOUNTS_TOOLS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.autoSwitchTools)}
-    export FLAKELAB_ACCOUNTS_SESSION_THRESHOLD=${toString cfg.accounts.sessionThreshold}
-    export FLAKELAB_ACCOUNTS_WEEK_THRESHOLD=${toString cfg.accounts.weekThreshold}
-    export FLAKELAB_ACCOUNTS_MODEL_THRESHOLD=${toString cfg.accounts.modelThreshold}
-    export FLAKELAB_ACCOUNTS_MODEL_WINDOWS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.modelWindows)}
-    export FLAKELAB_ACCOUNTS_STRATEGY=${cfg.accounts.strategy}
-    export FLAKELAB_ACCOUNTS_AUTO_SWITCH=${lib.boolToString (cfg.accounts.autoSwitchInterval != null)}
-    export PATH=${
-      bin [
-        pkgs.zsh
-        pkgs.coreutils
-        pkgs.util-linux
-        pkgs.procps
-        pkgs.gnugrep
-        pkgs.gawk
-        pkgs.curl
-        pkgs.jq
-      ]
-    }:$PATH
-    exec ${zsh} ${s}/accounts "$@"
-  '';
-
   # What a bare `flakelab` opens at a terminal. stty is the one tool it runs;
   # the caller's PATH is kept aside and restored before the chosen command runs,
   # so that command's own wrapper sees the PATH a typed `flakelab <command>` has.
@@ -223,7 +195,7 @@ rec {
   # commands it shells out to by their wrappers so their pinned PATHs hold.
   web = pkgs.writeShellScriptBin "web" ''
     export FLAKELAB_WEB_STATIC=${../files/config/web}
-    export FLAKELAB_WEB_ACCOUNTS=${accounts}/bin/accounts
+    export FLAKELAB_WEB_TYCSWAP=${lib.getExe pkgs.tycswap}
     export FLAKELAB_WEB_SESSIONS=${claude-sessions}/bin/claude-sessions
     export PATH=${
       bin [
@@ -453,6 +425,8 @@ rec {
     export FLAKELAB_AI_CLIS="${
       toString (lib.optional cfg.installClaude "claude" ++ lib.optional cfg.installCodex "codex")
     }"
+    export FLAKELAB_INSTALL_TYCSWAP=${lib.boolToString cfg.installTycswap}
+    export FLAKELAB_TYCSWAP_AUTOSWITCH=${lib.boolToString (cfg.tycswapAutoSwitchInterval != null)}
     export PATH=${
       bin [
         pkgs.zsh
@@ -560,7 +534,7 @@ rec {
               pkgs.coreutils
               pkgs.gnugrep
             ]
-          }:$PATH
+          }${lib.optionalString cfg.installTycswap ":${pkgs.tycswap}/bin"}:$PATH
           # No `set -e`: one failed clone must not skip activate-hooks.
           set -uo pipefail
           # The same first-key-on-disk rule the activation steps use (nix/clone-key.nix).

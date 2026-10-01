@@ -82,14 +82,14 @@
       pkgsDev = pkgs.extend (nixpkgs.lib.composeExtensions unstableOverlay preCommitOverlay);
 
       # tycswap: the account switcher for Claude Code and Codex logins, one static
-      # Go binary named `cswap`. Pinned to a release tag: `version` is the one
+      # Go binary named `tycswap`. Pinned to a release tag: `version` is the one
       # place it is written (the tag and the ldflag derive from it), and a bump
       # needs both hashes with it - a build with a stale hash prints the new one,
       # and checks.tycswap fails in CI rather than on a box's update.
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
-          version = "0.2.0";
+          version = "0.3.0";
         in
         pkgs.buildGoModule {
           pname = "tycswap";
@@ -98,20 +98,20 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-Hu3WqYf0Oekb5iMeU+Y4gu+zEiycyBQHVt/3XrwaFUY=";
+            hash = "sha256-i+Hi5f0DoTYdmucD1jEQewj7dPpsZgRgti9x8coenAk=";
           };
-          vendorHash = "sha256-jLuFFHT+aLdTiMaxrYl0fRgRHH2s8gIoDSVP2+vZO30=";
-          subPackages = [ "cmd/cswap" ];
+          vendorHash = "sha256-jn6YYJLyFhDCy5LnareJ/mGpFQrQymzvg2LugIhKQ/o=";
+          subPackages = [ "cmd/tycswap" ];
           env.CGO_ENABLED = 0;
           ldflags = [
             "-s"
             "-w"
-            "-X git.dpemmons.com/dpemmons/cswap/internal/version.Version=v${version}"
+            "-X github.com/tyclab/tycswap/internal/version.Version=v${version}"
           ];
           # The upstream suite wants a writable HOME and minutes of wall clock; the
           # release is tested there, CI here builds the binary only.
           doCheck = false;
-          meta.mainProgram = "cswap";
+          meta.mainProgram = "tycswap";
         };
       tycswapOverlay = _final: _prev: { inherit tycswap; };
 
@@ -367,7 +367,6 @@
         # The --help sweep runs `mcp`, a python3 program.
         flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
-        accounts = suiteCheck "accounts";
         notify = suiteCheck "notify";
         # The suite; the launcher as installed, against a fixture account; the
         # account and the headless browser registered in both clients' rendered
@@ -760,7 +759,7 @@
               echo '{"env":{"MY_VAR":"mine"}}' > "$settings"
               bash -euo pipefail ${entryEarlier}
               jq -e '.env | .MY_VAR == "mine" and .WHATSAPP_MCP_DIR == "/example/whatsapp-mcp-server" and .PLAYWRIGHT_MCP_EXTENSION == "true"' "$settings" > /dev/null
-              jq -e '.statusLine.command | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$")' "$settings" > /dev/null
+              jq -e '.statusLine.command | test("/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$")' "$settings" > /dev/null
               bash -euo pipefail ${entryLater}
               jq -e --argjson b "$base" '.env | keys == ($b + ["MY_VAR"] | sort)' "$settings" > /dev/null
               jq -e 'has("statusLine") | not' "$settings" > /dev/null
@@ -1277,36 +1276,62 @@
             touch $out
           '';
 
-        # The accounts overview at shell start is a file read, the timer that writes
-        # it is on every box (auto-switch on or off), and the global compinit stays
-        # off (oh-my-zsh runs one).
-        shell-overview =
+        # The auto-switch timer is tycswap's `tycswap auto --once` on a user timer,
+        # present only when an interval is set and the binary is installed; the
+        # quota hook follows the same switch. The global compinit stays off
+        # (oh-my-zsh runs one).
+        tycswap-timer =
           let
             inherit (nixpkgs) lib;
             ext =
-              accounts:
-              self.nixosConfigurations.default.extendModules { modules = [ { flakelab.accounts = accounts; } ]; };
+              attrs: self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; };
             hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
-            overview = ext { shellOverview = true; };
-            timerOf = sys: (hmOf sys).systemd.user.timers.flakelab-accounts-autoswitch.Timer.OnUnitActiveSec;
-            wrapperOf =
+            timersOf = sys: (hmOf sys).systemd.user.timers;
+            settingsOf = sys: (hmOf sys).home.activation.claudeSettings.data;
+            doctorOf =
               sys:
               (import ./nix/scripts.nix {
                 inherit (sys) pkgs;
                 cfg = sys.config.flakelab;
-              }).accounts;
-            on = ext { autoSwitchInterval = "5min"; };
+              }).nix-doctor;
+            on = ext { tycswapAutoSwitchInterval = "5min"; };
+            bad = ext {
+              installTycswap = false;
+              tycswapAutoSwitchInterval = "2min";
+            };
+            # A statusline is rendered only with a statusbar plugin; this system has one.
+            statusline = ext {
+              claudePluginMarketplaces = [
+                {
+                  name = "tools";
+                  url = "https://example.invalid/tools.git";
+                }
+              ];
+              claudePlugins = [ "statusbar@tools" ];
+            };
           in
-          assert lib.hasInfix "/.local/state/flakelab/accounts/overview.txt"
-            (hmOf overview).programs.zsh.initContent;
           assert
-            !(lib.hasInfix "overview.txt" (hmOf self.nixosConfigurations.default).programs.zsh.initContent);
-          assert timerOf self.nixosConfigurations.default == "2min";
-          assert timerOf on == "5min";
+            !(builtins.hasAttr "flakelab-tycswap-autoswitch" (timersOf self.nixosConfigurations.default));
+          assert (timersOf on).flakelab-tycswap-autoswitch.Timer.OnUnitActiveSec == "5min";
+          assert
+            builtins.match ".*/bin/(cswap|tycswap) auto --once --json" (
+              lib.concatStringsSep " " (
+                lib.toList (hmOf on).systemd.user.services.flakelab-tycswap-autoswitch.Service.ExecStart
+              )
+            ) != null;
+          assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAutoSwitchInterval" a.message)
+            (hmOf bad).assertions;
+          assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
+          assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
+          assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
+          # The statusline is the plugin command itself: the retired tee was a store
+          # script whose text (and its accounts ingest) the activation never carried.
+          assert lib.hasInfix "statusline-command.sh" (settingsOf statusline);
           assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
-          pkgs.runCommandLocal "flakelab-check-shell-overview" { } ''
-            grep -q '^export FLAKELAB_ACCOUNTS_AUTO_SWITCH=false$' ${wrapperOf self.nixosConfigurations.default}/bin/accounts
-            grep -q '^export FLAKELAB_ACCOUNTS_AUTO_SWITCH=true$' ${wrapperOf on}/bin/accounts
+          pkgs.runCommandLocal "flakelab-check-tycswap-timer" { } ''
+            grep -q '^export FLAKELAB_TYCSWAP_AUTOSWITCH=false$' ${doctorOf self.nixosConfigurations.default}/bin/nix-doctor
+            grep -q '^export FLAKELAB_TYCSWAP_AUTOSWITCH=true$' ${doctorOf on}/bin/nix-doctor
+            grep -q '^export FLAKELAB_INSTALL_TYCSWAP=true$' ${doctorOf on}/bin/nix-doctor
             touch $out
           '';
 

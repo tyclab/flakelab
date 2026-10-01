@@ -37,7 +37,6 @@ _order=(
   doctor
   backup
   sessions
-  accounts
   notify
   web
   mcp
@@ -61,7 +60,6 @@ _bin=(
   doctor          nix-doctor
   backup          nix-backup
   sessions        claude-sessions
-  accounts        accounts
   notify          notify
   web             web
   mcp             flakelab-mcp
@@ -86,7 +84,6 @@ _file=(
   doctor          nix-doctor
   backup          nix-backup
   sessions        claude-sessions
-  accounts        accounts
   notify          notify
   web             web
   mcp             mcp
@@ -108,9 +105,8 @@ _desc=(
   doctor          'diagnose this distro and print what to run next'
   backup          'back up home-dir data to the backup root (--restore to read it back)'
   sessions        'the running agent sessions; --start/--attach host one in tmux, --save before a restart, --open after'
-  accounts        'stored logins per agent CLI: add the live one, switch without a logout'
   notify          'a push (ntfy) when a session waits on you; the Claude and Codex hooks call it'
-  web             'the dashboard in a browser: accounts, sessions, switch and start; token-protected'
+  web             'the dashboard in a browser: the tycswap logins, sessions, switch and start; token-protected'
   mcp             'MCP accounts shared by Claude and Codex: connect, login, status, import-codex'
   clone           'discover and clone the configured GitLab groups and repos'
   provision       'drive the Windows provisioning script from inside WSL'
