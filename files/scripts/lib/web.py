@@ -2,7 +2,7 @@
 
 One process, the standard library only: a threaded HTTP server that serves
 the page (files/config/web/index.html) and a small JSON API over the two
-scripts that already know the state, `accounts` and `claude-sessions`. It
+scripts that already know the state, `tycswap` and `claude-sessions`. It
 never reads a token file of a tool, never touches the network itself, and
 does nothing the CLI could not: every write is one CLI call, so the CLI's
 own locks, refusals and exit codes hold.
@@ -27,7 +27,7 @@ Environment (set by the zsh wrapper):
   FLAKELAB_WEB_BIND, FLAKELAB_WEB_PORT      address and port
   FLAKELAB_WEB_TOKEN_FILE                   the token file
   FLAKELAB_WEB_STATIC                       the directory holding index.html
-  FLAKELAB_WEB_ACCOUNTS, FLAKELAB_WEB_SESSIONS   the two commands
+  FLAKELAB_WEB_TYCSWAP, FLAKELAB_WEB_SESSIONS    the two commands
   FLAKELAB_WEB_TERMINAL_SOCKET              optional: ttyd's Unix socket
   FLAKELAB_WEB_LOGO                         optional: an image served at /logo, the
                                             page's heading mark and tab icon
@@ -37,14 +37,8 @@ Without the token: GET / (the page), GET /logo (the configured image, 404
 without one), GET /api/health {ok, logo}.
 
 API (all JSON, the bearer required):
-  GET  /api/state                {accounts, status, config, sessions, terminal}
-                                 (config: accounts config --json)
-  POST /api/fetch                accounts --fetch --json         -> {accounts}
-  POST /api/switch {entry}       accounts switch <entry> [--force]
-  POST /api/auto {dryRun}        accounts auto --once --json [--dry-run] -> {events}
-  POST /api/config {key, value}  accounts config set <key> <value>
-  POST /api/config {key, unset: true} | {all: true, unset: true}
-                                 accounts config unset <key> | --all
+  GET  /api/state                {accounts (tycswap list --json), sessions, terminal}
+  POST /api/switch {entry}       tycswap switch <entry> [--force]
   POST /api/sessions/start {tool, dir, args?}   claude-sessions --start <tool> <dir> --detach
   POST /api/terminal             a session cookie for /terminal/ (204)
 Every CLI result comes back as {ok, code, stdout, stderr} beside the parsed
@@ -79,7 +73,7 @@ TOKEN_FILE = Path(
 STATIC = Path(
     os.environ.get("FLAKELAB_WEB_STATIC", os.path.dirname(os.path.abspath(__file__)))
 )
-ACCOUNTS = os.environ.get("FLAKELAB_WEB_ACCOUNTS", "accounts")
+TYCSWAP = os.environ.get("FLAKELAB_WEB_TYCSWAP", "tycswap")
 SESSIONS = os.environ.get("FLAKELAB_WEB_SESSIONS", "claude-sessions")
 TERMINAL_SOCKET = os.environ.get("FLAKELAB_WEB_TERMINAL_SOCKET", "")
 LOGO = os.environ.get("FLAKELAB_WEB_LOGO", "")
@@ -234,53 +228,18 @@ def json_lines(text):
 
 
 def state():
-    # Read-only calls, none takes the store's lock: side by side, so a
-    # refresh costs the slowest of them.
-    with ThreadPoolExecutor(4) as pool:
-        acc, st, cfg, se = pool.map(
-            run,
-            [
-                [ACCOUNTS, "--json"],
-                [ACCOUNTS, "status", "--json"],
-                [ACCOUNTS, "config", "--json"],
-                [SESSIONS, "--json"],
-            ],
-        )
+    # Read-only calls, neither takes the store's lock: side by side, so a
+    # refresh costs the slower of them.
+    with ThreadPoolExecutor(2) as pool:
+        acc, se = pool.map(run, [[TYCSWAP, "list", "--json"], [SESSIONS, "--json"]])
     return {
         "accounts": parse(acc["stdout"], {}),
-        "status": parse(st["stdout"], {}),
-        "config": parse(cfg["stdout"], {}),
         "sessions": parse(se["stdout"], []),
         "terminal": bool(TERMINAL_SOCKET),
-        "calls": {"accounts": acc, "status": st, "config": cfg, "sessions": se},
+        "calls": {"accounts": acc, "sessions": se},
     }
 
 
-def config_argv(doc):
-    """The `accounts config` call a POST /api/config body asks for, or the
-    reason it is refused. The CLI validates the key and the value; this only
-    keeps an option out of the key and turns a JSON value into its text."""
-    key = doc.get("key")
-    if doc.get("unset") is True:
-        if doc.get("all") is True:
-            return [ACCOUNTS, "config", "unset", "--all"], None
-        if isinstance(key, str) and key and not key.startswith("-"):
-            return [ACCOUNTS, "config", "unset", key], None
-        return None, "key is required (or all: true)"
-    if not isinstance(key, str) or not key or key.startswith("-"):
-        return None, "key is required"
-    value = doc.get("value")
-    if isinstance(value, bool):
-        text = "true" if value else "false"
-    elif isinstance(value, int):
-        text = str(value)
-    elif isinstance(value, float) and value.is_integer():
-        text = str(int(value))
-    elif isinstance(value, str) and value.strip():
-        text = value.strip()
-    else:
-        return None, "value must be a string, an integer or a boolean"
-    return [ACCOUNTS, "config", "set", key, text], None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -498,52 +457,21 @@ class Handler(BaseHTTPRequestHandler):
         if doc is None:
             self.send_json(400, {"error": "the body must be a JSON object"})
             return
-        if path == "/api/fetch":
-            r = run([ACCOUNTS, "--fetch", "--json"])
-            self.send_json(
-                200 if r["ok"] else 502, {"call": r, "accounts": parse(r["stdout"], {})}
-            )
-            return
         if path == "/api/switch":
             entry = str(doc.get("entry", "")).strip()
             if not entry or entry.startswith("-"):
                 self.send_json(
-                    400, {"error": "entry is required (an id, an alias or a label)"}
+                    400, {"error": "entry is required (a number, an email or an alias)"}
                 )
                 return
-            argv = [ACCOUNTS, "switch", entry]
+            argv = [TYCSWAP, "switch", entry]
             if doc.get("force") is True:
                 argv.append("--force")
             r = run(argv)
+            # tycswap's exit 1 is a handled refusal (unknown entry, a lock held);
+            # the page shows its reason, so it is a conflict, not a bad gateway.
             self.send_json(
-                200 if r["ok"] else (409 if r["code"] == 2 else 502), {"call": r}
-            )
-            return
-        if path == "/api/auto":
-            argv = [ACCOUNTS, "auto", "--once", "--json"]
-            if doc.get("dryRun", True) is not False:
-                argv.append("--dry-run")
-            tool = str(doc.get("tool", "")).strip()
-            if tool:
-                if tool not in TOOLS:
-                    self.send_json(
-                        400, {"error": "tool must be one of " + ", ".join(TOOLS)}
-                    )
-                    return
-                argv += ["--tool", tool]
-            r = run(argv)
-            self.send_json(
-                200 if r["ok"] else 502, {"call": r, "events": json_lines(r["stdout"])}
-            )
-            return
-        if path == "/api/config":
-            argv, why = config_argv(doc)
-            if argv is None:
-                self.send_json(400, {"error": why})
-                return
-            r = run(argv)
-            self.send_json(
-                200 if r["ok"] else (409 if r["code"] == 2 else 502), {"call": r}
+                200 if r["ok"] else (409 if r["code"] == 1 else 502), {"call": r}
             )
             return
         if path == "/api/sessions/start":

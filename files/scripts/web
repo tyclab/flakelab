@@ -4,9 +4,8 @@ set -uo pipefail
 
 #
 # web — the dashboard for the agent sessions and the stored logins, in a
-# browser (remote-sessions.md): the accounts with their windows and a switch
-# button, the running sessions with their tmux window, a start form, the
-# engine's dry run, and a link to the browser terminal when one is on.
+# browser (remote-sessions.md): the logins with their windows and a switch
+# button, the running sessions with their tmux window, a start form, and a link to the browser terminal when one is on.
 #
 # Usage: flakelab web [--bind ADDR] [--port N] [--token-file FILE] [--terminal-socket PATH] [--logo FILE]
 #        flakelab web --print-token | --rotate-token
@@ -14,7 +13,7 @@ set -uo pipefail
 # One python3 process (lib/web.py, the standard library only), bound to
 # 127.0.0.1:8321 unless told otherwise, every API call but /api/health behind
 # a bearer token from the token file (0600 under ~/.local/state/flakelab/web/,
-# made on first start). It shells out to `accounts` and `claude-sessions` for everything,
+# made on first start). It shells out to `tycswap` and `claude-sessions` for everything,
 # so their locks, refusals and exit codes hold; it never touches a token file
 # of a tool. Bind it to the box's WireGuard address to reach it from a phone;
 # never to a public interface. With --terminal-socket it also fronts ttyd,
@@ -25,8 +24,8 @@ set -uo pipefail
 # and every terminal session ends).
 #
 # The two commands: from the dispatch dir when the wrapper set it
-# (FLAKELAB_WEB_ACCOUNTS, FLAKELAB_WEB_SESSIONS), else the siblings of this
-# script, so a checkout serves its own.
+# (FLAKELAB_WEB_TYCSWAP, FLAKELAB_WEB_SESSIONS), else tycswap from PATH and the
+# sibling claude-sessions, so a checkout serves its own.
 #
 
 SCRIPT_DIR="${0:A:h}"
@@ -100,6 +99,6 @@ fi
 
 export FLAKELAB_WEB_BIND="$BIND" FLAKELAB_WEB_PORT="$PORT" FLAKELAB_WEB_TOKEN_FILE="$TOKEN_FILE" FLAKELAB_WEB_TERMINAL_SOCKET="$TERMINAL_SOCKET" FLAKELAB_WEB_LOGO="$LOGO"
 export FLAKELAB_WEB_STATIC="${FLAKELAB_WEB_STATIC:-${SCRIPT_DIR:h}/config/web}"
-export FLAKELAB_WEB_ACCOUNTS="${FLAKELAB_WEB_ACCOUNTS:-${SCRIPT_DIR}/accounts}"
+export FLAKELAB_WEB_TYCSWAP="${FLAKELAB_WEB_TYCSWAP:-tycswap}"
 export FLAKELAB_WEB_SESSIONS="${FLAKELAB_WEB_SESSIONS:-${SCRIPT_DIR}/claude-sessions}"
 exec python3 "${SCRIPT_DIR}/lib/web.py"

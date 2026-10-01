@@ -223,7 +223,7 @@ rec {
   # commands it shells out to by their wrappers so their pinned PATHs hold.
   web = pkgs.writeShellScriptBin "web" ''
     export FLAKELAB_WEB_STATIC=${../files/config/web}
-    export FLAKELAB_WEB_ACCOUNTS=${accounts}/bin/accounts
+    export FLAKELAB_WEB_TYCSWAP=${lib.getExe pkgs.tycswap}
     export FLAKELAB_WEB_SESSIONS=${claude-sessions}/bin/claude-sessions
     export PATH=${
       bin [
