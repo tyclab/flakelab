@@ -242,20 +242,20 @@ place to **generate** from, not to run this system: the flake's outputs are
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
 them all, and the table has the daily ones.
 
-| Command                   | Action                                                          |
-| ------------------------- | --------------------------------------------------------------- |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>` |
-| `flakelab update-all`     | rebuild + clone                                                 |
-| `flakelab clone`          | clone / fetch GitLab group repos                                |
-| `flakelab doctor`         | diagnose a provisioned distro                                   |
-| `flakelab backup`         | payload + optional shared state root                            |
-| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux   |
+| Command                   | Action                                                                       |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`              |
+| `flakelab update-all`     | rebuild + clone                                                              |
+| `flakelab clone`          | clone / fetch GitLab group repos                                             |
+| `flakelab doctor`         | diagnose a provisioned distro                                                |
+| `flakelab backup`         | payload + optional shared state root                                         |
+| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux                |
 | `tycswap`                 | the account switcher: stored logins per agent CLI; a switch without a logout |
-| `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it    |
-| `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start   |
-| `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)              |
-| `flakelab overlay-gen`    | write the private overlay from a config                         |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                    |
+| `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it                 |
+| `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start          |
+| `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)                           |
+| `flakelab overlay-gen`    | write the private overlay from a config                                      |
+| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                                 |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean
@@ -350,7 +350,7 @@ with your own rather than reading them as defaults.
 | `nix/options.nix`                         | `flakelab.*` option schema — the names, types and defaults of record                              |
 | `nix/configuration.nix`                   | system, every target: locale, native Docker, nix-ld                                               |
 | `nix/targets/`                            | the platform half: `wsl.nix` (wsl.conf, interop), `proxmox-vm.nix`                                |
-| `nix/home/`                               | user: packages, zsh, git/ssh, claude, codex, tycswap, web, tooling, health, backup               |
+| `nix/home/`                               | user: packages, zsh, git/ssh, claude, codex, tycswap, web, tooling, health, backup                |
 | `nix/secrets.nix`                         | the optional sops-nix enrolment (`sopsSecretsFile`)                                               |
 | `nix/state-syncthing.nix`                 | the state root replicated by Syncthing through an untrusted hub (`stateSyncthing`)                |
 | `nix/mcp-clients.nix`                     | the servers registered in both Claude and Codex (`mcpShared`, `mcpBrowsers`)                      |
