@@ -99,6 +99,12 @@ the private overlay `flakelab-config`, which imports this flake via
   - Exit codes: a usage error (an unknown flag or argument) exits 2 on every
     command, failed work exits 1, and the doctor's 1 is a failed check
     (`--strict` counts its warnings as failures).
+  - zsh, not bash — and an agent's habits come from bash. In `${VAR:-word}` the
+    word ends at the first unquoted `}` unless that `}` closes a nested
+    `${…}`, so a literal brace in a default (a JSON object, a brace group)
+    truncates the default and leaves the rest as text: branch on the variable
+    instead. Globs are zsh's (`(N.)`, `<->`), arrays are 1-based, `read -A`
+    fills an array (not `-a`), and `$path`/`$fpath` are live arrays.
   - At a terminal only, a person is asked instead of refused
     (`lib/prompt.zsh`, `ARCHITECTURE.md#at-a-terminal`): a bare `flakelab`
     opens `flakelab-menu`, and a missing tool, session or login is picked from
