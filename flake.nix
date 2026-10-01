@@ -1294,6 +1294,11 @@
               installTycswap = false;
               tycswapAutoSwitchInterval = "2min";
             };
+            # A statusline is rendered only with a statusbar plugin; this system has one.
+            statusline = ext {
+              claudePluginMarketplaces = [ { name = "tools"; url = "https://example.invalid/tools.git"; } ];
+              claudePlugins = [ "statusbar@tools" ];
+            };
           in
           assert !(builtins.hasAttr "flakelab-tycswap-autoswitch" (timersOf self.nixosConfigurations.default));
           assert (timersOf on).flakelab-tycswap-autoswitch.Timer.OnUnitActiveSec == "5min";
@@ -1302,6 +1307,9 @@
           assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
           assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
           assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
+          # The statusline is the plugin command itself: the retired tee was a store
+          # script whose text (and its accounts ingest) the activation never carried.
+          assert lib.hasInfix "statusline-command.sh" (settingsOf statusline);
           assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
           pkgs.runCommandLocal "flakelab-check-tycswap-timer" { } "touch $out";
 

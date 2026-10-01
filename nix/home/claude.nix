@@ -152,23 +152,16 @@ let
   '';
 
   # Written when absent or when it is flakelab's own (an earlier generation's
-  # tee script, or the plain plugin command every box before the tee had), and
+  # tee script into the retired engine, or the plain plugin command), and
   # flakelab's own is removed once the statusbar plugin is not enabled, so a
   # local override survives while a provisioned box follows this flake; the
   # sort -V glob resolves the newest cached plugin version at statusline time.
-  # The stdin Claude Code hands the statusline carries the live login's
-  # rate_limits with every refresh: teed into `accounts ingest` on the way, so
-  # the usage endpoint is asked for the active entry only for its per-model
-  # week, at the candidate cadence (accounts.md, "Usage"). The tee never
-  # delays or fails the statusline.
+  # tycswap reads usage from the endpoint itself, so nothing is teed off stdin.
   statuslineMarketplace = marketplaceOf "statusbar";
   claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
-  claudeStatuslineCmd = pkgs.writeShellScript "flakelab-claude-statusline" ''
-    tee >(${scripts.accounts}/bin/accounts ingest --tool claude > /dev/null 2>&1 || true) | ${claudeStatuslinePlugin}
-  '';
   claudeStatuslineArg = lib.optionalString (
     statuslineMarketplace != null
-  ) "--arg statusline ${lib.escapeShellArg "${claudeStatuslineCmd}"}";
+  ) "--arg statusline ${lib.escapeShellArg claudeStatuslinePlugin}";
   claudeStatuslineOurs = ''((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))'';
   claudeStatuslineJq =
     if statuslineMarketplace != null then
