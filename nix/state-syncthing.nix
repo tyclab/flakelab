@@ -14,6 +14,13 @@ let
   secretDir = "/run/flakelab-syncthing";
   passwordFile = "${secretDir}/${st.folderId}.password";
   configDir = if st.configDir != null then st.configDir else "${home}/.config/syncthing";
+  # The one line that reads the password out of the render, as a script of its
+  # own so checks.state-syncthing can run it against a fixture: the first
+  # `KEY=` line wins, a CR from a CRLF file is dropped, and the key is literal in
+  # the pattern because its option type allows an identifier only.
+  readPassword = pkgs.writeShellScript "flakelab-syncthing-password-read" ''
+    sed -n 's/^${st.passwordEnvKey}=//p' "$1" | tr -d '\r' | head -n 1
+  '';
 in
 {
   config = lib.mkIf (st != null) {
@@ -87,7 +94,7 @@ in
         pkgs.gnused
       ];
       script = ''
-        value="$(sed -n 's/^${st.passwordEnvKey}=//p' /run/secrets/tyc-env | tr -d '\r' | head -n 1)"
+        value="$(${readPassword} /run/secrets/tyc-env)"
         if [ -z "$value" ]; then
           echo "${st.passwordEnvKey} is missing from /run/secrets/tyc-env: seal it into the overlay's secrets file first" >&2
           exit 1

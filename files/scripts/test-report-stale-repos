@@ -1,0 +1,151 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for report-stale-repos and the glab-group-projects it reads
+# (files/scripts/report-stale-repos, files/scripts/glab-group-projects): a
+# `glab` stand-in on PATH answering each group's project list from a fixture
+# and recording the query, and a throwaway repos dir whose checkouts are clean,
+# dirty or absent. No network, no real glab.
+#
+# Usage: files/scripts/test-report-stale-repos
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/report-stale-repos"
+LIST="${SCRIPT_DIR}/glab-group-projects"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the pre-increment value, so an
+# `&& ok || bad` chain would run both arms on the first call.
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+export HOME="${BASE}/home"
+REPOS="${BASE}/git"
+STUBS="${BASE}/bin"
+export FIXTURES="${BASE}/fixtures"
+export CALLS="${BASE}/glab.log"
+mkdir -p "${HOME}" "${REPOS}" "${STUBS}" "${FIXTURES}"
+git config --global init.defaultBranch main
+git config --global user.name "test-report-stale-repos"
+git config --global user.email "stale@example.invalid"
+
+# The glab stand-in: `glab api --paginate --output ndjson groups/<group>/projects?…`
+# answers from fixtures/<group>.ndjson (a subgroup's %2F spelled __), records
+# the query, and fails outright under FAKE_GLAB_FAIL.
+cat > "${STUBS}/glab" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "glab $*" >> "${CALLS}"
+[[ -n "${FAKE_GLAB_FAIL:-}" ]] && { print -ru2 -- "glab: 401 Unauthorized"; exit 1 }
+q="${@[-1]}"
+grp="${${q#groups/}%%/projects*}"
+f="${FIXTURES}/${grp//\%2F/__}.ndjson"
+[[ -f "$f" ]] && cat "$f"
+exit 0
+STUB
+chmod +x "${STUBS}/glab"
+export PATH="${STUBS}:${PATH}"
+
+project() { print -r -- "{\"path_with_namespace\":\"$1\",\"archived\":$2,\"marked_for_deletion_on\":${3:-null},\"marked_for_deletion_at\":null}" }
+{
+  project acme/active false
+  project acme/old-archived true
+  project acme/doomed false '"2026-10-01"'
+  project acme/gone-archived true
+  project acme/sub/nested true
+  project other/stray true
+} > "${FIXTURES}/acme.ndjson"
+project acme/sub/nested true > "${FIXTURES}/acme__sub.ndjson"
+
+# A checkout whose commits are all pushed to its origin, so `--branches --not
+# --remotes` is empty and only the working tree can make it KEEP.
+mkclone() {
+  local dest="${REPOS}/$1" bare="${BASE}/remotes/$1.git"
+  mkdir -p "${bare:h}"
+  git init -q --bare "${bare}"
+  git init -q "${dest}"
+  print -r -- "hello" > "${dest}/README"
+  git -C "${dest}" add README && git -C "${dest}" commit -q -m init
+  git -C "${dest}" remote add origin "${bare}" && git -C "${dest}" push -q -u origin main
+}
+mkclone acme/active
+mkclone acme/old-archived
+mkclone acme/doomed
+print -r -- "edited" >> "${REPOS}/acme/doomed/README"
+mkclone acme/sub/nested
+mkclone other/stray
+
+typeset -i RC=0
+OUT="" ERR=""
+run()  { rm -f "${CALLS}"; OUT="$("${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+list() { rm -f "${CALLS}"; OUT="$("${LIST}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+calls() { cat "${CALLS}" 2>/dev/null }
+
+print -r -- "test-report-stale-repos"
+
+print -r -- "one group"
+run --repos-dir "${REPOS}" --group acme
+check    "exits 0" "${RC}" "0"
+contains "an archived project with a clean checkout is safe to remove" "${OUT}" "  SAFE TO REMOVE  archived  ${REPOS}/acme/old-archived"
+contains "a deletion-scheduled one with local work is kept, saying why" "${OUT}" "  KEEP — uncommitted  deletion-scheduled  ${REPOS}/acme/doomed"
+excludes "an active project is not listed"            "${OUT}" "acme/active"
+excludes "a project outside the group is not listed"  "${OUT}" "other/stray"
+contains "the summary counts checkouts, removable ones and remote-only" "${OUT}" "SUMMARY archived/deletion-scheduled: 3 checked out locally (2 with no local work), 1 remote-only"
+contains "and says what the listing means"            "${OUT}" "Excluded from clone/fetch — these never update again."
+contains "the query asks for subgroups and the full page" "$(calls)" "groups/acme/projects?include_subgroups=true&per_page=100"
+excludes "and not for membership"                      "$(calls)" "membership=true"
+
+print -r -- ""
+print -r -- "overlapping groups"
+run --repos-dir "${REPOS}" --group acme --group acme/sub --member
+check    "exits 0" "${RC}" "0"
+check    "a project both groups return is listed once" "$(print -r -- "${OUT}" | grep -c 'acme/sub/nested')" "1"
+contains "a subgroup's slash is percent-encoded"      "$(calls)" "groups/acme%2Fsub/projects"
+contains "--member reaches the query"                  "$(calls)" "membership=true"
+
+print -r -- ""
+print -r -- "refusals and usage"
+FAKE_GLAB_FAIL=1 run --repos-dir "${REPOS}" --group acme
+check    "a failed listing exits 1"   "${RC}" "1"
+contains "naming the group"           "${ERR}" "Error: could not list projects for acme"
+run --repos-dir "${REPOS}"
+check    "no group is nothing to do"  "${RC}" "0"
+check    "and prints nothing"         "${OUT}" ""
+run --group acme
+check    "no --repos-dir is a usage error" "${RC}" "2"
+run --repos-dir "${REPOS}" --bogus
+check    "an unknown option is a usage error" "${RC}" "2"
+run --help
+check    "--help exits 0" "${RC}" "0"
+
+print -r -- ""
+print -r -- "glab-group-projects on its own"
+list --group acme
+check    "exits 0" "${RC}" "0"
+check    "emits one line per project" "$(print -r -- "${OUT}" | grep -c .)" "6"
+check    "every line is JSON"         "$(print -r -- "${OUT}" | jq -c '.path_with_namespace' | grep -c .)" "6"
+list --group acme --no-archived --per-page 50
+contains "--no-archived and --per-page reach the query" "$(calls)" "groups/acme/projects?include_subgroups=true&per_page=50&archived=false"
+list --group nobody
+check    "an empty group exits 0"     "${RC}" "0"
+contains "with a warning"             "${ERR}" "WARNING: nobody returned 0 projects"
+FAKE_GLAB_FAIL=1 list --group acme
+check    "a failed call exits 1"      "${RC}" "1"
+contains "with glab's own words"      "${ERR}" "Error: glab api groups/acme/projects failed: glab: 401 Unauthorized"
+list
+check    "no --group is a usage error" "${RC}" "2"
+list --group acme --per-page 0
+check    "a per-page below 1 is a usage error" "${RC}" "2"
+list --group acme --per-page 101
+check    "a per-page above GitLab's cap is a usage error" "${RC}" "2"
+list --group acme --bogus
+check    "an unknown option is a usage error" "${RC}" "2"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))
