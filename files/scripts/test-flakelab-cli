@@ -31,7 +31,7 @@ DISPATCH="${BASE}/dispatch/bin"
 mkdir -p "${DISPATCH}"
 
 typeset -a WRAPPERS=(
-  nix-update nix-update-all nix-doctor nix-backup claude-sessions accounts notify web flakelab-mcp nix-clone-repos
+  nix-update nix-update-all nix-doctor nix-backup claude-sessions notify web flakelab-mcp nix-clone-repos
   nix-provision nix-overlay-generate build-dev-wsl-nix test-provision-nix
   get_current_wsl_distro_name clone-repos activate-hooks report-stale-repos
   glab-group-projects
@@ -65,7 +65,7 @@ chmod +x "${MENUDISPATCH}/flakelab-menu"
 
 # Mirrored, not sourced: the router's arrays are not meant to be sourced by anything.
 typeset -a ORDER=(
-  update update-all doctor backup sessions accounts notify web mcp clone provision overlay-gen build-distro
+  update update-all doctor backup sessions notify web mcp clone provision overlay-gen build-distro
   test-provision distro-name clone-repos activate-hooks stale-repos
   glab-projects
 )
@@ -99,7 +99,7 @@ count_listed() {
 
 print -r -- "no FLAKELAB_TARGET (checkout mode): every verb available"
 run_router "" --help
-check "--help lists all 19 commands" "$(count_listed)" "19"
+check "--help lists all 18 commands" "$(count_listed)" "18"
 check "--help exits 0" "${RC}" "0"
 
 run_router "" mcp
@@ -113,7 +113,7 @@ check "build-distro exits 0 with no target set" "${RC}" "0"
 print -r -- ""
 print -r -- "FLAKELAB_TARGET=proxmox-vm: the four wsl-only verbs are gated"
 run_router "proxmox-vm" --help
-check "--help lists 15 commands (19 minus the four wsl-only verbs)" "$(count_listed)" "15"
+check "--help lists 14 commands (18 minus the four wsl-only verbs)" "$(count_listed)" "14"
 for c in "${WSL_ONLY[@]}"; do
   excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
 done
@@ -156,7 +156,7 @@ contains "the list says a terminal gets a menu" "${OUT}" "At a terminal a bare f
 at_tty "" "${WSLENV[@]}" zsh "${ROUTER}"
 contains "at a terminal a bare flakelab opens the menu" "${OUT}" "ran:flakelab-menu"
 contains "handing it the router's own path" "${OUT}" "router=${ROUTER}"
-contains "and the commands this target offers" "${OUT}" "menu=update update-all doctor backup sessions accounts notify web mcp clone provision"
+contains "and the commands this target offers" "${OUT}" "menu=update update-all doctor backup sessions notify web mcp clone provision"
 at_tty "" env FLAKELAB_DISPATCH_DIR="${DISPATCH}" FLAKELAB_TARGET=proxmox-vm zsh "${ROUTER}"
 excludes "a target's gated verbs are not offered" "${OUT}" " provision"
 at_tty "" "${WSLENV[@]}" FLAKELAB_NO_PROMPT=1 zsh "${ROUTER}"
@@ -188,13 +188,13 @@ check "Esc backs out and Esc at the top leaves with 130" "${RC}" "130"
 at_tty 'doc\r\e[B\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "doctor's second action passes its flag" "${OUT}" "ran:nix-doctor --quiet"
 contains "and prints it" "${OUT}" "→ flakelab doctor --quiet"
-at_tty 'acc\rswitch the\r' "${MENUENV[@]}" zsh "${ROUTER}"
-contains "an action the command completes runs without its argument" "${OUT}" "ran:accounts switch"
-excludes "and leaves the full command to the command" "${OUT}" "→ flakelab accounts switch"
-at_tty 'acc\radd\e[B\r' "${MENUENV[@]}" zsh "${ROUTER}"
-contains "an action is found by the flags it adds, not only by its wording" "${OUT}" "ran:accounts add --login"
-at_tty 'acc\r\e\e' "${MENUENV[@]}" zsh "${ROUTER}"
-contains "which the list shows beside each action, to copy next time" "${OUT}" "add --login"
+at_tty 'ses\rstart\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "an action the command completes runs without its argument" "${OUT}" "ran:claude-sessions --start"
+excludes "and leaves the full command to the command" "${OUT}" "→ flakelab sessions --start"
+at_tty 'ses\r--recent\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "an action is found by the flags it adds, not only by its wording" "${OUT}" "ran:claude-sessions --recent"
+at_tty 'ses\r\e\e' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "which the list shows beside each action, to copy next time" "${OUT}" "--recent"
 at_tty 'update\rn\e' "${MENUENV[@]}" zsh "${ROUTER}"
 excludes "a declined rebuild runs nothing" "${OUT}" "ran:nix-update"
 check "and Esc then leaves with 130" "${RC}" "130"
@@ -301,7 +301,7 @@ for b in flakelab git glab gh nix nixos-rebuild wsl.exe wt.exe tmux curl sudo sy
   chmod +x "${HELPBIN}/${b}"
 done
 typeset -a HELP_SCRIPTS=(
-  nix-update nix-doctor nix-backup claude-sessions accounts notify web nix-provision
+  nix-update nix-doctor nix-backup claude-sessions notify web nix-provision
   nix-overlay-generate build-dev-wsl-nix test-provision-nix get_current_wsl_distro_name
   clone-repos activate-hooks report-stale-repos glab-group-projects mcp
   gitchecker gitcleaner gitpublisher

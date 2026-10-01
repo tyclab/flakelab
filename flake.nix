@@ -367,7 +367,6 @@
         # The --help sweep runs `mcp`, a python3 program.
         flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
-        accounts = suiteCheck "accounts";
         notify = suiteCheck "notify";
         # The suite; the launcher as installed, against a fixture account; the
         # account and the headless browser registered in both clients' rendered

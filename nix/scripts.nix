@@ -164,34 +164,6 @@ rec {
     exec ${zsh} ${s}/claude-sessions "$@"
   '';
 
-  # The store is the script's own; flock serialises writers, pgrep counts the
-  # tool's running sessions for the post-switch line. Sourced from `s`, so the
-  # adapters under lib/ sit beside it in the store. The user's PATH stays
-  # behind the pinned set: the Codex adapter runs the installed `codex`
-  # (~/.local/bin) for its usage read and profile check.
-  accounts = pkgs.writeShellScriptBin "accounts" ''
-    export FLAKELAB_ACCOUNTS_TOOLS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.autoSwitchTools)}
-    export FLAKELAB_ACCOUNTS_SESSION_THRESHOLD=${toString cfg.accounts.sessionThreshold}
-    export FLAKELAB_ACCOUNTS_WEEK_THRESHOLD=${toString cfg.accounts.weekThreshold}
-    export FLAKELAB_ACCOUNTS_MODEL_THRESHOLD=${toString cfg.accounts.modelThreshold}
-    export FLAKELAB_ACCOUNTS_MODEL_WINDOWS=${lib.escapeShellArg (lib.concatStringsSep "," cfg.accounts.modelWindows)}
-    export FLAKELAB_ACCOUNTS_STRATEGY=${cfg.accounts.strategy}
-    export FLAKELAB_ACCOUNTS_AUTO_SWITCH=${lib.boolToString (cfg.accounts.autoSwitchInterval != null)}
-    export PATH=${
-      bin [
-        pkgs.zsh
-        pkgs.coreutils
-        pkgs.util-linux
-        pkgs.procps
-        pkgs.gnugrep
-        pkgs.gawk
-        pkgs.curl
-        pkgs.jq
-      ]
-    }:$PATH
-    exec ${zsh} ${s}/accounts "$@"
-  '';
-
   # What a bare `flakelab` opens at a terminal. stty is the one tool it runs;
   # the caller's PATH is kept aside and restored before the chosen command runs,
   # so that command's own wrapper sees the PATH a typed `flakelab <command>` has.

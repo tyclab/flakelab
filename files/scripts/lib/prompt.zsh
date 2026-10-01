@@ -12,7 +12,7 @@
 # shells carry CODEX_THREAD_ID; Claude Code's carry CLAUDECODE=1.
 #
 # Everything is drawn on stderr and answers land in globals, not on stdout, so
-# a caller whose stdout is captured (`eval "$(flakelab accounts env)"`) still
+# a caller whose stdout is captured (`eval "$(tycswap env 2)"`) still
 # gets its prompt and its stdout stays data:
 #   PROMPT_INDEX  the 1-based index prompt_choose picked
 #   PROMPT_TEXT   the line prompt_input read

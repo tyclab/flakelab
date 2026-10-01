@@ -18,7 +18,6 @@ let
       scripts.nix-doctor
       scripts.nix-backup
       scripts.claude-sessions
-      scripts.accounts
       scripts.notify
       scripts.web
       scripts.mcp
