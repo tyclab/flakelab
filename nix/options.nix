@@ -104,6 +104,18 @@ in
       description = "GitLab groups cloned in full by `flakelab clone`. Profile groups (profiles/) are unioned in by mkSystem, so do not repeat them.";
     };
 
+    cloneGithub = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Discover GitHub repositories with gh during `flakelab clone`. Opt-in per device; skips archived, disabled and empty repositories and respects cloneExclude. Uses the existing gh login or GH_TOKEN/GITHUB_TOKEN.";
+    };
+
+    githubOwners = mkOption {
+      type = types.listOf (types.strMatching "[A-Za-z0-9][A-Za-z0-9-]*");
+      default = [ ];
+      description = "GitHub organization/user names to discover when cloneGithub is enabled. Empty discovers repositories owned by the authenticated user or their organizations. Repositories go under ~/git/<owner>/<repo>.";
+    };
+
     profileCliTools = mkOption {
       type = types.listOf types.str;
       default = [ ];
