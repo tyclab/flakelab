@@ -205,8 +205,9 @@ Phases, each shippable on its own. All five are built.
 2. **Remote Control on its own switch** — done: `flakelab.claudeRemoteControl`,
    default off, writes `remoteControlAtStartup` and clears the four variables
    Remote Control's feature flags need, so a box can have every session
-   steerable from the app without adopting the auto-mode trust bundle;
-   `claudeAgentDefaults` still implies it.
+   steerable from the app without adopting the auto-mode trust bundle, and
+   an agent box can keep its sessions off the app: `claudeAgentDefaults`
+   does not imply it.
 3. **A push when a session waits on you** — done: `flakelab notify`
    (`files/scripts/notify`, `test-notify`), the `Notification` hook behind
    `flakelab.notify.enable` written into `settings.json` the way the
