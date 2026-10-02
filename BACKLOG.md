@@ -14,10 +14,11 @@ the repository, alongside the code it describes.
 Every adopter used to inherit the operator's full-trust agent setup without
 opting in. The agent-surface items are now gated behind options that default off:
 
-| surface                                                                                  | option                         |
-| ---------------------------------------------------------------------------------------- | ------------------------------ |
-| `cc` = `claude --dangerously-skip-permissions`                                           | `flakelab.claudeTrustAll`      |
-| `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`, `remoteControlAtStartup` | `flakelab.claudeAgentDefaults` |
+| surface                                                                         | option                         |
+| ------------------------------------------------------------------------------- | ------------------------------ |
+| `cc` = `claude --dangerously-skip-permissions`                                  | `flakelab.claudeTrustAll`      |
+| `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`                  | `flakelab.claudeAgentDefaults` |
+| `remoteControlAtStartup`, the four env vars Remote Control's feature flags need | `flakelab.claudeRemoteControl` |
 
 `claudeSettings` is gated on `installClaude` like every sibling activation.
 

@@ -797,6 +797,62 @@
               jq -e '. | length == 9' "$record" > /dev/null
               touch $out
             '';
+        # Remote Control follows claudeRemoteControl alone: the agent bundle writes
+        # the permission mode and nothing of Remote Control, so a box can have
+        # either without the other. Both entries run against a settings.json the
+        # user set the four vars in.
+        claude-remote-control =
+          let
+            activation =
+              attrs:
+              let
+                sys =
+                  (self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; }).config;
+              in
+              sys.home-manager.users.${sys.flakelab.username}.home.activation.claudeSettings.data;
+            agentOnly = activation { claudeAgentDefaults = true; };
+            remoteControlOnly = activation { claudeRemoteControl = true; };
+            neither = activation { };
+          in
+          assert nixpkgs.lib.hasInfix ''.permissions.defaultMode = "auto"'' agentOnly;
+          assert !nixpkgs.lib.hasInfix "remoteControlAtStartup" agentOnly;
+          assert nixpkgs.lib.hasInfix ".remoteControlAtStartup = true" remoteControlOnly;
+          assert !nixpkgs.lib.hasInfix "defaultMode" remoteControlOnly;
+          assert !nixpkgs.lib.hasInfix "remoteControlAtStartup" neither;
+          assert !nixpkgs.lib.hasInfix "defaultMode" neither;
+          pkgs.runCommandLocal "flakelab-check-claude-remote-control"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export DRY_RUN_CMD=
+              # fresh <name>: an empty HOME whose settings.json carries the four vars.
+              fresh() {
+                export HOME="$TMPDIR/$1"
+                mkdir -p "$HOME/.claude"
+                settings="$HOME/.claude/settings.json"
+                echo '{"env":{"DISABLE_TELEMETRY":"1","DO_NOT_TRACK":"1","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","DISABLE_GROWTHBOOK":"1"}}' > "$settings"
+              }
+              vars='["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC","DISABLE_GROWTHBOOK","DISABLE_TELEMETRY","DO_NOT_TRACK"]'
+
+              echo "the agent bundle alone: auto mode, no Remote Control, the four vars stay"
+              fresh agent-only
+              bash -euo pipefail ${pkgs.writeText "claude-agent-only-activation" agentOnly}
+              jq -e '.permissions.defaultMode == "auto" and .skipAutoPermissionPrompt == true' "$settings" > /dev/null
+              jq -e 'has("remoteControlAtStartup") | not' "$settings" > /dev/null
+              jq -e --argjson v "$vars" '[.env[$v[]]] == ["1","1","1","1"]' "$settings" > /dev/null
+
+              echo "claudeRemoteControl alone: Remote Control, the four vars go, no auto mode"
+              fresh remote-control-only
+              bash -euo pipefail ${pkgs.writeText "claude-remote-control-only-activation" remoteControlOnly}
+              jq -e '.remoteControlAtStartup == true' "$settings" > /dev/null
+              jq -e --argjson v "$vars" '[.env | has($v[])] == [false,false,false,false]' "$settings" > /dev/null
+              jq -e '(.permissions | has("defaultMode") | not) and (has("skipAutoPermissionPrompt") | not)' "$settings" > /dev/null
+              touch $out
+            '';
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
         deadnix = nixLintCheck "deadnix" pkgs.deadnix "deadnix --fail .";
 
