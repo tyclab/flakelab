@@ -1,0 +1,54 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+# Internal discovery for flakelab clone. gh owns pagination and authentication;
+# buffer every page before emitting URLs so a failed page cannot start a partial
+# clone sweep. GraphQL's isEmpty avoids guessing from the repository's size.
+typeset -a owners=()
+while (( $# )); do
+  case "$1" in
+    --owner)
+      (( $# > 1 )) && [[ "$2" =~ '^[A-Za-z0-9][A-Za-z0-9-]*$' ]] \
+        || { print -ru2 -- '--owner needs a GitHub user or organization name'; exit 2; }
+      owners+=("$2"); shift 2 ;;
+    --help|-h)
+      print -r -- 'Usage: gh-repos [--owner <user-or-organization>]...'
+      print -r -- 'Without owners, discover repositories owned by your account or organizations.'
+      exit 0 ;;
+    *) print -ru2 -- "Unknown option: $1"; exit 2 ;;
+  esac
+done
+
+typeset tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT INT TERM
+typeset fields='nodes { sshUrl isArchived isDisabled isEmpty }
+  pageInfo { hasNextPage endCursor }'
+typeset query owner
+if (( ${#owners} )); then
+  query='query($owner: String!, $endCursor: String) {
+    owner: repositoryOwner(login: $owner) {
+      repositories(first: 100, after: $endCursor, ownerAffiliations: [OWNER]) {'"${fields}"'}
+    }
+  }'
+  for owner in "${(@u)owners}"; do
+    gh api --hostname github.com graphql --paginate -f query="${query}" -f owner="${owner}" >> "${tmp}/pages"
+  done
+else
+  query='query($endCursor: String) {
+    owner: viewer {
+      repositories(first: 100, after: $endCursor, ownerAffiliations: [OWNER, ORGANIZATION_MEMBER]) {'"${fields}"'}
+    }
+  }'
+  gh api --hostname github.com graphql --paginate -f query="${query}" > "${tmp}/pages"
+fi
+
+jq -r '
+  if (.errors | length) > 0 or .data.owner.repositories.nodes == null
+  then error("GitHub repository discovery failed; check the owner and gh access")
+  else .data.owner.repositories.nodes[]
+    | select(.isArchived == false and .isDisabled == false and .isEmpty == false)
+    | .sshUrl
+  end
+' "${tmp}/pages" > "${tmp}/urls"
+sort -u "${tmp}/urls"

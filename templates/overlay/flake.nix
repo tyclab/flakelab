@@ -45,6 +45,11 @@
         # Personal full-clone GitLab groups; profile groups are unioned in.
         gitlabGroups = [ ];
 
+        # GitHub discovery is opt-in on each device. Empty owners means your
+        # account and organizations; gh uses its login or GH_TOKEN/GITHUB_TOKEN.
+        cloneGithub = false;
+        githubOwners = [ ];
+
         # Repos to keep out of ~/git.
         cloneExclude = [
           "flakelab"

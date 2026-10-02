@@ -448,7 +448,7 @@ rec {
       groups = cfg.gitlabGroups;
       inherit (cfg) repos sshKeys;
       cloneKeyResolve = import ./clone-key.nix { inherit lib sshKeys; };
-      hasWork = groups != [ ] || repos != [ ];
+      hasWork = groups != [ ] || cfg.cloneGithub || repos != [ ];
 
       # --include-subgroups also returns projects shared INTO the group, and the "/"
       # boundary keeps sibling namespaces out. The jq keeps `.archived != true` and is
@@ -465,11 +465,16 @@ rec {
       # Fail fast: a truncated list is indistinguishable from "those repos are gone".
       # The exclusion grep stays outside that fence, because under pipefail filtering
       # everything out looks like a failed glab call.
-      discoveryBlock = lib.optionalString (groups != [ ]) ''
-        : "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/tyc/secrets.env}"
+      discoveryBlock = lib.optionalString (groups != [ ] || cfg.cloneGithub) ''
+        ${lib.optionalString (
+          groups != [ ]
+        ) '': "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/tyc/secrets.env}"''}
         set -e
         {
         ${lib.concatMapStringsSep "\n        " listGroup groups}
+        ${lib.optionalString cfg.cloneGithub "${zsh} ${s}/gh-repos ${
+          lib.concatMapStringsSep " " (owner: "--owner ${lib.escapeShellArg owner}") cfg.githubOwners
+        }"}
         } > "$_raw"
         set +e
 
@@ -497,7 +502,7 @@ rec {
           -h|--help)
             echo "Usage: flakelab clone"
             echo ""
-            echo "Clones what is missing of the configured GitLab groups and repos under"
+            echo "Clones configured GitLab groups, opt-in GitHub owners, and extra repos under"
             echo "~/git, fetches and rebases the clones already there, installs their"
             echo "pre-commit hooks, and reports clones whose project is archived or"
             echo "scheduled for deletion. No options: the groups, the repos and the"
@@ -519,7 +524,7 @@ rec {
       if !hasWork then
         ''
           ${argGuard}
-          echo "nix-clone-repos: no gitlabGroups/repos configured — nothing to clone."
+          echo "nix-clone-repos: no gitlabGroups, enabled GitHub discovery or repos — nothing to clone."
         ''
       else
         ''
@@ -528,6 +533,7 @@ rec {
             bin [
               pkgs.zsh
               pkgs.glab
+              pkgs.gh
               pkgs.jq
               pkgs.git
               pkgs.openssh

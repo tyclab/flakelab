@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- Opt-in GitHub discovery for `flakelab clone`: `cloneGithub` defaults off, and `githubOwners` selects users or organizations (empty means the authenticated account and its organizations). Paginated discovery skips archived, disabled and empty repositories, honors `cloneExclude`, and uses the existing `gh` credentials.
 - `flakelab web`: a browser dashboard for the tycswap logins and the sessions on 127.0.0.1:8321 behind a token; `flakelab.web.enable`, `flakelab.web.terminal` (ttyd), `flakelab.web.logo`.
 - `flakelab.stateSyncthing`: the state root replicated by Syncthing through an untrusted hub; needs a Linux `stateRoot` and `sopsSecretsFile`.
 - A bare `flakelab` opens a menu, and a command missing an argument asks for it at a terminal; `FLAKELAB_NO_PROMPT=1` turns every prompt off.

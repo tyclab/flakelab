@@ -359,6 +359,7 @@
         # on a box's `flakelab update`.
         inherit tycswap;
         clone-repos = suiteCheck "clone-repos";
+        gh-repos = suiteCheck "gh-repos";
         gitchecker = suiteCheck "gitchecker";
         gitcleaner = suiteCheck "gitcleaner";
         gitpublisher = suiteCheck "gitpublisher";
@@ -1312,6 +1313,14 @@
                 cfg = c;
               }).nix-clone-repos;
             withWork = cloneOf (cfg // { gitlabGroups = [ "example/group" ]; });
+            withGithub = cloneOf (
+              cfg
+              // {
+                cloneGithub = true;
+                githubOwners = [ "example-owner" ];
+              }
+            );
+            githubOff = cloneOf (cfg // { githubOwners = [ "example-owner" ]; });
             noWork = cloneOf (
               cfg
               // {
@@ -1321,7 +1330,7 @@
             );
           in
           pkgs.runCommandLocal "flakelab-check-clone-args" { } ''
-            for s in ${withWork}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
+            for s in ${withWork}/bin/nix-clone-repos ${withGithub}/bin/nix-clone-repos ${githubOff}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
               "$s" --help > out
               grep -q '^Usage: flakelab clone$' out
               rc=0
@@ -1329,6 +1338,8 @@
               test "$rc" = 2
               grep -q "takes no arguments (got '--dry-run')" err
             done
+            grep -q 'gh-repos --owner example-owner' ${withGithub}/bin/nix-clone-repos
+            ! grep -q 'gh-repos' ${githubOff}/bin/nix-clone-repos
             touch $out
           '';
 
