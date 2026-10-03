@@ -68,6 +68,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `checks.mcp` runs its headless browser test with ASLR on: in the Nix build sandbox, which turns ASLR off, a host uprobe on libc `setenv` left the browser's zygote spinning until the 180 s launch timeout.
 - `flakelab backup` and `--restore` skipped tycswap's Claude credential and config snapshots: the store names them with a leading dot and the glob did not match dotfiles (#179). The Codex snapshots, named without one, were carried; the fixture now uses the real names.
 - Activation removes `env` keys in `~/.claude/settings.json` and `mcpServers` in `~/.claude.json` it no longer renders, recorded in `~/.local/state/flakelab/activation-rendered/`.
 - `flakelab update` fetches the overlay's inputs as the caller before the switch, so a collected private `git+ssh` input no longer fails the rebuild.

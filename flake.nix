@@ -414,6 +414,7 @@
                 pkgs.jq
                 pkgs.python3
                 pkgs.remarshal
+                pkgs.util-linux
               ];
             }
             ''
@@ -442,9 +443,13 @@
               config="$(grep -o '/nix/store/[^ ]*-playwright-headless.json' "$headless")"
               jq -e '.browser.launchOptions | has("chromiumSandbox") | not' "$config"
               if grep -q sandbox "$headless"; then exit 1; fi
+              # Nix builds run with ASLR off. On a host with a uprobe on libc setenv,
+              # which Chromium calls at every start, the kernel can then fail to place
+              # the probe's scratch page and the zygote spins forever. setarch restores
+              # ASLR for the test, the way hosts run the server.
               FLAKELAB_MCP_HEADLESS="$headless" FLAKELAB_MCP_HEADLESS_ARGS=--no-sandbox \
                 FLAKELAB_MCP_HEADLESS_VERSION=${headlessShell.browserVersion} \
-                python3 ${./files/scripts}/lib/test-mcp.py -v HeadlessBrowserTest
+                setarch "$(uname -m)" python3 ${./files/scripts}/lib/test-mcp.py -v HeadlessBrowserTest
               touch "$out"
             '';
         # The dashboard's suite runs the server on loopback and talks to it.
