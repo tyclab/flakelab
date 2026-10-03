@@ -1168,7 +1168,7 @@ do_restore() {
       [[ -d "${BACKUP_TYCSWAP}/${tycswap_d}" ]] || continue
       [[ "${tycswap_d}" == codex/* ]] && ensure_private_dir "${TYCSWAP_STORE}/codex"
       ensure_private_dir "${TYCSWAP_STORE}/${tycswap_d}"
-      for tycswap_f in "${BACKUP_TYCSWAP}/${tycswap_d}"/*(N.); do
+      for tycswap_f in "${BACKUP_TYCSWAP}/${tycswap_d}"/*(N.D); do
         restore_private_file "${tycswap_f}" "${TYCSWAP_STORE}/${tycswap_d}/${tycswap_f:t}" true
       done
     done
@@ -1354,10 +1354,10 @@ do_backup() {
       [[ -d "${TYCSWAP_STORE}/${tycswap_d}" ]] || continue
       [[ "${tycswap_d}" == codex/* ]] && ensure_private_dir "${BACKUP_TYCSWAP}/codex"
       ensure_private_dir "${BACKUP_TYCSWAP}/${tycswap_d}"
-      for tycswap_f in "${TYCSWAP_STORE}/${tycswap_d}"/*(N.); do
+      for tycswap_f in "${TYCSWAP_STORE}/${tycswap_d}"/*(N.D); do
         backup_private_file "${tycswap_f}" "${BACKUP_TYCSWAP}/${tycswap_d}/${tycswap_f:t}"
       done
-      for tycswap_f in "${BACKUP_TYCSWAP}/${tycswap_d}"/*(N.); do
+      for tycswap_f in "${BACKUP_TYCSWAP}/${tycswap_d}"/*(N.D); do
         [[ -f "${TYCSWAP_STORE}/${tycswap_d}/${tycswap_f:t}" ]] && continue
         if ${DRY_RUN}; then log_dry "Would remove archived ${tycswap_d}/${tycswap_f:t} (gone from the store)"
         else rm -f -- "${tycswap_f}" && log_info "Removed archived ${tycswap_d}/${tycswap_f:t} (gone from the store)"; fi
