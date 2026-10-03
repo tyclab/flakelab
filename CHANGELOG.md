@@ -39,7 +39,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
-- Tycswap is pinned to v0.5.0, adding terminal and browser settings editors, dashboard updates and Guide tabs, and fixes for API-key switching with MCP credentials.
+- Tycswap is pinned to v0.5.1, adding terminal and browser settings editors, dashboard updates and Guide tabs, and fixes for API-key switching (MCP credentials, emptied API-key slots, forced activations) and for accounts at their usage limit reading as unavailable.
 - `flakelab.claudeAgentDefaults` no longer implies Remote Control: `remoteControlAtStartup` and the removal of the four env vars its feature flags need follow `flakelab.claudeRemoteControl` alone, so an agent box can keep its sessions off the app. A box that had Remote Control through the bundle sets `claudeRemoteControl = true;` to keep it.
 - The dashboard reloads every 15 seconds instead of 30, and not while its tab is hidden.
 - The prompt's git segment is coloured; the oh-my-zsh theme defaults to `robbyrussell` (`lib.mkDefault`).
