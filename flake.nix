@@ -89,7 +89,7 @@
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
-          version = "0.4.0";
+          version = "0.5.1";
         in
         pkgs.buildGoModule {
           pname = "tycswap";
@@ -98,7 +98,7 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-G4q3YzxjRj7ZQ3ockO29MiK0rAO/59epygtsggXGxbk=";
+            hash = "sha256-oIDiChWgEcGtpZH+MBpM/uTtBUm0cYNJt/ZdYOkTyYQ=";
           };
           vendorHash = "sha256-A87i6YailHyI4ocgqlgy9MQ3RzQ6sA6abi7DUkCOG+Y=";
           subPackages = [ "cmd/tycswap" ];
@@ -359,6 +359,7 @@
         # on a box's `flakelab update`.
         inherit tycswap;
         clone-repos = suiteCheck "clone-repos";
+        gh-repos = suiteCheck "gh-repos";
         gitchecker = suiteCheck "gitchecker";
         gitcleaner = suiteCheck "gitcleaner";
         gitpublisher = suiteCheck "gitpublisher";
@@ -795,6 +796,62 @@
               grep -q 'could not update' "$warnLog"
               grep -qx 'not-json' "$settings"
               jq -e '. | length == 9' "$record" > /dev/null
+              touch $out
+            '';
+        # Remote Control follows claudeRemoteControl alone: the agent bundle writes
+        # the permission mode and nothing of Remote Control, so a box can have
+        # either without the other. Both entries run against a settings.json the
+        # user set the four vars in.
+        claude-remote-control =
+          let
+            activation =
+              attrs:
+              let
+                sys =
+                  (self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; }).config;
+              in
+              sys.home-manager.users.${sys.flakelab.username}.home.activation.claudeSettings.data;
+            agentOnly = activation { claudeAgentDefaults = true; };
+            remoteControlOnly = activation { claudeRemoteControl = true; };
+            neither = activation { };
+          in
+          assert nixpkgs.lib.hasInfix ''.permissions.defaultMode = "auto"'' agentOnly;
+          assert !nixpkgs.lib.hasInfix "remoteControlAtStartup" agentOnly;
+          assert nixpkgs.lib.hasInfix ".remoteControlAtStartup = true" remoteControlOnly;
+          assert !nixpkgs.lib.hasInfix "defaultMode" remoteControlOnly;
+          assert !nixpkgs.lib.hasInfix "remoteControlAtStartup" neither;
+          assert !nixpkgs.lib.hasInfix "defaultMode" neither;
+          pkgs.runCommandLocal "flakelab-check-claude-remote-control"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+              ];
+            }
+            ''
+              export DRY_RUN_CMD=
+              # fresh <name>: an empty HOME whose settings.json carries the four vars.
+              fresh() {
+                export HOME="$TMPDIR/$1"
+                mkdir -p "$HOME/.claude"
+                settings="$HOME/.claude/settings.json"
+                echo '{"env":{"DISABLE_TELEMETRY":"1","DO_NOT_TRACK":"1","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","DISABLE_GROWTHBOOK":"1"}}' > "$settings"
+              }
+              vars='["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC","DISABLE_GROWTHBOOK","DISABLE_TELEMETRY","DO_NOT_TRACK"]'
+
+              echo "the agent bundle alone: auto mode, no Remote Control, the four vars stay"
+              fresh agent-only
+              bash -euo pipefail ${pkgs.writeText "claude-agent-only-activation" agentOnly}
+              jq -e '.permissions.defaultMode == "auto" and .skipAutoPermissionPrompt == true' "$settings" > /dev/null
+              jq -e 'has("remoteControlAtStartup") | not' "$settings" > /dev/null
+              jq -e --argjson v "$vars" '[.env[$v[]]] == ["1","1","1","1"]' "$settings" > /dev/null
+
+              echo "claudeRemoteControl alone: Remote Control, the four vars go, no auto mode"
+              fresh remote-control-only
+              bash -euo pipefail ${pkgs.writeText "claude-remote-control-only-activation" remoteControlOnly}
+              jq -e '.remoteControlAtStartup == true' "$settings" > /dev/null
+              jq -e --argjson v "$vars" '[.env | has($v[])] == [false,false,false,false]' "$settings" > /dev/null
+              jq -e '(.permissions | has("defaultMode") | not) and (has("skipAutoPermissionPrompt") | not)' "$settings" > /dev/null
               touch $out
             '';
         statix = nixLintCheck "statix" pkgs.statix "statix check .";
@@ -1256,6 +1313,14 @@
                 cfg = c;
               }).nix-clone-repos;
             withWork = cloneOf (cfg // { gitlabGroups = [ "example/group" ]; });
+            withGithub = cloneOf (
+              cfg
+              // {
+                cloneGithub = true;
+                githubOwners = [ "example-owner" ];
+              }
+            );
+            githubOff = cloneOf (cfg // { githubOwners = [ "example-owner" ]; });
             noWork = cloneOf (
               cfg
               // {
@@ -1265,7 +1330,7 @@
             );
           in
           pkgs.runCommandLocal "flakelab-check-clone-args" { } ''
-            for s in ${withWork}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
+            for s in ${withWork}/bin/nix-clone-repos ${withGithub}/bin/nix-clone-repos ${githubOff}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
               "$s" --help > out
               grep -q '^Usage: flakelab clone$' out
               rc=0
@@ -1273,6 +1338,8 @@
               test "$rc" = 2
               grep -q "takes no arguments (got '--dry-run')" err
             done
+            grep -q 'gh-repos --owner example-owner' ${withGithub}/bin/nix-clone-repos
+            ! grep -q 'gh-repos' ${githubOff}/bin/nix-clone-repos
             touch $out
           '';
 

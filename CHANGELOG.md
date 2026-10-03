@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- Opt-in GitHub discovery for `flakelab clone`: `cloneGithub` defaults off, and `githubOwners` selects users or organizations (empty means the authenticated account and its organizations). Paginated discovery skips archived, disabled and empty repositories, honors `cloneExclude`, and uses the existing `gh` credentials.
 - `flakelab web`: a browser dashboard for the tycswap logins and the sessions on 127.0.0.1:8321 behind a token; `flakelab.web.enable`, `flakelab.web.terminal` (ttyd), `flakelab.web.logo`.
 - `flakelab.stateSyncthing`: the state root replicated by Syncthing through an untrusted hub; needs a Linux `stateRoot` and `sopsSecretsFile`.
 - A bare `flakelab` opens a menu, and a command missing an argument asks for it at a terminal; `FLAKELAB_NO_PROMPT=1` turns every prompt off.
@@ -38,6 +39,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- Tycswap is pinned to v0.5.1, adding terminal and browser settings editors, dashboard updates and Guide tabs, and fixes for API-key switching (MCP credentials, emptied API-key slots, forced activations) and for accounts at their usage limit reading as unavailable.
+- `flakelab.claudeAgentDefaults` no longer implies Remote Control: `remoteControlAtStartup` and the removal of the four env vars its feature flags need follow `flakelab.claudeRemoteControl` alone, so an agent box can keep its sessions off the app. A box that had Remote Control through the bundle sets `claudeRemoteControl = true;` to keep it.
 - The dashboard reloads every 15 seconds instead of 30, and not while its tab is hidden.
 - The prompt's git segment is coloured; the oh-my-zsh theme defaults to `robbyrussell` (`lib.mkDefault`).
 - The system-wide `compinit` in `/etc/zshrc` is off (`programs.zsh.enableGlobalCompInit = false`).

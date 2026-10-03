@@ -291,9 +291,15 @@ Codex uses native permission profiles, automatic review and exact MCP tool
 grants when `codexAutoReview` is enabled. Setup and verification:
 [`CODEX-PERMISSIONS.md`](CODEX-PERMISSIONS.md).
 
-**Repo discovery is GitLab-only.** `flakelab clone` enumerates groups through
-`glab`, so `gitlabGroups` and the profiles are a GitLab concept; repos on other
-forges are cloned by naming them individually under `repos` in the config.
+`flakelab clone` enumerates `gitlabGroups` through `glab`. GitHub discovery is
+opt-in per device: set `cloneGithub = true;` in its overlay and optionally
+`githubOwners = [ "your-organization" ];`. Empty owners means repositories
+owned by the authenticated account or its organizations. `gh` uses its existing
+login or `GH_TOKEN`/`GITHUB_TOKEN`; no token is stored in the flake. All pages are
+read before cloning, archived/disabled/empty repositories are skipped, and
+`cloneExclude` applies to both forges. Checkouts use `~/git/<owner>/<repo>`;
+choose owners without namespace collisions with your GitLab groups. Individual
+repositories on any forge can still be listed under `repos`.
 
 ## Where configuration lives
 

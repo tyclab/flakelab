@@ -53,7 +53,8 @@ is only the reasoning a description has no room for:
 
 - `claudeAgentDefaults` and `claudeRemoteControl` default off because each
   trades something of the operator's away — the permission prompts, or the
-  transcript staying on the box — and the trade is the adopter's to make.
+  transcript staying on the box — and the trade is the adopter's to make,
+  one switch at a time: neither option implies the other.
   Everything else `claudeSettings` asserts (attribution, the classifier rules,
   `installMethod`, `autoUpdatesChannel`, the deny floor) is unconditional, and
   the whole activation is gated on `installClaude`.

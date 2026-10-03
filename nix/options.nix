@@ -104,6 +104,18 @@ in
       description = "GitLab groups cloned in full by `flakelab clone`. Profile groups (profiles/) are unioned in by mkSystem, so do not repeat them.";
     };
 
+    cloneGithub = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Discover GitHub repositories with gh during `flakelab clone`. Opt-in per device; skips archived, disabled and empty repositories and respects cloneExclude. Uses the existing gh login or GH_TOKEN/GITHUB_TOKEN.";
+    };
+
+    githubOwners = mkOption {
+      type = types.listOf (types.strMatching "[A-Za-z0-9][A-Za-z0-9-]*");
+      default = [ ];
+      description = "GitHub organization/user names to discover when cloneGithub is enabled. Empty discovers repositories owned by the authenticated user or their organizations. Repositories go under ~/git/<owner>/<repo>.";
+    };
+
     profileCliTools = mkOption {
       type = types.listOf types.str;
       default = [ ];
@@ -358,13 +370,12 @@ in
     };
 
     # Opt-in bundle, not a default: it hands every session auto mode without the
-    # consent prompt, brings the Remote Control bridge up at startup, and removes
-    # the four opt-out env vars a user may have set for themselves. An adopter who
-    # never asked for that must not get it from a rebuild.
+    # consent prompt. An adopter who never asked for that must not get it from a
+    # rebuild. Remote Control is claudeRemoteControl's decision, below.
     claudeAgentDefaults = mkOption {
       type = types.bool;
       default = false;
-      description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\", skipAutoPermissionPrompt, remoteControlAtStartup, and removal of the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would otherwise defeat the feature-flag evaluation Remote Control depends on. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the force-push deny floor) is written regardless.";
+      description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\" and skipAutoPermissionPrompt. It leaves remoteControlAtStartup and the env vars Remote Control needs alone: those are claudeRemoteControl's decision. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the force-push deny floor) is written regardless.";
     };
 
     # Its own switch, apart from the trust bundle above: steering a session from
@@ -372,7 +383,7 @@ in
     claudeRemoteControl = mkOption {
       type = types.bool;
       default = false;
-      description = "Connect Claude Code's Remote Control at the start of every interactive session (settings.remoteControlAtStartup = true), so each one is steerable from claude.ai/code and the Claude app, and remove the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would defeat the feature-flag evaluation Remote Control depends on. Off by default: the session transcript is stored on Anthropic's servers while a session is connected, which an adopter must choose. claudeAgentDefaults implies it. Needs a full claude.ai login on the box and, on Team and Enterprise, the admin toggle.";
+      description = "Connect Claude Code's Remote Control at the start of every interactive session (settings.remoteControlAtStartup = true), so each one is steerable from claude.ai/code and the Claude app, and remove the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would defeat the feature-flag evaluation Remote Control depends on. Off by default: the session transcript is stored on Anthropic's servers while a session is connected, which an adopter must choose. Independent of claudeAgentDefaults: neither implies the other. Needs a full claude.ai login on the box and, on Team and Enterprise, the admin toggle.";
     };
 
     # A push when a session waits on you (remote-sessions.md, phase 3).

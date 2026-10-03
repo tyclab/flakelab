@@ -75,11 +75,12 @@ let
     | .skipAutoPermissionPrompt = true
   '';
 
-  # Remote Control on its own switch, which the agent bundle implies. The four
-  # vars are deleted, not set to "0": they gate the feature-flag evaluation
-  # Remote Control needs. Off, both the key and the vars are left as the user
-  # has them.
-  claudeRemoteControlJq = lib.optionalString (cfg.claudeAgentDefaults || cfg.claudeRemoteControl) ''
+  # Remote Control on its own switch: the agent bundle does not imply it, so a
+  # box can auto-approve tools without connecting every session to the app, and
+  # the other way round. The four vars are deleted, not set to "0": they gate
+  # the feature-flag evaluation Remote Control needs. Off, both the key and the
+  # vars are left as the user has them.
+  claudeRemoteControlJq = lib.optionalString cfg.claudeRemoteControl ''
     | .remoteControlAtStartup = true
     | .env |= del(
         .DISABLE_TELEMETRY,

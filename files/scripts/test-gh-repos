@@ -1,0 +1,76 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+typeset script="${0:A:h}/gh-repos"
+typeset scratch="$(mktemp -d)"
+trap 'rm -rf "${scratch}"' EXIT INT TERM
+mkdir -p "${scratch}/bin"
+export GH_TEST_CALLS="${scratch}/calls" GH_TEST_PAGES="${scratch}/pages"
+cat > "${scratch}/bin/gh" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${GH_TEST_CALLS}"
+cat "${GH_TEST_PAGES}"
+[[ "${GH_TEST_FAIL:-0}" == 0 ]]
+STUB
+chmod +x "${scratch}/bin/gh"
+export PATH="${scratch}/bin:${PATH}"
+
+cat > "${GH_TEST_PAGES}" <<'JSON'
+{"data":{"owner":{"repositories":{"nodes":[
+{"sshUrl":"git@github.com:example/active.git","isArchived":false,"isDisabled":false,"isEmpty":false},
+{"sshUrl":"git@github.com:example/archived.git","isArchived":true,"isDisabled":false,"isEmpty":false},
+{"sshUrl":"git@github.com:example/disabled.git","isArchived":false,"isDisabled":true,"isEmpty":false},
+{"sshUrl":"git@github.com:example/empty.git","isArchived":false,"isDisabled":false,"isEmpty":true}
+],"pageInfo":{"hasNextPage":true,"endCursor":"page-two"}}}}}
+{"data":{"owner":{"repositories":{"nodes":[
+{"sshUrl":"git@github.com:example/last-page.git","isArchived":false,"isDisabled":false,"isEmpty":false}
+],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}
+JSON
+
+"${script}" --owner example > "${scratch}/out"
+[[ "$(<"${scratch}/out")" == $'git@github.com:example/active.git\ngit@github.com:example/last-page.git' ]]
+grep -q -- '--hostname github.com graphql --paginate' "${GH_TEST_CALLS}"
+grep -q -- 'ownerAffiliations: \[OWNER\]' "${GH_TEST_CALLS}"
+grep -q -- 'pageInfo { hasNextPage endCursor }' "${GH_TEST_CALLS}"
+grep -q -- 'owner=example' "${GH_TEST_CALLS}"
+print -r -- 'ok: all pages, eligibility filters, explicit owner, pagination and fixed host'
+
+: > "${GH_TEST_CALLS}"
+"${script}" > "${scratch}/out"
+grep -q -- 'owner: viewer' "${GH_TEST_CALLS}"
+grep -q -- 'ownerAffiliations: \[OWNER, ORGANIZATION_MEMBER\]' "${GH_TEST_CALLS}"
+print -r -- 'ok: default discovery includes owned and organization repositories'
+
+"${script}" --owner example --owner other > "${scratch}/out"
+[[ $(wc -l < "${scratch}/out") == 2 ]]
+print -r -- 'ok: overlapping results are deduplicated'
+
+if GH_TEST_FAIL=1 "${script}" --owner example > "${scratch}/out" 2> "${scratch}/err"; then
+  print -ru2 -- 'FAIL: partial API failure succeeded'; exit 1
+fi
+[[ ! -s "${scratch}/out" ]]
+print -r -- 'ok: a failed later page emits no partial clone list'
+
+cp "${GH_TEST_PAGES}" "${scratch}/valid-pages"
+for payload in '{"data":{"owner":null}}' '{"errors":[{"message":"denied"}]}' 'not json'; do
+  cp "${scratch}/valid-pages" "${GH_TEST_PAGES}"
+  print -r -- "${payload}" >> "${GH_TEST_PAGES}"
+  if "${script}" --owner example > "${scratch}/out" 2> "${scratch}/err"; then
+    print -ru2 -- 'FAIL: invalid/error response succeeded'; exit 1
+  fi
+  [[ ! -s "${scratch}/out" ]]
+done
+print -r -- 'ok: null owner, GraphQL errors and invalid JSON emit no partial list'
+
+print -r -- '{"data":{"owner":{"repositories":{"nodes":[]}}}}' > "${GH_TEST_PAGES}"
+"${script}" --owner example > "${scratch}/out"
+[[ ! -s "${scratch}/out" ]]
+for arg in '--owner' '--unknown'; do
+  typeset rc=0
+  "${script}" "${arg}" > "${scratch}/out" 2> "${scratch}/err" || rc=$?
+  [[ ${rc} == 2 ]]
+done
+typeset rc=0
+"${script}" --owner 'bad/owner' > "${scratch}/out" 2> "${scratch}/err" || rc=$?
+[[ ${rc} == 2 ]]
+print -r -- 'ok: empty owners are valid; malformed arguments fail with usage status'
