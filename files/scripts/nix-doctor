@@ -745,11 +745,12 @@ if (( heldCount > 0 )); then
   log_warn "${heldCount} secret finding(s) held back from the state root"
   # A file with a held finding AND no synced copy at all was held back WHOLE —
   # nothing of that session ever reaches the other machines until it is reviewed.
+  # Any depth: subagent transcripts and workflow journals sit under the session.
   if [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
     local heldName
     while IFS= read -r heldName; do
       [[ -n "${heldName}" ]] || continue
-      local -a synced=("${FLAKELAB_STATE_ROOT}"/claude/projects/*/"${heldName}"(N))
+      local -a synced=("${FLAKELAB_STATE_ROOT}"/claude/projects/**/"${heldName}"(N))
       (( ${#synced} == 0 )) && log_warn "held back whole, never synced: ${heldName}"
     done < <(jq -r 'select(.kind == "transcript") | .file // empty' "${HELD_FILE}" 2>/dev/null | sort -u)
   fi
