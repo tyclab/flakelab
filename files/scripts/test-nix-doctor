@@ -252,6 +252,43 @@ chmod +x "${UMT}/systemctl"; ln -sf "${TOOLS}/tycswap" "${UMT}/tycswap"
 out="$(section Switcher PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_AUTOSWITCH=true FAKE_TIMERS='flakelab-tycswap-autoswitch.timer  loaded active waiting')"
 contains "a scheduled timer passes" "${out}" "[ OK ] auto-switch timer scheduled (flakelab-tycswap-autoswitch.timer)"
 
+# dashboard_section <systemctl show answer> [<cmdline word>...]: the doctor's
+# Dashboard section under a systemctl whose `show flakelab-web.service` prints the
+# answer, with /proc faked so that PID 4242's cmdline is the given words (none: no
+# process to read).
+PROCT="${BASE}/proc-web"
+dashboard_section() {
+  print -rl -- '#!/bin/sh' 'case "$*" in *"show flakelab-web.service"*) printf "%s\n" "${FAKE_WEB_SHOW:-}" ;; esac' 'exit 0' > "${UMT}/systemctl"
+  chmod +x "${UMT}/systemctl"
+  rm -rf "${PROCT}"; mkdir -p "${PROCT}/4242"
+  (( $# > 1 )) && printf '%s\0' "${@:2}" > "${PROCT}/4242/cmdline"
+  section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_PROC_ROOT="${PROCT}" FAKE_WEB_SHOW="$1"
+}
+WEB_HERE="${DOCTOR:A:h}/lib/web.py"
+
+print -r -- "dashboard: no unit"
+contains "is a note" "$(dashboard_section $'LoadState=not-found\nActiveState=inactive\nMainPID=0')" "[ OK ] note: no dashboard unit (flakelab.web.enable runs flakelab-web)"
+
+print -r -- "dashboard: the unit is loaded but down"
+out="$(dashboard_section $'LoadState=loaded\nActiveState=failed\nMainPID=0')"
+contains "warns"                 "${out}" "[WARN] flakelab-web.service is loaded but not active"
+contains "names the status line" "${out}" "systemctl --user status flakelab-web.service"
+
+print -r -- "dashboard: running this generation's web.py"
+contains "passes" "$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242' python3 "${WEB_HERE}")" "[ OK ] dashboard runs this generation's code (flakelab-web.service)"
+
+print -r -- "dashboard: running a previous generation's web.py"
+out="$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242' python3 /nix/store/00000000000000000000000000000000-scripts/lib/web.py)"
+contains "warns"             "${out}" "[WARN] the dashboard runs a previous generation's code; activation never restarts it"
+contains "names the restart" "${out}" "systemctl --user restart flakelab-web.service"
+
+print -r -- "dashboard: a process that cannot be read"
+contains "warns, naming the pid" "$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242')" "[WARN] the dashboard's process (4242) cannot be read"
+
+print -r -- "dashboard: no user manager"
+stub systemctl 1
+contains "is a note" "$(section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "[ OK ] note: no user manager, so no dashboard unit to check"
+
 print -r -- "systemd cgroup: another target"
 contains "no WSL, nothing to check" "$(cgroup_section other)" "[ OK ] target other: systemd starts at the top of its own cgroup tree"
 

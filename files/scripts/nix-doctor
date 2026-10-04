@@ -409,6 +409,37 @@ if [[ -d "${OLD_ACCT_STORE}" ]]; then
   log_hint "move its logins into tycswap, then remove it: README, \"Migrating from flakelab accounts\""
 fi
 
+# Dashboard — flakelab-web, the user unit `flakelab.web.enable` declares.
+# Activation never restarts it (neverRestartedByActivation in nix/home), so
+# after an update it keeps serving the previous generation's web.py until it is
+# restarted by hand; this generation's web.py sits beside this script.
+log_head "Dashboard"
+if ${NO_USER_MANAGER} || ! command -v systemctl > /dev/null 2>&1; then
+  log_ok "note: no user manager, so no dashboard unit to check"
+else
+  _web_show="$(systemctl --user show flakelab-web.service -p LoadState -p ActiveState -p MainPID 2> /dev/null)"
+  if [[ "${_web_show}" != *LoadState=loaded* ]]; then
+    log_ok "note: no dashboard unit (flakelab.web.enable runs flakelab-web)"
+  elif [[ "${_web_show}" != *ActiveState=active* ]]; then
+    log_warn "flakelab-web.service is loaded but not active"
+    log_hint "systemctl --user status flakelab-web.service"
+  else
+    _web_pid="${_web_show##*MainPID=}"; _web_pid="${_web_pid%%$'\n'*}"
+    _web_proc="${FLAKELAB_PROC_ROOT:-/proc}/${_web_pid}/cmdline"
+    _web_cmd=""
+    [[ -n "${_web_pid}" && -r "${_web_proc}" ]] && _web_cmd="$(tr '\0' ' ' < "${_web_proc}")"
+    _web_here="${0:A:h}/lib/web.py"
+    if [[ -z "${_web_cmd}" ]]; then
+      log_warn "the dashboard's process (${_web_pid}) cannot be read"
+    elif [[ " ${_web_cmd}" == *" ${_web_here} "* ]]; then
+      log_ok "dashboard runs this generation's code (flakelab-web.service)"
+    else
+      log_warn "the dashboard runs a previous generation's code; activation never restarts it"
+      log_hint "systemctl --user restart flakelab-web.service"
+    fi
+  fi
+fi
+
 # Which file git actually reads the flake's keys from.
 log_head "Git config"
 GITCONFIG="${HOME}/.gitconfig"
