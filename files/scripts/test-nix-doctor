@@ -30,7 +30,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
+    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -323,6 +323,30 @@ contains "it fails, naming PID 1 and its cgroup" "${out}" "[FAIL] PID 1 is init,
 contains "names the wsl.conf switch" "${out}" "/etc/wsl.conf needs [boot] systemd=true"
 contains "and the restart"        "${out}" "'wsl --shutdown' from a Windows terminal"
 lacks    "no cgroup verdict"      "${out}" "systemd runs in"
+
+# shared_state <state root>: the doctor's "Shared state" section against the held list under ${BASE}/home.
+shared_state() { section 'Shared state' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_STATE_ROOT="$1" }
+GATE="${BASE}/home/.local/state/flakelab/state-gate"
+SROOT="${BASE}/state"
+mkdir -p "${GATE}" "${SROOT}/claude/projects/slug/sess/subagents/workflows/wf_1"
+{
+  print -r -- '{"kind":"transcript","file":"top.jsonl"}'
+  print -r -- '{"kind":"transcript","file":"agent-a1.jsonl"}'
+  print -r -- '{"kind":"transcript","file":"journal.jsonl"}'
+  print -r -- '{"kind":"transcript","file":"never.jsonl"}'
+} > "${GATE}/held.jsonl"
+: > "${SROOT}/claude/projects/slug/top.jsonl"
+: > "${SROOT}/claude/projects/slug/sess/subagents/agent-a1.jsonl"
+: > "${SROOT}/claude/projects/slug/sess/subagents/workflows/wf_1/journal.jsonl"
+
+print -r -- "shared state: a held file is never synced only when the state root has no copy at any depth"
+out="$(shared_state "${SROOT}")"
+contains "counts the held findings"                 "${out}" "[WARN] 4 secret finding(s) held back from the state root"
+contains "a file with no copy anywhere is named"    "${out}" "held back whole, never synced: never.jsonl"
+lacks    "a session transcript with a copy is not"  "${out}" "never synced: top.jsonl"
+lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agent-a1.jsonl"
+lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
+rm -rf "${GATE}" "${SROOT}"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
