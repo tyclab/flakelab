@@ -204,6 +204,7 @@ while (( $# > 0 )); do
       echo ""
       echo "Environment:"
       echo "  FLAKELAB_BACKUP_ROOT        payload root (set by the nix wrapper: <repoPath>-payload, beside the overlay, unless backupRoot names another)"
+      echo "  FLAKELAB_BOX_NAME           this box's name for its payload instance, slug manifest and gate ledger (set by the nix wrapper from boxName; wins over the two below)"
       echo "  FLAKELAB_INSTANCE           instance name off WSL, where WSL_DISTRO_NAME is unset (set by the nix wrapper from hostName)"
       echo "  FLAKELAB_STATE_ROOT         optional shared-state root (a synced folder, never a git checkout)"
       echo "  FLAKELAB_STATE_TRANSCRIPTS  1 to include Claude transcripts and Codex sessions in the state root"
@@ -228,12 +229,15 @@ while (( $# > 0 )); do
 done
 
 # After the arguments, so --help is answered without asking wsl.exe anything.
-# WSL_DISTRO_NAME wins where it is set (the shell env on a WSL distro).
-# FLAKELAB_INSTANCE is next: the nix-backup wrapper (nix/scripts.nix) exports it
-# from flakelab.hostName on every OTHER target, where WSL_DISTRO_NAME is never
-# set at all — so on those targets this line resolves the instance directly and
-# the wsl.exe fallback below never runs.
-DISTRO_NAME="${WSL_DISTRO_NAME:-${FLAKELAB_INSTANCE:-unknown}}"
+# FLAKELAB_BOX_NAME wins where it is set: the wrapper exports flakelab.boxName,
+# the name a box gets when two of them are built from one overlay and so share
+# the distro name and the hostname — without it, both write one payload
+# instance, one slug manifest and one gate ledger identity. WSL_DISTRO_NAME is
+# next (the shell env on a WSL distro). FLAKELAB_INSTANCE is last: the wrapper
+# exports it from flakelab.hostName on every OTHER target, where
+# WSL_DISTRO_NAME is never set at all — so on those targets this line resolves
+# the instance directly and the wsl.exe fallback below never runs.
+DISTRO_NAME="${FLAKELAB_BOX_NAME:-${WSL_DISTRO_NAME:-${FLAKELAB_INSTANCE:-unknown}}}"
 if [[ "${DISTRO_NAME}" == "unknown" ]]; then
   script_dir="${0:A:h}"
   if [[ -x "${script_dir}/get_current_wsl_distro_name" ]]; then

@@ -46,7 +46,9 @@ typeset -gA GATE_SETTLED_IDS=()
 
 gate_now() { date +%s }
 
-gate_host() { print -r -- "${HOST:-$(hostname)}" }
+# The ledger's name for this box: flakelab.boxName where one is configured
+# (two boxes from one overlay share the hostname), else the hostname.
+gate_host() { print -r -- "${FLAKELAB_BOX_NAME:-${HOST:-$(hostname)}}" }
 
 gate_decisions_shared() { print -r -- "${STATE_ROOT}/.flakelab-state-gate/decisions.jsonl" }
 

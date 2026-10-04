@@ -359,6 +359,9 @@ rec {
 
   nix-backup = pkgs.writeShellScriptBin "nix-backup" ''
     export FLAKELAB_BACKUP_ROOT=${backupRoot}
+    ${lib.optionalString (
+      cfg.boxName != null
+    ) "export FLAKELAB_BOX_NAME=${lib.escapeShellArg cfg.boxName}"}
     ${lib.optionalString (cfg.sopsSecretsFile != null) "export FLAKELAB_SOPS_RENDER=1"}
     ${
       # Gated at eval time, not on WSL_DISTRO_NAME: that variable is unset inside the

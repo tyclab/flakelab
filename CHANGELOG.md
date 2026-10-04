@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab.boxName`: a second box built from the same overlay that keeps the shared hostname names itself here, and that name — not the hostname or the distro name — becomes its backup payload instance (`instances/<name>`), its slug manifest in the state root and the gate ledger's `host`. Before, two such boxes wrote one instance and one manifest through the sync, and a ruling taken on one counted as the other's. Null keeps everything on the distro name and the hostname, as before.
 - Opt-in GitHub discovery for `flakelab clone`: `cloneGithub` defaults off, and `githubOwners` selects users or organizations (empty means the authenticated account and its organizations). Paginated discovery skips archived, disabled and empty repositories, honors `cloneExclude`, and uses the existing `gh` credentials.
 - `flakelab web`: a browser dashboard for the tycswap logins and the sessions on 127.0.0.1:8321 behind a token; `flakelab.web.enable`, `flakelab.web.terminal` (ttyd), `flakelab.web.logo`.
 - `flakelab.stateSyncthing`: the state root replicated by Syncthing through an untrusted hub; needs a Linux `stateRoot` and `sopsSecretsFile`.
