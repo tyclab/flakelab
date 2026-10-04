@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab.tycswapAppPort`: `tycswap app --headless --port <n>` as the user service `flakelab-tycswap-app`, the dashboard the Windows tray (`tycswap.exe app --remote`) drives through WSL2's localhost forwarding; the tray is registered once per PC with `--autostart on`. Null, the default, installs no service.
 - `flakelab doctor` has a "Dashboard" section: it warns when `flakelab-web.service` still runs a previous generation's code after `flakelab update` (activation never restarts it) and names the restart, and when the unit is loaded but down.
 - `flakelab.boxName`: a second box built from the same overlay that keeps the shared hostname names itself here, and that name — not the hostname or the distro name — becomes its backup payload instance (`instances/<name>`), its slug manifest in the state root and the gate ledger's `host`. Before, two such boxes wrote one instance and one manifest through the sync, and a ruling taken on one counted as the other's. Null keeps everything on the distro name and the hostname, as before.
 - Opt-in GitHub discovery for `flakelab clone`: `cloneGithub` defaults off, and `githubOwners` selects users or organizations (empty means the authenticated account and its organizations). Paginated discovery skips archived, disabled and empty repositories, honors `cloneExclude`, and uses the existing `gh` credentials.

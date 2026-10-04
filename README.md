@@ -521,6 +521,25 @@ cooldown are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
 by `flakelab backup` (`tycswap/`) and read by `flakelab doctor` (`Switcher`),
 `flakelab web` and `flakelab sessions`.
 
+A distro has no tray, so `flakelab.tycswapAppPort = 7337;` runs `tycswap app
+--headless --port 7337` as the user service `flakelab-tycswap-app`, and the
+Windows binary (`tycswap_<version>_windows_amd64.exe` from the release, checked
+against its `SHA256SUMS`) is the tray for it, registered once per PC from a
+PowerShell as the user:
+
+```powershell
+$token = '\\wsl.localhost\<distro>\home\<user>\.local\share\tycswap\remote.token'
+tycswap.exe app --remote http://127.0.0.1:7337 --token-file $token --autostart on
+Start-Process tycswap.exe -ArgumentList 'app', '--remote', 'http://127.0.0.1:7337', '--token-file', $token
+```
+
+The app writes that token on every start and the tray reads it again by
+itself; the tray switches, toggles auto-switch and opens the distro's
+dashboard, while adding a login stays on the dashboard. Its auto-switch
+toggle starts an engine inside the app: with `tycswapAutoSwitchInterval` set
+the timer is the engine, so leave the toggle off. The Windows binary
+upgrades itself from the releases; the distro's follows the flake's pin.
+
 #### Migrating from flakelab accounts
 
 `flakelab accounts`, the zsh switcher this flake carried before tycswap, is

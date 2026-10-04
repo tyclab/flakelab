@@ -50,8 +50,9 @@ the private overlay `flakelab-config`, which imports this flake via
     directory, never the machine id.
   - tycswap is the account switcher (`installTycswap`, pinned in
     `flake.nix`); flakelab carries the glue only: `nix/home/tycswap.nix` (the
-    `flakelab-tycswap-autoswitch` timer behind `tycswapAutoSwitchInterval`, and
-    the quota hook in `claude.nix` that ticks it), the `tycswap` backup
+    `flakelab-tycswap-autoswitch` timer behind `tycswapAutoSwitchInterval`, the
+    `flakelab-tycswap-app` service behind `tycswapAppPort` for the Windows tray,
+    and the quota hook in `claude.nix` that ticks the timer), the `tycswap` backup
     category, the doctor's `Switcher` section, `claude-sessions` reading
     tycswap's session profiles, and `flakelab web` over `tycswap list --json`
     and `tycswap switch`. The store is `~/.local/share/tycswap`; nothing reads

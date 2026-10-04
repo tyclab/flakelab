@@ -1371,6 +1371,11 @@
               installTycswap = false;
               tycswapAutoSwitchInterval = "2min";
             };
+            app = ext { tycswapAppPort = 7337; };
+            badApp = ext {
+              installTycswap = false;
+              tycswapAppPort = 7337;
+            };
             # A statusline is rendered only with a statusbar plugin; this system has one.
             statusline = ext {
               claudePluginMarketplaces = [
@@ -1393,6 +1398,20 @@
             ) != null;
           assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAutoSwitchInterval" a.message)
             (hmOf bad).assertions;
+          # The headless app for the Windows tray: absent by default, on the named
+          # port when set, restarted by the activation (no X-RestartIfChanged).
+          assert
+            !(builtins.hasAttr "flakelab-tycswap-app" (hmOf self.nixosConfigurations.default)
+            .systemd.user.services);
+          assert
+            builtins.match ".*/bin/tycswap app --headless --port 7337 --no-update-check" (
+              lib.concatStringsSep " " (
+                lib.toList (hmOf app).systemd.user.services.flakelab-tycswap-app.Service.ExecStart
+              )
+            ) != null;
+          assert !((hmOf app).systemd.user.services.flakelab-tycswap-app.Service ? "X-RestartIfChanged");
+          assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAppPort" a.message)
+            (hmOf badApp).assertions;
           assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
           assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
           assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);

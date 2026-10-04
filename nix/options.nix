@@ -210,6 +210,12 @@ in
       example = "2min";
       description = "systemd time span (OnUnitActiveSec syntax) between ticks of `tycswap auto --once`, the user timer that moves the live Claude Code or Codex login to another stored one before it hits a rate limit. null (the default) installs no timer. Thresholds, strategy and cooldown are tycswap's own settings (`tycswap config`). Needs installTycswap.";
     };
+    tycswapAppPort = mkOption {
+      type = types.nullOr types.port;
+      default = null;
+      example = 7337;
+      description = "Port of `tycswap app --headless`, tycswap's dashboard as the user service flakelab-tycswap-app on 127.0.0.1, for the Windows tray: a distro has no tray, so the Windows binary shows the icon and drives this dashboard over WSL2's localhost forwarding (`tycswap.exe app --remote http://127.0.0.1:<port> --token-file \\\\wsl.localhost\\<distro>\\home\\<user>\\.local\\share\\tycswap\\remote.token --autostart on`, once per PC). The app writes that token on every start and the tray reads it again by itself. The tray's auto-switch toggle starts an engine inside the app: with tycswapAutoSwitchInterval set, the timer is the engine, so leave the toggle off. null (the default) installs no service. Needs installTycswap.";
+    };
 
     # The tiering is the whole point, and it is easy to get backwards:
     #   hard_deny  cannot be cleared by anything, including a direct operator
