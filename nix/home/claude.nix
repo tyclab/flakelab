@@ -32,12 +32,15 @@ let
   # Pins live in variables so renovate.json's customManagers can see them; an inline
   # pin in an args list has no manager watching it.
   # renovate: datasource=pypi depName=mcp-grafana
-  grafanaMcpVersion = "1.6.3";
+  grafanaMcpVersion = "2.0.0";
 
   # One server covering Grafana, Prometheus and Loki; GRAFANA_* is inherited.
   grafanaServer = {
     command = "uvx";
-    args = [ "mcp-grafana==${grafanaMcpVersion}" ];
+    args = [
+      "mcp-grafana==${grafanaMcpVersion}"
+      "--usage-stats=disabled"
+    ];
   };
 
   # Run from the cloned repo, talking REST to the bridge at WHATSAPP_BRIDGE_HOST.
