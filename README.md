@@ -489,10 +489,12 @@ the rest (`hubAddresses`, `folderId`, `configDir`, `guiAddress`).
 
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
 snapshots the running agent sessions (Claude Code, Codex) every
-`sessionsAutosaveInterval` (default 5 min), one file per boot. After a crash,
+`sessionsAutosaveInterval` (default 5 min), one file per box and boot (the file
+name carries the hostname and the machine id, so two boxes that share a
+hostname and a synced state root never read each other's). After a crash,
 `flakelab sessions --resume` prints — and on WSL `--open` reopens — every
-session that was open; `flakelab sessions --recent` lists the ones closed in
-the last day.
+session that was open here; `flakelab sessions --recent` lists the ones closed
+in the last day.
 
 ### Account switcher
 

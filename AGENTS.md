@@ -44,7 +44,10 @@ the private overlay `flakelab-config`, which imports this flake via
     matches helpers. Saved lines are `<tool>  <dir>  <id>`; a line without the
     tool column is Claude Code. Saves go to the state root's `claude/sessions/`
     when one is set, else `~/.local/state/flakelab/sessions/`, never into
-    `~/.claude/sessions`.
+    `~/.claude/sessions`; they are named `<hostname>-<machine>-…` (twelve hex
+    digits of `/etc/machine-id`), and the default `--resume`/`--open` read only
+    this box's: two distros from one overlay share the hostname and the synced
+    directory, never the machine id.
   - tycswap is the account switcher (`installTycswap`, pinned in
     `flake.nix`); flakelab carries the glue only: `nix/home/tycswap.nix` (the
     `flakelab-tycswap-autoswitch` timer behind `tycswapAutoSwitchInterval`, and

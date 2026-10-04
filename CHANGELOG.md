@@ -68,6 +68,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab sessions` names its saves and autosaves `<hostname>-<machine>-…`, the first twelve hex digits of `/etc/machine-id` behind the hostname, and the default `--resume`/`--open` read only this box's files. Two WSL distros built from one overlay share the hostname and, through the sync, the save directory; named after the host alone, the other box's newer autosave was what a reboot here reopened. A file named explicitly is still resumed whichever box wrote it; files from before the rename are left alone and are not read by default.
 - `flakelab backup --review-secrets` scrubs a transcript secret where it sits: every line that holds it literally (the scanner reports a match ending at a line break one line early, and one finding where a line holds the token twice), and for a secret the scanner decoded out of a base64, percent-encoded or hex run, that run. Before, both re-scanned dirty and the file stayed held with the delete pending forever.
 - A `delete` settles each record it carried out; a record whose scrub failed stays held and is retried on its own. Before, one stuck file kept every record of that secret held.
 - `flakelab doctor` finds a held transcript's synced copy at any depth under the state root; subagent transcripts and workflow journals were called "held back whole, never synced" while synced.

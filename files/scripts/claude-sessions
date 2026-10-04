@@ -43,8 +43,9 @@ set -uo pipefail
 #                                      that window by name; none: the whole server
 #   claude-sessions --save [file]      also write "<tool>  <dir>  <id>" lines to file
 #   claude-sessions --resume [file]    print the resume command per session,
-#                                      from a saved file (default: the newest
-#                                      save), or from the live sessions if none
+#                                      from a saved file (default: this box's
+#                                      newest save), or from the live sessions
+#                                      if none
 #   claude-sessions --open [file]      the same sessions, each in its own new
 #                                      Windows Terminal tab (WSL only); with tmux
 #                                      on PATH each tab is a view on a window that
@@ -62,15 +63,21 @@ set -uo pipefail
 # any directory, and a failing `cd` would stop the line before it ran.
 #
 # Crash recovery: --autosave (the flakelab-sessions-autosave timer) keeps ONE
-# file per boot, <host>-autosave-<boot>.txt beside the saves, rewritten only
+# file per boot, <box>-autosave-<boot>.txt beside the saves, rewritten only
 # when the running set changed and never with an empty one — the first ticks
 # after a crash run with nothing open. So the file a crash or a hard reset
 # leaves behind is exactly what was open, untouched by the reboot. With no file
-# named, --resume and --open take the newest save that is neither this boot's
-# own autosave (that is the live set, not a record of the last one) nor
-# another host's.
+# named, --resume and --open take this box's newest save that is not this
+# boot's own autosave (that is the live set, not a record of the last one).
 #
-# Save location: $FLAKELAB_STATE_ROOT/claude/sessions/<host>-<date>.txt when a
+# The box, not the host: <box> is <hostname>-<machine>, the first twelve hex
+# digits of /etc/machine-id behind the hostname. Two WSL distros built from one
+# overlay share the hostname AND, through the sync, the save directory; named
+# after the host alone, the other box's autosave is this box's newest file,
+# and a reboot here brought that box's sessions back (2026-10-04). Another
+# box's file — any shape, any name — is still resumed when named explicitly.
+#
+# Save location: $FLAKELAB_STATE_ROOT/claude/sessions/<box>-<date>.txt when a
 # state root is configured (nix/options.nix stateRoot) — the list then
 # replicates with the transcripts it names — else
 # ~/.local/state/flakelab/sessions/. Never ~/.claude/sessions: that directory
@@ -89,6 +96,9 @@ PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
 # The kernel's id for this boot: a crash, a reboot or a `wsl --shutdown` starts
 # a new one. FLAKELAB_BOOT_ID_FILE is a test seam.
 BOOT_ID_FILE="${FLAKELAB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
+# What tells this box from one with the same hostname; FLAKELAB_MACHINE_ID_FILE
+# is a test seam. Unreadable, the box is the host alone.
+MACHINE_ID_FILE="${FLAKELAB_MACHINE_ID_FILE:-/etc/machine-id}"
 REGISTRY="${HOME}/.claude/sessions"
 # A session on a tycswap profile (tycswap run, tycswap env) keeps its registry
 # entry, and with the history unshared its transcript, under that profile:
@@ -134,7 +144,7 @@ Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
                     at a terminal, picked from a list of the windows first
   --save [file]     list, and write "<tool>  <dir>  <session-id>" lines to file
   --resume [file]   print the resume commands, one per terminal, from file
-                    (default: newest save, else the live sessions)
+                    (default: this box's newest save, else the live sessions)
   --open [file]     open each of those sessions in its own Windows Terminal
                     tab (WSL only); with tmux on PATH, as a view on a window
                     that outlives the tab
@@ -192,7 +202,17 @@ boot_id() {
   print -r -- "${b[1,12]}"
 }
 
-autosave_name() { print -r -- "${HOST}-autosave-$1.txt" }
+# <hostname>-<machine>: the prefix of every file this box writes, and the only
+# prefix the default --resume/--open reads.
+box_id() {
+  local m=""
+  [[ -r "${MACHINE_ID_FILE}" ]] && m="$(<"${MACHINE_ID_FILE}")"
+  m="${m//[^0-9a-f]/}"
+  print -r -- "${HOST}${m:+-${m[1,12]}}"
+}
+BOX="$(box_id)"
+
+autosave_name() { print -r -- "${BOX}-autosave-$1.txt" }
 
 is_tool() { (( ${TOOLS[(Ie)$1]} )) }
 
@@ -430,11 +450,11 @@ write_save() {
   if [[ -z "$FILE" ]]; then
     dir="$(save_dir)"
     mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
-    FILE="${dir}/${HOST}-$(date +%Y-%m-%dT%H%M).txt"
+    FILE="${dir}/${BOX}-$(date +%Y-%m-%dT%H%M).txt"
   fi
   dedupe_sessions
   {
-    print -r -- "# claude-sessions ${HOST}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)"
+    print -r -- "# claude-sessions ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)"
     for row in "${SESSION_ROWS[@]}"; do
       IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
       save_line "$tool" "$cwd" "$sid"
@@ -469,7 +489,7 @@ write_autosave() {
   fi
   tmp="$(mktemp "${dir}/.${file:t}.flakelab-tmp.XXXXXX")" || { print -ru2 -- "Error: cannot write in ${dir}"; return 1 }
   if ! {
-    print -r -- "# claude-sessions autosave ${HOST}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} boot=${boot} $(date -Is)"
+    print -r -- "# claude-sessions autosave ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} boot=${boot} $(date -Is)"
     print -rl -- "${lines[@]}"
   } > "$tmp" || ! mv -f "$tmp" "$file"; then
     rm -f "$tmp"
@@ -477,7 +497,7 @@ write_autosave() {
     return 1
   fi
   print -ru2 -- "autosaved ${#lines[@]} session(s) to ${file}"
-  old=("${dir}/${HOST}"-autosave-*.txt(Nom))
+  old=("${dir}/${BOX}"-autosave-*.txt(Nom))
   (( ${#old[@]} > AUTOSAVE_KEEP )) && rm -f -- "${old[@]:$AUTOSAVE_KEEP}"
   return 0
 }
@@ -504,15 +524,13 @@ typeset -a PAIRS=()
 collect_pairs() {
   local src="$FILE" line row tool p age sid cwd wid wname f cur=""
   if [[ -z "$src" ]]; then
-    # Newest save first; (N) keeps an empty directory from being a glob error.
-    # This boot's own autosave is the live set, and another host's autosave
-    # names that host's sessions: neither is what a restart here left behind.
+    # This box's newest save; (N) keeps an empty directory from being a glob
+    # error. Another box's files, even from the same hostname, name that box's
+    # sessions, and this boot's own autosave is the live set: neither is what
+    # a restart here left behind.
     cur="$(boot_id)" || cur=""
-    for f in "$(save_dir)"/*.txt(Nom); do
-      if [[ "${f:t}" == *-autosave-*.txt ]]; then
-        [[ "${f:t}" == "${HOST}-autosave-"* ]] || continue
-        [[ -n "$cur" && "${f:t}" == "$(autosave_name "$cur")" ]] && continue
-      fi
+    for f in "$(save_dir)"/${BOX}-*.txt(Nom); do
+      [[ -n "$cur" && "${f:t}" == "$(autosave_name "$cur")" ]] && continue
       src="$f"
       break
     done
