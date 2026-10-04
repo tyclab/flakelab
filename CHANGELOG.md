@@ -68,6 +68,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab backup --review-secrets` scrubs a transcript secret where it sits: every line that holds it literally (the scanner reports a match ending at a line break one line early, and one finding where a line holds the token twice), and for a secret the scanner decoded out of a base64, percent-encoded or hex run, that run. Before, both re-scanned dirty and the file stayed held with the delete pending forever.
+- A `delete` settles each record it carried out; a record whose scrub failed stays held and is retried on its own. Before, one stuck file kept every record of that secret held.
 - `checks.mcp` runs its headless browser test with ASLR on: in the Nix build sandbox, which turns ASLR off, a host uprobe on libc `setenv` left the browser's zygote spinning until the 180 s launch timeout.
 - `flakelab backup` and `--restore` skipped tycswap's Claude credential and config snapshots: the store names them with a leading dot and the glob did not match dotfiles (#179). The Codex snapshots, named without one, were carried; the fixture now uses the real names.
 - Activation removes `env` keys in `~/.claude/settings.json` and `mcpServers` in `~/.claude.json` it no longer renders, recorded in `~/.local/state/flakelab/activation-rendered/`.

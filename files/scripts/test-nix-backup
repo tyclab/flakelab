@@ -79,6 +79,26 @@ if [[ "${FAKE_GITLEAKS_BROKEN:-}" == 1 ]]; then
   exit 2
 fi
 [[ -n "${report}" ]] || report=/dev/stdout
+# decoded_carrier <line> <secret>: the tag gitleaks' decoding pass puts on a
+# finding whose secret sits inside a base64, percent-encoded or hex run on the
+# line; the Secret it reports is the DECODED text, which the line never holds.
+decoded_carrier() {
+  local line="$1" s="$2" tok dec
+  for tok in ${(f)"$(print -r -- "${line}" | grep -oE '[A-Za-z0-9+/]{16,}={0,2}')"}; do
+    dec="$(print -rn -- "${tok}" | base64 -d 2> /dev/null)" || continue
+    [[ "${dec}" == *"${s}"* ]] && { print -r -- "decoded:base64"; return 0 }
+  done
+  for tok in ${(f)"$(print -r -- "${line}" | grep -oE '([A-Za-z0-9._~+-]|%[0-9A-Fa-f]{2})*%[0-9A-Fa-f]{2}([A-Za-z0-9._~+-]|%[0-9A-Fa-f]{2})*')"}; do
+    dec="$(printf '%b' "${tok//\%/\\x}")"
+    [[ "${dec}" == *"${s}"* ]] && { print -r -- "decoded:percent"; return 0 }
+  done
+  for tok in ${(f)"$(print -r -- "${line}" | grep -oE '[0-9A-Fa-f]{32,}')"}; do
+    (( ${#tok} % 2 )) && continue
+    dec="$(printf '%b' "$(print -rn -- "${tok}" | sed 's/../\\x&/g')")"
+    [[ "${dec}" == *"${s}"* ]] && { print -r -- "decoded:hex"; return 0 }
+  done
+  return 1
+}
 typeset -a needles=()
 [[ -n "${FAKE_GITLEAKS_SECRET:-}" ]]  && needles+=("${FAKE_GITLEAKS_SECRET}")
 [[ -n "${FAKE_GITLEAKS_SECRET2:-}" ]] && needles+=("${FAKE_GITLEAKS_SECRET2}")
@@ -92,12 +112,19 @@ if (( ${#needles} > 0 )) && [[ -n "${target}" ]]; then
     while IFS= read -r line || [[ -n "${line}" ]]; do
       n=$(( n + 1 ))
       for s in "${needles[@]}"; do
-        [[ "${line}" == *"${s}"* ]] || continue
+        tag=""
+        if [[ "${line}" != *"${s}"* ]]; then
+          [[ "${FAKE_GITLEAKS_DECODE:-}" == 1 ]] || continue
+          tag="$(decoded_carrier "${line}" "${s}")" || continue
+        fi
         reported="${f}"
         [[ "${FAKE_GITLEAKS_RELPATH:-}" == 1 ]] && reported="${f:t}"
-        finding="$(jq -c -n --arg f "${reported}" --argjson n "${n}" \
-          --arg m "${line}" --arg s "${s}" \
-          '{Description:"fake secret",StartLine:$n,EndLine:$n,File:$f,RuleID:"fake-rule",Match:$m,Secret:$s}')"
+        rn=${n}
+        [[ "${FAKE_GITLEAKS_LINE_OFF:-}" == 1 && ${n} -gt 1 ]] && rn=$(( n - 1 ))
+        finding="$(jq -c -n --arg f "${reported}" --argjson n "${rn}" \
+          --arg m "${line}" --arg s "${s}" --arg t "${tag}" \
+          '{Description:"fake secret",StartLine:$n,EndLine:$n,File:$f,RuleID:"fake-rule",Match:$m,Secret:$s,
+            Tags:(if $t == "" then [] else [$t,"decode-depth:1"] end)}')"
         findings+=("${finding}")
         [[ "${FAKE_GITLEAKS_DUP:-}" == 1 ]] && findings+=("${finding}")
       done
@@ -137,8 +164,10 @@ chmod +x "${BASE}/bin/gitleaks"
 
 # Per-scenario knobs, reset by fixture: STATE/TRANSCRIPTS/TRANSCRIPT_SECRETS feed FLAKELAB_STATE_*,
 # SOPS feeds FLAKELAB_SOPS_RENDER,
-# FAKE_* steer the scanner, ANSWERS feeds FLAKELAB_GATE_ANSWERS, NO_GITLEAKS
-# runs on a PATH without any gitleaks.
+# FAKE_* steer the scanner (LINE_OFF: a literal match reported one line early, as the
+# real scanner does for a match ending at a line break; DECODE: a secret found only
+# inside a base64, percent or hex run, reported decoded), ANSWERS feeds
+# FLAKELAB_GATE_ANSWERS, NO_GITLEAKS runs on a PATH without any gitleaks.
 STATE=""
 TRANSCRIPTS=""
 TRANSCRIPT_SECRETS=""
@@ -149,6 +178,8 @@ FAKE_SPAN=""
 FAKE_BROKEN=""
 FAKE_RELPATH=""
 FAKE_DUP=""
+FAKE_LINE_OFF=""
+FAKE_DECODE=""
 ANSWERS=""
 NO_GITLEAKS=""
 
@@ -193,6 +224,8 @@ fixture() {
   FAKE_BROKEN=""
   FAKE_RELPATH=""
   FAKE_DUP=""
+  FAKE_LINE_OFF=""
+  FAKE_DECODE=""
   ANSWERS=""
   NO_GITLEAKS=""
   rm -rf "${BASE}/${name}"
@@ -243,6 +276,7 @@ run_backup() {
     FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}" \
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
     FAKE_GITLEAKS_RELPATH="${FAKE_RELPATH}" FAKE_GITLEAKS_DUP="${FAKE_DUP}" \
+    FAKE_GITLEAKS_LINE_OFF="${FAKE_LINE_OFF}" FAKE_GITLEAKS_DECODE="${FAKE_DECODE}" \
     FLAKELAB_GATE_ANSWERS="${ANSWERS}" \
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}" \
     "${BACKUP}" "$@" < /dev/null 2>&1)"
@@ -516,6 +550,7 @@ run_backup_tty() {
     FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}"
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}"
     FAKE_GITLEAKS_RELPATH="${FAKE_RELPATH}" FAKE_GITLEAKS_DUP="${FAKE_DUP}"
+    FAKE_GITLEAKS_LINE_OFF="${FAKE_LINE_OFF}" FAKE_GITLEAKS_DECODE="${FAKE_DECODE}"
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}"
     "${BACKUP}" "$@")
   OUT="$(printf "$keys" | TERM=xterm timeout 120 script -qec "${(j: :)${(q)cmd[@]}}" /dev/null 2>&1)"; RC=$?
@@ -1920,6 +1955,92 @@ decisions="$(< "${FIX_DECISIONS}")"
 contains "the decision is recorded"                "${decisions}" '"decision":"delete"'
 excludes "and never the secret"                    "${decisions}" "hunter2"
 
+print -r -- "--review-secrets scrubs a secret the scanner reported one line early"
+transcript_fixture gate-review-transcript-line-off
+FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+FAKE_LINE_OFF=1
+LIVE="${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+{
+  print -r -- '{"type":"user","text":"a clean first line"}'
+  print -r -- '{"type":"assistant","text":"token hunter2-secret-and-a-good-deal-more here"}'
+} > "${LIVE}"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the finding is held"                     "$(grep_c_held)" "1"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the live transcript lost the secret"     "$(< "${LIVE}")" "hunter2-secret"
+contains "the line that held it carries the placeholder" "$(sed -n 2p "${LIVE}")" "[REDACTED:fake-rule]"
+check    "the reported line is untouched"          "$(sed -n 1p "${LIVE}")" '{"type":"user","text":"a clean first line"}'
+check    "both lines are still valid JSON"         "$(jq -r '.type' "${LIVE}" | paste -sd,)" "user,assistant"
+check    "the held list no longer carries it"      "$(grep_c_held)" "0"
+
+print -r -- "--review-secrets scrubs a secret the scanner decoded out of base64"
+transcript_fixture gate-review-transcript-base64
+FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+FAKE_DECODE=1
+LIVE="${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+blob="$(print -rn -- "config: token=hunter2-secret-and-a-good-deal-more; end" | base64 -w0)"
+print -r -- "{\"type\":\"user\",\"text\":\"file ${blob} shown\"}" > "${LIVE}"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the finding is held"                     "$(grep_c_held)" "1"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the live transcript lost the blob"       "$(< "${LIVE}")" "${blob}"
+contains "and carries the placeholder instead"     "$(< "${LIVE}")" "file [REDACTED:fake-rule] shown"
+check    "the scrubbed line is still valid JSON"   "$(jq -r '.type' "${LIVE}")" "user"
+check    "the held list no longer carries it"      "$(grep_c_held)" "0"
+
+print -r -- "--review-secrets scrubs a secret the scanner decoded out of a percent-encoded run"
+transcript_fixture gate-review-transcript-percent
+FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+FAKE_DECODE=1
+LIVE="${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+print -r -- '{"type":"user","text":"url ?token=hunter2%2Dsecret-and-a-good-deal-more%20x end"}' > "${LIVE}"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the finding is held"                     "$(grep_c_held)" "1"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the live transcript lost the run"        "$(< "${LIVE}")" "hunter2%2Dsecret"
+contains "and carries the placeholder instead"     "$(< "${LIVE}")" "url ?token=[REDACTED:fake-rule] end"
+check    "the scrubbed line is still valid JSON"   "$(jq -r '.type' "${LIVE}")" "user"
+check    "the held list no longer carries it"      "$(grep_c_held)" "0"
+
+print -r -- "--review-secrets scrubs a secret the scanner decoded out of hex"
+transcript_fixture gate-review-transcript-hex
+FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+FAKE_DECODE=1
+LIVE="${SLUG_HOME}/abc.jsonl"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+hex="$(print -rn -- "token=hunter2-secret-and-a-good-deal-more" | od -An -tx1 | tr -d ' \n')"
+print -r -- "{\"type\":\"user\",\"text\":\"dump ${hex} end\"}" > "${LIVE}"
+
+run_backup --force
+check    "the backup exits clean"                  "${RC}" "0"
+check    "the finding is held"                     "$(grep_c_held)" "1"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                  "${RC}" "0"
+excludes "the live transcript lost the hex"        "$(< "${LIVE}")" "${hex}"
+contains "and carries the placeholder instead"     "$(< "${LIVE}")" "dump [REDACTED:fake-rule] end"
+check    "the scrubbed line is still valid JSON"   "$(jq -r '.type' "${LIVE}")" "user"
+check    "the held list no longer carries it"      "$(grep_c_held)" "0"
+
 print -r -- "a transcript that vanished before the review is not written off"
 transcript_fixture gate-review-transcript-gone
 secret_transcript
@@ -1936,7 +2057,7 @@ check    "the entry stays held"                    "$(grep -c . "${FIX_HELD}")" 
 contains "the delete ruling is recorded anyway"    "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
 contains "and the failure says it stands"          "${OUT}" "the delete ruling stands"
 
-print -r -- "a delete settles only when every record of that secret went"
+print -r -- "a delete settles each record it carried out; a stuck one stays held"
 transcript_fixture gate-review-partial-delete
 FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
 LIVE="${SLUG_HOME}/abc.jsonl"
@@ -1958,12 +2079,13 @@ check    "the review reports the failure"          "${RC}" "1"
 contains "and says the ruling stands as pending"   "${OUT}" "the delete ruling stands"
 excludes "the history record was still removed"    "$(< "${FIX_HOME}/.zsh_history")" "export TOKEN="
 contains "and the clean record stayed"             "$(< "${FIX_HOME}/.zsh_history")" "ls"
-check    "BOTH entries stay held"                  "$(grep -c . "${FIX_HELD}")" "2"
+check    "only the stuck entry stays held"         "$(grep -c . "${FIX_HELD}")" "1"
+contains "and it is the transcript's"              "$(< "${FIX_HELD}")" '"kind":"transcript"'
 contains "the delete ruling reached the state root" "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
 no_scratch "and no scratch file is left in the gate directory" "${FIX_HOME}/.local/state/flakelab/state-gate"
 
-# The finding is decided now, so the next review offers it as a pending delete;
-# the record whose file is gone settles as carried out.
+# The finding is decided now, so the next review offers the stuck record as a
+# pending delete; the record whose file is gone settles as carried out.
 ANSWERS="y"
 run_backup --review-secrets
 check    "the second review exits clean"           "${RC}" "0"
@@ -2110,6 +2232,55 @@ contains "and says the ruling stands as pending"   "${OUT}" "the delete ruling s
 contains "the record is still in the live history" "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
 check    "and the entry stays held"                "$(grep_c_held)" "1"
 contains "the delete ruling reached the state root" "$(< "${FIX_DECISIONS}")" '"decision":"delete"'
+
+# Two transcripts carry one secret; one cannot be scrubbed (the span is never
+# literal in the file). The ruling settles the file it did scrub and keeps only
+# the stuck one held — before this, one stuck sibling kept every file held.
+sibling_transcripts() {
+  FAKE_SECRET="part-one part-two"
+  FAKE_SPAN="part-one part-two"
+  rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+  CLEAN_A="${SLUG_HOME}/aaa.jsonl"
+  STUCK_B="${SLUG_HOME}/bbb.jsonl"
+  print -r -- '{"type":"user","text":"token part-one part-two here"}' > "${CLEAN_A}"
+  {
+    print -r -- '{"type":"user","text":"token part-one'
+    print -r -- 'part-two here"}'
+  } > "${STUCK_B}"
+}
+
+print -r -- "a delete settles the transcripts it scrubbed even when a sibling cannot be"
+transcript_fixture gate-review-sibling-unscrubbable
+sibling_transcripts
+
+run_backup --force
+check "the backup exits clean"                     "${RC}" "0"
+check "both files are held"                        "$(grep_c_held)" "2"
+
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review reports the stuck file"       "${RC}" "1"
+contains "and says the ruling stands"              "${OUT}" "the delete ruling stands"
+excludes "the clean file lost the secret"          "$(< "${CLEAN_A}")" "part-one part-two"
+contains "the stuck file is untouched"             "$(< "${STUCK_B}")" "part-two here"
+check    "only the stuck file stays held"          "$(grep_c_held)" "1"
+contains "and it is the stuck one"                 "$(< "${FIX_HELD}")" '"file":"bbb.jsonl"'
+
+print -r -- "a delete already decided settles the transcripts it scrubbed even when a sibling cannot be"
+transcript_fixture gate-pending-sibling-unscrubbable
+sibling_transcripts
+
+run_backup --force
+check "the backup exits clean"                     "${RC}" "0"
+foreign_decision delete "part-one part-two"
+
+ANSWERS="y"
+run_backup --review-secrets
+check    "the review reports the stuck file"       "${RC}" "1"
+contains "and says it stays held"                  "${OUT}" "it stays held and will be offered again"
+excludes "the clean file lost the secret"          "$(< "${CLEAN_A}")" "part-one part-two"
+check    "only the stuck file stays held"          "$(grep_c_held)" "1"
+contains "and it is the stuck one"                 "$(< "${FIX_HELD}")" '"file":"bbb.jsonl"'
 
 print -r -- "--review-secrets without a terminal fails even with nothing held"
 state_fixture gate-review-headless

@@ -542,6 +542,41 @@ gate_redact_line_strings() {
   return 0
 }
 
+# Lines of <file> that hold <needle> literally, one number per line.
+gate_literal_lines() {
+  local file="$1" needle="$2"
+  LC_ALL=C grep -n -a -F -- "${needle}" "${file}" 2> /dev/null | cut -d: -f1 || true
+  return 0
+}
+
+# Encoded carriers of <needle> on lines <start>..<end> of <file>: the base64
+# blobs, percent-encoded runs and hex runs whose decoded text holds it. The
+# scanner decodes those and reports the DECODED secret, which the file never
+# holds literally; the whole run is what the redactor has to replace. One
+# `<line>\x01<run>` per carrier.
+gate_encoded_carriers() {
+  local file="$1" start="$2" end="$3" needle="$4"
+  local -i ln
+  local text run dec
+  for (( ln = start; ln <= end; ln++ )); do
+    text="$(sed -n "${ln}p" "${file}")" || continue
+    for run in ${(f)"$(print -r -- "${text}" | LC_ALL=C grep -oE '[A-Za-z0-9+/]{16,}={0,2}' || true)"}; do
+      dec="$(print -rn -- "${run}" | base64 -d 2> /dev/null | tr '\n\r' '  ')" || dec=""
+      [[ "${dec}" == *"${needle}"* ]] && print -r -- "${ln}"$'\x01'"${run}"
+    done
+    for run in ${(f)"$(print -r -- "${text}" | LC_ALL=C grep -oE '([A-Za-z0-9._~+-]|%[0-9A-Fa-f]{2})*%[0-9A-Fa-f]{2}([A-Za-z0-9._~+-]|%[0-9A-Fa-f]{2})*' || true)"}; do
+      dec="$(printf '%b' "${run//\%/\\x}" | tr '\n\r' '  ')" || dec=""
+      [[ "${dec}" == *"${needle}"* ]] && print -r -- "${ln}"$'\x01'"${run}"
+    done
+    for run in ${(f)"$(print -r -- "${text}" | LC_ALL=C grep -oE '[0-9A-Fa-f]{32,}' || true)"}; do
+      (( ${#run} % 2 )) && continue
+      dec="$(printf '%b' "$(print -rn -- "${run}" | sed 's/../\\x&/g')" | tr '\n\r' '  ')" || dec=""
+      [[ "${dec}" == *"${needle}"* ]] && print -r -- "${ln}"$'\x01'"${run}"
+    done
+  done
+  return 0
+}
+
 # <src> to <out> with every flagged secret replaced by [REDACTED:<rule>]. Sets
 # GATE_REDACT_HELD. Non-zero means the result cannot be trusted (a secret not
 # found literally, a redacted line no longer valid JSON) and the caller holds
@@ -560,9 +595,9 @@ gate_redact_transcript() {
     return 1
   fi
 
-  local start end rule desc match secret fp decision red pv ptext id entry now needle trail
+  local start end rule desc match secret fp decision red pv ptext id entry now needle trail carrier
   local -i held=0 countable=0 ln
-  local -a checked=() secrets=()
+  local -a checked=() secrets=() carriers=()
   now="$(gate_now)"
   gate_decisions_load
   if [[ -n "${held_file}" ]]; then
@@ -592,10 +627,32 @@ gate_redact_transcript() {
     needle="${secret}"
     trail="${secret##*[^\\]}"
     (( ${#trail} % 2 )) && needle="${secret[1,-2]}"
-    print -r -- "${start}"$'\x01'"${end}"$'\x01'"${rule}"$'\x01'"${needle}" >> "${spec}"
-    for (( ln = start; ln <= end; ln++ )); do
-      checked+=("${ln}")
-    done
+    # The lines to clear: every line that holds the needle literally — the
+    # scanner reports a match ending at a line break one line early, and one
+    # finding where a line holds the token twice — else the encoded runs on the
+    # reported lines that decode to it, else the reported span itself, which
+    # the literal pass then fails and the string pass holds the file for.
+    carriers=(${(f)"$(gate_literal_lines "${src}" "${needle}")"})
+    if (( ${#carriers} )); then
+      for ln in "${carriers[@]}"; do
+        print -r -- "${ln}"$'\x01'"${ln}"$'\x01'"${rule}"$'\x01'"${needle}" >> "${spec}"
+        checked+=("${ln}")
+      done
+    else
+      carriers=(${(f)"$(gate_encoded_carriers "${src}" "${start}" "${end}" "${needle}")"})
+      if (( ${#carriers} )); then
+        for carrier in "${carriers[@]}"; do
+          ln="${carrier%%$'\x01'*}"
+          print -r -- "${ln}"$'\x01'"${ln}"$'\x01'"${rule}"$'\x01'"${carrier#*$'\x01'}" >> "${spec}"
+          checked+=("${ln}")
+        done
+      else
+        print -r -- "${start}"$'\x01'"${end}"$'\x01'"${rule}"$'\x01'"${needle}" >> "${spec}"
+        for (( ln = start; ln <= end; ln++ )); do
+          checked+=("${ln}")
+        done
+      fi
+    fi
     held=$(( held + 1 ))
     decision="$(gate_decision "${fp}")"
     # Redacted either way; `keep` (unless the operator asked to revisit those
@@ -1174,14 +1231,13 @@ gate_apply_pending_deletes() {
 
   # A fingerprint settles only when EVERY record carrying it was accounted for:
   # settling on a partial apply would prune the entries that did not go through.
-  local -A failed=() seen=() ids=()
+  local -A failed=() seen=() done_ids=()
   local -a order=()
   local applied_now
   local -i gone=0 failures_before=0
   for line in "${pending[@]}"; do
     gate_read_held "${line}"
     [[ -n "${seen[${fp}]:-}" ]] || { seen[${fp}]=1; order+=("${fp}") }
-    ids[${fp}]="${ids[${fp}]:-} ${entry_id}"
     if [[ "${kind}" == transcript ]]; then
       gate_scrub_transcript "${live_path}" "${fp}"
       if ${GATE_SCRUB_OK}; then
@@ -1204,20 +1260,28 @@ gate_apply_pending_deletes() {
         applied_now=true
       fi
     fi
-    ${applied_now} || failed[${fp}]=1
+    if ${applied_now}; then
+      done_ids[${fp}]="${done_ids[${fp}]:-} ${entry_id}"
+    else
+      failed[${fp}]=1
+    fi
   done
 
   (( gone == 0 )) || log_warn "${gone} record(s) named a file that is no longer on this box; there was nothing to scrub and they are settled."
 
+  # Each record settles on its own: gate_prune_held keys on the entry id, so
+  # the files this box did scrub leave the held list while a stuck sibling
+  # stays and is offered again. The ruling counts as applied here only once
+  # every record went through.
   local settled_id
   for fp in "${order[@]}"; do
+    for settled_id in ${=done_ids[${fp}]:-}; do
+      [[ -n "${settled_id}" ]] && GATE_SETTLED_IDS[${settled_id}]=1
+    done
     if [[ -n "${failed[${fp}]:-}" ]]; then
       record_failure "A deletion already decided could not be applied to this box's local files; it stays held and will be offered again (answer k at the confirmation to keep this box's copies instead)"
       continue
     fi
-    for settled_id in ${=ids[${fp}]}; do
-      [[ -n "${settled_id}" ]] && GATE_SETTLED_IDS[${settled_id}]=1
-    done
     gate_settle_delete_here "${fp}"
   done
   return 0
@@ -1361,10 +1425,11 @@ do_review_secrets() {
       del_order+=("${gfp}")
       for gline in "${glines[@]}"; do
         gate_read_held "${gline}"
-        del_ids[${gfp}]="${del_ids[${gfp}]:-} ${entry_id}"
         if [[ "${kind}" == transcript ]]; then
           gate_scrub_transcript "${live_path}" "${gfp}"
-          if ! ${GATE_SCRUB_OK}; then
+          if ${GATE_SCRUB_OK}; then
+            del_ids[${gfp}]="${del_ids[${gfp}]:-} ${entry_id}"
+          else
             del_failed[${gfp}]=1
             [[ -n "${del_where[${gfp}]:-}" ]] || del_where[${gfp}]="${file}"
           fi
@@ -1376,6 +1441,8 @@ do_review_secrets() {
           if (( FAILURES > failures_before )); then
             del_failed[${gfp}]=1
             [[ -n "${del_where[${gfp}]:-}" ]] || del_where[${gfp}]="the local history"
+          else
+            del_ids[${gfp}]="${del_ids[${gfp}]:-} ${entry_id}"
           fi
         fi
       done
@@ -1383,18 +1450,19 @@ do_review_secrets() {
     echo ""
   done
 
-  # Settled only when EVERY record carrying the fingerprint went through:
-  # gate_prune_held keys on the fingerprint, so a partial success would drop
-  # the entries whose scrub failed and nothing would ever offer them again.
+  # Each record settles on its own: gate_prune_held keys on the entry id, so
+  # the files this box did scrub leave the held list while a stuck sibling
+  # stays under the ruling and is retried. The ruling counts as applied here
+  # only once every record went through.
   local dfp settled_id
   for dfp in "${del_order[@]}"; do
+    for settled_id in ${=del_ids[${dfp}]:-}; do
+      [[ -n "${settled_id}" ]] && GATE_SETTLED_IDS[${settled_id}]=1
+    done
     if [[ -n "${del_failed[${dfp}]:-}" ]]; then
       record_failure "Could not remove the finding from ${del_where[${dfp}]} yet (a live session's file refuses a rewrite); the delete ruling stands and every later --review-secrets retries it"
       continue
     fi
-    for settled_id in ${=del_ids[${dfp}]}; do
-      [[ -n "${settled_id}" ]] && GATE_SETTLED_IDS[${settled_id}]=1
-    done
     gate_settle_delete_here "${dfp}"
   done
 
