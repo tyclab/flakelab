@@ -142,7 +142,13 @@ in
     hostName = mkOption {
       type = types.strMatching "^[[:alnum:]]([[:alnum:]_-]{0,61}[[:alnum:]])?$";
       default = "flakelab";
-      description = "System hostname (networking.hostName), as a single RFC 1123 label (alphanumeric ends, 63 characters at most). The default matches the distro name a fresh provision registers; a box registered under another name, or a second box built from the same overlay, sets its own here. Changing it on an existing box renames it at the next restart, and anything keyed on the hostname (the gate ledger among them) sees a new machine.";
+      description = "System hostname (networking.hostName), as a single RFC 1123 label (alphanumeric ends, 63 characters at most). The default matches the distro name a fresh provision registers; a box registered under another name sets its own here. A second box built from the same overlay that is to keep the shared hostname sets boxName instead. Changing it on an existing box renames it at the next restart, and anything keyed on the hostname (the gate ledger among them, unless boxName names the box) sees a new machine.";
+    };
+
+    boxName = mkOption {
+      type = types.nullOr (types.strMatching "^[[:alnum:]]([[:alnum:]_-]{0,61}[[:alnum:]])?$");
+      default = null;
+      description = "This box's name in the state that boxes share: the backup payload instance (`instances/<name>`), the state root's slug manifest and the gate ledger's `host`. Null keeps every one of those on the distro name and the hostname, as before. Two boxes built from one overlay share both — a sync then has them overwrite one instance and one manifest, and a ruling on one box counts as the other's — so each box that keeps the shared hostName sets its own here (`nixosConfigurations.<box>` is the place). Exported as FLAKELAB_BOX_NAME to `flakelab backup`; a change moves the box to a fresh instance, the old one stays for `--restore --instance <old>`.";
     };
 
     windowsUsername = mkOption {

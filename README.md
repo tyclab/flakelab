@@ -338,10 +338,16 @@ nix eval .#nixosConfigurations.default.options.flakelab.stateRoot.description
 
 One of them is per box rather than per person: `hostName` sets the distro's
 `networking.hostName` and defaults to `flakelab`, so a box registered under
-another name — or a second box built from the same overlay — overrides it there.
-An existing box therefore flips from `nixos` to `flakelab` at its next
-`flakelab update`, effective at the next distro restart; set
-`hostName = "nixos"` in the overlay to keep the name it has.
+another name overrides it there. An existing box therefore flips from `nixos`
+to `flakelab` at its next `flakelab update`, effective at the next distro
+restart; set `hostName = "nixos"` in the overlay to keep the name it has. A
+second box built from the same overlay that keeps the shared hostname sets
+`boxName` in its own `nixosConfigurations.<box>` instead: that name, not the
+hostname, is what the box writes into the state the boxes share — its backup
+payload instance under `instances/`, its slug manifest in the state root and
+the gate ledger's `host` — so two boxes never overwrite one instance or answer
+for each other. The box's next `flakelab backup` starts a fresh instance under
+the new name; the old one stays for `--restore --instance <old>`.
 
 This repo ships **no committed secrets**; the personal values live in the
 private overlay. `profiles/example.nix` and

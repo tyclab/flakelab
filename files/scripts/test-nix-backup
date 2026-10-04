@@ -257,11 +257,13 @@ transcript_fixture() {
 # run_backup / run_restore: the real script, sandboxed; set OUT and RC. stdin is
 # /dev/null so prompts are reached only through the seams, under a terminal or not.
 #
-# RUN_WSL_NAME / RUN_INSTANCE: the two halves of the DISTRO_NAME fallback chain
-# (WSL_DISTRO_NAME, then FLAKELAB_INSTANCE). Every existing case here leaves
-# both at their default — WSL_DISTRO_NAME=TestDistro, FLAKELAB_INSTANCE unset —
-# which is the exact env this suite always ran under; the instance-identity
-# cases below are the only ones that override them, and reset both afterward.
+# RUN_BOX_NAME / RUN_WSL_NAME / RUN_INSTANCE: the DISTRO_NAME fallback chain
+# (FLAKELAB_BOX_NAME, then WSL_DISTRO_NAME, then FLAKELAB_INSTANCE). Every
+# existing case here leaves them at their default — WSL_DISTRO_NAME=TestDistro,
+# the other two unset — which is the exact env this suite always ran under; the
+# instance-identity and per-box cases are the only ones that override them, and
+# reset them afterward.
+RUN_BOX_NAME=""
 RUN_WSL_NAME="TestDistro"
 RUN_INSTANCE=""
 typeset -i RC=0
@@ -279,6 +281,7 @@ run_backup() {
     FAKE_GITLEAKS_LINE_OFF="${FAKE_LINE_OFF}" FAKE_GITLEAKS_DECODE="${FAKE_DECODE}" \
     FLAKELAB_GATE_ANSWERS="${ANSWERS}" \
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}" \
+    FLAKELAB_BOX_NAME="${RUN_BOX_NAME}" \
     "${BACKUP}" "$@" < /dev/null 2>&1)"
   RC=$?
 }
@@ -345,6 +348,20 @@ RUN_INSTANCE=""
 contains "the payload path uses WSL_DISTRO_NAME" "${OUT}" "instances/TestDistro"
 excludes "not FLAKELAB_INSTANCE"                  "${OUT}" "instances/vmbox"
 check    "the run exits clean"                    "${RC}"  "0"
+
+# Two boxes built from one overlay share the distro name and the hostname;
+# flakelab.boxName gives each its own payload instance, manifest and ledger name.
+print -r -- "FLAKELAB_BOX_NAME wins over the distro name and the instance"
+fixture instance-box-name
+RUN_BOX_NAME="desk"
+RUN_INSTANCE="vmbox"
+run_backup --dry-run
+RUN_BOX_NAME=""
+RUN_INSTANCE=""
+contains "the payload path uses FLAKELAB_BOX_NAME" "${OUT}" "instances/desk"
+excludes "not WSL_DISTRO_NAME"                     "${OUT}" "instances/TestDistro"
+excludes "nor FLAKELAB_INSTANCE"                   "${OUT}" "instances/vmbox"
+check    "the run exits clean"                     "${RC}"  "0"
 
 print -r -- "restore merges instead of overwriting"
 fixture additive
@@ -800,8 +817,19 @@ check "the state root holds exactly the history, the memory and the slug manifes
 ./claude/projects/some-slug/memory/MEMORY.md
 ./shell/.zsh_history_merged"
 is_file "the seed is still in the backup root" "${FIX_ROOT}/shared/secrets/secrets.env"
+
 is_file "host-specific claude settings are still in the backup root" "${FIX_ROOT}/instances/TestDistro/claude/settings.json"
 absent  "memory is not ALSO written to the backup root" "${FIX_ROOT}/instances/TestDistro/claude/projects"
+
+print -r -- "the slug manifest is named after the box when one is configured"
+state_fixture manifest-box-name
+mkdir -p "${FIX_HOME}/.claude/projects/some-slug"
+RUN_BOX_NAME="desk"
+run_backup --force
+RUN_BOX_NAME=""
+check   "the run exits clean"                         "${RC}" "0"
+is_file "the manifest carries the box name"           "${FIX_STATE}/.flakelab-state-manifests/desk"
+absent  "and none is written under the distro name"   "${FIX_STATE}/.flakelab-state-manifests/TestDistro"
 
 print -r -- "with the sops render the legacy secrets.env is neither archived nor restored"
 fixture sops-skips-legacy-secrets
@@ -2196,6 +2224,34 @@ contains "offers the deletion there"               "${OUT}" \
 excludes "which applies it to that box's history"  "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
 contains "keeping the clean record"                "$(< "${FIX_HOME}/.zsh_history")" "ls"
 check    "and settles the entry there"             "$(grep_c_held)" "0"
+
+# Per BOX when one is configured: a fourth box with the SAME hostname (two
+# distros from one overlay) and its own boxName has not answered either.
+FIX_HOME="${BASE}/gate-pending-delete-keep/home4"
+FIX_HELD="${FIX_HOME}/.local/state/flakelab/state-gate/held.jsonl"
+mkdir -p "${FIX_HOME}"
+{
+  rec 1000 0 "export TOKEN=hunter2-secret"
+  rec 2000 0 "ls"
+} > "${FIX_HOME}/.zsh_history"
+
+RUN_BOX_NAME="desk"
+run_backup --force
+check    "a same-named box's backup exits clean"   "${RC}" "0"
+check    "and holds the record there"              "$(grep_c_held)" "1"
+contains "counting it as pending"                  "${OUT}" \
+  "1 secret record(s) held back from the state root; review with"
+
+ANSWERS="y"
+run_backup --review-secrets
+RUN_BOX_NAME=""
+check    "its review exits clean"                  "${RC}" "0"
+contains "offers the deletion there"               "${OUT}" \
+  "already decided to this machine's local files"
+excludes "which applies it to that box's history"  "$(< "${FIX_HOME}/.zsh_history")" "hunter2-secret"
+check    "and settles the entry there"             "$(grep_c_held)" "0"
+contains "the decision is recorded under the box name" \
+  "$(< "${FIX_HOME}/.local/state/flakelab/state-gate/decisions.local.jsonl")" '"host":"desk"'
 
 print -r -- "a history deletion already decided settles only when the rewrite went through"
 state_fixture gate-pending-delete-unwritable
