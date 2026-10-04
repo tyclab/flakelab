@@ -142,6 +142,11 @@ with_tmux() { PATH="${TMUXBIN}:${PATH}" "$@" }
 
 export FLAKELAB_PROC_ROOT="${PROC}"
 unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME TMUX
+# The box: the hostname plus the first twelve hex digits of the machine id —
+# two distros built from one overlay share the hostname and the state root.
+export FLAKELAB_MACHINE_ID_FILE="${BASE}/machine-id"
+print -r -- "9d2cb36e27df4be5847702beaf545337" > "${FLAKELAB_MACHINE_ID_FILE}"
+BOX="${HOST}-9d2cb36e27df"
 
 # stdout and stderr apart: --json's stdout must parse on its own.
 run() { OUT="$("${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
@@ -190,6 +195,8 @@ SAVED="$(ls "${HOME}"/.local/state/flakelab/sessions/*.txt 2>/dev/null | head -1
 [[ -n "${SAVED}" ]] && ok "--save writes under ~/.local/state/flakelab/sessions without a state root" || bad "--save wrote nothing under ~/.local/state/flakelab/sessions"
 [[ -z "$(print -rl -- "${HOME}"/.claude/sessions/*.txt(N))" ]] && ok "--save leaves Claude's own ~/.claude/sessions alone" || bad "--save wrote into ~/.claude/sessions"
 contains "--save reports the count, id-less processes excluded" "${ERR}" "saved 3 session(s) to"
+[[ "${SAVED:t}" == "${BOX}-"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9][0-9][0-9].txt ]] && ok "--save names the file <host>-<machine>-<date>.txt" || bad "--save named the file ${SAVED:t}, not ${BOX}-<date>.txt"
+contains "the save header names the box" "$(head -1 "${SAVED}")" "# claude-sessions ${BOX} "
 check "saved lines are '<tool>  <dir>  <id>'" "$(grep -v '^#' "${SAVED}" | head -1)" "claude  ${WORK}  ${SID_A}"
 contains "the codex session is saved with its tool" "$(<"${SAVED}")" "codex  ${BASE}/codex proj  ${SID_X}"
 
@@ -396,10 +403,11 @@ SAVES="${HOME}/.local/state/flakelab/sessions"
 rm -rf "${SAVES}"
 export FLAKELAB_BOOT_ID_FILE="${BASE}/boot_id"
 print -r -- "aaaaaaaa-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
-AUTO_A="${SAVES}/${HOST}-autosave-aaaaaaaa1111.txt"
+AUTO_A="${SAVES}/${BOX}-autosave-aaaaaaaa1111.txt"
 run --autosave
 check "--autosave exits 0" "${RC}" "0"
-[[ -f "${AUTO_A}" ]] && ok "--autosave writes <host>-autosave-<boot>.txt" || bad "--autosave wrote no ${AUTO_A:t}"
+[[ -f "${AUTO_A}" ]] && ok "--autosave writes <host>-<machine>-autosave-<boot>.txt" || bad "--autosave wrote no ${AUTO_A:t}"
+contains "the autosave header names the box and the boot" "$(head -1 "${AUTO_A}")" "# claude-sessions autosave ${BOX} boot=aaaaaaaa1111 "
 contains "--autosave reports the write" "${ERR}" "autosaved 3 session(s) to ${AUTO_A}"
 check "--autosave lines are the save shape, sorted" "$(grep -v '^#' "${AUTO_A}")" "claude  ${WORK}  ${SID_A}"$'\n'"claude  ${WORK}  ${SID_B}"$'\n'"codex  ${BASE}/codex proj  ${SID_X}"
 check "--autosave leaves no scratch file" "$(ls -A "${SAVES}" | grep -c flakelab-tmp)" "0"
@@ -412,9 +420,9 @@ check "nothing running exits 0" "${RC}" "0"
 check "nothing running keeps the snapshot" "$(grep -vc '^#' "${AUTO_A}")" "3"
 
 # A new boot: what --resume brings back is the file the last boot left, never
-# this boot's own snapshot and never another host's.
+# this boot's own snapshot and never another box's.
 print -r -- "bbbbbbbb-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
-AUTO_B="${SAVES}/${HOST}-autosave-bbbbbbbb1111.txt"
+AUTO_B="${SAVES}/${BOX}-autosave-bbbbbbbb1111.txt"
 touch -d '1 minute ago' "${AUTO_A}"
 run --autosave
 [[ -f "${AUTO_B}" ]] && ok "a new boot gets a file of its own" || bad "no autosave for the new boot"
@@ -424,17 +432,40 @@ contains "--resume takes the previous boot's snapshot, not this boot's" "${OUT}"
 print -rl -- "# another host" "${WORK}  ${SID_A}" > "${SAVES}/otherhost-autosave-cccccccc1111.txt"
 run --resume
 contains "--resume never takes another host's autosave" "${OUT}" "# from ${AUTO_A}"
+# The same hostname on another box — two distros from one overlay — in both
+# shapes: one still naming its files after the host alone, one after host and
+# machine. Both reached this directory through the sync, both are newer.
+SID_F=ffffffff-0000-1111-2222-333333333333
+print -rl -- "# same hostname, no machine id" "${WORK}  ${SID_F}" > "${SAVES}/${HOST}-autosave-dddddddd1111.txt"
+print -rl -- "# same hostname, another machine" "${WORK}  ${SID_F}" > "${SAVES}/${HOST}-bbbbbbbbbbbb-autosave-eeeeeeee1111.txt"
+run --resume
+contains "--resume never takes a same-named box's host-only autosave" "${OUT}" "# from ${AUTO_A}"
+excludes "and none of its sessions" "${OUT}" "${SID_F}"
+run --resume "${SAVES}/${HOST}-autosave-dddddddd1111.txt"
+contains "named explicitly, another box's file is still resumed" "${OUT}" "claude --resume ${SID_F}"
+# A manual save from a same-named box, newer than anything of ours.
+print -rl -- "# claude-sessions ${HOST}" "${WORK}  ${SID_F}" > "${SAVES}/${HOST}-2099-01-01T0000.txt"
+run --resume
+contains "--resume never takes a same-named box's manual save by default" "${OUT}" "# from ${AUTO_A}"
+rm -f "${SAVES}/${HOST}-2099-01-01T0000.txt" "${SAVES}/${HOST}-bbbbbbbbbbbb-autosave-eeeeeeee1111.txt"
 
 for i in 1 2 3 4 5 6; do
-  print -r -- "# old" > "${SAVES}/${HOST}-autosave-old00000000${i}.txt"
-  touch -d "${i} hours ago" "${SAVES}/${HOST}-autosave-old00000000${i}.txt"
+  print -r -- "# old" > "${SAVES}/${BOX}-autosave-old00000000${i}.txt"
+  touch -d "${i} hours ago" "${SAVES}/${BOX}-autosave-old00000000${i}.txt"
 done
+# The same-named box's host-only autosave is the oldest file of all.
+touch -d '9 hours ago' "${SAVES}/${HOST}-autosave-dddddddd1111.txt"
 print -r -- "cccccccc-1111-2222-3333-444444444444" > "${FLAKELAB_BOOT_ID_FILE}"
 run --autosave
-check "--autosave keeps this host's five newest" "$(print -l "${SAVES}/${HOST}"-autosave-*.txt(N) | wc -l | tr -d ' ')" "5"
-[[ -f "${SAVES}/${HOST}-autosave-cccccccc1111.txt" ]] && ok "the pruning keeps the file it just wrote" || bad "the pruning removed the new autosave"
+check "--autosave keeps this box's five newest" "$(print -l "${SAVES}/${BOX}"-autosave-*.txt(N) | wc -l | tr -d ' ')" "5"
+[[ -f "${SAVES}/${BOX}-autosave-cccccccc1111.txt" ]] && ok "the pruning keeps the file it just wrote" || bad "the pruning removed the new autosave"
 [[ -f "${SAVES}/otherhost-autosave-cccccccc1111.txt" ]] && ok "the pruning never touches another host's files" || bad "another host's autosave was pruned"
+[[ -f "${SAVES}/${HOST}-autosave-dddddddd1111.txt" ]] && ok "nor a same-named box's host-only autosave" || bad "a same-named box's autosave was pruned"
 unset FLAKELAB_BOOT_ID_FILE
+
+# No machine id to read: the box is the host alone, as before.
+FLAKELAB_MACHINE_ID_FILE="${BASE}/no-such-machine-id" run --save "${BASE}/host-only.txt"
+contains "without a machine id the header names the host alone" "$(head -1 "${BASE}/host-only.txt")" "# claude-sessions ${HOST} "
 
 # ---------------------------------------------------------------------------
 print -r -- ""
