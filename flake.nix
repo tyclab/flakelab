@@ -1048,6 +1048,70 @@
               touch $out
             '';
 
+        # installClaudePlugins names each marketplace it fetched, for the replay after
+        # `flakelab update`'s switch to skip. The rendered entry runs against a stub
+        # claude: a name is recorded only once its add or update succeeded, once across
+        # runs, and a record it cannot write fails nothing.
+        claude-marketplaces-fetched =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.claudePluginMarketplaces =
+                    map
+                      (name: {
+                        inherit name;
+                        url = "https://example.invalid/${name}.git";
+                      })
+                      [
+                        "fresh"
+                        "known"
+                        "broken-add"
+                        "broken-update"
+                      ];
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            entry = pkgs.writeText "claude-plugins-activation" hm.home.activation.installClaudePlugins.data;
+          in
+          pkgs.runCommandLocal "flakelab-check-claude-marketplaces-fetched"
+            { nativeBuildInputs = [ pkgs.bash ]; }
+            ''
+              export HOME="$TMPDIR/home" DRY_RUN_CMD=
+              mkdir -p "$HOME/.local/bin" "$HOME/.ssh"
+              touch "$HOME/.ssh/${builtins.head fixture.config.flakelab.sshKeys}"
+              # Lists known and broken-update as registered; fails whatever names broken.
+              printf '#!%s\n%s\n' "$(command -v bash)" '
+                case "$*" in
+                  "plugin marketplace list") printf "%s\n" known broken-update ;;
+                  *broken*) exit 1 ;;
+                esac' > "$HOME/.local/bin/claude"
+              chmod +x "$HOME/.local/bin/claude"
+              state="$HOME/.local/state/flakelab"
+              activate() { bash -euo pipefail ${entry}; }
+
+              echo "only a marketplace whose add or update succeeded is recorded"
+              activate
+              test "$(cat "$state/marketplaces-fetched")" = "$(printf '%s\n' fresh known)"
+              grep -q 'broken-add not added' "$state/activation-deferred"
+              grep -q 'broken-update not updated' "$state/activation-deferred"
+
+              echo "a second run records nothing twice"
+              activate
+              test "$(cat "$state/marketplaces-fetched")" = "$(printf '%s\n' fresh known)"
+
+              echo "a record it cannot write fails nothing, and defers only what failed to fetch"
+              rm -rf "$state"
+              touch "$state"
+              activate 2> err
+              grep -q 'DEFERRED: claude marketplace broken-add not added' err
+              grep -q 'DEFERRED: claude marketplace broken-update not updated' err
+              if grep -Eq 'DEFERRED: .*(fresh|known)' err; then exit 1; fi
+
+              touch $out
+            '';
+
         # The CLI installers fetch a script and pipe it into a shell. Without pipefail a
         # failed fetch hands the shell an empty script, which exits 0: nothing installed,
         # nothing deferred, and the health check then fails on the missing binary. Each
