@@ -23,6 +23,7 @@ let
     renderedRecord
     cloneKeyResolve
     sshKeys
+    stateDir
     ;
   inherit (cfg) whatsappMcpDir;
   # The Windows Chrome the Playwright plugin attaches to, from the one place
@@ -217,6 +218,8 @@ let
   ) "printf '\\n'; cat ${claudeMdExtraFile}";
 
   claudeMarketplaces = cfg.claudePluginMarketplaces;
+  # The marketplaces installClaudePlugins fetched; nix-update reads the same path.
+  marketplacesFetched = "${stateDir}/marketplaces-fetched";
   firstMarketplace =
     if claudeMarketplaces == [ ] then null else (builtins.head claudeMarketplaces).name;
   # `plugin install` requires `plugin@marketplace`; bare names are qualified here.
@@ -292,7 +295,10 @@ in
   );
 
   # Adds each marketplace over SSH with the seeded key and installs claudePlugins
-  # from it; failures warn rather than block.
+  # from it; failures warn rather than block. A marketplace added or updated here
+  # is named once in marketplaces-fetched, which `flakelab update` clears before
+  # its switch, so its replay after the switch skips exactly what this run
+  # fetched. The record is never fatal: without it the replay fetches again.
   home.activation.installClaudePlugins =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudeCode" ]
       (
@@ -309,9 +315,15 @@ in
             }:$PATH"
             export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -i $_cloneKey"
             ${sshAgentPreamble}
+            mkdir -p "${stateDir}" || true
+            _marketplaceFetched() {
+              grep -qxF "$1" "${marketplacesFetched}" 2>/dev/null \
+                || printf '%s\n' "$1" >> "${marketplacesFetched}" || true
+            }
           ${lib.concatMapStringsSep "\n" (m: ''
             if ! "$_claude" plugin marketplace list 2>/dev/null | grep -q ${lib.escapeShellArg m.name}; then
-              "$_claude" plugin marketplace add ${lib.escapeShellArg m.url} || \
+              "$_claude" plugin marketplace add ${lib.escapeShellArg m.url} \
+                && _marketplaceFetched ${lib.escapeShellArg m.name} || \
                 ${
                   if lib.hasPrefix "git@" m.url then
                     sshDefer "claude marketplace ${m.name} not added (no unlocked agent key, or host unreachable). Retry: flakelab update"
@@ -320,7 +332,8 @@ in
                 }
             else
               # A registered marketplace never re-fetches itself.
-              "$_claude" plugin marketplace update ${lib.escapeShellArg m.name} >/dev/null 2>&1 || \
+              "$_claude" plugin marketplace update ${lib.escapeShellArg m.name} >/dev/null 2>&1 \
+                && _marketplaceFetched ${lib.escapeShellArg m.name} || \
                 ${flakelabDefer} "claude marketplace ${m.name} not updated. Retry: flakelab update"
             fi'') claudeMarketplaces}
             for _p in ${lib.concatStringsSep " " qualifiedClaudePlugins}; do
