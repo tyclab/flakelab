@@ -489,6 +489,13 @@ _hm_stamp() {
 }
 _hm_before="$(_hm_stamp)"
 
+# The marketplaces this run's activation fetched, which installClaudePlugins names
+# one per line once it has added or updated each. Cleared before the switch, so
+# what the replay below reads is this run's record and never an earlier one's: a
+# unit start says nothing about whether the activation got as far as that step.
+_fetched_log="$HOME/.local/state/flakelab/marketplaces-fetched"
+rm -f -- "${_fetched_log}"
+
 # `path:`, not a bare path: a bare path resolves as `git+file:`, which sees only
 # tracked files, so it finds no lock, rewrites one as root, and the operator's next
 # unprivileged `nix` command in that checkout dies on a permission error.
@@ -580,11 +587,17 @@ if [[ -s "${_deferred}" ]]; then
 fi
 
 # The activation that does this only re-runs when the built config changed, while
-# the marketplace clone is runtime data, so replay it after every switch. Failures
-# warn only: the switch itself is applied.
+# the marketplace clone is runtime data, so replay it after every switch — except
+# for the marketplaces this run's activation fetched itself: a second fetch costs
+# time, and one that fails would warn over a clone that is current. One added by
+# hand is never in the record, so it is always refreshed. Failures warn only: the
+# switch itself is applied.
 _claude_marketplaces="$HOME/.claude/plugins/marketplaces"
 if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
+  _fetched=()
+  [[ -s "${_fetched_log}" ]] && _fetched=("${(@f)$(< "${_fetched_log}")}")
   for _m in "${_claude_marketplaces}"/*(N/); do
+    (( ${_fetched[(Ie)${_m:t}]} )) && continue
     claude plugin marketplace update "${_m:t}" > /dev/null 2>&1 \
       || _say yellow "⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch"
   done

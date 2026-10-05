@@ -50,6 +50,7 @@ done
 # without a root and a failing rebuild's status can be checked for surviving.
 # SUDO_WRITES_LOCK makes the switch leave a lock the caller cannot write - root's,
 # which a read-only mode stands in for, since the suite has no root to chown to.
+# SUDO_FETCHES names the marketplaces the switch's activation records as fetched.
 SHIM="${BASE}/bin"
 mkdir -p "${SHIM}"
 cat > "${SHIM}/sudo" <<'STUB'
@@ -58,6 +59,10 @@ print -r -- "$@" >> "${SUDO_LOG}"
 if [[ -n "${SUDO_WRITES_LOCK:-}" && "$1" == nixos-rebuild ]]; then
   print -r -- '{ "written": "by root" }' > "${FLAKELAB_REPO_ROOT}/flake.lock"
   chmod 444 "${FLAKELAB_REPO_ROOT}/flake.lock"
+fi
+if [[ -n "${SUDO_FETCHES:-}" && "$1" == nixos-rebuild ]]; then
+  mkdir -p "${HOME}/.local/state/flakelab"
+  print -rl -- ${=SUDO_FETCHES} >> "${HOME}/.local/state/flakelab/marketplaces-fetched"
 fi
 exit "${SUDO_RC:-0}"
 STUB
@@ -862,10 +867,59 @@ print -r -- 0 > "${STAMP_FILE}"
 STAMP_BUMP=1 UNIT_STATE=failed run_update "${d}"
 print -r -- 100 > "${STAMP_FILE}"
 excludes "nor when it had not succeeded yet this boot" "$(< "${SUDO_LOG}")" "systemctl restart"
+
+# ---------------------------------------------------------------------------
+# 7. The marketplace replay after the switch
+# ---------------------------------------------------------------------------
+# The activation adds or updates the declared marketplaces and records each one it
+# fetched; the replay after the switch refreshes every marketplace but those. The
+# record is the only signal: a unit the switch restarted may have stopped before
+# that step, and a record an earlier activation left is not this run's. The sudo
+# shim's switch records what SUDO_FETCHES names; `claude` logs each refresh and
+# fails the ones CLAUDE_FAILS names. The systemctl shim stays for the unit start.
+cat > "${SHIM}/claude" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${CLAUDE_LOG}"
+[[ " ${CLAUDE_FAILS:-} " != *" ${@[-1]} "* ]]
+STUB
+chmod +x "${SHIM}/claude"
+export CLAUDE_LOG="${BASE}/claude.log"
+FETCHED_LOG="${HOME}/.local/state/flakelab/marketplaces-fetched"
+mkdir -p "${HOME}/.claude/plugins/marketplaces/"{team-tools,by-hand}
+refreshed() { grep -cx "plugin marketplace update $1" "${CLAUDE_LOG}" }
+d="$(mk_local replay)"
+
+print -r -- "a marketplace this run's activation fetched is not fetched again"
+: > "${CLAUDE_LOG}"
+STAMP_BUMP=1 SUDO_FETCHES=team-tools CLAUDE_FAILS=team-tools run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "the fetched one is skipped"       "$(refreshed team-tools)" "0"
+check    "one added by hand is refreshed"   "$(refreshed by-hand)" "1"
+excludes "and nothing warns over the clone just fetched" "${OUT}" "team-tools not refreshed"
+
+# The unit start moved, so a gate on it would skip what nobody fetched.
+print -r -- "an activation that stopped before the marketplace step leaves every fetch to the replay"
+: > "${CLAUDE_LOG}"
+STAMP_BUMP=1 UNIT_STATE=failed SUDO_RC=4 RESULT_FAILED="home-manager-u.service" \
+  CLAUDE_FAILS=team-tools run_update "${d}"
+check    "it carries on, then exits 4"      "${RC}" "4"
+check    "the declared one is fetched"      "$(refreshed team-tools)" "1"
+check    "and the one added by hand"        "$(refreshed by-hand)" "1"
+contains "and a failed fetch still warns"   "${OUT}" "claude marketplace team-tools not refreshed"
+
+print -r -- "a record an earlier activation left is not read as this run's"
+: > "${CLAUDE_LOG}"
+print -r -- team-tools > "${FETCHED_LOG}"
+run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "the marketplace is fetched"       "$(refreshed team-tools)" "1"
+check    "and the record is gone"           "$([[ -e "${FETCHED_LOG}" ]] && print yes || print no)" "no"
+rm -f "${SHIM}/claude"
+rm -rf "${HOME}/.claude"
 rm -f "${SHIM}/systemctl"
 
 # ---------------------------------------------------------------------------
-# 7. What the re-lock reports
+# 8. What the re-lock reports
 # ---------------------------------------------------------------------------
 # `nix flake update` exits 0 whether or not the input moved, so the run reads the
 # lock on both sides and says which it was. The count comes from a local clone of
