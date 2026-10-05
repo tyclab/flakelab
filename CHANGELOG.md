@@ -140,7 +140,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - A restore no longer writes `~/.claude/plugins/known_marketplaces.json`.
 - `flakelab doctor`'s git-config check reads `user.email` with `--global`.
 - `flakelab update` no longer exits 4 where WSL's `wsl-mnt-guard.service` has `ExecStart=/bin/true`: the WSL target's drop-in points it at the Nix-store `true` (known-issues.md).
-- `flakelab update`'s marketplace refresh after the switch skips the Claude marketplaces that switch's activation just added or updated, so they are not fetched twice and a failed second fetch no longer warns "not refreshed" over a current clone. The activation names each one it fetched in `~/.local/state/flakelab/marketplaces-fetched`, which the update clears before the switch; a marketplace added by hand, and every one when the activation did not reach that step, is still refreshed.
+- `flakelab update` no longer re-fetches the Claude marketplaces its switch's activation just fetched, nor warns "not refreshed" over them.
 
 ## [0.3.0] - 2026-09-02
 
