@@ -537,8 +537,11 @@ The app writes that token on every start and the tray reads it again by
 itself; the tray switches, toggles auto-switch and opens the distro's
 dashboard, while adding a login stays on the dashboard. Its auto-switch
 toggle starts an engine inside the app: with `tycswapAutoSwitchInterval` set
-the timer is the engine, so leave the toggle off. The Windows binary
-upgrades itself from the releases; the distro's follows the flake's pin.
+the timer is the engine. The service sets `TYCSWAP_AUTO_MANAGED_BY`, so
+the dashboard and tray show the owner and disable that toggle, and the
+server rejects hosted-engine starts (including remembered startup and dry
+runs). Model-window settings remain editable and apply on the next timer
+tick. The Windows binary upgrades itself from the releases; the distro's follows the flake's pin.
 
 #### Migrating from flakelab accounts
 

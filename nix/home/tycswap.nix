@@ -59,6 +59,9 @@ in
         Unit.Description = "flakelab: tycswap's dashboard on 127.0.0.1:${toString cfg.tycswapAppPort} for the Windows tray";
         Service = {
           ExecStart = "${lib.getExe pkgs.tycswap} app --headless --port ${toString cfg.tycswapAppPort} --no-update-check";
+          # The timer owns rotation. Reject dashboard/tray starts server-side,
+          # including a remembered hosted engine from an earlier app run.
+          Environment = lib.optional on "TYCSWAP_AUTO_MANAGED_BY=flakelab-tycswap-autoswitch.timer";
           Restart = "on-failure";
           RestartSec = "5s";
         };

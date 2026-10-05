@@ -89,7 +89,7 @@
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
-          version = "0.7.4";
+          version = "0.7.5";
         in
         pkgs.buildGoModule {
           pname = "tycswap";
@@ -98,7 +98,7 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-HO5u7SgsHD9qkirywVaGHx7eO7jxN118j3cM2oCnfOY=";
+            hash = "sha256-AQCjnrKT7k7dFwFw4nzULvSlgmU4E/F3b4hOIKU7YCI=";
           };
           vendorHash = "sha256-ltzD3JGwaMseO0RmUYVxA3pijVoSvp4gl2JJYyZPEPY=";
           subPackages = [ "cmd/tycswap" ];
@@ -1372,6 +1372,10 @@
               tycswapAutoSwitchInterval = "2min";
             };
             app = ext { tycswapAppPort = 7337; };
+            managedApp = ext {
+              tycswapAppPort = 7337;
+              tycswapAutoSwitchInterval = "2min";
+            };
             badApp = ext {
               installTycswap = false;
               tycswapAppPort = 7337;
@@ -1410,6 +1414,9 @@
               )
             ) != null;
           assert !((hmOf app).systemd.user.services.flakelab-tycswap-app.Service ? "X-RestartIfChanged");
+          assert (hmOf app).systemd.user.services.flakelab-tycswap-app.Service.Environment == [ ];
+          assert builtins.elem "TYCSWAP_AUTO_MANAGED_BY=flakelab-tycswap-autoswitch.timer"
+            (hmOf managedApp).systemd.user.services.flakelab-tycswap-app.Service.Environment;
           assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAppPort" a.message)
             (hmOf badApp).assertions;
           assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
