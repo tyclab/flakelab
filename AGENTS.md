@@ -43,8 +43,10 @@ the private overlay `flakelab-config`, which imports this flake via
     `flakelab-sessions-autosave` timer, `sessionsAutosaveInterval`) keeps one
     snapshot per boot, so a crash needs no `--save` beforehand; `--recent`
     lists stopped sessions changed in the last day. Never `pgrep -f`: that
-    matches helpers. Saved lines are `<tool>  <dir>  <id>`; a line without the
-    tool column is Claude Code. Saves go to the state root's `claude/sessions/`
+    matches helpers. Profile sessions use JSON lines with `tool`, `cwd`,
+    `session` (the actual continuation id), `group` and `profile`. Unmanaged
+    sessions keep `<tool>  <dir>  <id>` lines; legacy lines without the tool
+    column still mean Claude Code. Saves go to the state root's `claude/sessions/`
     when one is set, else `~/.local/state/flakelab/sessions/`, never into
     `~/.claude/sessions`; they are named `<hostname>-<machine>-…` (twelve hex
     digits of `/etc/machine-id`), and the default `--resume`/`--open` read only
