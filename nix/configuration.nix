@@ -30,10 +30,6 @@ in
     # Home Manager writes ~/.zshrc but does not change the login shell, so without
     # this the distro lands in bash and no initContent runs.
     shell = pkgs.zsh;
-    # Every `wsl.exe -u <user> -- …` is its own logind session, and user@<uid>
-    # stops shortly after the last one ends, taking the ssh-agent and its loaded
-    # key with it before the provisioner's second switch, the clone sweep, or the
-    # backup timer can use it. Lingering keeps user@<uid> up.
     linger = true;
   };
 
@@ -74,9 +70,6 @@ in
   # it a second time, with its audit: 0.16 s of a 0.67 s interactive start.
   programs.zsh.enableGlobalCompInit = false;
 
-  # Keeps large contiguous blocks available: without it a fragmented VM cannot
-  # allocate a WSL session's ring buffer and every new session stalls on the
-  # vsock accept timeout.
   boot.kernel.sysctl."vm.compaction_proactiveness" = 60;
 
   # Runs foreign dynamically linked binaries, such as the installed Claude Code.
@@ -98,9 +91,6 @@ in
       figlet
       grc
     ]
-    # Inline rather than in nix/targets/wsl.nix, which would reorder the whole
-    # system path. hiPrio, so an xdg-utils some later package drags in cannot
-    # shadow the one opener that reaches Windows.
     ++ lib.optional (config.flakelab.target == "wsl") (lib.hiPrio scripts.xdg-open)
     ++ (with pkgs; [
       dnsutils

@@ -2,21 +2,6 @@
 
 set -uo pipefail
 
-#
-# Before systemd starts, move this distro to a cgroup its users can enter
-# (known-issues.md, "No user manager"). No set -e: a failed step is recorded.
-#
-# Usage: flakelab-wsl-init-cgroup
-#
-# The outcome, for flakelab doctor, in /run/flakelab/init-cgroup, key=value per line:
-#   result=moved|failed|skipped
-#   from=<the cgroup PID 1 was in>
-#   to=<the init.scope it went to, or was meant to>   (empty when skipped)
-#   reason=<why not>                                  (failed, skipped)
-# No record, and nothing on stderr, when there was nothing to do; otherwise the
-# outcome on stderr too, which the shim sends to the kernel log. Exit status 0
-# always.
-#
 
 CGROUP_ROOT="${FLAKELAB_CGROUP_ROOT:-/sys/fs/cgroup}"
 PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
@@ -41,11 +26,8 @@ fail() { # <reason>
   exit 0
 }
 
-# systemd is up: a switch, not a boot, and its tree is placed. switch-to-configuration
-# also names its action; the shim's boot activation does not.
 [[ -d "${SYSTEMD_RUNTIME}" || -n "${NIXOS_ACTION:-}" ]] && exit 0
 
-# The unified hierarchy's line. Without one there is no v2 tree to be locked out of.
 line="$(grep -m1 '^0::' "${PROC_ROOT}/1/cgroup" 2> /dev/null)" || exit 0
 FROM="${line#0::}"
 [[ "${FROM}" == /* && "${FROM}" != / ]] || exit 0
@@ -67,14 +49,10 @@ ns="${ns//[^0-9]/}"
 [[ -n "${id}" ]] || id="${ns}"
 [[ -n "${id}" ]] || fail "no machine id and no PID namespace to name a cgroup after"
 top="/flakelab-${id}"
-# populated=1: processes somewhere below it, so another live distro owns the name.
-# An earlier boot of this one leaves it empty, and it is reused. Two copies
-# starting in the same instant can still both take it.
 if grep -qx 'populated 1' "${CGROUP_ROOT}${top}/cgroup.events" 2> /dev/null; then
   [[ -n "${ns}" && "${id}" != "${ns}" ]] || fail "${top} is held by a live distro, and no PID namespace id tells this one apart"
   top+="-${ns}"
 fi
-# systemd started in an init.scope roots its tree at the cgroup above it.
 TO="${top}/init.scope"
 
 mkdir -p -- "${CGROUP_ROOT}${TO}" 2> /dev/null || fail "cannot create ${TO}"
@@ -84,11 +62,7 @@ if ! err="$({ print -r -- 1 >> "${CGROUP_ROOT}${TO}/cgroup.procs"; } 2>&1)"; the
   fail "moving PID 1 to ${TO}: ${${(f)err}[-1]:-refused}"
 fi
 
-# The rest of what this namespace sees there: WSL's own init and what it has
-# started. A process forked meanwhile stays behind, so read again until none of
-# ours is left; one that exited meanwhile is gone.
 for pass in 1 2 3 4 5; do
-  # The ones it cannot see read as 0.
   pids=("${(@f)$(2> /dev/null < "${CGROUP_ROOT}${FROM}/cgroup.procs")}")
   pids=(${pids:#0})
   (( ${#pids} )) || break

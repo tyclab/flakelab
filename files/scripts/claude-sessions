@@ -98,10 +98,6 @@ BOOT_ID_FILE="${FLAKELAB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 # is a test seam. Unreadable, the box is the host alone.
 MACHINE_ID_FILE="${FLAKELAB_MACHINE_ID_FILE:-/etc/machine-id}"
 REGISTRY="${HOME}/.claude/sessions"
-# A session on a tycswap profile (tycswap run, tycswap env) keeps its registry
-# entry, and with the history unshared its transcript, under that profile:
-# <store>/sessions/<n>-<email>/{sessions,projects}. FLAKELAB_TYCSWAP_ROOT is a
-# test seam over tycswap's XDG store.
 TYCSWAP_ROOT="${FLAKELAB_TYCSWAP_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}"
 TYCSWAP_PROFILES="${TYCSWAP_ROOT}/sessions"
 TYCSWAP_GROUPS="${TYCSWAP_ROOT}/groups"
@@ -292,12 +288,6 @@ tool_command() {
   print -r -- "$cmd"
 }
 
-# Create a window in the agents session (the session itself when it does not
-# exist yet) and print its window id. A window's command runs with the
-# server's environment, not the caller's, and the server is born by whoever
-# starts the first window (a terminal, the dashboard's service, ttyd), so the
-# caller's PATH is handed to the window explicitly: the tool resolves the
-# same way it did for the caller, whoever started the server.
 new_window() {
   local name="$1" dir="$2" cmd="$3" handover_cwd="${TYCSWAP_HANDOVER_CWD:-}" digest="${TYCSWAP_HANDOVER_DIGEST:-}"
   local -a env_args=(-e "PATH=${PATH}" -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST=)
@@ -314,14 +304,6 @@ new_window() {
   fi
 }
 
-# A view on the server: a session grouped with the agents session, so it shows
-# the same windows but keeps its own current window, and goes away with its
-# client while the agents session stays. Not `destroy-unattached`: the view
-# is made detached and attached by a later command (this process, a Windows
-# Terminal tab), and since tmux 3.4 a session with that option set is
-# destroyed the moment the command client that set it disconnects, before
-# anything attaches. A client-detached hook on the view kills it instead,
-# and fires for a closed terminal as well as an explicit detach.
 new_view() {
   local wid="$1" view
   view="${TMUX_SESSION}-${wid#@}-$$"
@@ -350,12 +332,6 @@ attach_window() {
 # ---------------------------------------------------------------------------
 # The live sessions.
 
-# One record per running session, unit-separator delimited (a tab is IFS
-# whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
-# into its place): <tool> US <pid> US <age-seconds> US <session-id> US <cwd>
-# US <window id> US <window name> US <group> US <profile>. A process with no id from any source
-# (starting, or a client whose server owns the session) gets an empty id and a stderr
-# note — it has nothing to resume by id.
 typeset -a ROWS=()
 US=$'\x1f'
 
@@ -496,17 +472,6 @@ gather() {
   done
 }
 
-# One row per SESSION, not per process. A session that is open in two
-# processes — `claude --resume <id>` on a session already running, a
-# reattach after a dropped connection — registers both pids under the same
-# id, and everything that saves or resumes works in sessions: the save file
-# carried the pair twice, --resume printed the same command twice and --open
-# opened two tabs onto one session. The OLDEST process wins, so the saved
-# directory is the one the session started in; ties keep the first row. It is
-# picked by age rather than by pgrep's order, which is ascending pid and only
-# usually ascending start time — after a pid wraparound the reattach can hold
-# the lower pid. The table and --json stay per process: they report a pid,
-# which is the thing that differs.
 typeset -a SESSION_ROWS=()
 dedupe_sessions() {
   local row tool p age sid cwd wid wname group profile key
@@ -759,16 +724,6 @@ print_resume() {
   done
 }
 
-# One Windows Terminal tab per session, attached to the calling distro.
-# `-w 0` targets the terminal window this shell lives in (a new one when it
-# has none). wt.exe reaches WSL through the interop PATH; when interop is off
-# there is no Windows to open tabs in, and --resume is the answer. A directory
-# this box does not have opens the tab in the home directory instead.
-#
-# With tmux on PATH the session is resumed in a window of the agents server
-# and the tab attaches a view on it, so closing the tab leaves the session
-# running and --attach brings it back; without tmux the tab runs the resume
-# command itself, as before.
 open_tabs() {
   local pair tool cwd sid group profile tab_cwd wid view n=0 use_tmux=false
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }

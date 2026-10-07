@@ -11,9 +11,6 @@ let
   inherit (flakelab) installCodex flakelabDefer;
 in
 {
-  # The nixpkgs build lags upstream. `codex update` runs this same installer, so one
-  # run per switch installs the first time and updates after; a release already in
-  # ~/.codex/packages is not downloaded again. The binary is static: no nix-ld.
   home.activation.installCodexCli = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
     lib.optionalString installCodex ''
       # ~/.local/bin on PATH, or the installer appends a PATH block to ~/.zshrc, a

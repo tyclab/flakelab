@@ -125,8 +125,6 @@ while (( $# > 0 )); do
     --repos-dir) ROOTS+=("$2"); shift ;;
     --repo)      REPO_ARGS+=("$2"); shift ;;
     --max-depth) MAX_DEPTH="$2"; shift ;;
-    # --dry-run is the "change nothing" flag; a fast-forward is a change, so it
-    # opts out of that too. --ff-dirty after --dry-run does not re-enable it.
     --dry-run)   DRY_RUN=1; FF=0 ;;
     --no-ff)     FF=0 ;;
     --ff-dirty)  FF_DIRTY=1 ;;
@@ -177,10 +175,6 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 
 gitscan_ssh_mux "${WORKDIR}"
 
-# Unlike gitchecker, a worktree is not its own repo here: deleting through it
-# writes the parent's ref store while a checkout of one of those branches is
-# live. Only real repos are swept; the worktrees they hold are handled from
-# inside the parent.
 GITSCAN_SKIP_WORKTREES=1
 typeset -a GITDIRS=()
 if (( ${#ABS_ROOTS[@]} > 0 )); then
@@ -207,8 +201,6 @@ fi
 
 gitscan_require_gh "${GITDIRS[@]}"
 
-# Found and removed are separate counts. "Nothing to clean" is a claim about the
-# tree; what the operator declined to delete says nothing about it.
 typeset -i FOUND_BRANCHES=0 FOUND_WORKTREES=0
 typeset -i GONE_BRANCHES=0 GONE_WORKTREES=0 KEPT_BRANCHES=0 FAILED_BRANCHES=0
 typeset -i REPOS_TOUCHED=0 SKIPPED=0
@@ -223,9 +215,6 @@ say() { (( JSON )) || print -r -- "$@" }
 
 rec_line() { print -r -- "${(pj:\t:)@}" >> "${REC}" }
 
-# skip <reason> [detail] — this repo goes unexamined. The reason reaches both
-# the operator and the JSON: "skipped" without a why is the silence this script
-# exists to avoid.
 skip() {
   LAST_SKIP="$1"
   print -r -u2 -- "gitcleaner: $1"
@@ -237,9 +226,6 @@ clean_repo() {
   local repo="$1"
   local default_branch head_branch branch upstream_track remote_url forge_line forge project
   local open_srcs="" wt_out
-  # A remote on a host neither CLI can query leaves the forge unasked. The
-  # ancestor test still stands on its own; the squash case cannot, so it is
-  # skipped rather than guessed at.
   local -i have_forge=0
   typeset -a to_delete_safe=() to_delete_squashed=() pruned_worktrees=() held_branches=()
   # "all" is per repo: agreeing to sweep one repo is not agreeing to the rest.
@@ -269,17 +255,9 @@ clean_repo() {
   }
   head_branch="$(git -C "${repo}" symbolic-ref --short -q HEAD 2>/dev/null)"
 
-  # Fast-forward before deciding what has landed. "Merged into the default
-  # branch" is answered against the LOCAL default ref, so a local default that
-  # trails origin under-reports merged branches and this run holds work it
-  # should have retired. Only strictly-behind branches move, and a branch that
-  # is not checked out moves without touching the working tree. --no-ff opts out.
   if (( FF )); then
     local -i ff_dirty_count=0
     ff_dirty_count="$(git -C "${repo}" status --porcelain=v1 2>/dev/null | grep -c . || true)"
-    # Declared once, outside the loop: a bare `local x` for an already-declared
-    # name LISTS it (`x=value` on stdout), which corrupts --json from iteration
-    # two onward.
     local ffb ffu ff_allow ffcounts ffahead ffbehind
     while IFS= read -r ffb || [[ -n "${ffb}" ]]; do
       [[ -z "${ffb}" ]] && continue
@@ -324,8 +302,6 @@ clean_repo() {
     fi
   fi
 
-  # A worktree that still exists is someone's live checkout. Its branch is off
-  # limits however merged it looks — that is a working tree with a HEAD.
   local wt_path=""
   while IFS= read -r line; do
     case "${line}" in
@@ -338,9 +314,6 @@ clean_repo() {
   if [[ -n "${remote_url}" ]] && forge_line="$(gitscan_forge_of "${remote_url}")"; then
     IFS=$'\t' read -r forge project <<< "${forge_line}"
     have_forge=1
-    # Open MRs pin their source branch: work still under review is not stale,
-    # however merged its base looks. Every page of them — a guard that only
-    # covers the first hundred is not a guard.
     if ! gitscan_open_requests "${forge}" "${project}"; then
       skip "${GITSCAN_FORGE_WHY} for ${project} — skipping ${repo}" "${GITSCAN_FORGE_JSON}"
       return 2
@@ -369,21 +342,10 @@ clean_repo() {
 
     if git -C "${repo}" merge-base --is-ancestor \
          "refs/heads/${branch}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
-      # Every commit is already reachable from origin/<default>: nothing is
-      # lost even if the forge knows nothing about it.
       to_delete_safe+=("${branch}")
       continue
     fi
 
-    # Squash and rebase merges rewrite the commits, so the branch is not an
-    # ancestor of anything. Only the forge can say the work landed, and only a
-    # pruned upstream proves this local ref is the leftover rather than the
-    # branch someone is still pushing to.
-    #
-    # The forge is asked about this one branch. Listing merged MRs and searching
-    # the list meant searching one page of an unbounded history, so a branch
-    # whose MR merged a while ago simply looked unmerged. The gone-upstream test
-    # comes first because it is local and free.
     upstream_track="$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)"
     [[ "${upstream_track}" == *gone* ]] || continue
     (( have_forge )) || continue
@@ -395,9 +357,6 @@ clean_repo() {
     esac
   done < <(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
 
-  # --only narrows the *deletions* to named branches. A stale worktree entry is
-  # not narrowed: its checkout directory is already gone, so there is nothing to
-  # lose, and pruning it is what makes a named branch deletable at all.
   if (( ${#ONLY[@]} > 0 )); then
     typeset -a keep_safe=() keep_squashed=()
     for branch in "${to_delete_safe[@]}"; do
@@ -433,9 +392,6 @@ clean_repo() {
     fi
   done
 
-  # confirm <prompt> — y delete, n keep, a rest of this repo, q stop the run.
-  # prompt_keys, not a yes/no: the answer is a key, so anything other than
-  # y/n is handled instead of collapsing into "not yes".
   confirm() {
     local _p="$1"
     [[ "${MODE}" == delete ]] && return 0
@@ -450,8 +406,6 @@ clean_repo() {
     esac
   }
 
-  # delete_branch <branch> <flag> <why> — prints the SHA it removed, because
-  # that line is the whole undo procedure.
   delete_branch() {
     local _b="$1" _flag="$2" _why="$3" _sha
     _sha="$(git -C "${repo}" rev-parse --short "refs/heads/${_b}" 2>/dev/null)"

@@ -1,6 +1,5 @@
 *.log
 
-# WSL base image cache and test instance.
 files/.wsl-*
 
 id_ed25519
@@ -15,12 +14,9 @@ files/config/.backup.lock
 
 files/config/shared/gitconfig/
 files/config/shared/shell/
-# Cleartext tokens copied here by `flakelab backup`.
 files/config/shared/secrets/
 # A filled-in provisioning config carries the same tokens in cleartext.
 files/config/user_data.yaml
-# Keys live in <overlay>-payload/shared/ssh/keys now; this is for a checkout
-# still in the old layout.
 files/config/shared/ssh/
 
 # Claude Code agent scratch.

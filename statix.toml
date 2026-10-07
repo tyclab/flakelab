@@ -1,2 +1,1 @@
-# repeated_keys off: home-manager's per-concern top-level blocks are idiomatic here.
 disabled = ["repeated_keys"]

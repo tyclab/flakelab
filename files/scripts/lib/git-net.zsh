@@ -1,5 +1,3 @@
-# The one copy of this repo's network-facing plumbing: SSH options and one retry
-# helper. Sourced, not executed, by clone-repos and lib/gitscan.zsh.
 
 typeset -g GITNET_SSH_BASE="-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
 

@@ -113,21 +113,10 @@ in
     WHATSAPP_MCP_DIR = whatsappMcpDir;
   }
   // lib.optionalAttrs (builtins.elem "ansible" profileCliTools) {
-    # The bundled collections (community.general, community.docker, ansible.posix)
-    # ship in the ansible DISTRIBUTION, not in pkgs.ansible — that attribute is
-    # ansible-core, and its ansible_collections tree does not exist. ansible-lint
-    # cannot see them either way: pre-commit runs it from an isolated venv carrying
-    # its own ansible-core, so naming the tree here is what resolves them there.
-    # The writable entry stays FIRST: ansible-galaxy installs into the head of this
-    # list, and the store is read-only.
     ANSIBLE_COLLECTIONS_PATH = "${config.home.homeDirectory}/.ansible/collections:${pkgs.python3Packages.ansible}/${pkgs.python3.sitePackages}/ansible_collections";
   }
   // cfg.sessionVariables;
 
-  # The session host for `flakelab sessions --start`: an agent session runs in
-  # a window of the `agents` tmux session and outlives the terminal, the SSH
-  # connection or the Windows Terminal tab it was started from. The config is
-  # the shipped file, defaults a guest already knows.
   programs.tmux = {
     enable = true;
     extraConfig = builtins.readFile ../../files/config/tmux/tmux.conf;

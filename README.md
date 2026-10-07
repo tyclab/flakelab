@@ -30,6 +30,21 @@ Driving a Windows browser from inside WSL (Chrome DevTools across the WSL2 NAT):
 > **[`known-issues.md`](known-issues.md) is the full account** — read it before
 > provisioning.
 
+## Process
+
+Repository rules: [AGENTS.md](AGENTS.md).
+
+```mermaid
+flowchart LR
+  Template[Shareable flakelab modules] --> Overlay[Private overlay and userData]
+  Overlay --> Check[Offline tests and flake checks]
+  Check --> Build[NixOS system build]
+  Build --> Switch[Explicit flakelab update]
+  Switch --> System[WSL or Proxmox VM]
+  System --> CLI[flakelab command router]
+  CLI --> Wrappers[Per-command wrappers and pinned tools]
+```
+
 ## Architecture at a glance
 
 Two repos: a private overlay flake supplies the **data** (plus optional extra

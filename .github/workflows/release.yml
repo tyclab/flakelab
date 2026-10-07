@@ -31,16 +31,11 @@ jobs:
 
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          # make-disk-image requires the kvm system feature; naming it here
-          # replaces the default list, so the other four come along.
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
 
       - run: nix build --print-build-logs .#proxmoxImage
 
-      # qcow2 has no compressed variant in image.format, and the raw image is
-      # several times the size of a release asset. `-c` is the whole reason this
-      # runs outside the derivation.
       - name: Compress and checksum
         run: |
           asset="flakelab-proxmox-vm-${GITHUB_REF_NAME}.qcow2"

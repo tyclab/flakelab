@@ -5,15 +5,10 @@
 # which errexit would turn into silent aborts.
 set -uo pipefail
 
-# The command as the user runs it: the script's own name is not on PATH.
 _self="flakelab update"
 
-# print -P prompt-expands the whole string, so a `%` in a path, a branch or a
-# URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r
-# turns `\t` in a Windows path into a tab. Only the colour is markup here.
 _say() { print -rP -- "%F{$1}${2//\%/%%}%f" }
 
-# Set by the nix wrapper; the fallback lets this run straight from a checkout.
 _repo_is_own_tree=false
 if [[ -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
   _repo="${FLAKELAB_REPO_ROOT}"
@@ -25,20 +20,12 @@ else
   exit 1
 fi
 
-# The same lib the sweep scripts source, so the retry behaviour cannot drift.
 source "${0:A:h}/lib/git-net.zsh" || exit 1
 source "${0:A:h}/lib/overlay-git.zsh" || exit 1
-# The y/N questions, asked the one way every flakelab command asks them.
 source "${0:A:h}/lib/prompt.zsh" || exit 1
 
-# The template .gitignore a plain-directory overlay is measured against before it
-# becomes a repository. The nix wrapper names the store copy; from a checkout it
-# sits three levels up.
 _overlay_gitignore="${FLAKELAB_OVERLAY_GITIGNORE:-${0:A:h:h:h}/templates/overlay/.gitignore}"
 
-# _url_path <filesystem path> -> the body of a `path:` flake URL. Unescaped, a
-# space makes nix read the whole string as a relative path and `#`/`?` truncate it;
-# `%` goes first or the later escapes are escaped again.
 _url_path() {
   local s="$1"
   s="${s//\%/%25}"
@@ -102,10 +89,6 @@ _nix_pull() {
   return 1
 }
 
-# --all --prune: every remote, and refs that are gone upstream go here too, so a
-# merged branch does not linger as a stale origin/ ref. No ControlMaster: one
-# fetch, so there is no second connection to reuse. An explicit GIT_SSH_COMMAND
-# from the environment wins.
 _nix_fetch() {
   local _dir="$1"
   local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
@@ -187,7 +170,6 @@ _nix_check_base() {
     _say green "✓ rebased ${_head} onto origin/${_default}"
     return 0
   fi
-  # Leave nothing half-applied for the next run to trip over.
   git -C "$_dir" rebase --abort 2>/dev/null || true
   _say red "✗ rebase onto origin/${_default} conflicted — tree restored, refusing to rebuild from a branch behind ${_default}"
   print -r -- "$_out"
@@ -261,8 +243,6 @@ _nix_adopt_overlay() {
       ;;
     3)
       _say yellow "⚠ ${_d} is not a git checkout and has no .gitignore — left as it is: the overlay holds key material and secrets that only the template .gitignore keeps out of a commit"
-      # install, not cp: the nix wrapper names a store copy, and cp would carry its
-      # read-only mode onto a file the operator is meant to edit.
       _say yellow "  install -m 644 ${(qq)_overlay_gitignore} ${(qq)_d}/.gitignore, then: flakelab update"
       ;;
     6)
@@ -272,9 +252,6 @@ _nix_adopt_overlay() {
       _say cyan "ℹ ${_d} is not a git checkout — no drift check (no template .gitignore at ${_overlay_gitignore} to measure a first commit against)"
       ;;
     5)
-      # Yellow, not the red ✗ that stops a run everywhere else in this file: the
-      # switch goes ahead, the directory is as it was. Capped, because a payload
-      # the .gitignore missed is thousands of paths, again on every update.
       _say yellow "⚠ ${_d} not initialised: its .gitignore would let ${#OVERLAYGIT_LEAKS} path(s) into the first commit that the template .gitignore keeps out of git"
       for _p in "${(@)OVERLAYGIT_LEAKS[1,20]}"; do print -r -- "    ${_p}"; done
       (( ${#OVERLAYGIT_LEAKS} > 20 )) && print -r -- "    … and $(( ${#OVERLAYGIT_LEAKS} - 20 )) more"
@@ -316,7 +293,6 @@ if overlaygit_payload_inside "${_repo}"; then
   _say yellow "  move it beside the overlay, once:  flakelab doctor  prints the commands"
 fi
 
-# Order matters: an accepted pull moves HEAD, which the next check measures.
 if _nix_repo_shape; then
   _nix_check_remote || exit 1
   _nix_check_base || exit 1
@@ -342,9 +318,6 @@ _fl_locked() {
   ' 2> /dev/null
 }
 
-# A repo's path after its host, lowercased, from `git@host:owner/repo`,
-# `https://host/owner/repo`, `ssh://git@host:port/owner/repo` or `file:///dir` —
-# and a lock's `owner/repo`, which has no host and comes back as it is.
 _fl_repo_path() {
   local _u="${${${1:l}%/}%.git}"
   if [[ "${_u}" == *://* ]]; then
@@ -355,15 +328,6 @@ _fl_repo_path() {
   print -r -- "${_u#/}"
 }
 
-# What came in, as the phrase the line ends with, counted in a local clone of the
-# same repo that already has both revs — the operator's own checkout under ~/git
-# (the namespace path from the clone sweep, a GitLab subgroup's included, or
-# `<repo>` by hand), usually the one the change was merged from. Six levels, as
-# deep as gitchecker looks. A clone matches on whole path segments, so
-# `nottyclab/flakelab` is not `tyclab/flakelab`. Nothing is fetched: an update
-# has to work offline, and someone's working tree is not this command's to move.
-# A clone that has not seen the new rev yet yields nothing, and the revs are
-# then printed on their own.
 _fl_commits() {
   local _want _old="$2" _new="$3" _d _url _n
   _want="$(_fl_repo_path "$1")"
@@ -382,28 +346,16 @@ _fl_commits() {
   return 1
 }
 
-# A `path:` flakelab input is mutable but its lock entry is not, so without
-# re-locking a `git pull` over there leaves this flake on the previous snapshot and
-# the switch silently builds the old flakelab. `nix eval` rather than jq: the
-# wrapper's PATH has no jq.
 _nix_relock_flakelab() {
   local _lock="${_repo}/flake.lock" _out
   local -a _b _a
   [[ -f "${_lock}" ]] || return 0
-  # `:-` on every field: the eval yields nothing when it cannot read the lock, or
-  # when there is no `nix` on PATH at all, and `set -u` makes
-  # an index past the end of a short array fatal.
   _b=("${(@s:|:)$(_fl_locked)}")
   local _ty="${_b[1]:-}" _where="${_b[2]:-}" _rev0="${_b[3]:-}" _nar0="${_b[5]:-}"
   [[ -n "${_ty}" ]] || return 0
-  # A `git+file:` input is locked as type `git` with a file:// url. It re-locks to
-  # that checkout's last commit like any git input, but serves committed content
-  # only, so the edit under test may be absent.
   if [[ "${_ty}" == git && "${_b[4]:-}" == file://* ]]; then
     _say yellow "⚠ LOCAL flakelab (git+file: ${_b[4]#file://}) — only committed content is in this build"
   fi
-  # Unprivileged: a root-written lock on the 9p mount breaks the operator's next
-  # `nix` command with "opening file flake.lock: Permission denied".
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
     _a=("${(@s:|:)$(_fl_locked)}")
     local _rev1="${_a[3]:-}" _id1="${_a[3]:-${_a[5]:-}}"
@@ -413,7 +365,6 @@ _nix_relock_flakelab() {
       # A rev in the input's URL: `nix flake update` can never move it.
       _say yellow "⚠ flakelab input unchanged (${_a[6][1,7]}): inputs.flakelab.url in ${_repo}/flake.nix names that rev, so update cannot move it; drop the rev from the URL"
     elif [[ -z "${_id1}" || "${_rev0:-${_nar0}}" == "${_id1}" ]]; then
-      # Said, not skipped: "already current" is the answer an update was asked for.
       _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"
     elif [[ -z "${_rev1}" ]]; then
       _say cyan "ℹ flakelab input updated: the ${_ty} input has no rev to name, but its content hash moved"
@@ -459,10 +410,6 @@ _nix_reclaim_lock() {
 _nix_reclaim_lock
 _nix_relock_flakelab || exit 1
 
-# The switch evaluates as root, which has no ssh key: a private git+ssh input that
-# a garbage collection took out of the store cannot be fetched back there. Fetched
-# here first as the caller, whose agent can; an input still in the store costs
-# nothing. Warns only: the switch gives the verdict.
 _nix_fetch_inputs() {
   local _out
   [[ -f "${_repo}/flake.lock" ]] || return 0
@@ -543,17 +490,6 @@ esac
 _deferred="$HOME/.local/state/flakelab/activation-deferred"
 _failures="$HOME/.local/state/flakelab/activation-failures"
 
-# The switch left the activation alone, so run it here instead — but only when
-# there is something to re-run: steps the last activation recorded as failed or
-# deferred, or a unit that is not in effect — failed, inactive (a failed one after
-# `reset-failed`), or never activated this boot, which is the same gap before any
-# log exists. `flakelab doctor` answers a failure with "Re-run: flakelab update",
-# and this is what makes that true. Nothing recorded and a unit already active is
-# a no-op restart, so it is skipped rather than announced. The stamp cannot see a generation, only
-# whether this unit was restarted, and a generation that changed elsewhere in the
-# system leaves this one untouched too — so nothing here says the generation is
-# unchanged. Failures warn only — the switch itself is applied. Read with zsh's
-# own split: this runs before any PATH beyond the wrapper's is assumed.
 if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
   _hm_failed=() _hm_pending=()
   [[ -s "${_failures}" ]] && _hm_failed=("${(@f)$(< "${_failures}")}")
@@ -578,8 +514,6 @@ if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
   fi
 fi
 
-# What is still deferred after all that, named once, whether the restart above
-# ran or not.
 if [[ -s "${_deferred}" ]]; then
   _deferred_lines=("${(@f)$(< "${_deferred}")}")
   _say yellow "⚠ activation deferred ${#_deferred_lines} step(s), also listed by flakelab doctor:"
@@ -601,10 +535,6 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     claude plugin marketplace update "${_m:t}" > /dev/null 2>&1 \
       || _say yellow "⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch"
   done
-  # `plugin install` is a no-op on an installed plugin, so a merged bump would stay
-  # on its installed version; only plugins whose fetched version differs are updated,
-  # which is readable only for marketplace-tree sources. </dev/null bounds the
-  # confirmation prompt an install command would raise, so it warns instead of hanging.
   _installed="$HOME/.claude/plugins/installed_plugins.json"
   if [ -f "${_installed}" ] && command -v jq > /dev/null 2>&1; then
     for _m in "${_claude_marketplaces}"/*(N/); do
@@ -624,7 +554,6 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   _recommended="$(find "${_claude_marketplaces}" -type f -name recommended-permissions.json 2> /dev/null | head -1)"
   if [ -n "${_recommended}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     _tmp="$(mktemp)"
-    # Asserted, not unioned: a union only grows, and a withdrawn rule would stay.
     if jq -s '.[0] * {permissions: {allow: .[1]}}' \
          "${_settings}" "${_recommended}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
@@ -633,7 +562,6 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     fi
     rm -f "${_tmp}"
   fi
-  # A marketplace without the file leaves permissions.ask alone.
   _recommendedask="$(find "${_claude_marketplaces}" -type f -name recommended-ask.json 2> /dev/null | head -1)"
   if [ -n "${_recommendedask}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     _tmp="$(mktemp)"

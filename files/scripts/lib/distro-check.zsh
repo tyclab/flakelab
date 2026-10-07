@@ -1,8 +1,3 @@
-# The checks `flakelab build-distro` (build-dev-wsl-nix) and `flakelab
-# test-provision` (test-provision-nix) run against a freshly built distro, in
-# one place so the two cannot drift. Sourced, not executed. The caller sets
-# _WSL_BIN and DISTRO_NAME; _CHECK_USER is the `-u <name>` pair the probes run
-# as, empty for the distro's default user.
 
 # print -P prompt-expands the whole string, so a `%` in a path, a branch or a
 # URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r

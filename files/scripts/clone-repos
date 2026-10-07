@@ -2,17 +2,6 @@
 
 set -uo pipefail
 
-#
-# Parallel git clone/fetch for WSL provisioning
-#
-# Reads repo specs from stdin (one per line):
-#   ssh_url                        → dest auto-derived under --repos-dir
-#   ssh_url /absolute/dest/path    → explicit dest
-#
-# Usage:
-#   clone-repos --key-file ~/.ssh/id_ed25519 --repos-dir ~/git
-#   clone-repos --key-file ~/.ssh/id_ed25519 --max-jobs 8 --repos-dir ~/git
-#
 
 MAX_JOBS=4
 KEY_FILE=""

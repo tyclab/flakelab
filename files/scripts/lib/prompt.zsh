@@ -86,17 +86,10 @@ _pc_draw() {
   print -u2 -rn -- "$out"
 }
 
-# The rest of an escape sequence: a key that arrives within 50 ms of the Esc.
-# zselect, because `read -t` on -u 0 answers at once with a NUL instead of
-# waiting out its timeout. Only with the terminal non-canonical: once `read -k`
-# has put a canonical terminal back, zselect reports it readable at once.
 _pc_more() {
   zselect -t 5 -r 0 2>/dev/null && read -rs -k 1 -u 0 "$1"
 }
 
-# _pc_csi <var> — the rest of a sequence after its Esc [: parameter bytes up to
-# the one final byte, which lands in <var>. Delete is Esc [ 3 ~ and Ctrl-Down
-# Esc [ 1 ; 5 B, so none of the middle may land as a typed key.
 _pc_csi() {
   _pc_more "$1" || return 1
   while [[ "${(P)1}" != [@-~] ]]; do _pc_more "$1" || return 1; done
@@ -107,10 +100,6 @@ _pc_restore() {
   print -u2 -n -- $'\e[?25h'
 }
 
-# prompt_choose <question> <label>... — an arrow-key list. Typing filters it
-# (case-insensitive substring), Backspace and Ctrl-U edit the filter, ↑/↓
-# move, Enter picks, Esc/Ctrl-C/Ctrl-D cancel. Sets PROMPT_INDEX; returns 1
-# on cancel.
 prompt_choose() {
   emulate -L zsh
   setopt localtraps
@@ -148,9 +137,6 @@ prompt_choose() {
       $'\r'|$'\n') (( ${#shown} > 0 )) && { picked=${shown[cur]}; break } ;;
       $'\x03'|$'\x04') picked=-1; break ;;
       $'\e')
-        # An arrow is Esc [ x (or Esc O x); Esc alone, or
-        # followed by anything else (an Alt chord), cancels. A second Esc is
-        # kept for the list that comes next.
         c1=""
         if ! _pc_more c1 || [[ "$c1" != [\[O] ]]; then
           [[ "${c1:-}" == $'\e' ]] && _PC_PENDING="$c1"
@@ -180,10 +166,6 @@ prompt_choose() {
   return 1
 }
 
-# prompt_input <question> [default] — one line in the zsh line editor, the
-# default already typed: Enter takes it, the usual editing keys work, Tab
-# completes file names. A leading ~ is expanded. Sets PROMPT_TEXT; returns 1
-# on Ctrl-C or Ctrl-D.
 prompt_input() {
   emulate -L zsh
   setopt localtraps

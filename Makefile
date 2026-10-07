@@ -19,8 +19,6 @@ lint:
 fmt:
 	nix fmt
 
-# The nix gates locally. Built from the flake so the pinned linter versions run,
-# not whatever the local registry resolves.
 lint-nix:
 	nix fmt
 	git diff --exit-code

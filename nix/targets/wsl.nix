@@ -1,5 +1,3 @@
-# WSL target layer: the NixOS-WSL settings; everything portable lives in
-# nix/configuration.nix.
 { config, pkgs, ... }:
 let
   scripts = import ../scripts.nix {
@@ -32,8 +30,6 @@ in
   # (including WSL's chosen automount root); only replace the startup command.
   systemd.services.wsl-mnt-guard = {
     overrideStrategy = "asDropin";
-    # Restarting an active guard during a switch would run its shutdown action
-    # and change /mnt/wsl mount propagation before the distro actually stops.
     restartIfChanged = false;
     serviceConfig.ExecStart = [
       ""

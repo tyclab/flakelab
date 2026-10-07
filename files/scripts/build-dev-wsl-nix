@@ -43,14 +43,8 @@ while (( $# > 0 )); do
   shift
 done
 
-# Repo root: set by the nix wrapper (from repoPath), because ${0:A:h:h:h} from a
-# flat store directory resolves to the store's parent - /nix - which yielded a
-# flake ref of `/nix#default` and a log path under /nix. The fallback keeps the
-# script runnable straight from a checkout.
 _repo_root="${FLAKELAB_REPO_ROOT:-${0:A:h:h:h}}"
 _flake_ref="${FLAKE_REF:-${_repo_root}#default}"
-# Verify checks compare against the built flake's user/locale (an overlay carries
-# them in flake.nix; the template in nix/users/default.nix).
 _flake_dir="${_flake_ref%%#*}"
 # The first match, else the default: not `| head -1 || echo`, where a head that
 # exits before grep has written everything fails the pipe and appends the default.
@@ -72,8 +66,6 @@ if ! _exists; then
   _base_tmp=""
   if [[ -z "${BASE_TARBALL}" ]]; then
     command -v curl >/dev/null || { _say red "curl not found — pass --base" >&2; exit 1 }
-    # Download onto the Windows mount (not /tmp): wsl.exe --import needs a Windows
-    # path, and _win can't convert a distro-local /tmp path. Gitignored (files/.wsl-*).
     _base_tmp="$(mktemp "${_repo_root}/files/.wsl-nixos-base.XXXXXX")"; BASE_TARBALL="${_base_tmp}"
     _say cyan "Downloading NixOS-WSL base image..."
     curl -fL --retry 5 --retry-all-errors --progress-bar -o "${BASE_TARBALL}" "${BASE_URL}"
@@ -87,15 +79,10 @@ else
   _say green "${DISTRO_NAME} exists — applying flake (--reinstall to rebuild from base)"
 fi
 
-# Root reads the /mnt/c repo as another uid; mark it safe so the flake git
-# fetcher (and nixos-rebuild) don't bail with "not owned by current user".
-# Write directly — git is not on root's PATH in the base image before the flake applies.
-# Trust all: root reads the flake + its inputs from /mnt/c (a throwaway distro).
 ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
   sh -c "mkdir -p /root && printf '[safe]\n\tdirectory = *\n' >> /root/.gitconfig" \
   < /dev/null || true
 
-# Pin the lock for the flake being built (an overlay ships without one).
 if [[ ! -f "${_flake_dir}/flake.lock" ]]; then
   _say cyan "Generating flake.lock..."
   ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
@@ -148,12 +135,6 @@ _verdict() {
   [[ "${_v_verdict}" == unanswered ]] && (( _v_rc == 0 )) && _v_rc=3
   return 0
 }
-# NOTE: deliberately NO `wsl --terminate` here — terminating a systemd distro
-# unmounts the shared binfmt_misc and breaks interop for sibling distros
-# (known-issues.md). Default-user is verified by reading /etc/wsl.conf.
-# Degraded carries on into verification: a fresh import's first switch starts the
-# lingering user's user@1000 at once, and that start can fail ("Failed to spawn
-# executor: Device or resource busy"). The units are read again at the end.
 _verdict --rc "${_rc}"
 case "${_v_verdict}" in
   applied)  _say green "Flake applied." ;;
@@ -171,7 +152,6 @@ case "${_v_verdict}" in
 esac
 
 if ${VERIFY}; then
-  # As the flake's user, not the import's default: the switch above is what sets it.
   _CHECK_USER=(-u "${_username}")
   _say cyan "=== Verification ==="
   check_contains "PID 1 is systemd"               "systemd"     zsh -lc "ps -p 1 -o comm="

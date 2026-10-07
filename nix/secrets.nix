@@ -20,8 +20,6 @@ in
       age = {
         keyFile = cfg.sopsAgeKeyFile;
         generateKey = false;
-        # Do not derive from SSH host keys: they sit on the root disk and rotate
-        # with a re-image, silently orphaning the file.
         sshKeyPaths = [ ];
       };
       gnupg.sshKeyPaths = [ ];

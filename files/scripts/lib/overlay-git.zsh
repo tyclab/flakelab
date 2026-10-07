@@ -1,31 +1,7 @@
-# The one copy of "this overlay directory becomes a repository": one commit on
-# main, no remote, autocrlf off. Sourced, not executed, by nix-overlay-generate,
-# nix-update and nix-doctor; setup-wsl-nix.ps1 carries the PowerShell twin
-# (Get-OverlayGitLeaks), because it runs where there is no zsh.
-#
-# The overlay holds the SSH key, secrets.env and the backup payload, and only
-# its .gitignore keeps them out of `git add`. Every caller KEEPS a .gitignore
-# that is already there, so that file is not evidence of anything: it can predate
-# a template entry or never have been the template at all. The measure is the
-# template this flakelab ships - whatever the first commit would carry that the
-# template ignores is a leak, and the commit does not happen. One thing the
-# template ignores is committed on purpose: the sops ciphertext (README,
-# "Secrets": `sopsSecretsFile = ./secrets/secrets.env`), re-included by the
-# overlay's own `!secrets/secrets.env`. It passes only when it IS ciphertext.
-#
-# Needs zsh, coreutils and git, nothing else: the generator's wrapper pins no more.
 
 typeset -ga OVERLAYGIT_CANDIDATES=() OVERLAYGIT_LEAKS=()
 typeset -g OVERLAYGIT_WHY=""
 
-# overlaygit_is_sops_dotenv <file> - true when every line is what `sops encrypt`
-# writes for a dotenv: an encrypted value or comment, an empty value, or sops's
-# own metadata, with the MAC and version present. A plaintext value anywhere
-# fails, a `_unencrypted` key included: that suffix is sops's contract, and this
-# is about what reaches a commit. The metadata keys are the ones sops writes -
-# its settings and one `__`-flattened block per key service - not any `sops_`
-# name, or `sops_token=<plaintext>` would ride through the one deliberate
-# exception. A key service sops grows later is a refusal until it is added here.
 overlaygit_is_sops_dotenv() {
   setopt localoptions extendedglob
   local _f="$1" _line _val
@@ -77,17 +53,12 @@ overlaygit_leaks() {
       || { OVERLAYGIT_WHY="listing ${_d} failed: $(< "${_probe}/err")"; return 1 }
     OVERLAYGIT_CANDIDATES=(${(0)_raw})
     (( ${#OVERLAYGIT_CANDIDATES} )) || return 0
-    # The template alone decides here: as the scratch repository's info/exclude,
-    # with --no-index, the overlay's own .gitignore is nowhere in the lookup.
     mkdir -p "${_probe}/.git/info" && cp -- "${_tpl}" "${_probe}/.git/info/exclude" \
       || { OVERLAYGIT_WHY="cannot read ${_tpl}"; return 1 }
     _raw="$(print -rN -- "${OVERLAYGIT_CANDIDATES[@]}" \
       | git -C "${_probe}" -c core.quotePath=false check-ignore --no-index --stdin -z 2> "${_probe}/err")" || _rc=$?
-    # 1 is check-ignore's "none of them is ignored".
     (( _rc <= 1 )) || { OVERLAYGIT_WHY="check-ignore failed: $(< "${_probe}/err")"; return 1 }
     _hits=(${(0)_raw})
-    # Only a dotenv can be the sops exception, so only those are opened: a payload
-    # the .gitignore missed is thousands of hits, on a 9p mount, on every update.
     for _p in "${_hits[@]}"; do
       [[ "${_p:t}" == *.env ]] && overlaygit_is_sops_dotenv "${_d}/${_p}" && continue
       OVERLAYGIT_LEAKS+=("${_p}")
@@ -98,21 +69,6 @@ overlaygit_leaks() {
   }
 }
 
-# overlaygit_adopt <dir> <template .gitignore> <commit message>
-#   0  a repository now: one commit on main, no remote, autocrlf off
-#   1  git failed, OVERLAYGIT_WHY says where; the .git this call made is gone again
-#   2  <dir>/.git is already there - not this function's to touch, readable or not
-#   3  no <dir>/.gitignore
-#   4  no template to measure against
-#   5  OVERLAYGIT_LEAKS holds what the first commit would have carried
-#   6  <dir> is not a directory - a mount that is not up, not an overlay to adopt
-# All or nothing: <dir> ends up with the finished repository or with no .git at
-# all, an interrupt included, because a half-made one reads as "a repository with
-# uncommitted changes" to every later run and is never adopted again. Only what
-# was checked is staged - the list, not `add -A` - so a file that appears between
-# the check and the add is not in the commit. Signing and hooks are off: the
-# identity is flakelab@localhost, and the operator's global config (gpgsign, a
-# hooksPath) must not decide whether an overlay gets its history.
 overlaygit_adopt() {
   setopt localoptions localtraps
   local _d="$1" _tpl="$2" _msg="$3" _out

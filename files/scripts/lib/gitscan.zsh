@@ -71,10 +71,6 @@ gitscan_ssh_mux() {
   export GIT_SSH_COMMAND="ssh ${GITNET_SSH_BASE} -o ControlMaster=auto -o ControlPath=${workdir}/ssh-%r@%h:%p -o ControlPersist=60"
 }
 
-# gitscan_discover <max-depth> <root>... — every repo under each root into
-# GITSCAN_GITDIRS, with its root at the same index in GITSCAN_GITDIR_ROOTS.
-# GITSCAN_SKIP_WORKTREES=1 drops worktrees, whose .git points into the parent's
-# admin dir: deleting from there writes the parent's ref store under a live checkout.
 gitscan_discover() {
   local max_depth="$1"; shift
   local root gd
