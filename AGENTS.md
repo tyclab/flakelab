@@ -29,8 +29,10 @@ the private overlay `flakelab-config`, which imports this flake via
   - `sessions` (`claude-sessions`, the script name kept): the running agent
     sessions — Claude Code, Codex — with their session ids: Claude Code's
     from its own registry `~/.claude/sessions/<pid>.json` (open transcript in
-    `/proc` as fallback), Codex's from the rollout file the process holds
-    open. `--start <tool> [dir] [-- args]`
+    `/proc` as fallback; registry candidates with a live Claude executable
+    also find version-named processes), Codex's from every user rollout the
+    process holds open, including shared app-servers. Internal subagents and
+    daemon supervisors are excluded; rollout metadata supplies each directory. `--start <tool> [dir] [-- args]`
     runs one in a window of the `agents` tmux session so it outlives its
     terminal; `--attach [id|window]` joins it (a grouped view session per
     terminal); the table's HOST column names the window. `--save` before a
