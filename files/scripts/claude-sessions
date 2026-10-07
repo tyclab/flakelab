@@ -13,17 +13,15 @@ set -uo pipefail
 # sessions survive, but only if the session ids are known. That is what this
 # command records before the restart.
 #
-# A session is the tool's process itself: pgrep -x, because -f would also match
-# its helper shells, tails and subagents. Claude Code registers each one in
-# ~/.claude/sessions/<pid>.json (pid, sessionId, cwd, startedAt) — that is the
-# id, and it is there before the first message is sent. The registry is not
-# pruned on exit, so a pid is only a session while it is a live `claude`
-# process. A live process with no registry file (an older Claude Code) falls
-# back to the transcript it holds open in /proc/<pid>/fd; a Codex process is
-# identified the same way, by the rollout file it holds open, whose name
-# carries the id. The newest transcript in the project directory is never the
-# answer — two sessions in one directory share it.
-#
+# Process candidates come from exact names and Claude's PID registry (Claude
+# may rename itself to a version number). Registry-only candidates must still
+# have a live Claude executable. Never pgrep -f, which also matches helpers.
+# Claude's registry supplies the id, with an open transcript as fallback.
+# Codex's shared app-server may hold many rollouts: enumerate all user sessions
+# and use each rollout's metadata directory, excluding internal subagents.
+# A CLI client may hold no transcript itself; its session is saved from the
+# server. The newest transcript in a shared directory is never an identity.
+
 # The host: a session started with --start runs in a window of the `agents`
 # tmux session, and the table says so. A terminal — local, a Windows Terminal
 # tab, an SSH client on a phone — is then a view on that window and can close
@@ -330,7 +328,7 @@ attach_window() {
 # whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
 # into its place): <tool> US <pid> US <age-seconds> US <session-id> US <cwd>
 # US <window id> US <window name>. A process with no id from any source
-# (still starting, on an older Claude Code) gets an empty id and a stderr
+# (starting, or a client whose server owns the session) gets an empty id and a stderr
 # note — it has nothing to resume by id.
 typeset -a ROWS=()
 US=$'\x1f'
@@ -346,14 +344,67 @@ open_uuid() {
     sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
 }
 
+# Claude can rename its process to a version number. Its registry supplies
+# candidates, but only a local Claude executable makes a PID live: a synced or
+# stale registry entry must never identify an unrelated process on this box.
+claude_pids() {
+  local reg p exe
+  pgrep -x "${TOOL_PROC[claude]}" 2>/dev/null
+  for reg in "${REGISTRY}"/<->.json(N) "${TYCSWAP_PROFILES}"/*/sessions/<->.json(N); do
+    p="${reg:t:r}"
+    exe="$(readlink "${PROC_ROOT}/${p}/exe" 2>/dev/null)" || continue
+    [[ "${exe:t}" == claude || "$exe" == */claude/versions/* ]] && print -r -- "$p"
+  done
+  return 0
+}
+
+# A daemon may hold many conversations. Keep every distinct rollout, with its
+# own directory, and exclude internal subagents (including guardian threads).
+# Never infer a session from the newest file in a shared/synced directory.
+codex_sessions() {
+  local p="$1" fallback="$2" f transcript sid meta cwd
+  local -A seen=()
+  for f in "${PROC_ROOT}/${p}"/fd/*(@N); do
+    transcript="$(readlink "$f" 2>/dev/null)" || continue
+    [[ "${transcript:t}" == rollout-*.jsonl ]] || continue
+    sid="$(print -r -- "${transcript:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$')"
+    sid="${sid%.jsonl}"
+    [[ -n "$sid" && -z "${seen[$sid]:-}" ]] || continue
+    seen[$sid]=1
+    cwd="$fallback"
+    if [[ -r "$f" ]]; then
+      meta="$(head -n 1 "$f" 2>/dev/null)"
+      if print -r -- "$meta" | jq -e '.type == "session_meta"' >/dev/null 2>&1; then
+        print -r -- "$meta" | jq -e '.payload.source | type == "object" and has("subagent")' >/dev/null 2>&1 && continue
+        cwd="$(print -r -- "$meta" | jq -r '.payload.cwd // empty')"
+        [[ -n "$cwd" ]] || cwd="$fallback"
+      fi
+    fi
+    print -r -- "${sid}${US}${cwd}"
+  done
+  return 0
+}
+
 gather() {
-  local tool p cwd sid age reg started now host wid wname
+  local tool p cwd sid age reg started now host wid wname record
+  local -a pids args sessions
   now="$(date +%s)"
   load_panes
   for tool in "${TOOLS[@]}"; do
-    for p in $(pgrep -x "${TOOL_PROC[$tool]}" 2>/dev/null); do
+    if [[ "$tool" == claude ]]; then
+      pids=( ${(f)"$(claude_pids | sort -nu)"} )
+    else
+      pids=( $(pgrep -x "${TOOL_PROC[$tool]}" 2>/dev/null) )
+    fi
+    for p in "${pids[@]}"; do
       cwd="$(readlink "${PROC_ROOT}/${p}/cwd" 2>/dev/null)" || continue
-      sid=""; age=""
+      args=()
+      [[ -r "${PROC_ROOT}/${p}/cmdline" ]] && args=( "${(@0)$(<"${PROC_ROOT}/${p}/cmdline")}" )
+      # Supervisors have no conversation to restore. The app-server itself
+      # is scanned below because it owns the CLI clients' conversations.
+      [[ "$tool" == claude && "${args[2]:-}" == daemon ]] && continue
+      [[ "$tool" == codex && "${args[2]:-}" == app-server && "${args[3]:-}" == daemon ]] && continue
+      sid=""; age=""; sessions=()
       case "$tool" in
         claude)
           reg="${REGISTRY}/${p}.json"
@@ -364,14 +415,26 @@ gather() {
             [[ "$started" == <-> ]] && age=$(( now - started / 1000 ))
           fi
           [[ -n "$sid" ]] || sid="$(open_uuid "$p" '\.jsonl$')"
+          sessions=("${sid}${US}${cwd}")
           ;;
-        codex) sid="$(open_uuid "$p" '/rollout-[^/]*\.jsonl$')" ;;
+        codex)
+          sessions=( "${(@f)$(codex_sessions "$p" "$cwd")}" )
+          # A server with no user conversations is infrastructure, not a
+          # starting session. An id-less CLI can be starting or be a client.
+          if [[ -z "${sessions[1]:-}" ]]; then
+            [[ "${args[2]:-}" == app-server ]] && continue
+            sessions=("${US}${cwd}")
+          fi
+          ;;
       esac
       [[ -n "$age" ]] || age="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')"
-      [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no session id yet: listed, but nothing to save or resume it by"
       host="$(host_of "$p")"
       IFS="$US" read -r wid wname <<<"$host"
-      ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}")
+      for record in "${sessions[@]}"; do
+        IFS="$US" read -r sid cwd <<<"$record"
+        [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no local session id: starting or a client of a shared server; nothing to save or resume by this pid"
+        ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}")
+      done
     done
   done
 }
@@ -446,22 +509,30 @@ print_json() {
 save_line() { print -r -- "$1  $2  $3" }
 
 write_save() {
-  local dir row tool p age sid cwd wid wname n=0
+  local dir tmp row tool p age sid cwd wid wname
+  local -a lines=()
   if [[ -z "$FILE" ]]; then
     dir="$(save_dir)"
     mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
     FILE="${dir}/${BOX}-$(date +%Y-%m-%dT%H%M).txt"
   fi
   dedupe_sessions
-  {
-    print -r -- "# claude-sessions ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)"
-    for row in "${SESSION_ROWS[@]}"; do
-      IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
-      save_line "$tool" "$cwd" "$sid"
-      (( n++ ))
-    done
-  } > "$FILE" || { print -ru2 -- "Error: cannot write ${FILE}"; return 1 }
-  print -ru2 -- "saved ${n} session(s) to ${FILE}"
+  for row in "${SESSION_ROWS[@]}"; do
+    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    lines+=("$(save_line "$tool" "$cwd" "$sid")")
+  done
+  # The same atomic replacement and sync-excluded scratch names as autosave.
+  # Check each write: a later successful counter must not hide a disk error.
+  tmp="$(mktemp "${FILE:h}/.${FILE:t}.flakelab-tmp.XXXXXX")" || { print -ru2 -- "Error: cannot write ${FILE}"; return 1 }
+  if ! {
+    print -r -- "# claude-sessions ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} $(date -Is)" &&
+      { (( ${#lines[@]} == 0 )) || print -rl -- "${lines[@]}"; }
+  } > "$tmp" || ! mv -fT -- "$tmp" "$FILE"; then
+    rm -f -- "$tmp"
+    print -ru2 -- "Error: cannot write ${FILE}"
+    return 1
+  fi
+  print -ru2 -- "saved ${#lines[@]} session(s) to ${FILE}"
 }
 
 # The timer's snapshot, in the save shape. Sorted, so a changed pgrep order is
@@ -489,9 +560,9 @@ write_autosave() {
   fi
   tmp="$(mktemp "${dir}/.${file:t}.flakelab-tmp.XXXXXX")" || { print -ru2 -- "Error: cannot write in ${dir}"; return 1 }
   if ! {
-    print -r -- "# claude-sessions autosave ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} boot=${boot} $(date -Is)"
-    print -rl -- "${lines[@]}"
-  } > "$tmp" || ! mv -f "$tmp" "$file"; then
+    print -r -- "# claude-sessions autosave ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} boot=${boot} $(date -Is)" &&
+      print -rl -- "${lines[@]}"
+  } > "$tmp" || ! mv -fT -- "$tmp" "$file"; then
     rm -f "$tmp"
     print -ru2 -- "Error: cannot write ${file}"
     return 1

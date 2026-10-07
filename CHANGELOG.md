@@ -71,6 +71,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab sessions --save` succeeds with exactly one session and replaces snapshots atomically using sync-excluded temporary files. Discovery includes version-named Claude processes and every user conversation held by a shared Codex server, using each rollout's directory and excluding daemon supervisors and internal subagents. Machine-specific save names and cross-instance resume/pruning isolation are preserved.
+
 - Protect timer-owned tycswap auto-switch: the dashboard service declares its scheduler, so tray/dashboard starts and remembered startup cannot launch a second engine. Update tycswap to 0.7.5 with persistent Off/All/Selected model controls, stale-save protection, and accurate selected-window tray gauges.
 
 - `flakelab sessions` names its saves and autosaves `<hostname>-<machine>-…`, the first twelve hex digits of `/etc/machine-id` behind the hostname, and the default `--resume`/`--open` read only this box's files. Two WSL distros built from one overlay share the hostname and, through the sync, the save directory; named after the host alone, the other box's newer autosave was what a reboot here reopened. A file named explicitly is still resumed whichever box wrote it; files from before the rename are left alone and are not read by default.
