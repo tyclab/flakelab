@@ -81,6 +81,10 @@ cat > "${STUBS}/pgrep" <<'STUB'
 [[ "$1" == "-x" ]] || exit 1
 # FAKE_PGREP_NONE: nothing running, the first minutes after a crash.
 [[ -n "${FAKE_PGREP_NONE:-}" ]] && exit 1
+if [[ -n "${FAKE_PGREP_ONLY:-}" ]]; then
+  [[ "$2" == codex ]] && print -r -- "$FAKE_PGREP_ONLY"
+  exit 0
+fi
 case "$2" in
   claude)
     # FAKE_PGREP_DUP: pid 400 is a second, YOUNGER process on pid 100's
@@ -164,8 +168,8 @@ contains "pid 100 takes id and age from its registry file, not its open transcri
 contains "pid 200 falls back to its own transcript, not the shared directory's newest" "${OUT}" "claude  200      1d01h   ${SID_B}"
 contains "a codex process is identified by the rollout file it holds open" "${OUT}" "codex   500      10m     ${SID_X}"
 excludes "a registry file for a dead pid is not a session" "${OUT}" "999"
-contains "a claude process with no id is noted on stderr" "${ERR}" "note: claude pid 300 in ${BASE}/other has no session id yet"
-contains "which says what that means: listed, nothing to resume it by" "${ERR}" "has no session id yet: listed, but nothing to save or resume it by"
+contains "a claude process with no id is noted on stderr" "${ERR}" "note: claude pid 300 in ${BASE}/other has no local session id"
+contains "which says what that means: listed, nothing to resume it by" "${ERR}" "has no local session id: starting or a client of a shared server; nothing to save or resume by this pid"
 contains "the directory with a space is printed intact" "${OUT}" "${WORK}"
 contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  ${WORK}"
 
@@ -584,6 +588,100 @@ mkdir -p "${BASE}/root2/sessions/9-z_example.com/sessions"
 mv "${PROFILE}/sessions/300.json" "${BASE}/root2/sessions/9-z_example.com/sessions/300.json"
 check "FLAKELAB_TYCSWAP_ROOT points the scan at another store" \
   "$(FLAKELAB_TYCSWAP_ROOT="${BASE}/root2" "${CMD}" 2>/dev/null | grep -E '^claude  300 +[0-9]+[dhm]' | grep -c -- "${SID_P}")" "1"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "manual snapshots: single/empty, atomic failure, shared state"
+export FAKE_PGREP_ONLY=500
+run --save "${BASE}/single.txt"
+check "saving exactly one session exits 0" "$RC" 0
+contains "and reports one session" "$ERR" "saved 1 session(s)"
+run --resume "${BASE}/single.txt"
+contains "that session resumes with its directory" "$OUT" "cd ${(q)WORK} && codex resume ${SID_X}"
+FAKE_PGREP_NONE=1 run --save "${BASE}/empty.txt"
+check "saving no sessions exits 0" "$RC" 0
+contains "and reports zero" "$ERR" "saved 0 session(s)"
+check "an empty snapshot has only its header" "$(wc -l < "${BASE}/empty.txt" | tr -d ' ')" 1
+
+# A rename failure leaves the old snapshot byte-for-byte intact, and no temp.
+cp "${BASE}/single.txt" "${BASE}/before.txt"
+print -rl -- '#!/usr/bin/env zsh' 'exit 1' > "${STUBS}/mv"
+chmod +x "${STUBS}/mv"
+run --save "${BASE}/single.txt"
+check "a real write/rename failure exits 1" "$RC" 1
+cmp -s "${BASE}/single.txt" "${BASE}/before.txt" && ok "failed replacement preserves the previous save" || bad "failed replacement lost the previous save"
+check "failed replacement removes its sync-excluded scratch file" "$(find "$BASE" -name '*.flakelab-tmp.*' | wc -l | tr -d ' ')" 0
+rm "${STUBS}/mv"
+mkdir "${BASE}/directory.txt"
+run --save "${BASE}/directory.txt"
+check "a directory destination is a failure, not a moved scratch file" "$RC" 1
+check "a failed destination leaves no scratch file" "$(find "$BASE" -name '*.flakelab-tmp.*' | wc -l | tr -d ' ')" 0
+run --save "${BASE}/missing-parent/save.txt"
+check "a missing explicit parent is a write failure" "$RC" 1
+
+export FLAKELAB_STATE_ROOT="${BASE}/shared"
+run --save
+A_SAVE="$(print -rl -- "${BASE}/shared/claude/sessions/"*.txt)"
+cp "$A_SAVE" "${BASE}/a-before.txt"
+print -r -- bbbbbbbbbbbb0000000000000000000000 > "${BASE}/machine-b"
+FLAKELAB_MACHINE_ID_FILE="${BASE}/machine-b" run --save
+check "a second instance can save to the same state root" "$RC" 0
+cmp -s "$A_SAVE" "${BASE}/a-before.txt" && ok "the second instance leaves the first snapshot intact" || bad "another instance overwrote the snapshot"
+check "same-hostname instances get distinct snapshots" "$(find "${BASE}/shared/claude/sessions" -name '*.txt' | wc -l | tr -d ' ')" 2
+run --resume
+contains "default resume still selects this instance" "$OUT" "# from ${A_SAVE}"
+FLAKELAB_MACHINE_ID_FILE="${BASE}/machine-b" run --resume
+contains "the second instance selects its own snapshot" "$OUT" "${HOST}-bbbbbbbbbbbb-"
+check "successful saves leave no scratch files to sync" "$(find "${BASE}/shared" -name '*.flakelab-tmp.*' | wc -l | tr -d ' ')" 0
+unset FLAKELAB_STATE_ROOT FAKE_PGREP_ONLY
+
+print -r -- ""
+print -r -- "renamed Claude processes and shared Codex servers"
+# Registry candidates still need a live local Claude executable. A dead PID
+# and a PID reused by another executable must not become sessions.
+mk_proc 700 "$WORK" 1 /dev/null
+mk_proc 701 "$WORK" 1 /dev/null
+ln -s /opt/claude/versions/2.1.292 "${PROC}/700/exe"
+ln -s /usr/bin/sleep "${PROC}/701/exe"
+for p in 700 701; do
+  print -r -- "{\"pid\":${p},\"sessionId\":\"${SID_P}\",\"startedAt\":${NOW_MS}}" > "${HOME}/.claude/sessions/${p}.json"
+done
+run --json
+check "a version-named Claude process is found from its registry" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 700) | .session')" "$SID_P"
+check "a registry PID reused by another executable is excluded" "$(print -r -- "$OUT" | jq '[.[] | select(.pid == 701)] | length')" 0
+rm "${HOME}/.claude/sessions/700.json" "${HOME}/.claude/sessions/701.json"
+
+CODEX_ROLLOUTS="${BASE}/daemon-rollouts"
+mkdir "$CODEX_ROLLOUTS"
+for sid in "$SID_X" "$SID_A" "$SID_B"; do
+  print -r -- "{\"type\":\"session_meta\",\"payload\":{\"id\":\"${sid}\",\"cwd\":\"${WORK}\",\"source\":\"cli\"}}" > "${CODEX_ROLLOUTS}/rollout-now-${sid}.jsonl"
+done
+# Internal guardian/worker sessions must not become standalone resume tabs.
+print -r -- "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"${WORK}\",\"source\":{\"subagent\":{\"other\":\"guardian\"}}}}" > "${CODEX_ROLLOUTS}/rollout-now-${SID_B}.jsonl"
+mk_proc 800 "$BASE" 1 "${CODEX_ROLLOUTS}/rollout-now-${SID_X}.jsonl" "${CODEX_ROLLOUTS}/rollout-now-${SID_A}.jsonl" "${CODEX_ROLLOUTS}/rollout-now-${SID_B}.jsonl" "${CODEX_ROLLOUTS}/rollout-now-${SID_X}.jsonl"
+printf 'codex\0app-server\0--managed-daemon\0' > "${PROC}/800/cmdline"
+export FAKE_PGREP_ONLY=800
+run --json
+check "one server lists both distinct user sessions" "$(print -r -- "$OUT" | jq 'length')" 2
+check "the internal guardian session is excluded" "$(print -r -- "$OUT" | jq --arg sid "$SID_B" '[.[] | select(.session == $sid)] | length')" 0
+check "both sessions use transcript cwd, not server cwd" "$(print -r -- "$OUT" | jq --arg cwd "$WORK" '[.[] | select(.cwd == $cwd)] | length')" 2
+run --save "${BASE}/daemon.txt"
+check "all server user sessions save successfully" "$RC" 0
+contains "two sessions, not one process, are counted" "$ERR" "saved 2 session(s)"
+run --resume "${BASE}/daemon.txt"
+check "both saved sessions resume once" "$(print -r -- "$OUT" | grep -c 'codex resume')" 2
+# A supervisor and a server with no conversations have nothing to resume.
+printf 'codex\0app-server\0daemon\0pid-update-loop\0' > "${PROC}/800/cmdline"
+run --json
+check "the daemon supervisor is excluded" "$(print -r -- "$OUT" | jq 'length')" 0
+printf 'codex\0app-server\0--managed-daemon\0' > "${PROC}/800/cmdline"
+rm "${PROC}/800/fd/3" "${PROC}/800/fd/4" "${PROC}/800/fd/6"
+run --json
+check "a server holding only an internal thread is excluded" "$(print -r -- "$OUT" | jq 'length')" 0
+unset FAKE_PGREP_ONLY
+printf 'claude\0daemon\0run\0' > "${PROC}/300/cmdline"
+run --json
+check "the Claude daemon is excluded" "$(print -r -- "$OUT" | jq '[.[] | select(.pid == 300)] | length')" 0
 
 run --help
 check "--help exits 0" "${RC}" "0"

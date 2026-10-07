@@ -73,8 +73,16 @@ Mechanics worth knowing:
   that starts it, which is what carries `secrets.env`, `PATH` and the agent
   socket into every later window. A server started from a shell without them
   keeps lacking them until it is restarted.
-- **Codex.** A `codex` process is identified by the rollout file it holds
-  open under `~/.codex/sessions/`. Saves carry a tool column and `--resume`
+- **Discovery and safe saves.** Claude's local PID registry also finds sessions
+  whose process name is a version number, after checking the live executable.
+  Manual saves and autosaves replace complete files atomically; scratch files
+  use the state sync's excluded naming pattern. Machine-specific snapshot names
+  keep same-hostname instances from overwriting or pruning each other's saves.
+- **Codex.** All user rollouts held open by a `codex` process are listed,
+  including multiple conversations in a shared app-server. Each uses its
+  transcript's directory; internal subagents and daemon supervisors are excluded.
+  A CLI client may show no ID because its server owns the transcript; the
+  server's identified sessions are still saved. Saves carry a tool column and `--resume`
   prints `codex resume <id>`; `--recent` reads both tools' stores.
 - **Nothing forces tmux.** The aliases `c`, `cc`, `codex` stay bare; a
   session that finishes in a minute does not need a host.
