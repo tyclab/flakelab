@@ -160,7 +160,7 @@ rec {
         pkgs.jq
         pkgs.tmux
       ]
-    }:$HOME/.local/bin:$PATH
+    }${lib.optionalString cfg.installTycswap ":${pkgs.tycswap}/bin"}:$HOME/.local/bin:$PATH
     exec ${zsh} ${s}/claude-sessions "$@"
   '';
 

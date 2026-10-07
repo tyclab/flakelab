@@ -521,6 +521,12 @@ cooldown are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
 by `flakelab backup` (`tycswap/`) and read by `flakelab doctor` (`Switcher`),
 `flakelab web` and `flakelab sessions`.
 
+Claude sessions can use independent Fable and Opus/other rotation groups.
+`flakelab sessions --start claude --group fable /path/to/work` selects a group;
+`--save`, `--resume` and `--open` retain its profile and actual continuation id.
+See [session-groups.md](session-groups.md) for starting work and moving an old
+conversation when you choose to restart it.
+
 A distro has no tray, so `flakelab.tycswapAppPort = 7337;` runs `tycswap app
 --headless --port 7337` as the user service `flakelab-tycswap-app`, and the
 Windows binary (`tycswap_<version>_windows_amd64.exe` from the release, checked
