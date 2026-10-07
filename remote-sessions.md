@@ -87,6 +87,10 @@ Mechanics worth knowing:
 - **Nothing forces tmux.** The aliases `c`, `cc`, `codex` stay bare; a
   session that finishes in a minute does not need a host.
   `--start` is the deliberate form for the ones that should outlive a tab.
+- **Rotation groups survive recovery.** Fable and Opus/other sessions retain
+  their group, profile and actual migrated conversation id in snapshots.
+  Starting or moving a conversation into a group is explicit; existing
+  sessions keep running. See [session-groups.md](session-groups.md).
 - **A profile session is a session.** One started by `tycswap run`
   keeps its registry entry under the profile; the table finds it there and
   `--recent` reads the transcripts a profile kept for itself.

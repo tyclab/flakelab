@@ -102,7 +102,10 @@ REGISTRY="${HOME}/.claude/sessions"
 # entry, and with the history unshared its transcript, under that profile:
 # <store>/sessions/<n>-<email>/{sessions,projects}. FLAKELAB_TYCSWAP_ROOT is a
 # test seam over tycswap's XDG store.
-TYCSWAP_PROFILES="${FLAKELAB_TYCSWAP_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}/sessions"
+TYCSWAP_ROOT="${FLAKELAB_TYCSWAP_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}"
+TYCSWAP_PROFILES="${TYCSWAP_ROOT}/sessions"
+TYCSWAP_GROUPS="${TYCSWAP_ROOT}/groups"
+GROUP=""
 # The tmux session every --start window lands in, and the prefix of the view
 # sessions --attach and --open create on it.
 TMUX_SESSION="${FLAKELAB_TMUX_SESSION:-agents}"
@@ -126,7 +129,7 @@ typeset -A TOOL_CMD=(claude claude codex codex)
 
 usage() {
   cat <<'USAGE'
-Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
+Usage: flakelab sessions [--start <tool> [--group fable|opus] [dir] [--detach] [-- args...]]
                          [--attach [id|window]] [--save [file]] [--resume [file]]
                          [--open [file]] [--autosave] [--recent [hours]] [--json]
 
@@ -136,11 +139,15 @@ Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
                     window of the `agents` tmux session, and attach to it —
                     unless --detach, or there is no terminal. At a terminal,
                     with no tool, the tool and the directory are asked for
+  --group fable|opus
+                    choose a Claude rotation group for --start, --resume or
+                    --open; saved group sessions retain their group by default
   --attach [id|window]
                     attach this terminal to the window holding session id, or
                     to the window named; with neither, to the whole server —
                     at a terminal, picked from a list of the windows first
-  --save [file]     list, and write "<tool>  <dir>  <session-id>" lines to file
+  --save [file]     list, and save tool, directory and actual session id;
+                    profile sessions also store group/profile in JSON lines
   --resume [file]   print the resume commands, one per terminal, from file
                     (default: this box's newest save, else the live sessions)
   --open [file]     open each of those sessions in its own Windows Terminal
@@ -166,6 +173,9 @@ while (( $# > 0 )); do
         START_ASK=true
       fi
       ;;
+    --group)
+      [[ "${2:-}" == fable || "${2:-}" == opus ]] || { print -ru2 -- "Error: --group needs fable|opus"; exit 2 }
+      GROUP="$2"; shift ;;
     --detach) START_DETACH=true ;;
     --attach) MODE=attach; [[ "${2:-}" == -* || -z "${2:-}" ]] || { ATTACH_TARGET="$2"; shift } ;;
     --save)   MODE=save;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
@@ -176,10 +186,19 @@ while (( $# > 0 )); do
     --json)   MODE=json ;;
     --) shift; START_ARGS=("$@"); break ;;
     --help|-h) usage; exit 0 ;;
-    *) print -ru2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
+    *)
+      if [[ "$MODE" == start && -n "$START_TOOL" && -z "$START_DIR" && "$1" != -* ]]; then
+        START_DIR="$1"
+      else
+        print -ru2 -- "Unknown option: $1"; usage >&2; exit 2
+      fi ;;
   esac
   shift
 done
+
+if [[ -n "$GROUP" && "$MODE" != start && "$MODE" != resume && "$MODE" != open ]]; then
+  print -ru2 -- "Error: --group is for --start, --resume or --open"; exit 2
+fi
 
 save_dir() {
   if [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
@@ -280,11 +299,18 @@ tool_command() {
 # caller's PATH is handed to the window explicitly: the tool resolves the
 # same way it did for the caller, whoever started the server.
 new_window() {
-  local name="$1" dir="$2" cmd="$3"
+  local name="$1" dir="$2" cmd="$3" handover_cwd="${TYCSWAP_HANDOVER_CWD:-}" digest="${TYCSWAP_HANDOVER_DIGEST:-}"
+  local -a env_args=(-e "PATH=${PATH}" -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST=)
+  if [[ -n "$handover_cwd" || -n "$digest" ]]; then
+    [[ "$handover_cwd" == /* && -d "$handover_cwd" && "$digest" =~ '^[[:xdigit:]]{64}$' ]] || {
+      print -ru2 -- "Error: handover needs an absolute existing directory and a 64-hex digest"; return 2
+    }
+    env_args=(-e "PATH=${PATH}" -e "TYCSWAP_HANDOVER_CWD=${handover_cwd}" -e "TYCSWAP_HANDOVER_DIGEST=${digest}")
+  fi
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" -e "PATH=${PATH}" -c "$dir" "$cmd"
+    tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
   else
-    tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" -e "PATH=${PATH}" -c "$dir" "$cmd"
+    tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
   fi
 }
 
@@ -327,7 +353,7 @@ attach_window() {
 # One record per running session, unit-separator delimited (a tab is IFS
 # whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
 # into its place): <tool> US <pid> US <age-seconds> US <session-id> US <cwd>
-# US <window id> US <window name>. A process with no id from any source
+# US <window id> US <window name> US <group> US <profile>. A process with no id from any source
 # (starting, or a client whose server owns the session) gets an empty id and a stderr
 # note — it has nothing to resume by id.
 typeset -a ROWS=()
@@ -350,7 +376,7 @@ open_uuid() {
 claude_pids() {
   local reg p exe
   pgrep -x "${TOOL_PROC[claude]}" 2>/dev/null
-  for reg in "${REGISTRY}"/<->.json(N) "${TYCSWAP_PROFILES}"/*/sessions/<->.json(N); do
+  for reg in "${REGISTRY}"/<->.json(N) "${TYCSWAP_PROFILES}"/*/sessions/<->.json(N) "${TYCSWAP_GROUPS}"/{fable,opus}/profile/sessions/<->.json(N); do
     p="${reg:t:r}"
     exe="$(readlink "${PROC_ROOT}/${p}/exe" 2>/dev/null)" || continue
     [[ "${exe:t}" == claude || "$exe" == */claude/versions/* ]] && print -r -- "$p"
@@ -385,8 +411,31 @@ codex_sessions() {
   return 0
 }
 
+profile_group() {
+  case "$1" in
+    "${TYCSWAP_GROUPS}/fable/profile") print fable ;;
+    "${TYCSWAP_GROUPS}/opus/profile") print opus ;;
+  esac
+  return 0
+}
+
+process_profile() {
+  local p="$1" item f target
+  if [[ -r "${PROC_ROOT}/${p}/environ" ]]; then
+    for item in "${(@0)$(<"${PROC_ROOT}/${p}/environ")}"; do
+      [[ "$item" == CLAUDE_CONFIG_DIR=* ]] && { print -r -- "${item#*=}"; return 0; }
+    done
+  fi
+  for f in "${PROC_ROOT}/${p}"/fd/*(@N); do
+    target="$(readlink "$f" 2>/dev/null)" || continue
+    [[ "$target" == */projects/*/*.jsonl ]] || continue
+    print -r -- "${target%%/projects/*}"; return 0
+  done
+  return 0
+}
+
 gather() {
-  local tool p cwd sid age reg started now host wid wname record
+  local tool p cwd sid age reg started now host wid wname record group profile
   local -a pids args sessions
   now="$(date +%s)"
   load_panes
@@ -404,11 +453,19 @@ gather() {
       # is scanned below because it owns the CLI clients' conversations.
       [[ "$tool" == claude && "${args[2]:-}" == daemon ]] && continue
       [[ "$tool" == codex && "${args[2]:-}" == app-server && "${args[3]:-}" == daemon ]] && continue
-      sid=""; age=""; sessions=()
+      sid=""; age=""; sessions=(); group=""; profile=""
       case "$tool" in
         claude)
-          reg="${REGISTRY}/${p}.json"
-          [[ -r "$reg" ]] || for reg in "${TYCSWAP_PROFILES}"/*/sessions/${p}.json(N); do break; done
+          profile="$(process_profile "$p")"
+          [[ -n "$profile" ]] && profile="${profile:A}"
+          reg="${profile:-${HOME}/.claude}/sessions/${p}.json"
+          if [[ -z "$profile" && ! -r "$reg" ]]; then
+            for reg in "${TYCSWAP_GROUPS}"/{fable,opus}/profile/sessions/${p}.json(N) "${TYCSWAP_PROFILES}"/*/sessions/${p}.json(N); do
+              profile="${reg:h:h}"; break
+            done
+          fi
+          [[ "$profile" == "${HOME}/.claude" ]] && profile=""
+          group="$(profile_group "$profile")"
           if [[ -r "$reg" ]]; then
             sid="$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)"
             started="$(jq -r '.startedAt // empty' "$reg" 2>/dev/null)"
@@ -433,7 +490,7 @@ gather() {
       for record in "${sessions[@]}"; do
         IFS="$US" read -r sid cwd <<<"$record"
         [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no local session id: starting or a client of a shared server; nothing to save or resume by this pid"
-        ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}")
+        ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}${US}${group}${US}${profile}")
       done
     done
   done
@@ -452,13 +509,13 @@ gather() {
 # which is the thing that differs.
 typeset -a SESSION_ROWS=()
 dedupe_sessions() {
-  local row tool p age sid cwd wid wname key
+  local row tool p age sid cwd wid wname group profile key
   local -A best=() best_age=()
   local -a order=()
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     [[ -n "$sid" ]] || continue
-    key="${tool}${US}${sid}"
+    key="${tool}${US}${sid}${US}${profile}"
     if (( ${+best[$key]} )); then
       (( age > best_age[$key] )) || continue
     else
@@ -480,36 +537,44 @@ fmt_age() {
 }
 
 print_table() {
-  local row tool p age sid cwd wid wname
+  local row tool p age sid cwd wid wname group profile
   if (( ${#ROWS[@]} == 0 )); then
     print -ru2 -- "no running agent sessions"
     return 0
   fi
-  printf '%-7s %-8s %-7s %-36s %-18s %s\n' TOOL PID AGE SESSION HOST DIRECTORY
+  printf '%-7s %-8s %-7s %-36s %-18s %-8s %s\n' TOOL PID AGE SESSION HOST GROUP DIRECTORY
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
-    printf '%-7s %-8s %-7s %-36s %-18s %s\n' "$tool" "$p" "$(fmt_age "$age")" "${sid:--}" "${wname:--}" "$cwd"
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
+    printf '%-7s %-8s %-7s %-36s %-18s %-8s %s\n' "$tool" "$p" "$(fmt_age "$age")" "${sid:--}" "${wname:--}" "${group:--}" "$cwd"
   done
 }
 
 print_json() {
-  local row tool p age sid cwd wid wname
+  local row tool p age sid cwd wid wname group profile
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     jq -n --arg tool "$tool" --argjson pid "$p" --argjson age "$age" --arg session "$sid" --arg cwd "$cwd" \
-      --arg distro "${WSL_DISTRO_NAME:-}" --arg tmux "$TMUX_SESSION" --arg wid "$wid" --arg wname "$wname" \
+      --arg group "$group" --arg profile "$profile" --arg distro "${WSL_DISTRO_NAME:-}" --arg tmux "$TMUX_SESSION" --arg wid "$wid" --arg wname "$wname" \
       '{tool: $tool, pid: $pid, age_seconds: $age, session: (if $session == "" then null else $session end), cwd: $cwd,
+        group: (if $group == "" then null else $group end), profile: (if $profile == "" then null else $profile end),
         host: (if $wid == "" then null else {session: $tmux, window: $wname, id: $wid} end),
         distro: (if $distro == "" then null else $distro end)}'
   done | jq -s .
 }
 
-# Saved lines are "<tool>  <dir>  <id>" — two spaces, the same shape --resume
-# reads back; comment lines carry host, distro and time.
-save_line() { print -r -- "$1  $2  $3" }
+# Profile sessions use JSON lines with group/profile and the actual session id.
+# Unmanaged sessions keep the older two-space format.
+save_line() {
+  if [[ -n "${5:-}" ]]; then
+    jq -cn --arg tool "$1" --arg cwd "$2" --arg session "$3" --arg group "${4:-}" --arg profile "$5" \
+      '{tool:$tool,cwd:$cwd,session:$session,group:$group,profile:$profile}'
+  else
+    print -r -- "$1  $2  $3"
+  fi
+}
 
 write_save() {
-  local dir tmp row tool p age sid cwd wid wname
+  local dir tmp row tool p age sid cwd wid wname group profile
   local -a lines=()
   if [[ -z "$FILE" ]]; then
     dir="$(save_dir)"
@@ -518,8 +583,8 @@ write_save() {
   fi
   dedupe_sessions
   for row in "${SESSION_ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
-    lines+=("$(save_line "$tool" "$cwd" "$sid")")
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
+    lines+=("$(save_line "$tool" "$cwd" "$sid" "$group" "$profile")")
   done
   # The same atomic replacement and sync-excluded scratch names as autosave.
   # Check each write: a later successful counter must not hide a disk error.
@@ -540,14 +605,14 @@ write_save() {
 # save directory may be a synced folder. The temp name is one the state sync
 # already treats as scratch.
 write_autosave() {
-  local boot dir file tmp row tool p age sid cwd wid wname
+  local boot dir file tmp row tool p age sid cwd wid wname group profile
   local -a lines=() old=()
   boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
   gather 2>/dev/null
   dedupe_sessions
   for row in "${SESSION_ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
-    lines+=("$(save_line "$tool" "$cwd" "$sid")")
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
+    lines+=("$(save_line "$tool" "$cwd" "$sid" "$group" "$profile")")
   done
   # Nothing running keeps the last snapshot: after a crash that is the record.
   (( ${#lines[@]} > 0 )) || return 0
@@ -579,7 +644,14 @@ write_autosave() {
 # with two spaces in its name still parses.
 parse_line() {
   local line="$1" rest
-  PL_TOOL=claude
+  PL_TOOL=claude; PL_GROUP=""; PL_PROFILE=""
+  if [[ "$line" == \{* ]]; then
+    local fields
+    fields="$(print -r -- "$line" | jq -er '[.tool,.cwd,.session,(.group // ""),(.profile // "")] | if all(.[]; type == "string" and (contains("\u001f") | not)) then join("\u001f") else error("bad snapshot") end' 2>/dev/null)" || return 1
+    IFS="$US" read -r PL_TOOL PL_CWD PL_SID PL_GROUP PL_PROFILE <<<"$fields"
+    is_tool "$PL_TOOL" && [[ -n "$PL_SID" && ( -z "$PL_GROUP" || "$PL_GROUP" == fable || "$PL_GROUP" == opus ) ]] || return 1
+    return 0
+  fi
   if [[ "$line" == *"  "*"  "* ]] && is_tool "${line%%  *}"; then
     PL_TOOL="${line%%  *}"
     line="${line#*  }"
@@ -587,13 +659,13 @@ parse_line() {
   PL_SID="${line##*  }"
   PL_CWD="${line%  *}"
 }
-PL_TOOL=""; PL_SID=""; PL_CWD=""
+PL_TOOL=""; PL_SID=""; PL_CWD=""; PL_GROUP=""; PL_PROFILE=""
 
 # PAIRS: "<tool> US <cwd> US <sid>" per session to bring back — from FILE,
 # else the newest save, else the live sessions. Prints the source as a comment.
 typeset -a PAIRS=()
 collect_pairs() {
-  local src="$FILE" line row tool p age sid cwd wid wname f cur=""
+  local src="$FILE" line row tool p age sid cwd wid wname group profile f cur=""
   if [[ -z "$src" ]]; then
     # This box's newest save; (N) keeps an empty directory from being a glob
     # error. Another box's files, even from the same hostname, name that box's
@@ -611,16 +683,16 @@ collect_pairs() {
     print -r -- "# from ${src}"
     while IFS= read -r line; do
       [[ "$line" == \#* || -z "$line" ]] && continue
-      parse_line "$line"
-      PAIRS+=("${PL_TOOL}${US}${PL_CWD}${US}${PL_SID}")
+      parse_line "$line" || { print -ru2 -- "Error: invalid snapshot line in ${src}"; return 1 }
+      PAIRS+=("${PL_TOOL}${US}${PL_CWD}${US}${PL_SID}${US}${PL_GROUP}${US}${PL_PROFILE}")
     done < "$src"
   else
     gather
     print -r -- "# from the live sessions (no saved file)"
     for row in "${ROWS[@]}"; do
-      IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+      IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
       [[ -n "$sid" ]] || continue
-      PAIRS+=("${tool}${US}${cwd}${US}${sid}")
+      PAIRS+=("${tool}${US}${cwd}${US}${sid}${US}${group}${US}${profile}")
     done
   fi
   # A saved file can carry the same session twice as well — one written
@@ -629,9 +701,9 @@ collect_pairs() {
   local -A seen=()
   local -a uniq=()
   for row in "${PAIRS[@]}"; do
-    IFS="$US" read -r tool cwd sid <<<"$row"
-    (( ${+seen[${tool}${US}${sid}]} )) && continue
-    seen[${tool}${US}${sid}]=1
+    IFS="$US" read -r tool cwd sid group profile <<<"$row"
+    (( ${+seen[${tool}${US}${sid}${US}${profile}]} )) && continue
+    seen[${tool}${US}${sid}${US}${profile}]=1
     uniq+=("$row")
   done
   PAIRS=("${uniq[@]}")
@@ -639,17 +711,35 @@ collect_pairs() {
 }
 
 # The tool's own resume command for a session id.
+typeset -a RESUME_ARGS=()
+resume_args() {
+  local tool="$1" sid="$2" group="${3:-}" profile="${4:-}" f
+  [[ "$tool" == claude ]] && group="${GROUP:-$group}"
+  if [[ "$tool" == claude && -n "$group" ]]; then
+    if [[ -n "$GROUP" && "$(profile_group "$profile")" != "$GROUP" ]]; then
+      for f in "${profile:-${HOME}/.claude}"/projects/*/${sid}.jsonl(N); do
+        sid="$f"; break
+      done
+    fi
+    RESUME_ARGS=(tycswap run --group "$group" --resume "$sid")
+  elif [[ "$tool" == claude && -n "$profile" ]]; then
+    RESUME_ARGS=(env "CLAUDE_CONFIG_DIR=${profile}" claude --resume "$sid")
+  elif [[ "$tool" == claude ]]; then
+    RESUME_ARGS=(claude --resume "$sid")
+  else
+    RESUME_ARGS=(codex resume "$sid")
+  fi
+}
+
 resume_cmd() {
-  case "$1" in
-    claude) print -r -- "claude --resume $2" ;;
-    codex)  print -r -- "codex resume $2" ;;
-  esac
+  resume_args "$@"
+  print -r -- "${(j: :)${(@q)RESUME_ARGS}}"
 }
 
 # One resume line: the cd only where this box has the directory.
 resume_line() {
-  local tool="$1" cwd="$2" sid="$3" note="${4:-}" cmd
-  cmd="$(resume_cmd "$tool" "$sid")"
+  local tool="$1" cwd="$2" sid="$3" note="${4:-}" group="${5:-}" profile="${6:-}" cmd
+  cmd="$(resume_cmd "$tool" "$sid" "$group" "$profile")"
   if [[ -n "$cwd" && -d "$cwd" ]]; then
     print -r -- "cd ${(q)cwd} && ${cmd}${note:+  # ${note}}"
   elif [[ -n "$cwd" ]]; then
@@ -660,12 +750,12 @@ resume_line() {
 }
 
 print_resume() {
-  local pair tool cwd sid
+  local pair tool cwd sid group profile
   collect_pairs || return 1
   print -r -- "# one line per terminal — in one shell they run in sequence"
   for pair in "${PAIRS[@]}"; do
-    IFS="$US" read -r tool cwd sid <<<"$pair"
-    resume_line "$tool" "$cwd" "$sid"
+    IFS="$US" read -r tool cwd sid group profile <<<"$pair"
+    resume_line "$tool" "$cwd" "$sid" "" "$group" "$profile"
   done
 }
 
@@ -680,23 +770,24 @@ print_resume() {
 # running and --attach brings it back; without tmux the tab runs the resume
 # command itself, as before.
 open_tabs() {
-  local pair tool cwd sid tab_cwd wid view n=0 use_tmux=false
+  local pair tool cwd sid group profile tab_cwd wid view n=0 use_tmux=false
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
   have_tmux && use_tmux=true
   collect_pairs || return 1
   for pair in "${PAIRS[@]}"; do
-    IFS="$US" read -r tool cwd sid <<<"$pair"
+    IFS="$US" read -r tool cwd sid group profile <<<"$pair"
     tab_cwd="$cwd"
     [[ -d "$tab_cwd" ]] || tab_cwd="$HOME"
     if $use_tmux; then
-      wid="$(new_window "$(window_name "$tool" "$cwd")" "$tab_cwd" "$(resume_cmd "$tool" "$sid")")" || { print -ru2 -- "tmux could not start a window for ${cwd} ${sid}"; continue }
+      wid="$(new_window "$(window_name "$tool" "$cwd")" "$tab_cwd" "$(resume_cmd "$tool" "$sid" "$group" "$profile")")" || { print -ru2 -- "tmux could not start a window for ${cwd} ${sid}"; continue }
       view="$(new_view "$wid")" || { print -ru2 -- "tmux could not open a view on ${wid}"; continue }
       wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" -- tmux attach-session -t "$view" </dev/null >/dev/null 2>&1 &&
         (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
     else
       [[ "$tab_cwd" == "$HOME" ]] && tab_cwd="~"
-      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- ${=$(resume_cmd "$tool" "$sid")} </dev/null >/dev/null 2>&1 &&
+      resume_args "$tool" "$sid" "$group" "$profile"
+      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- "${RESUME_ARGS[@]}" </dev/null >/dev/null 2>&1 &&
         (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
     fi
   done
@@ -712,34 +803,37 @@ open_tabs() {
 # list is newest first across all tools.
 typeset -a RECENT=()
 recent_add() {
-  local f="$1" tool="$2" cwd="$3" sid="$4" extra="${5:-}" stamp
+  local f="$1" tool="$2" cwd="$3" sid="$4" extra="${5:-}" group="${6:-}" profile="${7:-}" stamp
   stamp="$(date -r "$f" '+%s %Y-%m-%d %H:%M')"
-  RECENT+=("${stamp%% *}${US}$(resume_line "$tool" "$cwd" "$sid" "${stamp#* }${extra:+, ${extra}}")")
+  RECENT+=("${stamp%% *}${US}$(resume_line "$tool" "$cwd" "$sid" "${stamp#* }${extra:+, ${extra}}" "$group" "$profile")")
 }
 
 print_recent() {
   local -A live=() seen=()
-  local row tool p age sid cwd wid wname f
+  local row tool p age sid cwd wid wname group profile f
   gather 2>/dev/null
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
-    [[ -n "$sid" ]] && live[${tool}${US}${sid}]=1
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
+    [[ -n "$sid" ]] && live[${tool}${US}${sid}${US}${profile}]=1
   done
   print -r -- "# not running, changed in the last ${RECENT_HOURS}h — newest first"
   # A profile that shares the history links projects/ to ~/.claude's, so the
   # same transcript is globbed twice: the first sighting lists it.
-  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${TYCSWAP_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${TYCSWAP_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${TYCSWAP_GROUPS}"/{fable,opus}/profile/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
-    [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
-    seen[claude${US}${sid}]=1
+    profile="${${f:A}:h:h:h}"
+    [[ "$profile" == "${HOME}/.claude" ]] && profile=""
+    [[ -n "${live[claude${US}${sid}${US}${profile}]:-}" || -n "${seen[claude${US}${sid}${US}${profile}]:-}" ]] && continue
+    seen[claude${US}${sid}${US}${profile}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
-    recent_add "$f" claude "$cwd" "$sid"
+    group="$(profile_group "$profile")"
+    recent_add "$f" claude "$cwd" "$sid" "" "$group" "$profile"
   done
   for f in "${HOME}"/.codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
     [[ -n "$sid" ]] || continue
-    [[ -n "${live[codex${US}${sid}]:-}" ]] && continue
-    seen[codex${US}${sid}]=1
+    [[ -n "${live[codex${US}${sid}${US}]:-}" ]] && continue
+    seen[codex${US}${sid}${US}]=1
     cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
     recent_add "$f" codex "$cwd" "$sid"
   done
@@ -751,7 +845,7 @@ print_recent() {
     local pull="synced, not yet pulled here: flakelab backup --state-only first"
     for f in "${FLAKELAB_STATE_ROOT}"/claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
       sid="${f:t:r}"
-      [[ -n "${live[claude${US}${sid}]:-}" || -n "${seen[claude${US}${sid}]:-}" ]] && continue
+      [[ -n "${live[claude${US}${sid}${US}]:-}" || -n "${seen[claude${US}${sid}${US}]:-}" ]] && continue
       [[ -f "${HOME}/.claude/projects/${f:h:t}/${f:t}" ]] && continue
       cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
       recent_add "$f" claude "$cwd" "$sid" "${pull}"
@@ -759,7 +853,7 @@ print_recent() {
     for f in "${FLAKELAB_STATE_ROOT}"/codex/sessions/**/rollout-*.jsonl(N.mh-${RECENT_HOURS}om); do
       sid="$(print -r -- "${f:t}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)"
       [[ -n "$sid" ]] || continue
-      [[ -n "${live[codex${US}${sid}]:-}" || -n "${seen[codex${US}${sid}]:-}" ]] && continue
+      [[ -n "${live[codex${US}${sid}${US}]:-}" || -n "${seen[codex${US}${sid}${US}]:-}" ]] && continue
       cwd="$(head -n 5 "$f" | jq -R -r 'fromjson? | select(.type? == "session_meta") | .payload.cwd? // empty' 2>/dev/null | head -n 1)"
       recent_add "$f" codex "$cwd" "$sid" "${pull}"
     done
@@ -805,7 +899,13 @@ start_session() {
   [[ -d "$dir" ]] || { print -ru2 -- "Error: no such directory: ${dir}"; return 2 }
   dir="${dir:A}"
   name="$(window_name "$START_TOOL" "$dir")"
-  cmd="$(tool_command "$START_TOOL" "${START_ARGS[@]}")"
+  if [[ -n "$GROUP" ]]; then
+    [[ "$START_TOOL" == claude ]] || { print -ru2 -- "Error: --group only supports claude"; return 2 }
+    command -v tycswap >/dev/null 2>&1 || { print -ru2 -- "Error: --group needs tycswap on PATH"; return 2 }
+    cmd="tycswap run --group ${GROUP} --${START_ARGS:+ ${(j: :)${(@q)START_ARGS}}}"
+  else
+    cmd="$(tool_command "$START_TOOL" "${START_ARGS[@]}")"
+  fi
   wid="$(new_window "$name" "$dir" "$cmd")" || { print -ru2 -- "Error: tmux could not start the window"; return 1 }
   print -ru2 -- "started ${START_TOOL} in ${dir} as ${TMUX_SESSION}:${name} (${wid})"
   if $START_DETACH || [[ ! -t 0 || ! -t 1 ]]; then
@@ -820,12 +920,12 @@ start_session() {
 # Sets ATTACH_WID (empty: the whole server) and prints the command that says so.
 ATTACH_WID=""
 ask_attach() {
-  local row tool p age sid cwd wid wname
+  local row tool p age sid cwd wid wname group profile
   local -a labels=() wids=() keys=()
   local -A seen=()
   gather 2>/dev/null
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     [[ -n "$wid" && -z "${seen[$wid]:-}" ]] || continue
     seen[$wid]=1
     labels+=("$(printf '%-7s %-7s %-9s %s' "$tool" "$(fmt_age "$age")" "${${sid:--}[1,8]}" "$(tilde "$cwd")")")
@@ -848,7 +948,7 @@ ask_attach() {
 # --attach: by session id (the window its process runs in), by window name, or
 # the whole server.
 attach_session() {
-  local target="$ATTACH_TARGET" row tool p age sid cwd wid wname found=""
+  local target="$ATTACH_TARGET" row tool p age sid cwd wid wname group profile found=""
   have_tmux || { print -ru2 -- "Error: --attach needs tmux on PATH"; return 2 }
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || { print -ru2 -- "Error: no '${TMUX_SESSION}' tmux session — start one with: flakelab sessions --start <tool>"; return 2 }
   if [[ -z "$target" ]] && prompt_tty; then
@@ -862,7 +962,7 @@ attach_session() {
   fi
   gather 2>/dev/null
   for row in "${ROWS[@]}"; do
-    IFS="$US" read -r tool p age sid cwd wid wname <<<"$row"
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     [[ -n "$wid" ]] || continue
     if [[ "$sid" == "$target" || "$wname" == "$target" || "$wid" == "$target" ]]; then found="$wid"; break; fi
   done

@@ -145,7 +145,7 @@ export TMUX_PANES="${BASE}/panes"
 with_tmux() { PATH="${TMUXBIN}:${PATH}" "$@" }
 
 export FLAKELAB_PROC_ROOT="${PROC}"
-unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME TMUX
+unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME TMUX TYCSWAP_HANDOVER_CWD TYCSWAP_HANDOVER_DIGEST
 # The box: the hostname plus the first twelve hex digits of the machine id —
 # two distros built from one overlay share the hostname and the state root.
 export FLAKELAB_MACHINE_ID_FILE="${BASE}/machine-id"
@@ -163,7 +163,7 @@ ERR=""
 print -r -- "list"
 run
 check "list exits 0" "${RC}" "0"
-contains "the table starts with the tool and host columns" "${OUT}" "TOOL    PID      AGE     SESSION                              HOST               DIRECTORY"
+contains "the table starts with the tool and host columns" "${OUT}" "TOOL    PID      AGE     SESSION                              HOST               GROUP    DIRECTORY"
 contains "pid 100 takes id and age from its registry file, not its open transcript" "${OUT}" "claude  100      2h01m   ${SID_A}"
 contains "pid 200 falls back to its own transcript, not the shared directory's newest" "${OUT}" "claude  200      1d01h   ${SID_B}"
 contains "a codex process is identified by the rollout file it holds open" "${OUT}" "codex   500      10m     ${SID_X}"
@@ -171,13 +171,13 @@ excludes "a registry file for a dead pid is not a session" "${OUT}" "999"
 contains "a claude process with no id is noted on stderr" "${ERR}" "note: claude pid 300 in ${BASE}/other has no local session id"
 contains "which says what that means: listed, nothing to resume it by" "${ERR}" "has no local session id: starting or a client of a shared server; nothing to save or resume by this pid"
 contains "the directory with a space is printed intact" "${OUT}" "${WORK}"
-contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  ${WORK}"
+contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  -        ${WORK}"
 
 run_tmux
 check "list with tmux exits 0" "${RC}" "0"
-contains "a session whose shell is a tmux pane shows its window" "${OUT}" "${SID_B} claude-work_dir    ${WORK}"
-contains "the codex window is found through its pane too" "${OUT}" "${SID_X} codex-codex_proj   ${BASE}/codex proj"
-contains "a process not under a pane keeps the dash" "${OUT}" "${SID_A} -                  ${WORK}"
+contains "a session whose shell is a tmux pane shows its window" "${OUT}" "${SID_B} claude-work_dir    -        ${WORK}"
+contains "the codex window is found through its pane too" "${OUT}" "${SID_X} codex-codex_proj   -        ${BASE}/codex proj"
+contains "a process not under a pane keeps the dash" "${OUT}" "${SID_A} -                  -        ${WORK}"
 check "the host lookup is one list-panes call" "$(grep -c '^list-panes' "${TMUX_LOG}")" "1"
 
 run --json
@@ -244,7 +244,7 @@ export FAKE_TMUX_HAS=1
 run_tmux --open
 check "--open with tmux exits 0" "${RC}" "0"
 check "--open with tmux opens a window per session" "$(grep -c '^new-window' "${TMUX_LOG}")" "3"
-contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude --resume ${SID_A}"
+contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --resume ${SID_A}"
 check "with the caller's PATH handed to it, whoever started the server" "$(grep -c '^new-window -d -P -F #{window_id} -t agents -n [a-z_-]* -e PATH=' "${TMUX_LOG}")" "3"
 check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "3"
 check "the view is set to go away with its client, by a hook" "$(grep -c -E '^set-hook -t agents-10-[0-9]+ client-detached kill-session -t agents-10-[0-9]+$' "${TMUX_LOG}")" "1"
@@ -282,7 +282,7 @@ check "--start with a missing directory exits 2" "${RC}" "2"
 export FAKE_TMUX_HAS=1
 run_tmux --start claude "${WORK}" --detach -- --model opus
 check "--start --detach exits 0" "${RC}" "0"
-contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude --model opus"
+contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --model opus"
 contains "--start reports the window" "${ERR}" "started claude in ${WORK} as agents:claude-work_dir (@10)"
 contains "--start --detach says how to attach" "${ERR}" "attach with: flakelab sessions --attach claude-work_dir"
 excludes "--start --detach opens no view" "$(<"${TMUX_LOG}")" "attach-session"
@@ -294,7 +294,7 @@ contains "--start with no terminal still says how to attach" "${ERR}" "attach wi
 unset FAKE_TMUX_HAS
 : > "${TMUX_LOG}"
 run_tmux --start claude "${WORK}" --detach
-contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude"
+contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -577,6 +577,10 @@ print -r -- "{\"type\":\"user\",\"cwd\":\"${BASE}/other\"}" > "${PROFILE}/projec
 run --recent
 contains "--recent reads a transcript a profile kept for itself" "${OUT}" "claude --resume ${SID_Q}  # "
 excludes "and leaves the running profile session out" "${OUT}" "${SID_P}"
+run --save "${BASE}/legacy-profile.txt"
+check "a legacy profile snapshot retains the profile" "$(jq -Rr --arg id "$SID_P" 'fromjson? | select(.session == $id) | .profile' "${BASE}/legacy-profile.txt")" "$PROFILE"
+run --resume "${BASE}/legacy-profile.txt"
+contains "a legacy profile resumes in its original config directory" "$OUT" "env CLAUDE_CONFIG_DIR=${PROFILE} claude --resume ${SID_P}"
 # A profile that shares the history (tycswap's default) links projects/ to
 # ~/.claude's: the same transcript is globbed twice and listed once.
 mkdir -p "${PROFILE:h}/3-c_example.com"
@@ -588,6 +592,101 @@ mkdir -p "${BASE}/root2/sessions/9-z_example.com/sessions"
 mv "${PROFILE}/sessions/300.json" "${BASE}/root2/sessions/9-z_example.com/sessions/300.json"
 check "FLAKELAB_TYCSWAP_ROOT points the scan at another store" \
   "$(FLAKELAB_TYCSWAP_ROOT="${BASE}/root2" "${CMD}" 2>/dev/null | grep -E '^claude  300 +[0-9]+[dhm]' | grep -c -- "${SID_P}")" "1"
+
+# ---------------------------------------------------------------------------
+print -r -- ""
+print -r -- "managed groups: launcher, actual ids, profiles and opt-in migration"
+print -rl -- '#!/usr/bin/env zsh' 'exit 0' > "${STUBS}/tycswap"
+chmod +x "${STUBS}/tycswap"
+: > "${TMUX_LOG}"
+run_tmux --start claude --group fable "${WORK}" --detach -- --model fable
+check "a grouped start accepts the directory after --group" "$RC" 0
+contains "a grouped start delegates model args to tycswap" "$(<"${TMUX_LOG}")" "-c ${WORK} tycswap run --group fable -- --model fable"
+run_tmux --start codex --group opus --detach
+check "a Claude group refuses Codex" "$RC" 2
+: > "$TMUX_LOG"
+HANDOVER_DIGEST="$(printf '%064d' 0)"
+TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" FAKE_TMUX_HAS=1 run_tmux --start claude --group fable "$WORK" --detach
+check "an attested handover starts on an existing tmux server" "$RC" 0
+contains "the new window receives exactly the handover directory and digest" "$(<"$TMUX_LOG")" "-e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
+: > "$TMUX_LOG"
+TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" run_tmux --start codex "$WORK" --detach
+contains "the first server window also receives the attestation" "$(<"$TMUX_LOG")" "-s agents -n codex-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
+: > "$TMUX_LOG"
+run_tmux --start codex "$WORK" --detach
+contains "an ordinary launch clears stale server handover variables" "$(<"$TMUX_LOG")" '-e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST='
+: > "$TMUX_LOG"
+TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST=bad run_tmux --start codex "$WORK" --detach
+check "an invalid digest refuses the window" "$RC" 1
+excludes "an invalid attestation starts no process" "$(<"$TMUX_LOG")" new-session
+TYCSWAP_HANDOVER_CWD=relative TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" run_tmux --start codex "$WORK" --detach
+check "a relative handover directory refuses the window" "$RC" 1
+TYCSWAP_HANDOVER_CWD="$WORK" run_tmux --start codex "$WORK" --detach
+check "a partial handover pair refuses the window" "$RC" 1
+run --resume --group unknown
+check "an unknown group is a usage error" "$RC" 2
+run --json --group fable
+check "a group on an unrelated action is a usage error" "$RC" 2
+
+GROUP_ROOT="${HOME}/.local/share/tycswap/groups"
+FABLE_PROFILE="${GROUP_ROOT}/fable/profile"
+OPUS_PROFILE="${GROUP_ROOT}/opus/profile"
+SID_M=abcd1234-1111-2222-3333-444444444444
+SID_N=abcd5678-1111-2222-3333-444444444444
+for profile in "$FABLE_PROFILE" "$OPUS_PROFILE"; do
+  mkdir -p "${profile}/sessions" "${profile}/projects/-work"
+  print -r -- 'DO-NOT-EXPOSE-CREDENTIAL' > "${profile}/.credentials.json"
+done
+for p in 310 320; do
+  mk_proc "$p" "$WORK" 1 /dev/null
+  ln -s /opt/claude/versions/2.1.292 "${PROC}/${p}/exe"
+done
+printf 'CLAUDE_CONFIG_DIR=%s\0' "$FABLE_PROFILE" > "${PROC}/310/environ"
+printf 'CLAUDE_CONFIG_DIR=%s\0' "$OPUS_PROFILE" > "${PROC}/320/environ"
+print -r -- "{\"pid\":310,\"sessionId\":\"${SID_M}\",\"startedAt\":${NOW_MS}}" > "${FABLE_PROFILE}/sessions/310.json"
+print -r -- "{\"pid\":320,\"sessionId\":\"${SID_N}\",\"startedAt\":${NOW_MS}}" > "${OPUS_PROFILE}/sessions/320.json"
+print -r -- "{\"pid\":310,\"sessionId\":\"${SID_A}\"}" > "${HOME}/.claude/sessions/310.json"
+run --json
+check "group profile registry wins over a stale default entry" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 310) | .session')" "$SID_M"
+check "Fable ownership is visible" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 310) | .group')" fable
+check "Opus keeps its own profile" "$(print -r -- "$OUT" | jq -r '.[] | select(.pid == 320) | .profile')" "$OPUS_PROFILE"
+excludes "listing never reads profile credentials" "$OUT" DO-NOT-EXPOSE-CREDENTIAL
+run --save "${BASE}/groups.txt"
+check "saved metadata contains the actual migrated id and profile" "$(jq -Rr --arg id "$SID_M" 'fromjson? | select(.session == $id) | [.group,.profile] | join("|")' "${BASE}/groups.txt")" "fable|${FABLE_PROFILE}"
+run --resume "${BASE}/groups.txt"
+contains "group resumes retain the migrated Fable id" "$OUT" "tycswap run --group fable --resume ${SID_M}"
+contains "group resumes retain the independent Opus id" "$OUT" "tycswap run --group opus --resume ${SID_N}"
+excludes "unmanaged sessions remain unmanaged without an explicit group" "$(print -r -- "$OUT" | grep "$SID_A")" 'tycswap run'
+export WSL_DISTRO_NAME=flakelab
+: > "$WT_LOG"
+run --open "${BASE}/groups.txt"
+contains "direct tabs resume in the saved group" "$(<"$WT_LOG")" "-- tycswap run --group fable --resume ${SID_M}"
+: > "$TMUX_LOG"
+run_tmux --open "${BASE}/groups.txt"
+contains "tmux tabs resume in the saved group" "$(<"$TMUX_LOG")" "tycswap run --group opus --resume ${SID_N}"
+unset WSL_DISTRO_NAME
+
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_A}.jsonl"
+run --resume "${BASE}/old-shape.txt" --group fable
+contains "explicit migration sends the source transcript path" "$OUT" "tycswap run --group fable --resume ${HOME}/.claude/projects/-work/${SID_A}.jsonl"
+contains "the Codex line in a mixed old snapshot keeps its tool" "$OUT" "codex resume ${SID_B}"
+export WSL_DISTRO_NAME=flakelab
+: > "$WT_LOG"
+run --open "${BASE}/old-shape.txt" --group opus
+contains "explicit group choice also migrates old Windows Terminal tabs" "$(<"$WT_LOG")" "-- tycswap run --group opus --resume ${HOME}/.claude/projects/-work/${SID_A}.jsonl"
+unset WSL_DISTRO_NAME
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${FABLE_PROFILE}/projects/-work/${SID_N}.jsonl"
+run --recent
+contains "stopped group history resumes with its profile's group" "$OUT" "tycswap run --group fable --resume ${SID_N}"
+excludes "a session active in Opus does not hide Fable's distinct copy" "$ERR" 'no stopped session'
+run --autosave
+AUTO_GROUP="${HOME}/.local/state/flakelab/sessions/${BOX}-autosave-$(tr -d '-' < /proc/sys/kernel/random/boot_id | cut -c1-12).txt"
+contains "autosave stores group ownership and the actual id" "$(<"$AUTO_GROUP")" "\"session\":\"${SID_M}\",\"group\":\"fable\""
+print -r -- '{"tool":"claude","cwd":"/tmp","session":"x","group":"bogus","profile":"/tmp"}' > "${BASE}/bad-group.txt"
+run --resume "${BASE}/bad-group.txt"
+check "corrupt group metadata fails before launching" "$RC" 1
+rm -rf "${PROC}/310" "${PROC}/320" "$GROUP_ROOT"
+rm "${HOME}/.claude/sessions/310.json" "${HOME}/.claude/projects/-work/${SID_A}.jsonl"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
