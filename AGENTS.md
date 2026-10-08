@@ -165,6 +165,10 @@ the private overlay `flakelab-config`, which imports this flake via
   templates are application inputs, not additional repository instructions.
 - README files and agent instruction files are exempt from the comment limit
   by design. The limit applies to code and configuration files.
+- Outside the limit (operator, 2026-10-08): vendored third-party code and
+  third-party build output (kept byte-identical to upstream), Hugo site
+  functional files, translation files, and approved runtime text such as MCP
+  tool docstrings. Output of our own generators is inside it: fix the generator.
 - Keep comments at or below 20% of nonblank lines in each code/configuration
   file. 20% is a ceiling, not a target: delete narrative, keep the one-line why
   (version pins, security choices, rulings with ids and dates, gotchas, cross-file contracts). Preserve licenses, tool directives and runtime strings; only the
