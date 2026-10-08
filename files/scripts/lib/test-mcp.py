@@ -4,6 +4,8 @@ headless browser server when FLAKELAB_MCP_HEADLESS names its launcher
 (FLAKELAB_MCP_HEADLESS_ARGS adds arguments to it)."""
 import http.server
 import importlib.util
+import io
+import multiprocessing
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,184 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("mcp", Path(__file__).with_name("mcp.py"))
 mcp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mcp)
+
+
+class NativeMcpTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.secret = Path(self.temp.name) / 'secrets.env'
+        self.secret.write_text('FIXTURE_KEY=fixture\n')
+        self.servers = {'hub': {'url': 'https://mcp.example.test/mcp', 'tokenEnv': 'FIXTURE_KEY', 'clientsAgree': True}}
+
+    def check(self, **kwargs):
+        return mcp.mcp_native.check(self.servers, secret_file=self.secret, **kwargs)
+
+    def test_missing_credential_and_stale_shell_fail_without_leaking_values(self):
+        self.assertEqual(self.check(env={})[0]['status'], 'credential-missing-from-environment')
+        self.secret.write_text('FIXTURE_KEY=new-fixture-value\nUNRELATED=unrelated-fixture-value\n')
+        result = self.check(env={'FIXTURE_KEY': 'old-fixture-value'})
+        self.assertEqual(result[0]['status'], 'fresh-environment-source-mismatch')
+        self.assertNotIn('fixture-value', json.dumps(result))
+
+    def test_client_mismatch_and_unsafe_endpoints_never_send_credentials(self):
+        with patch.object(mcp.mcp_native, 'probe') as probe:
+            for url in ('http://example.test/mcp', 'https://user:pass@example.test/mcp', 'https://example.test/mcp?token=fixture', 'https://[invalid', 'https://example.test:bad/mcp'):
+                self.servers['hub']['url'] = url
+                self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, live=True)[0]['status'], 'configuration-invalid')
+            self.servers['hub'].update(url='https://example.test/mcp', clientsAgree=False)
+            self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, live=True)[0]['status'], 'client-config-mismatch')
+            probe.assert_not_called()
+
+    def test_live_read_acceptance_and_revoked_key_status_are_distinct(self):
+        with patch.object(mcp.mcp_native, 'probe', return_value=12):
+            self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, live=True)[0],
+                             {'name': 'hub', 'status': 'authenticated', 'tools': 12, 'scope': 'fresh-invocation',
+                              'runningClients': 'unverified', 'otherConfigLayers': 'unverified'})
+        error = mcp.mcp_native.urllib.error.HTTPError('https://example.test', 401, 'unauthorized', {}, None)
+        with patch.object(mcp.mcp_native, 'probe', side_effect=error):
+            self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, live=True)[0]['status'], 'unauthorized')
+
+    def test_bearer_is_not_forwarded_on_redirect(self):
+        handler = mcp.mcp_native.NoRedirect()
+        self.assertIsNone(handler.redirect_request(None, None, 302, '', {}, 'https://elsewhere.test'))
+
+    def test_secret_source_is_required_and_bad_line_only_fails_its_server(self):
+        self.secret.unlink()
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'})[0]['status'], 'secret-source-missing')
+        self.secret.write_text('FIXTURE_KEY="unterminated\nOTHER_KEY=other\n')
+        self.servers['other'] = dict(self.servers['hub'], tokenEnv='OTHER_KEY')
+        rows = self.check(env={'FIXTURE_KEY': 'fixture', 'OTHER_KEY': 'other'})
+        self.assertEqual([r['status'] for r in rows], ['secret-source-invalid', 'configured'])
+        self.assertNotIn('unterminated', json.dumps(rows))
+
+    def test_malformed_server_does_not_hide_next_server(self):
+        self.servers = {'broken': None, **self.servers}
+        rows = self.check(env={'FIXTURE_KEY': 'fixture'})
+        self.assertEqual([r['status'] for r in rows], ['configuration-invalid', 'configured'])
+
+    def test_configured_source_is_used_without_enrolled_fallback(self):
+        config = {'nativeServers': self.servers, 'nativeSecretFile': str(self.secret)}
+        with patch.dict(os.environ, {'FIXTURE_KEY': 'fixture'}), patch('builtins.print') as output:
+            self.assertEqual(mcp.mcp_native.doctor(config), 0)
+        self.assertEqual(json.loads(output.call_args.args[0])[0]['status'], 'configured')
+        config['nativeSecretFile'] = str(self.secret.parent / 'missing-sops-render')
+        with patch.dict(os.environ, {'FIXTURE_KEY': 'fixture'}), patch('builtins.print') as output:
+            self.assertEqual(mcp.mcp_native.doctor(config), 1)
+        self.assertEqual(json.loads(output.call_args.args[0])[0]['status'], 'secret-source-missing')
+
+    def client_files(self):
+        root = Path(self.temp.name)
+        files = {name: str(root / filename) for name, filename in
+                 [('claude', 'claude.json'), ('codexSystem', 'system.toml'), ('codexUser', 'user.toml')]}
+        self.servers['hub'].update(claudeInstalled=True, claudeEnabled=True, claudeDisabled=False, codexEnabled=True)
+        Path(files['claude']).write_text(json.dumps({'mcpServers': {'hub': {
+            'type': 'http', 'url': self.servers['hub']['url'], 'headers': {'Authorization': 'Bearer ${FIXTURE_KEY}'}}}}))
+        Path(files['codexSystem']).write_text('[mcp_servers.hub]\nurl = "https://mcp.example.test/mcp"\nbearer_token_env_var = "FIXTURE_KEY"\n')
+        return files
+
+    def test_reads_activated_claude_and_codex_user_override(self):
+        files = self.client_files()
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files)[0]['status'], 'configured')
+        Path(files['codexUser']).write_text('[mcp_servers.hub]\nurl = "https://stale.example.test/mcp"\n')
+        with patch.object(mcp.mcp_native, 'probe') as probe:
+            self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files, live=True)[0]['status'],
+                             'codex-client-config-mismatch')
+            probe.assert_not_called()
+        Path(files['codexUser']).unlink()
+        Path(files['claude']).write_text('{}')
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files)[0]['status'], 'claude-activation-missing')
+
+    def test_also_checks_a_manually_activated_claude_entry(self):
+        files = self.client_files()
+        self.servers['hub']['claudeEnabled'] = False
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files)[0]['status'], 'configured')
+        active = json.loads(Path(files['claude']).read_text())
+        active['mcpServers']['hub']['url'] = 'https://stale.example.test/mcp'
+        Path(files['claude']).write_text(json.dumps(active))
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files)[0]['status'],
+                         'claude-client-config-mismatch')
+
+    def test_respects_disabled_claude_and_detects_stale_activation(self):
+        files = self.client_files()
+        self.servers['hub'].update(claudeEnabled=False, claudeDisabled=True)
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files)[0]['status'],
+                         'claude-disabled-server-still-activated')
+        Path(files['claude']).write_text('{}')
+        self.assertEqual(self.check(env={'FIXTURE_KEY': 'fixture'}, client_files=files)[0]['status'], 'configured')
+
+    def test_codex_home_override_and_malformed_configs_are_safe(self):
+        files = self.client_files()
+        custom_home = Path(self.temp.name) / 'custom-codex'
+        custom_home.mkdir()
+        config = custom_home / 'config.toml'
+        config.write_text('[mcp_servers.hub]\nenabled = false\n')
+        env = {'FIXTURE_KEY': 'fixture', 'CODEX_HOME': str(custom_home)}
+        self.assertEqual(self.check(env=env, client_files=files)[0]['status'], 'codex-client-config-mismatch')
+        config.write_text('invalid-fixture-secret-value')
+        result = self.check(env=env, client_files=files)
+        self.assertEqual(result[0]['status'], 'client-config-unreadable-or-invalid')
+        self.assertNotIn('fixture-secret-value', json.dumps(result))
+
+    def test_sse_multiline_events_are_assembled_before_json_parsing(self):
+        class Response(io.BytesIO):
+            headers = {'Content-Type': 'text/event-stream', 'Mcp-Session-Id': 'fixture-session'}
+        body = (b': heartbeat\r\ndata: {"jsonrpc":"2.0","method":"notification"}\r\n\r\n'
+                b'event: message\ndata: {"jsonrpc":"2.0",\ndata: "id": 7, "result": {"tools": []}}\n\n')
+        with patch.object(mcp.mcp_native.urllib.request.OpenerDirector, 'open', return_value=Response(body)):
+            result, session = mcp.mcp_native.rpc(mcp.mcp_native.urllib.request.build_opener(),
+                                               'https://example.test', 'fixture', {'id': 7})
+        self.assertEqual(result['id'], 7)
+        self.assertEqual(session, 'fixture-session')
+
+    def test_uses_negotiated_protocol_and_session_after_initialize(self):
+        replies = [({'result': {'serverInfo': {'name': 'fixture'}, 'protocolVersion': '2025-03-26'}}, 'session'),
+                   (None, 'session'), ({'result': {'tools': [{'name': 'fixture'}]}}, 'session')]
+        with patch.object(mcp.mcp_native, 'rpc', side_effect=replies) as rpc:
+            self.assertEqual(mcp.mcp_native._probe('https://example.test', 'fixture'), 1)
+        for call in rpc.call_args_list[1:]:
+            self.assertEqual(call.args[-2:], ('session', '2025-03-26'))
+
+    def test_streaming_read_and_dns_have_a_wall_clock_deadline(self):
+        def never_finishes(*_args):
+            time.sleep(60)
+        for target in ('_probe',):
+            before_children = {p.pid for p in multiprocessing.active_children()}
+            started = time.monotonic()
+            with patch.object(mcp.mcp_native, target, side_effect=never_finishes):
+                with self.assertRaisesRegex(mcp.mcp_native.ProbeError, '^endpoint-timeout$'):
+                    mcp.mcp_native.probe('https://example.test', 'fixture', timeout=0.15)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertEqual({p.pid for p in multiprocessing.active_children()}, before_children)
+
+    def test_real_sse_trickle_cannot_extend_deadline(self):
+        class Trickle(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.end_headers()
+                try:
+                    for _ in range(100):
+                        self.wfile.write(b': heartbeat\n\n')
+                        self.wfile.flush()
+                        time.sleep(0.025)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            def log_message(self, *_args):
+                pass
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Trickle)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            started = time.monotonic()
+            with self.assertRaisesRegex(mcp.mcp_native.ProbeError, '^endpoint-timeout$'):
+                mcp.mcp_native.probe('http://127.0.0.1:%s/mcp' % server.server_port, 'fixture', timeout=0.2)
+            self.assertLess(time.monotonic() - started, 1.5)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=1)
 
 
 class SharedMcpTest(unittest.TestCase):

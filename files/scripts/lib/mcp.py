@@ -16,6 +16,8 @@ import tempfile
 import time
 from urllib.parse import parse_qs, urlsplit
 
+import mcp_native
+
 
 class Refusal(ValueError):
     """Nothing was changed: exit 2, as the rest of the CLI refuses."""
@@ -276,6 +278,8 @@ def main():
     parser = argparse.ArgumentParser(prog="flakelab mcp", description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("status", help="report credential presence without exposing tokens")
+    doctor = sub.add_parser("doctor", help="check a fresh native MCP invocation; running clients remain unverified")
+    doctor.add_argument("--live", action="store_true", help="also initialize and list tools without invoking application actions")
     sub.add_parser("import-codex", help="move native Codex grants; stop agent clients first")
     for action in ["connect", "_login"]:
         child = sub.add_parser(action)
@@ -287,6 +291,8 @@ def main():
     child.add_argument("--fresh", action="store_true", help="discard old grants and register again")
     args = parser.parse_args()
     cfg = configuration()
+    if args.action == "doctor":
+        return mcp_native.doctor(cfg, live=args.live)
     named = [args.name] if getattr(args, "name", None) is not None else getattr(args, "names", [])
     if any(name not in cfg["servers"] for name in named):
         raise Refusal("Unknown MCP account.")

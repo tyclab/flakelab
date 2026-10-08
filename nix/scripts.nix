@@ -417,6 +417,7 @@ rec {
   # GitLab", where a missing token is not a finding; the CLI list does the same for
   # an installer the overlay switched off.
   nix-doctor = pkgs.writeShellScriptBin "nix-doctor" ''
+    export FLAKELAB_MCP_CONFIG=${(import ./mcp-clients.nix { inherit pkgs cfg; }).settings}
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_TARGET=${cfg.target}
     export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
@@ -441,6 +442,7 @@ rec {
         pkgs.coreutils
         pkgs.gnugrep
         pkgs.findutils
+        pkgs.python3
       ]
     }:$HOME/.local/bin:$PATH
     exec ${zsh} ${s}/nix-doctor "$@"
