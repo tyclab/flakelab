@@ -1,11 +1,13 @@
 {
   description = "Private flakelab overlay - real personal values, kept off the shareable template";
 
+  # Both generators rewrite this line by its marker: keep the marker exactly once, on one line.
   inputs.flakelab.url = "github:tyclab/flakelab"; # flakelab-url: substitution anchor
 
   outputs =
     { flakelab, ... }:
     {
+      # flakelab/nix/options.nix is the schema. No plaintext secrets: the Nix store is world-readable.
       nixosConfigurations.default = flakelab.lib.mkSystem {
         # Platform to build for; set on a Proxmox guest, never on a WSL distro.
         # target = "proxmox-vm";
@@ -28,6 +30,7 @@
 
         gitlabGroups = [ ];
 
+        # GitHub discovery is opt-in per device; empty owners means your account and organizations.
         cloneGithub = false;
         githubOwners = [ ];
 

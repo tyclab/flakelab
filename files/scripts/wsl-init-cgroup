@@ -2,7 +2,9 @@
 
 set -uo pipefail
 
-
+# Before systemd starts, move this distro to a cgroup its users can enter (known-issues.md, "No user manager").
+# Outcome for flakelab doctor in /run/flakelab/init-cgroup (result=moved|failed|skipped, from, to, reason);
+# nothing recorded when there was nothing to do. Exit status 0 always.
 CGROUP_ROOT="${FLAKELAB_CGROUP_ROOT:-/sys/fs/cgroup}"
 PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
 SYSTEMD_RUNTIME="${FLAKELAB_SYSTEMD_RUNTIME:-/run/systemd/system}"
@@ -26,6 +28,7 @@ fail() { # <reason>
   exit 0
 }
 
+# systemd is up (or switch-to-configuration names its action): a switch, not a boot.
 [[ -d "${SYSTEMD_RUNTIME}" || -n "${NIXOS_ACTION:-}" ]] && exit 0
 
 line="$(grep -m1 '^0::' "${PROC_ROOT}/1/cgroup" 2> /dev/null)" || exit 0
@@ -49,10 +52,12 @@ ns="${ns//[^0-9]/}"
 [[ -n "${id}" ]] || id="${ns}"
 [[ -n "${id}" ]] || fail "no machine id and no PID namespace to name a cgroup after"
 top="/flakelab-${id}"
+# populated 1: another live distro owns the name; an earlier boot of this one leaves it empty for reuse.
 if grep -qx 'populated 1' "${CGROUP_ROOT}${top}/cgroup.events" 2> /dev/null; then
   [[ -n "${ns}" && "${id}" != "${ns}" ]] || fail "${top} is held by a live distro, and no PID namespace id tells this one apart"
   top+="-${ns}"
 fi
+# systemd started in an init.scope roots its tree at the cgroup above it.
 TO="${top}/init.scope"
 
 mkdir -p -- "${CGROUP_ROOT}${TO}" 2> /dev/null || fail "cannot create ${TO}"
@@ -62,6 +67,7 @@ if ! err="$({ print -r -- 1 >> "${CGROUP_ROOT}${TO}/cgroup.procs"; } 2>&1)"; the
   fail "moving PID 1 to ${TO}: ${${(f)err}[-1]:-refused}"
 fi
 
+# Re-read until none is left: a process forked meanwhile stays behind. Pids it cannot see read as 0.
 for pass in 1 2 3 4 5; do
   pids=("${(@f)$(2> /dev/null < "${CGROUP_ROOT}${FROM}/cgroup.procs")}")
   pids=(${pids:#0})

@@ -166,7 +166,8 @@ the private overlay `flakelab-config`, which imports this flake via
 - README files and agent instruction files are exempt from the comment limit
   by design. The limit applies to code and configuration files.
 - Keep comments at or below 20% of nonblank lines in each code/configuration
-  file. Preserve licenses, tool directives and runtime strings; only the
+  file. 20% is a ceiling, not a target: delete narrative, keep the one-line why
+  (version pins, security choices, rulings with ids and dates, gotchas, cross-file contracts). Preserve licenses, tool directives and runtime strings; only the
   operator may grant a documented, file-specific exception. Do not add blank
   lines or move prose inline to satisfy the limit.
 - Remove unused files or features only after checking references and behavior.

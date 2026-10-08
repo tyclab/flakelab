@@ -37,6 +37,8 @@ in
     rm -f "${warnLog}" "${deferredLog}"
   '';
 
+  # Must be the LAST activation entry: the installers warn, not fail, so this turns recorded warnings into a failed
+  # activation. Interactive state (an agent key, a browser login) needs a TTY and is left to `flakelab doctor`.
   home.activation.flakelabHealthCheck =
     lib.hm.dag.entryAfter
       [

@@ -30,6 +30,7 @@ in
   # (including WSL's chosen automount root); only replace the startup command.
   systemd.services.wsl-mnt-guard = {
     overrideStrategy = "asDropin";
+    # Restarting the active guard mid-switch would run its shutdown action and change /mnt/wsl propagation.
     restartIfChanged = false;
     serviceConfig.ExecStart = [
       ""

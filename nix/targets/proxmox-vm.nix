@@ -34,6 +34,7 @@ in
     };
   };
 
+  # networkd sorts cloud-init's static unit ahead of the dhcp fallback, so PVE's address survives boot.
   networking.useNetworkd = true;
 
   services.qemuGuest.enable = true;
@@ -43,6 +44,7 @@ in
   systemd.services.qemu-guest-agent.serviceConfig.ExecStart =
     lib.mkForce "${config.services.qemuGuest.package}/bin/qemu-ga --statedir /run/qemu-ga -b guest-fsfreeze-freeze,guest-fsfreeze-freeze-list,guest-fsfreeze-thaw,guest-fsfreeze-status";
 
+  # mosh for a roaming client (a phone on WireGuard); the module opens its UDP range. Off by default.
   programs.mosh.enable = cfg.mosh.enable;
 
   # A bind off loopback is unreachable behind a firewall open only to sshd.
@@ -82,6 +84,7 @@ in
     pkgs.cloud-init
   ];
 
+  # The clones hardcode /bin/bash (Makefiles, the Claude statusline); a plain NixOS guest only has /bin/sh.
   systemd.tmpfiles.rules = [ "L+ /bin/bash - - - - ${pkgs.bashInteractive}/bin/bash" ];
 
   # By label on a single growing partition, as the seed image is built, so PVE's
@@ -106,6 +109,7 @@ in
 
   time.timeZone = lib.mkDefault "UTC";
 
+  # A variant, not a toplevel `system.build.image`, which collides with every variant beside it; growPartition fills PVE's disk.
   image.modules.proxmox-vm-seed = {
     imports = [ "${modulesPath}/virtualisation/disk-image.nix" ];
     image.format = "qcow2";

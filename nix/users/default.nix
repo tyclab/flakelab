@@ -1,3 +1,4 @@
+# Neutral placeholders, git-tracked because flakes evaluate tracked files only; never secrets.
 {
   username = "youruser";
   gitName = "Your Name";

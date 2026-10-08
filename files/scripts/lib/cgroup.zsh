@@ -1,5 +1,6 @@
 # The cgroup walk wsl-init-cgroup and nix-doctor share. Sourced, not executed.
 
+# first_unsearchable <tree> <cgroup>: first dir from the top others may not search (0); none (1); mode unreadable (2).
 first_unsearchable() {
   local dir="$1" part mode
   [[ "$2" == / ]] && return 1

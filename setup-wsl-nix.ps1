@@ -164,18 +164,17 @@ param(
 
     [string]$FlakeRef,
     [string]$Config,
+    # A box registered under another name must pass it, or `provision` imports a SECOND distro.
     [string]$DistroName = 'flakelab',
     [string]$Tarball,
     [string]$ImageUrl,
+    # Derived from the distro name so a second distro cannot import onto the first one's VHD.
     [string]$InstallDir = "$env:LOCALAPPDATA\WSL\$DistroName",
     [string]$SshPassphrase,
-    # The PREDECESSOR distro `migrate` and the key/secrets seeding read from.
-    # 'wslkube' is only the default name: a box that registered it under any
-    # other name must pass that real name here, or every step that reads it is
-    # skipped as "no such distro" and the run reports success with no key, no
-    # secrets and no migrated state. `wsl -l -v` lists the registrations.
+    # The predecessor distro `migrate` and seeding read; a wrong name skips every step and still reports success.
     [string]$WslkubeDistro = 'wslkube',
     [string]$WslkubeInstance = '',
+    # See .PARAMETER RestoreInstance; defaults to this distro's name, as `flakelab backup --restore` does.
     [string]$RestoreInstance = $DistroName,
     [switch]$CopyLiveCredentials,
     [switch]$SkipCloneRepos,
@@ -194,6 +193,7 @@ $started = Get-Date
 # alone cannot say whether the caller chose it, and the wslkube preemption
 # warning below has to tell those apart.
 $RestoreInstanceNamed = $PSBoundParameters.ContainsKey('RestoreInstance')
+# Nothing escapes a single quote across into zsh; refused before the distro is built.
 if ($RestoreInstance.Contains("'")) {
     throw ("-RestoreInstance {0}: a single quote in an instance name cannot cross the wsl.exe boundary. Rename the instance directory." -f $RestoreInstance)
 }
@@ -205,10 +205,7 @@ if ($env:WSL_DISTRO_NAME) {
 $NixosWslRelease = 'https://github.com/nix-community/NixOS-WSL/releases/latest/download/nixos.wsl'
 
 function Say([string]$m, [string]$c = 'Cyan') { Write-Host "> $m" -ForegroundColor $c }
-# Keys, secrets.env, the provisioning config and the backup payload live BESIDE
-# the overlay, never in it: every `nix` command given the overlay copies the whole
-# directory into the world-readable store, .gitignore or not. Same rule as
-# nix/scripts.nix's backupRoot default, so both ends name one directory.
+# Payload lives BESIDE the overlay: nix copies the whole overlay into the world-readable store. Same as backupRoot.
 function Get-PayloadRoot([string]$overlay) { return ($overlay.TrimEnd('\', '/') + '-payload') }
 function Warn([string]$m) { Write-Host "! $m" -ForegroundColor Yellow }
 function Do-Step([string]$desc, [scriptblock]$block) {
@@ -217,36 +214,23 @@ function Do-Step([string]$desc, [scriptblock]$block) {
     & $block
 }
 function ToWslPath([string]$p) {
-    # Only a drive path converts: the distro reaches the Windows side at
-    # /mnt/<letter>/... A UNC path - \\wsl$\... for a checkout on WSL's own
-    # filesystem - has no drive letter, and taking its first character silently
-    # produced '/mnt/\...', which exists nowhere and fails much later with nothing
-    # pointing back here. The Ansible predecessor hardcoded '/mnt/c' instead, so a
-    # checkout on any other drive broke the same way.
+    # Only a drive path converts to /mnt/<letter>; a UNC path silently became '/mnt/\...'.
     if ($p -notmatch '^[A-Za-z]:[\\/]') {
         throw ('cannot convert "{0}" to a WSL path: it is not on a Windows drive. Keep this checkout and the overlay under C:\Users\<name>\git\, not on WSL''s own filesystem (\\wsl$\...).' -f $p)
     }
+    # A single quote ends the quoting every `sh -c` payload relies on, and nothing escapes it across wsl.exe.
     if ($p.Contains("'")) {
         throw ('cannot convert "{0}" to a WSL path: a single quote in a directory name cannot cross the wsl.exe boundary. Rename the folder.' -f $p)
     }
+    # --flake <path>#default is a bare argument: nix cuts at the first '#' and applies another flake.
     if ($p.Contains('#')) {
         throw ('cannot convert "{0}" to a WSL path: a "#" in a directory name is the flake-ref fragment delimiter, so --flake <path>#default would be cut there and rebuild a different flake. Rename the folder.' -f $p)
     }
     $drive = $p.Substring(0, 1).ToLower()
     return '/mnt/' + $drive + ($p.Substring(2) -replace '\\', '/')
 }
-# ConvertTo-PathUrl <wsl path> -> the path as the body of a `path:` flake URL.
-#
-# `path:` is a URL and nix parses it as one: a raw space makes the parse fail and
-# nix falls back to reading the WHOLE string - scheme included - as a relative
-# filesystem path, so the rebuild dies with "no such file or directory" naming a
-# path with `path:` inside it. `#` and `?` are worse than broken: they are the
-# fragment and query delimiters, so a checkout under a folder containing either
-# is silently truncated. A checkout under C:\Users\First Last\ is the ordinary
-# Windows case, which is why this is not theoretical.
-#
-# '%' goes FIRST or the escapes added after it are escaped again. .Replace, not
-# -replace: no regex, no '$' capture references.
+# ConvertTo-PathUrl: body of a `path:` URL. A space breaks the parse, `#`/`?` silently truncate (C:\Users\First Last).
+# '%' goes FIRST or later escapes are escaped again; .Replace, not -replace (no regex, no '$' references).
 function ConvertTo-PathUrl([string]$p) {
     return $p.Replace('%', '%25').Replace(' ', '%20').Replace('#', '%23').Replace('?', '%3F')
 }
@@ -254,27 +238,18 @@ function Test-Distro([string]$dn) {
     $list = @(Invoke-NativeQuiet 'wsl.exe' @('--list', '--quiet')) -replace "`0", '' -split "`r?`n" | ForEach-Object { $_.Trim() }
     return $list -contains $dn
 }
-# Every file this script hands to Linux must be LF-only. Set-Content emits CRLF:
-# in secrets.env the CR lands INSIDE the quoted value (GITLAB_TOKEN comes out one
-# byte too long and GitLab answers `invalid header field value for
-# "Private-Token"` on every call), and an OpenSSH private key with CRLF line
-# endings is rejected outright. UTF-8 without BOM - a BOM corrupts the first line
-# just as badly.
+# LF-only, UTF-8 without BOM: a CR lands inside secrets.env values (bad Private-Token header), CRLF keys are rejected.
 function Write-LfFile([string]$Path, [string[]]$Lines) {
     $text = ($Lines -join "`n") + "`n"
     [IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding $false))
 }
-# Windows PowerShell 5.1 + ErrorActionPreference=Stop: redirecting a native
-# command's stderr (`2>$null`, `2>&1`) turns EVERY stderr line into a TERMINATING
-# NativeCommandError. Observed 2026-08-23: right after the first switch wsl.exe
-# printed 'Failed to start the systemd user session for <user>' (transient - the
-# user had just been created) and the interop probe's `2>$null` killed the whole
-# provision. Every probe-style native call whose stderr is noise goes through
-# here: stderr is dropped, stdout comes back, $LASTEXITCODE is still set.
+# PS 5.1 + Stop: redirecting a native command's stderr makes every stderr line terminating (killed a provision
+# 2026-08-23). Probe-style native calls go through here: stderr dropped, stdout returned, $LASTEXITCODE set.
 function Invoke-NativeQuiet([string]$exe, [string[]]$argv) {
     $ErrorActionPreference = 'Continue'
     & $exe @argv 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
 }
+# $AllowExit: exit codes this call site handles itself; strict stays the default.
 function Invoke-Wsl([string]$dn, [string]$asUser, [string[]]$cmd, [int[]]$AllowExit = @()) {
     $wslArgs = @('-d', $dn)
     if ($asUser) { $wslArgs += @('-u', $asUser) }
@@ -284,22 +259,8 @@ function Invoke-Wsl([string]$dn, [string]$asUser, [string[]]$cmd, [int[]]$AllowE
     if ($LASTEXITCODE -ne 0 -and $AllowExit -notcontains $LASTEXITCODE) { throw "wsl.exe failed (exit $LASTEXITCODE) for: $($cmd[0])" }
 }
 
-# The in-distro commands are subcommands of `flakelab` now (nix-clone-repos ->
-# `flakelab clone`, nix-backup -> `flakelab backup`, and so on). This script
-# cannot assume the target distro has them: `migrate` runs against a distro it
-# did not just build, and an operator may point a fresh checkout of this script
-# at a box provisioned before the CLI landed. So feature-detect.
-#
-# `if/then/else`, not `new || old`: a fallback chained on failure would rerun the
-# work under the old name whenever the new command legitimately exited non-zero,
-# turning a real error into a confusing double run. This branches on PRESENCE
-# only, and whichever branch runs owns the exit status.
-#
-# The reverse direction - a pre-CLI copy of THIS script against a current distro
-# - is NOT covered any more: the deprecation shims for the old names are gone, so
-# such a copy calls `nix-clone-repos`, finds nothing, and Invoke-CloneRepos only
-# Warns on a non-zero exit. Update the checkout before provisioning a current
-# distro with it.
+# Feature-detect the `flakelab` subcommands: `migrate` may target a distro built before the CLI.
+# if/else on presence, not `new || old`, which would rerun real failures under the old name.
 function DistroCmd([string]$Sub, [string]$Legacy, [string]$CmdArgs = '') {
     $a = if ($CmdArgs) { " $CmdArgs" } else { '' }
     "if command -v flakelab >/dev/null 2>&1; then flakelab $Sub$a; else $Legacy$a; fi"
@@ -309,19 +270,12 @@ $RepoWin = $PSScriptRoot
 $RepoWsl = ToWslPath $RepoWin
 $TemplateWin = Join-Path $RepoWin 'templates\overlay'
 
-# The overlay injects the real identity via lib.mkSystem; this repo ships
-# placeholders. `init` CREATES the overlay and `generate`/`provision` GENERATE its
-# flake, so none of them may demand one; every other command applies it, and a
-# missing flake there fails deep inside a rebuild.
+# `init` creates the overlay and `generate`/`provision` generate its flake; every other command needs one.
 if (-not $FlakeRef) {
     $siblingDir = Split-Path $RepoWin -Parent
     $FlakeRef = Join-Path $siblingDir 'flakelab-config'
-    # Transitional: the sibling default was `wslnix-config` before the
-    # 2026-08-21 rename, and every box provisioned before it still has that
-    # directory. Without this the default misses, the fallback below silently
-    # retargets the overlay at THIS repo, and a credential-writing command
-    # copies cleartext tokens into the machinery checkout (observed 2026-08-22).
-    # Delete this branch once the overlays are renamed.
+    # Transitional (rename 2026-08-21): without it the fallback retargets this repo and a credential-writing command
+    # copies cleartext tokens into the checkout (observed 2026-08-22). Delete once the overlays are renamed.
     if (-not (Test-Path (Join-Path $FlakeRef 'flake.nix'))) {
         $legacyRef = Join-Path $siblingDir 'wslnix-config'
         if (Test-Path (Join-Path $legacyRef 'flake.nix')) {
@@ -330,6 +284,7 @@ if (-not $FlakeRef) {
         }
     }
 }
+# Resolve-Path throws on a missing path, and generation targets an overlay that does not exist yet.
 if (Test-Path $FlakeRef) { $FlakeRefFull = (Resolve-Path $FlakeRef).Path }
 elseif ([IO.Path]::IsPathRooted($FlakeRef)) { $FlakeRefFull = [IO.Path]::GetFullPath($FlakeRef) }
 else { $FlakeRefFull = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $FlakeRef)) }
@@ -337,20 +292,19 @@ else { $FlakeRefFull = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Fl
 $GitRoot = Split-Path $FlakeRefFull -Parent
 $WslkubeWin = Join-Path $GitRoot 'wslkube'
 
-# The config that drives BOTH the overlay flake and secrets.env: the sibling
-# wslkube checkout's user_data.yaml, or -Config on a machine that has none. One
-# schema either way - wslkube's - so there is nothing to keep in sync. Empty means
-# no config was found, which is the only case that still needs hand-seeding.
+# One config (wslkube schema) drives the overlay flake and secrets.env; empty means hand-seeding.
 if ($Config) {
     if (-not (Test-Path $Config)) { throw "-Config '$Config' not found" }
     $ConfigPath = (Resolve-Path $Config).Path
 }
 else {
     $ConfigPath = Join-Path $WslkubeWin 'files\config\user_data.yaml'
+    # Then the copy beside the overlay (beside, not in: it carries cleartext tokens).
     if (-not (Test-Path $ConfigPath)) { $ConfigPath = Join-Path (Get-PayloadRoot $FlakeRefFull) 'user_data.yaml' }
     if (-not (Test-Path $ConfigPath)) { $ConfigPath = '' }
 }
 
+# First-run wizard: interactive `provision` asks for the four required values; non-interactive and -DryRun refuse.
 function Test-InteractiveConsole {
     return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
 }
@@ -460,29 +414,14 @@ elseif (Test-Path (Join-Path $FlakeRefFull 'flake.nix')) {
     $OverlayWin = $FlakeRefFull
 }
 else {
-    # `migrate` and -CopyLiveCredentials pull the live private key and the
-    # cleartext tokens out of a running distro and write them under the
-    # OVERLAY. Falling back to this repo would put credentials inside the
-    # machinery checkout - gitignored, but on a Windows drive and in a
-    # directory that gets synced and shared. That is never what the caller
-    # meant, so it is an error here rather than the warning below (observed
-    # 2026-08-22: the rename moved the sibling default, the fallback fired,
-    # and secrets.env landed in the checkout).
+    # migrate/-CopyLiveCredentials write live keys and tokens under the overlay: falling back to this repo is an error
+    # (observed 2026-08-22, secrets.env landed in the checkout).
     if ($Command -eq 'migrate' -or $CopyLiveCredentials) {
         throw ("no overlay flake at $FlakeRef, and '$Command' writes credentials into the overlay - " +
                "refusing to write them into this repo. Pass -FlakeRef <your overlay>, " +
                "or create one first with: .\setup-wsl-nix.ps1 init")
     }
-    # Everything that BUILDS a distro refuses too. This repo's own values are
-    # placeholders - user 'youruser', no keys, no MCP servers, no plugins - and a
-    # box provisioned from them is not a usable box: it is a distro registered
-    # under the caller's chosen name, holding a user nobody asked for, that the
-    # real run then has to be told to reuse. The warning below was not enough,
-    # because a `provision` with no -Config and no sibling overlay is precisely
-    # the fresh-PC invocation the .cmd menu's [P] entry makes.
-    #
-    # `status` is the exception: reporting the fallback IS its job, and it
-    # changes nothing. It keeps $OverlayIsFallback, which Invoke-Status reads.
+    # Building from this repo's placeholders yields an unusable box, so it refuses; `status` only reports the fallback.
     if ($Command -ne 'status') {
         # `generate` applies nothing at all - it lands here only because there is
         # no config to generate FROM, so the placeholder wording below answers a
@@ -520,10 +459,7 @@ $KeyWin = Join-Path $KeyDirWin 'id_ed25519'
 $SecretsDirWin = Join-Path $PayloadWin 'shared\secrets'
 $SecretsWin = Join-Path $SecretsDirWin 'secrets.env'
 $Marker = Join-Path $OverlayWin '.migrated-from-wslkube'
-# The layout before <overlay>-payload kept all of that under the overlay's
-# files\config. Nothing is moved for the operator - the payload is theirs, and the
-# move is one command - but it is said, because from here on the keys and
-# secrets.env in there are not found, and nix still copies them into the store.
+# Old-layout payload under the overlay: not moved for the operator, but said, since nix still copies it into the store.
 $OldPayloadHere = @('shared', 'instances', 'snapshots', 'user_data.yaml') |
     Where-Object { Test-Path (Join-Path $OverlayWin "files\config\$_") }
 if ($OldPayloadHere -and -not $OverlayIsFallback) {
@@ -531,16 +467,12 @@ if ($OldPayloadHere -and -not $OverlayIsFallback) {
     Warn ("Move it once:  New-Item -ItemType Directory -Force '{0}' | Out-Null; {1}" -f $PayloadWin, (($OldPayloadHere | ForEach-Object { "Move-Item '{0}' '{1}'" -f (Join-Path $OverlayWin "files\config\$_"), $PayloadWin }) -join '; '))
 }
 
-# The overlay's sops-nix ciphertext, when its flake.nix declares one
-# (flakelab.sopsSecretsFile). sops-nix then renders the runtime secrets on every
-# activation and nix/home/zsh.nix compiles the legacy path out entirely, so the
-# plaintext seed above is deliberately ABSENT on an enrolled box - that is the
-# finished state, not a gap. Every check that demands $SecretsWin has to know
-# it, or provisioning reports MISSING and prints seeding instructions at exactly
-# the moment the cutover completes. Mirrors nix-doctor's SOPS_RENDER branch.
+# With sopsSecretsFile the plaintext seed is deliberately ABSENT; checks demanding $SecretsWin must know that
+# (mirrors nix-doctor's SOPS_RENDER branch).
 function Get-SopsSecretsPath {
     $flakeWin = Join-Path $OverlayWin 'flake.nix'
     if (-not (Test-Path $flakeWin)) { return '' }
+    # Anchored at line start: the template's commented-out switch must not read as enrolled.
     $m = @(Select-String -Path $flakeWin -Pattern '^\s*sopsSecretsFile\s*=\s*\.?/?([^;\s]+)\s*;')
     if ($m.Count -eq 0) { return '' }
     return (Join-Path $OverlayWin ($m[0].Matches[0].Groups[1].Value -replace '/', '\'))
@@ -579,19 +511,12 @@ $SecretKeyNames = @('GITLAB_TOKEN', 'GH_TOKEN', 'HASS_TOKEN',
 # must not see it land in the world-readable store just because it left the list.
 $RetiredSecretKeyNames = @('WHATSAPP_API_KEY')
 
-# Non-secret counterparts of the above. They belong in the overlay's
-# sessionVariables (declarative, in the shell env), NOT in secrets.env. Two of
-# them also gate a Claude MCP server in flakelab's nix/home/claude.nix
-# (GRAFANA_URL the grafana server, WHATSAPP_BRIDGE_HOST the whatsapp one); the
-# rest are plain environment the marketplace MCP plugins read.
+# Non-secret counterparts belong in sessionVariables, not secrets.env; GRAFANA_URL/WHATSAPP_BRIDGE_HOST gate MCP servers.
 $NonSecretKeyNames = @('HASS_URL', 'PROXMOX_API_URL', 'PROXMOX_VERIFY_SSL',
     'SYNOLOGY_URL', 'SYNOLOGY_VERIFY_SSL', 'SYNOLOGY_USERNAME',
     'GRAFANA_URL', 'WHATSAPP_BRIDGE_HOST')
 
-# -SshPassphrase given (even as '') means "never prompt" - an unattended run must
-# not block on a console read. Captured HERE because $PSBoundParameters inside a
-# function is that function's bound set, not the script's. StrictMode: initialise
-# everything before first use.
+# -SshPassphrase given (even '') means never prompt; captured here, as $PSBoundParameters in a function is its own.
 $SshPassphraseGiven = $PSBoundParameters.ContainsKey('SshPassphrase')
 if (-not $SshPassphrase) { $SshPassphrase = '' }
 $SshPassphraseResolved = $false
@@ -601,21 +526,11 @@ $SshPassphraseResolved = $false
 # initialise before first use.
 $FlakeFromConfig = $false
 
-# ---------- user_data.yaml -> overlay flake ----------
-# wslkube's files/config/user_data.yaml is the ONE config schema here: the overlay
-# flake is generated from it and secrets.env is harvested from it, so a flakelab-only
-# format would be a second thing to keep in sync with wslkube forever.
-#
-# Parsed by hand because this must run on stock Windows PowerShell 5.1, which ships
-# no YAML reader - and the file is flat: scalars, string lists, string maps
-# (custom_env_vars) and lists of maps (custom_aliases, repos). Nothing deeper is
-# supported, and nothing deeper is in the schema.
-#
-# All three scalar styles occur in real configs (`user: alice`, `giteditor: 'code'`,
-# `"quoted"`), and an inline comment is not part of the value. A line outside that
-# subset is named by number, never quoted - its value may be a token.
+# wslkube's user_data.yaml is the one schema. Parsed by hand: PS 5.1 has no YAML reader, and the file is flat.
+# A line outside that subset is named by number, never quoted: its value may be a token.
 function ConvertFrom-YamlScalar([string]$raw) {
     $s = $raw.Trim()
+    # Anchored and greedy, so a value may contain '#' or the other quote character.
     if ($s -match "^'(.*)'\s*(?:#.*)?$") { return $Matches[1] -replace "''", "'" }
     if ($s -match '^"(.*)"\s*(?:#.*)?$') { return $Matches[1] -replace '\\"', '"' }
     return ($s -replace '\s+#.*$', '').Trim()
@@ -647,6 +562,7 @@ function Read-UserDataYaml([string]$path) {
         $lines = @($raw[$k].Lines)
         $skipped = if ($lines.Count -gt 0 -and $raw[$k].Scalar -ne '') { 1 } else { 0 }
         if ($lines.Count -eq 0) {
+            # Flow-style list (`[a, b]`, `[]` empty): kept as a scalar it would reach the overlay as a literal string.
             $scalar = [string]$raw[$k].Scalar
             if ($scalar -match '^\[(.*)\]$') {
                 $inner = $Matches[1]
@@ -709,21 +625,15 @@ function Get-UserDataValue($ud, [string]$key) {
     return $null
 }
 
+# @($null) is a ONE-element array: an absent key would yield one empty entry.
 function Get-UserDataList($ud, [string]$key) {
     $v = Get-UserDataValue $ud $key
     if ($null -eq $v) { return @() }
     return @(@($v) | Where-Object { $null -ne $_ })
 }
 
-# wslkube splits its config across TWO files the way Ansible loads them:
-# variables.yaml holds the shared defaults and user_data.yaml the per-host
-# overrides, and main_playbook.yaml includes both. Reading only user_data.yaml
-# therefore misses everything that was never host-specific - gitlab_groups,
-# clone_exclude, claude_plugins, claude_plugin_marketplace all live in
-# variables.yaml - and the generated overlay came out with no groups at all. That
-# is not a visible failure: the flake still builds, and `flakelab clone` is
-# GENERATED, so it bakes in "nothing to clone" and the box comes up with an empty
-# ~/git. Layer the two here, user_data winning, exactly as Ansible does.
+# Layer wslkube's variables.yaml under user_data.yaml as Ansible does: reading only user_data gave an overlay with no
+# groups and a silently empty ~/git.
 function Read-WslkubeConfig([string]$udPath, [string]$wslkubeRoot) {
     $ud = Read-UserDataYaml $udPath
     if (-not $wslkubeRoot) { return $ud }
@@ -736,12 +646,8 @@ function Read-WslkubeConfig([string]$udPath, [string]$wslkubeRoot) {
     return $merged
 }
 
-# Every top-level key is mapped by New-OverlayFlakeText, harvested by
-# Set-OverlaySecretsAndKey or named by Remove-UnmappedConfig. The letter is the
-# shape it is read in: s a scalar, l a list (a scalar is one entry), m a map, i a
-# list of maps. dockerautostart is wslkube's and has no effect here, as
-# user_data.example.yaml says. Keep in step with nix-overlay-generate's _shape
-# and _fields.
+# Every top-level key is mapped, harvested or named; s scalar, l list, m map, i list of maps.
+# Keep in step with nix-overlay-generate's _shape and _fields.
 $ConfigShape = @{
     user = 's'; target = 's'; gitfullname = 's'; gitmail = 's'; userlocale = 's'; windows_username = 's'
     backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'; dockerautostart = 's'
@@ -814,6 +720,7 @@ function Get-ProfileGroupMap {
     return $map
 }
 
+# Backslash first; `${` escaped as nix antiquotation; .Replace, not -replace.
 function ConvertTo-NixString([string]$s) {
     return '"' + $s.Replace('\', '\\').Replace('"', '\"').Replace('${', '\${') + '"'
 }
@@ -839,6 +746,7 @@ function Format-NixAttrs([string]$name, $map, [string]$indent) {
     return $out + @("$indent};")
 }
 
+# Read from profiles/: a silently dropped name means a box with none of that profile's tools or groups.
 function Get-KnownProfileName {
     $dir = Join-Path $RepoWin 'profiles'
     if (-not (Test-Path $dir)) { return @() }
@@ -847,17 +755,8 @@ function Get-KnownProfileName {
         Select-Object -ExpandProperty BaseName)
 }
 
-# The overlay flake, from the config. mkSystem does NOT layer this repo's
-# nix/users/default.nix underneath (flake.nix reads it only for its OWN
-# nixosConfigurations.default), so every option nix/options.nix declares WITHOUT
-# a default - username and repoPath among them; that file is the schema of
-# record, this comment deliberately does not keep a second copy of the list - has
-# to be emitted here even when the config is silent about it, or evaluation
-# aborts. A key that is neither a declared option nor profiles/teams/teamCliTools
-# now aborts mkSystem by name, so emitting a misspelt one fails loudly.
-#
-# NO SECRET reaches this file. custom_env_vars is split on $SecretKeyNames - the
-# same list secrets.env is built from - because the nix store is world-readable.
+# mkSystem does not layer nix/users/default.nix, so every option without a default must be emitted (options.nix is the
+# schema). NO SECRET here: custom_env_vars is split on $SecretKeyNames, the nix store is world-readable.
 function New-OverlayFlakeText($ud, [string]$udPath) {
     $target = [string](Get-UserDataValue $ud 'target')
     if ($target -and $target -ne 'wsl') {
@@ -865,6 +764,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     }
     $username = [string](Get-UserDataValue $ud 'user')
     if (-not $username) { throw "no 'user:' in $udPath - that is the Linux username, there is no sane default for it" }
+    # Required, as in wslkube: git would otherwise commit as a placeholder identity.
     $gitName = [string](Get-UserDataValue $ud 'gitfullname')
     $gitEmail = [string](Get-UserDataValue $ud 'gitmail')
     if (-not $gitName -or -not $gitEmail) { throw "no 'gitfullname:'/'gitmail:' in $udPath - the git identity has no default" }
@@ -883,6 +783,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     $body += "        gitName = $(ConvertTo-NixString $gitName);"
     $body += "        gitEmail = $(ConvertTo-NixString $gitEmail);"
     $body += "        locale = $(ConvertTo-NixString $locale);"
+    # Declared without a default, so absence is emitted as null/false, not omitted.
     $editor = [string](Get-UserDataValue $ud 'giteditor')
     $body += if ($editor) { "        gitEditor = $(ConvertTo-NixString $editor);" } else { '        gitEditor = null;' }
     $body += "        backupAutostart = $(ConvertTo-NixBool ([string](Get-UserDataValue $ud 'backupautostart')));"
@@ -902,6 +803,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     $body += "        repoPath = $(ConvertTo-NixString $OverlayWsl);"
     $body += ''
     $body += '        # Keep this overlay and flakelab itself out of ~/git.'
+    # wslkube's clone_exclude is unioned in, not replaced: dropping it re-clones Windows-mount repos into ~/git.
     $overlayUrl = [string](Get-UserDataValue $ud 'overlay_url')
     $overlayName = if ($overlayUrl) { (($overlayUrl -replace '/$', '') -replace '\.git$', '') -replace '^.*[/:]', '' } else { Split-Path $OverlayWin -Leaf }
     if ($overlayUrl -and -not $overlayName) { throw "overlay_url names no repository: '$overlayUrl'" }
@@ -919,6 +821,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     }
     $known = @(Get-KnownProfileName)
 
+    # A wslkube config has no profiles: derive them from gitlab_groups so a migration selects them.
     $groups = @(Get-UserDataList $ud 'gitlab_groups' | Where-Object { $_ })
     $groupMap = Get-ProfileGroupMap
     if ($profiles.Count -eq 0 -and $groups.Count -gt 0) {
@@ -935,11 +838,9 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     if ($unknown.Count -gt 0) {
         throw ("unknown profile(s) in {0}: {1} - known: {2}" -f $udPath, ($unknown -join ', '), ($known -join ', '))
     }
+    # Only url-carrying entries count: url-less ones are skipped below and would let an empty overlay through.
     $namedRepos = @(Get-UserDataList $ud 'repos' | Where-Object { [string](Get-UserDataValue $_ 'url') })
-    # A config that selects no profile, names no group AND names no repo produces
-    # a box with no profile packages and an empty ~/git, and every step still
-    # reports success - the exact failure this repo shipped once already. There is
-    # no legitimate reason to generate that overlay, so refuse rather than warn.
+    # No profile, group or repo yields an empty box that reports success: refuse.
     if ($profiles.Count -eq 0 -and $personalGroups.Count -eq 0 -and $namedRepos.Count -eq 0) {
         throw ("no profiles, no gitlab_groups and no repos resolved from {0} - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: {1}), 'gitlab_groups:' or 'repos:'; a wslkube checkout keeps gitlab_groups in its variables.yaml, which is read only when the config sits inside that checkout." -f $udPath, ($known -join ', '))
     }
@@ -957,6 +858,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += Format-NixList 'gitlabGroups' $personalGroups '        '
     }
 
+    # Space-separated in wslkube; the FIRST key is the git identity.
     $sshRaw = [string](Get-UserDataValue $ud 'sshkeyautoadd')
     if ($sshRaw) {
         $sshKeys = @($sshRaw -split '\s+' | Where-Object { $_ })
@@ -982,11 +884,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += '        ];'
     }
 
-    # Claude plugins: wslkube keeps the always-on set (claude_plugins) and the
-    # marketplace they resolve against in variables.yaml, and the opt-in MCP servers
-    # (claude_mcp_plugins) in user_data.yaml. mkSystem takes ONE claudePlugins list,
-    # so the two concatenate. Without the marketplace every install fails silently -
-    # activation only warns - and the box comes up with zero plugins.
+    # claude_plugins + claude_mcp_plugins concatenate; without the marketplace every install fails silently.
     $marketplace = Get-UserDataValue $ud 'claude_plugin_marketplace'
     if ($marketplace) {
         $mName = [string](Get-UserDataValue $marketplace 'name')
@@ -1019,6 +917,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += '        # default on a proxmox-vm seed built from it.'
         $body += ("        overlayUrl = {0};" -f (ConvertTo-NixString $overlayUrl))
     }
+    # wslkube hardcodes this in its task files, so regeneration would silently drop it.
     $whatsappDir = [string](Get-UserDataValue $ud 'whatsapp_mcp_dir')
     if ($whatsappDir) {
         $body += ''
@@ -1096,12 +995,15 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
 }
 
 $InProvision = $false
+# Flags, not return values: wsl.exe output in the pipeline makes a returned $false a truthy array.
 $BootstrapStopped = $false
 $PayloadRestored = $false
 $SwitchVerdict = $null
 $CarriedUnits = @()
 $ExitCode = 0
 
+# binfmt_misc is VM-global and a switch unregisters WSLInterop for every distro; probed from inside one.
+# Returns 'ok' / 'broken:<reason>' / 'unknown:<reason>'. WSLInterop-late (systemd-owned) counts too.
 function Get-InteropState([string]$dn) {
     if (-not (Test-Distro $dn)) { return "unknown:distro '$dn' is not registered" }
     $probe = @(
@@ -1129,12 +1031,7 @@ function Get-InteropState([string]$dn) {
     }
 }
 
-# Report interop for the target distro plus any ALREADY-RUNNING sibling (probing a
-# stopped one would boot it, and booting is itself what re-registers the handler -
-# so it would report health it just created). $runningOnly keeps `status`
-# side-effect free: it never starts a distro just to look. $advisory marks a
-# report nothing acts on, so a pre-existing wipe does not read as an error to
-# fix right now.
+# Interop for the target plus already-running siblings only: probing a stopped one boots it and re-registers the handler.
 function Show-InteropState([string]$when, [bool]$runningOnly = $false, [bool]$advisory = $false) {
     if ($DryRun) { Write-Host "  [dry-run] probe WSL interop ($when)" -ForegroundColor DarkGray; return $true }
     $running = @(@(Invoke-NativeQuiet 'wsl.exe' @('--list', '--running', '--quiet')) -replace "`0", '' |
@@ -1173,12 +1070,8 @@ function Show-InteropState([string]$when, [bool]$runningOnly = $false, [bool]$ad
     return $healthy
 }
 
-# -Shutdown forces `wsl --shutdown`; interactively we ask (naming the cost: every
-# WSL session in the VM dies); non-interactively we only print, never block and
-# never shut down on an agent's behalf (known-issues.md). $resumeHint is printed
-# on a decline so the operator knows how to continue. Returns 'ok' (healthy or
-# healed), 'declined' (operator said no - callers stop) or 'unattended' (nobody to
-# ask - callers continue, the wipe only hurts other sessions, not this script).
+# -Shutdown forces `wsl --shutdown`; interactively ask (every WSL session dies); unattended only print, never shut down.
+# Returns 'ok', 'declined' (callers stop) or 'unattended' (callers continue).
 function Invoke-InteropHeal([string]$resumeHint, [string]$when = 'after rebuild') {
     if ($DryRun) { Write-Host "  [dry-run] wsl --shutdown (heal interop, if confirmed)" -ForegroundColor DarkGray; return 'ok' }
     if (Show-InteropState $when) { return 'ok' }
@@ -1206,6 +1099,7 @@ function Invoke-WslShutdown {
     return 'ok'
 }
 
+# `sshKeys` in the applied flake is the source of truth; absent, [ "id_ed25519" ] as options.nix declares.
 function Get-DeclaredSshKeyName {
     foreach ($src in @($UserSourceWin, (Join-Path $RepoWin 'nix\users\default.nix'))) {
         if (-not (Test-Path $src)) { continue }
@@ -1217,10 +1111,7 @@ function Get-DeclaredSshKeyName {
     return @('id_ed25519')
 }
 
-# Declared keys that are actually present. Enumerating the folder instead pulls in
-# whatever else is lying there: a personal key with another passphrase fails
-# `ssh-add`, and one failed load skips the SECOND switch, which is the only reason
-# the agent gets loaded at all. Undeclared files are named and left alone.
+# Declared keys only: an undeclared key with another passphrase fails ssh-add and skips the second switch.
 function Get-OverlayPrivateKeyName {
     if (-not (Test-Path $KeyDirWin)) { return @() }
     $declared = @(Get-DeclaredSshKeyName)
@@ -1264,11 +1155,7 @@ function Resolve-SshPassphrase {
     }
 }
 
-# The Linux side. Written to a file rather than squeezed through `wsl.exe -- sh -c`
-# so nothing has to survive two layers of quoting; it carries NO secret (the
-# passphrase arrives as argv[2], base64-encoded to dodge every quoting/encoding
-# problem, and is never persisted on the Windows side). Single-quoted here-string:
-# PowerShell must not expand $.
+# A file, not `sh -c`, to avoid two quoting layers; no secret in it (passphrase as base64 argv[2], never persisted).
 $AgentLoadScript = @'
 #!/bin/sh
 # Generated by setup-wsl-nix.ps1 - do not edit, it is deleted right after it runs.
@@ -1367,6 +1254,7 @@ function Add-SshKeyToAgent {
     $scriptWin = Join-Path $OverlayWin '.ssh-agent-load.sh'
     $ok = $false
     try {
+        # LF only: a CRLF `#!/bin/sh` script dies with "bad interpreter".
         Write-LfFile $scriptWin ($AgentLoadScript -split "`r?`n")
         # Out-Host, not the pipeline: this function's return value must stay a
         # clean boolean, and native stdout would otherwise be part of it.
@@ -1402,24 +1290,11 @@ function Show-ManualSeedInstructions([string]$reason) {
     Write-Host ("    (With a wslkube checkout at {0}, 'migrate' seeds both for you.)" -f $WslkubeWin) -ForegroundColor DarkGray
 }
 
+# Runs BETWEEN the switches: no ~ before the first, and the second consumes the key via the agent.
 function Copy-OverlayFilesIntoDistro {
     if (Test-Path $KeyWin) {
-        # Exactly the keys the flake declares in `sshKeys` (plus their .pub
-        # halves), not everything in the folder: an undeclared key is another
-        # identity the distro has no business holding, and the zsh hook would
-        # never load it.
-        #
-        # The loop, the glob and the basename all run HERE rather than in the
-        # payload: a `sh -c` string handed to wsl.exe loses its double quotes and
-        # every $ expansion on the way. What crosses the boundary is literal paths
-        # only - nothing left to expand, nothing to lose. Same reason
-        # .ssh-agent-load.sh is a FILE run as `sh <file>`.
-        #
-        # SINGLE quotes around the overlay-side path, and single only: they are
-        # the ones that survive the boundary, and without them a checkout under
-        # C:\Users\First Last\ - the ordinary Windows layout - hands sh two words
-        # and the copy silently reads the wrong file. ToWslPath refuses the
-        # characters this quoting cannot carry.
+        # Only declared keys (and .pub). The loop runs here: `sh -c` via wsl.exe loses double quotes and $ expansions.
+        # Single quotes around the overlay path, the only ones that survive (C:\Users\First Last); ToWslPath refuses the rest.
         $keySrc = "$PayloadWsl/shared/ssh/keys"
         $names = @()
         foreach ($k in @(Get-OverlayPrivateKeyName)) {
@@ -1428,6 +1303,7 @@ function Copy-OverlayFilesIntoDistro {
         }
         $lines = @('set -e', 'mkdir -p ~/.ssh', 'chmod 700 ~/.ssh')
         foreach ($n in $names) {
+            # The destination stays unquoted for `~`, so whitespace or a quote in a key name is refused.
             if ($n -match "[\s']") { Warn "skipping '$n': whitespace or a single quote in a key filename cannot cross the wsl.exe boundary"; continue }
             $mode = if ($n -like '*.pub') { '644' } else { '600' }
             $lines += "cp '$keySrc/$n' ~/.ssh/$n"
@@ -1438,11 +1314,7 @@ function Copy-OverlayFilesIntoDistro {
     }
 
     if (Test-Path $SecretsWin) {
-        # ~/.config/tyc/secrets.env is what nix/home/zsh.nix sources at zsh start
-        # and what every credentialed MCP server inherits from. Single-quoted for
-        # the same reason as the key copy above: the overlay path may contain a
-        # space, and only single quotes reach sh intact. The destination stays
-        # bare so `~` still expands.
+        # zsh.nix sources ~/.config/tyc/secrets.env; source single-quoted (spaces), destination bare so `~` expands.
         Say 'Seeding secrets.env'
         Invoke-Wsl $DistroName $User @('sh', '-c', "set -e; mkdir -p ~/.config/tyc; chmod 700 ~/.config/tyc; cp '$PayloadWsl/shared/secrets/secrets.env' ~/.config/tyc/secrets.env; chmod 600 ~/.config/tyc/secrets.env")
     }
@@ -1457,20 +1329,14 @@ function Copy-OverlayFilesIntoDistro {
 
 function Invoke-NixosRebuild([string]$why) {
     Say "nixos-rebuild switch - $why (reloads systemd and WILL wipe WSL interop VM-wide)"
+    # A committed lock pins a moved checkout's NAR hash ("NAR hash mismatch"); only an UNTRACKED lock is dropped.
     $lockWin = Join-Path $OverlayWin 'flake.lock'
+    # Initialized outside the Test-Path block: the cleanup reads it, and StrictMode throws on unset.
     $tracked = $false
     $trackedKnown = $true
     if (Test-Path $lockWin) {
-        # Trackedness needs a Windows-side git, which a fresh machine (the very
-        # machine this script exists for) has no reason to carry - and under
-        # ErrorActionPreference=Stop a bare `& git` on such a box kills the whole
-        # provision with "git is not recognized". Without git the state is
-        # UNKNOWN, and unknown gets the conservative branch: keep the lock and
-        # say why, because deleting a lock that turns out to be tracked dirties
-        # the operator's repo behind their back, while a kept-but-stale lock
-        # fails loudly with the NAR-mismatch message whose remedy is named here.
-        # (A folder copied together with its flakelab checkout has a MATCHING
-        # lock, so on the copy-both-folders path this keeps a valid pin.)
+        # Without Windows git (a fresh PC; a bare `& git` would kill the run) trackedness is unknown: keep the lock and say why,
+        # since deleting a tracked lock dirties the operator's repo.
         $gitCmd = Get-Command git -ErrorAction SilentlyContinue
         if (Test-Path (Join-Path $OverlayWin '.git')) {
             if ($gitCmd) {
@@ -1489,11 +1355,13 @@ function Invoke-NixosRebuild([string]$why) {
             Do-Step 'remove stale flake.lock (pins the mutable flakelab input)' { Remove-Item -Force $lockWin }
         }
     }
+    # nix's libgit2 refuses a repo owned by another uid (every /mnt/c checkout for root); printf: no git in the base image.
     Invoke-Wsl $DistroName 'root' @('sh', '-c', "mkdir -p /root && { grep -qsF 'directory = *' /root/.gitconfig || printf '[safe]\ndirectory = *\n' >> /root/.gitconfig; }")
     # A switch that got as far as activating exits 0, 2 or 4, and which of those
     # it was says nothing reliable (files/scripts/switch-result has why), so those
     # three go to the verdict. Anything else never activated and throws here.
     try {
+        # `nix shell nixpkgs#git`: the base image has no git, which locking a git+ input needs.
         Invoke-Wsl $DistroName 'root' @('env', 'NIX_CONFIG=experimental-features = nix-command flakes',
             'nix', 'shell', 'nixpkgs#git', '-c',
             'nixos-rebuild', 'switch', '--flake', "path:$(ConvertTo-PathUrl $OverlayWsl)#default") -AllowExit @(2, 4)
@@ -1502,15 +1370,8 @@ function Invoke-NixosRebuild([string]$why) {
         Confirm-SwitchResult ($why -split ':')[0] $switchRc
     }
     finally {
-        # The switch ran as root, so any lock it just wrote is root-owned on the 9p
-        # mount, and the operator's own `nix eval` / `nix flake check` against the
-        # overlay then dies with "opening file ...flake.lock: Permission denied" as
-        # soon as nix wants to update it. In a finally: nix locks before it builds,
-        # so a switch that throws has usually written that lock as well.
-        # $trackedKnown guards the unknown case (no Windows git + pre-existing lock):
-        # deleting there could dirty a repo that does track its lock. A lock the
-        # switch itself created is still removed - the block above never ran, so
-        # $trackedKnown kept its $true initialization.
+        # A root-written lock on 9p breaks the operator's nix commands; removed in a finally (nix locks before it builds).
+        # $trackedKnown guards the unknown case; a lock the switch created is still removed.
         if ((Test-Path $lockWin) -and $trackedKnown -and -not $tracked) {
             Do-Step 'remove the root-owned flake.lock the switch wrote' {
                 Remove-Item -Force -ErrorAction SilentlyContinue $lockWin
@@ -1520,6 +1381,8 @@ function Invoke-NixosRebuild([string]$why) {
     }
 }
 
+# Bytes, not the pipeline: code-page decoding renames non-ASCII paths and a leak check must name them.
+# stdout drained asynchronously, or a full pipe hangs check-ignore.
 function Invoke-GitBytes([string[]]$argv, [byte[]]$stdin) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'git'
@@ -1540,10 +1403,7 @@ function Invoke-GitBytes([string[]]$argv, [byte[]]$stdin) {
     [pscustomobject]@{ ExitCode = $proc.ExitCode; Bytes = $out.ToArray(); Err = $err.Result }
 }
 
-# files/scripts/lib/overlay-git.zsh's overlaygit_is_sops_dotenv, line for line:
-# every line is an encrypted value or comment, an empty value, or sops's own
-# metadata - the keys sops writes, not any `sops_` name - with the MAC and version
-# present. One plaintext value fails it.
+# Twin of overlay-git.zsh's overlaygit_is_sops_dotenv, line for line.
 function Test-SopsDotenv([string]$path) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
     $mac = $false; $ver = $false
@@ -1561,13 +1421,8 @@ function Test-SopsDotenv([string]$path) {
     return ($mac -and $ver)
 }
 
-# The PowerShell twin of overlaygit_leaks: what a first `git add -A` in $root would
-# stage, and which of it the TEMPLATE .gitignore keeps out of git. This script
-# keeps a .gitignore that is already in $root, so that file proves nothing - it can
-# predate a template entry or never have been the template. Read-only: the listing
-# runs from a scratch git dir with $root as its work tree, so nothing is staged and
-# no .git appears in the overlay before the answer is known. $null means git could
-# not answer, which the caller treats as a refusal, never as "no leaks".
+# Twin of overlaygit_leaks: staged paths the TEMPLATE .gitignore ignores, via a scratch git dir (read-only).
+# $null means git could not answer: a refusal, never "no leaks".
 function Get-OverlayGitLeaks([string]$root) {
     $probe = Join-Path ([System.IO.Path]::GetTempPath()) ('flakelab-probe-' + [guid]::NewGuid().ToString('N'))
     try {
@@ -1592,22 +1447,8 @@ function Get-OverlayGitLeaks([string]$root) {
     }
 }
 
-# Same rule as nix-overlay-generate: the overlay is left as a repository -
-# initialised, one commit, no remote - so hand-edits and -Force regenerations
-# are diffs, and `flakelab update` reads the shape (no remote: nothing to be
-# behind, no drift check). An existing .git is left as is and gets no
-# commit. autocrlf is pinned off: Windows git would otherwise check the flake
-# out with CRLF, and the distro reads the same files. Without git on this
-# host the overlay is complete anyway; the warning names the step.
-#
-# The .gitignore above is KEPT when one was already there, so the first commit
-# is measured against the template before it happens (Get-OverlayGitLeaks), and
-# only the checked list is staged, not `add -A`. All or nothing: any failure
-# after `init`, Ctrl-C included, removes the .git this step made - a half-made
-# one reads as "a repository with uncommitted changes" to every later run and
-# is never adopted again. Signing and hooks are off: the identity is
-# flakelab@localhost, and the operator's global git config must not decide
-# whether the overlay gets its history.
+# As nix-overlay-generate: one commit, no remote, autocrlf off (the distro reads the same files). An existing .git is
+# left as is. All or nothing; only the checked list is staged; signing and hooks off.
 function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
     if (Test-Path -LiteralPath (Join-Path $root '.git')) { return }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -1660,15 +1501,7 @@ function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
     }
 }
 
-# ---------- commands ----------
-# The overlay skeleton this script needs, from templates/overlay - the same source
-# `nix flake new -t <this repo>#overlay` scaffolds, so there is one copy of the
-# overlay layout, not two. Refuses to clobber what is there (-Force).
-#
-# Both entry points write it: `init` with the template's placeholder flake to
-# hand-edit, and `generate`/`provision` with a flake generated from the config - so
-# the one-command path gets the same .gitignore that keeps secrets.env and the key
-# material out of git. $flakeText overrides the template's flake.nix; $null keeps it.
+# The overlay skeleton from templates/overlay (one copy of the layout); refuses to clobber without -Force.
 function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlayUrl) {
     if ($root -eq $RepoWin) { throw "refusing to write the overlay over this repo - pass -FlakeRef <path to the overlay>" }
     if (-not (Test-Path (Join-Path $TemplateWin 'flake.nix'))) { throw "template not found at $TemplateWin" }
@@ -1684,20 +1517,8 @@ function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlay
         if ((Test-Path $dst) -and -not $Force) { Warn "keeping existing $name (use -Force to overwrite)"; continue }
         if ($name -eq 'flake.nix' -and $flakeText) { $text = $flakeText }
         elseif ($name -eq 'flake.nix') {
-            # The template's input URL names the PUBLIC mirror, which does not
-            # resolve yet - so a bare `nix flake new -t <flakelab>#overlay` scaffold
-            # still fails to lock, and substituting a real local path is what
-            # makes the overlay buildable at all. This script is one of the two
-            # places that knows that path (files/scripts/nix-overlay-generate is
-            # the other).
-            #
-            # Keyed on the template's `flakelab-url:` marker, not on the URL: a
-            # pattern matching the URL would silently no-op the day the default
-            # changes, and the overlay would then point at the mirror with nothing
-            # said. Line-wise rather than regex-replaced so a '$' in the path
-            # cannot be read as a capture-group reference. Not finding the marker
-            # exactly once is fatal - writing an overlay whose input URL was never
-            # substituted is worse than not writing one.
+            # Substitute the flakelab URL keyed on the `flakelab-url:` marker, not the URL; line-wise so a '$' is literal.
+            # The marker must occur exactly once: an unsubstituted overlay is worse than none.
             $lines = @(Get-Content -Path (Join-Path $TemplateWin $name))
             $idx = @(0..($lines.Count - 1) | Where-Object { $lines[$_] -match '#\s*flakelab-url:' })
             if ($idx.Count -ne 1) {
@@ -1736,10 +1557,7 @@ function Set-OverlayFromConfig([string]$udPath) {
         }
         return
     }
-    # The rest of the run copies files as the flake's user, which is the one this
-    # generated flake just declared. The flag tells the secrets step that the flake
-    # already carries every non-secret custom_env_var, so it has nothing to remind
-    # anyone to paste.
+    # Later copies run as the flake's user; the flag says the flake already carries the non-secret env vars.
     $script:User = [string](Get-UserDataValue $ud 'user')
     $script:FlakeFromConfig = $true
 }
@@ -1778,30 +1596,12 @@ function Invoke-Bootstrap {
         }
     }
 
-    # TWO switches, deliberately. The SSH-dependent home-manager activation steps
-    # (the Claude marketplaces and plugins, and the statusline that runs after
-    # them) need a loaded ssh-agent, and the key can only be copied
-    # into ~ AFTER the Linux user exists - which is what the FIRST switch creates.
-    # One switch therefore always runs those steps before any key is present and
-    # they DEFER (non-fatally, and silently as far as the operator is concerned).
-    # Order: switch #1 (user + system) -> terminate -> key/secrets -> load agent ->
-    # switch #2, which re-runs activation and completes them. Both switches are
-    # idempotent, so #2 is safe to repeat and -SkipSecondSwitch opts out.
-    # A degraded switch carries on, which matters here most: a fresh import's first
-    # switch hands uid 1000 from the base image's `nixos` user to $User, and because
-    # the user lingers the switch starts user@1000 at once - which has been seen
-    # failing with "Failed to spawn executor: Device or resource busy" (Result:
-    # resources). The terminate below restarts it, and the boot verdict after it
-    # reads whether it came up.
+    # TWO switches: SSH-dependent activation steps defer until the key exists, which needs the user switch 1 creates.
+    # Degraded carries on: switch 1's user@1000 start can fail with EBUSY; the terminate restarts it.
     Invoke-NixosRebuild 'switch 1/2: create the user and the system generation'
+    # Restart so the new user resolves; before the heal, since a terminate can wipe binfmt again.
     Do-Step "wsl --terminate $DistroName (apply new user)" { & wsl.exe --terminate $DistroName | Out-Null }
-    # The boot the terminate starts runs the activation again, and nothing keeps that
-    # activation's status but the record the verdict reads. Read NOW, on the first
-    # boot after the restart: switch 2/2 resets every failed unit before it lists its
-    # own. Before the heal, so a declined heal still leaves with the verdict; the boot
-    # this starts re-registers the interop handler rather than wiping it.
-    # Nothing is carried across it: a boot starts clean, and its own failed units are
-    # the truth - a unit switch 1/2 named that is correctly idle now is not down.
+    # Read the restarted boot's verdict now: switch 2/2 resets failed units. Nothing is carried across a boot.
     Say "reading the restarted boot's activation and units (waits up to 180s for the boot)"
     $script:CarriedUnits = @()
     try {
@@ -1830,6 +1630,7 @@ function Invoke-Bootstrap {
     elseif ($DryRun -or $agentLoaded) {
         Invoke-NixosRebuild 'switch 2/2: complete the deferred SSH steps (Claude marketplaces + plugins, statusline)'
         if (-not $DryRun) {
+            # switch 2 restarts home-manager only on a changed generation, so re-run the activation now the key is loaded.
             Do-Step "systemctl restart home-manager-$User.service (re-run the activation with the loaded key)" {
                 Invoke-Wsl $DistroName 'root' @('systemctl', 'restart', "home-manager-$User.service")
             }
@@ -1858,14 +1659,8 @@ function Invoke-Bootstrap {
     else { Say "Applied '$DistroName', but its closing verdict is not clean (exit $ExitCode, above)." 'Yellow' }
 }
 
-# The one reading of a switch's result - files/scripts/switch-result has the contract
-# and the reasons: flakelab-switch-result, run in the distro as root, into
-# $SwitchVerdict (a flag, see above) as its exit code, verdict, activation and
-# failed units. $argv is --rc N after a switch, or nothing for the boot the distro
-# is running. The units an earlier verdict named are carried, so one a switch reset
-# to inactive without starting it is not read as recovered. `missing` is only what a
-# separate probe proves - a running system that predates the classifier; a
-# classifier that ran and answered nothing parseable is `unanswered`, never clean.
+# flakelab-switch-result in the distro (contract in files/scripts/switch-result). Earlier named units are carried;
+# `unanswered` is never clean.
 function Get-SwitchResult([string[]]$argv) {
     $tool = '/run/current-system/sw/bin/flakelab-switch-result'
     $cmd = @($tool) + $argv
@@ -1945,24 +1740,17 @@ function Complete-SwitchResult {
 # hand-written). Non-fatal: a fresh PC has no payload yet, which is not an error.
 function Restore-Backup {
     Say 'flakelab backup --restore (gitconfig, ssh config, shell history, secrets)'
-    # An instance name with no directory beside the overlay restores the SHARED
-    # categories, reports success, and looks exactly like a restore that worked -
-    # the failure this flag exists to fix. Refuse it here, where the names that DO
-    # exist can be listed. Only once there is a payload at all: a fresh PC has no
-    # instances/ yet, which is the ordinary first run and not an error.
+    # An unknown instance name would restore only shared categories and look like success: refuse (once a payload exists).
     $instRoot = Join-Path $PayloadWin 'instances'
     if ($RestoreInstance -and (Test-Path $instRoot) -and -not (Test-Path (Join-Path $instRoot $RestoreInstance))) {
         $have = @(Get-ChildItem -Path $instRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
         $names = if ($have.Count -gt 0) { $have -join ', ' } else { '(none)' }
         $msg = ("no backup instance '{0}' under {1} - it holds: {2}. " -f $RestoreInstance, $instRoot, $names) +
                "Name the one to restore with  -RestoreInstance <name>  (the default is the distro name, $DistroName)."
+        # A dry run reports and carries on, so later steps stay visible.
         if ($DryRun) { Warn $msg } else { throw $msg }
     }
-    # Named only when it differs from this distro, which is already nix-backup's
-    # own default: an in-distro nix-backup old enough to predate --instance exits
-    # 1 on the unknown option, and the default run must stay exactly what it was.
-    # -cne, not -ne: the payload directory is on a case-sensitive filesystem, so
-    # 'nixos' and 'NixOS' are different instances and only one of them exists.
+    # Only when it differs (older nix-backup lacks --instance); -cne: the payload is on a case-sensitive filesystem.
     $inst = if ($RestoreInstance -and $RestoreInstance -cne $DistroName) { " --instance '$RestoreInstance'" } else { '' }
     if ($inst) { Say "  restoring backup instance '$RestoreInstance'" 'DarkGray' }
     $cmd = DistroCmd 'backup' 'nix-backup' "--restore$inst"
@@ -1996,13 +1784,8 @@ function Get-WslkubeInstance {
     return ''
 }
 
-# This step reads LIVE credentials out of the wslkube checkout and the running
-# distro - every token in user_data.yaml plus the private SSH key - and writes
-# them UNENCRYPTED into the overlay on the Windows mount. Cheap to redo, painful
-# to do by accident, so it is consented to rather than assumed:
-# -CopyLiveCredentials pre-authorises it for an unattended run, a non-interactive
-# console without that flag skips it, and either way what gets copied is listed by
-# NAME only.
+# Copies live tokens and the private key UNENCRYPTED to the Windows mount: consented (-CopyLiveCredentials or a prompt),
+# listed by NAME only.
 function Confirm-CredentialCopy([string]$udPath, [int]$tokenCount = 0) {
     if ($CopyLiveCredentials -or $DryRun) { return $true }
     Warn 'about to copy LIVE credentials into the overlay, unencrypted on the Windows mount:'
@@ -2026,6 +1809,7 @@ function Set-OverlaySecretsAndKey([string]$udPath) {
     if ($udPath -and (Test-Path $udPath)) {
         $ud = Read-UserDataYaml $udPath
         $envVars = Get-UserDataValue $ud 'custom_env_vars'
+        # A top-level token key is accepted too, rather than silently dropped.
         $present = @($SecretKeyNames | Where-Object {
                 [string](Get-UserDataValue $envVars $_) -or [string](Get-UserDataValue $ud $_)
             })
@@ -2052,13 +1836,7 @@ function Set-OverlaySecretsAndKey([string]$udPath) {
             Do-Step "write secrets.env" { Write-LfFile $SecretsWin $lines }
         }
 
-        # The non-secret endpoints are NOT secrets.env material: they belong in the
-        # overlay flake's `sessionVariables` (declarative, rebuilt into the shell;
-        # GRAFANA_URL and WHATSAPP_BRIDGE_HOST also gate a Claude MCP server there,
-        # nix/home/claude.nix). A flake GENERATED
-        # from this config already carries them by construction, so the reminder is
-        # for the hand-written overlay only, and only for what that flake does not
-        # define. NAMES ONLY.
+        # Non-secret endpoints belong in sessionVariables; remind only for a hand-written flake. NAMES ONLY.
         $flakeText = if (Test-Path $OverlayFlakeWin) { Get-Content -Raw -Path $OverlayFlakeWin } else { '' }
         $found = @()
         if (-not $script:FlakeFromConfig) {
@@ -2094,10 +1872,7 @@ function Set-OverlaySecretsAndKey([string]$udPath) {
     }
 }
 
-# Runs `flakelab backup` inside the target distro, so the distro must already be built.
-# Sets $PayloadRestored only when the restore actually ran - the marker depends on
-# it, and a marker written after a no-op turns `migrate` into a silent skip from
-# then on.
+# Needs a built distro. $PayloadRestored only when the restore ran, or the marker turns `migrate` into a silent skip.
 function Restore-FromWslkube {
     $script:PayloadRestored = $false
     if (-not (Test-Path $WslkubeWin)) { return }
@@ -2156,10 +1931,7 @@ function Invoke-Provision {
     Say "PROVISION: overlay flake from config -> seed prep -> switch 1 -> key/secrets + ssh-agent -> switch 2 -> restore -> clone" 'Green'
     $script:InProvision = $true
     if ($ConfigPath) {
-        # ONE command: everything `init` leaves as a placeholder is in this config,
-        # so the flake is generated instead of hand-edited, and the same file feeds
-        # secrets.env. The credential copy is still consented to in
-        # Set-OverlaySecretsAndKey.
+        # One command: the flake is generated from the config; the credential copy is still consented.
         Set-OverlayFromConfig $ConfigPath
         Set-OverlaySecretsAndKey $ConfigPath
     }

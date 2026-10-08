@@ -1,4 +1,4 @@
-
+# Checks build-distro and test-provision share so they cannot drift. Caller sets _WSL_BIN, DISTRO_NAME, _CHECK_USER.
 # print -P prompt-expands the whole string, so a `%` in a path, a branch or a
 # URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r
 # turns `\t` in a Windows path into a tab. Only the colour is markup here.
@@ -34,11 +34,7 @@ check_contains() {
   fi
 }
 
-# The flakelab CLI itself: nothing else in the lists would notice a router entry
-# with no wrapper behind it, since every other probe resolves a command the CLI
-# does not own. The expected verbs are read out of the router's own `_order`
-# table rather than counted here, so a verb added there cannot leave this stale;
-# every target-gated verb is a wsl one, and so is the distro under test.
+# Catches a router entry with no wrapper behind it; the expected verbs come from the router's own `_order` table.
 check_flakelab_cli() {
   local router="$1" o
   local -a want=("${(@f)$(sed -n '/^_order=($/,/^)$/{/^  [a-z-]/p}' "$router" | tr -d ' ' | sort)}")

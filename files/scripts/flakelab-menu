@@ -2,6 +2,9 @@
 
 set -uo pipefail
 
+# flakelab-menu: what a bare `flakelab` opens at a terminal. It asks nothing a command asks itself, and a choice
+# re-enters the router (FLAKELAB_ROUTER), so the target gate and per-command wrappers apply as for a typed command.
+# Esc goes back one level and leaves with 130 at the top; once a command runs, its questions are its own.
 
 source "${0:A:h}/lib/prompt.zsh" || exit 1
 

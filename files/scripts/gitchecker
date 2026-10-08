@@ -5,36 +5,11 @@ set -uo pipefail
 #
 # gitchecker — report which clones on this host are out of date
 #
-# Scans one or more root dirs for git repos and reports, per repo:
-#   - uncommitted / staged changes and untracked files
-#   - every local branch's ahead / behind / diverged state vs its upstream
-#   - branches whose upstream was deleted on the remote (gone)
-#   - detached HEAD, branches with no upstream, stashed work
-#   - open merge requests (GitLab) / pull requests (GitHub)
-#
-# It already fetches, so it already knows which branches can move without a
-# merge — and it moves them. A branch that is STRICTLY BEHIND its upstream
-# (ahead == 0) fast-forwards; every other state (diverged, ahead, gone, no
-# upstream) is reported and left alone. Branches that are not checked out move
-# via `git fetch . <upstream>:<branch>`, which never touches the working tree
-# and which git itself refuses if the move would not be a fast-forward.
-#
-# A dirty working tree makes even a legal fast-forward a surprise, so that case
-# asks first (`--ff-dirty` for a non-interactive caller) and a diverged branch is
-# never resolved automatically. `--no-ff` restores pure reporting; it still
-# stashes, rebases and checks out nothing in any mode.
-#
-# The network is mandatory — every run fetches and queries the forge, and any
-# network failure aborts the whole run rather than printing a stale "current".
-# A repo that has no origin, or one on a forge this script does not integrate
-# with, is not a network failure: it is reported as skipped (attention) and the
-# rest of the sweep goes on, the same way gitcleaner treats it.
-#
-# Two callers, one scan. An operator gets the grouped, coloured report; a
-# non-interactive caller (an agent, a script) passes --json and gets one
-# document on stdout — including on abort, so a parse never has to guess whether
-# silence meant "clean" or "died". --repo narrows the sweep to named repos,
-# because an agent working in one clone has no business fetching a whole tree.
+# Per repo: dirty state, every local branch vs its upstream, gone upstreams, detached HEAD, stashes, open MRs/PRs.
+# Only STRICTLY BEHIND branches fast-forward (not checked out: `git fetch . <up>:<branch>`); a dirty tree asks first
+# (--ff-dirty), --no-ff only reports. Never stashes, rebases or checks out.
+# Any network failure aborts the run rather than print a stale "current"; no origin or an unknown forge is a skip.
+# --json prints one document on stdout, abort included; --repo narrows the sweep to named repos.
 #
 # Usage:
 #   gitchecker [--repos-dir DIR]... [--repo PATH]... [--max-jobs N]
@@ -46,6 +21,7 @@ set -uo pipefail
 #   2  preflight failure, per-repo fetch/forge failure, or usage error
 #
 
+# Sibling lookup: works from the nix store copy the wrapper runs and from the repo.
 GITSCAN_PROG=gitchecker
 source "${0:A:h}/lib/gitscan.zsh" || exit 2
 # The y/N questions, asked the one way every flakelab command asks them.
@@ -125,10 +101,12 @@ while (( $# > 0 )); do
   shift
 done
 
+# --repo names repos outright, so root discovery is skipped rather than run and filtered.
 if (( ${#REPO_ARGS[@]} == 0 && ${#ROOTS[@]} == 0 )); then
   ROOTS=("${HOME}/git")
 fi
 
+# --json is a parser contract; decided before preflight so even a preflight death obeys it.
 (( JSON )) && { QUIET=1; GITSCAN_DIE_JSON=1 }
 
 gitscan_preflight
@@ -147,6 +125,7 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 
 gitscan_ssh_mux "${WORKDIR}"
 
+# A worktree (.git is a file) is reported as its own repo: it has its own HEAD and dirty state.
 typeset -a GITDIRS=() GITDIR_ROOTS=()
 if (( ${#ABS_ROOTS[@]} > 0 )); then
   gitscan_discover "${MAX_DEPTH}" "${ABS_ROOTS[@]}"
@@ -172,6 +151,7 @@ fi
 
 gitscan_require_gh "${GITDIRS[@]}"
 
+# The `p` flag makes the join separator a real tab; without it zsh joins on a literal `\t`.
 emit() {
   local rec="$1"; shift
   print -r -- "${(pj:\t:)@}" >> "${rec}"
@@ -300,6 +280,7 @@ check_repo() {
       continue
     fi
 
+    # attention is set per outcome below: a branch this run fast-forwards ends in sync.
     label=""
     [[ "${branch}" != "${head_branch}" ]] && label="${branch}: "
     if (( ahead > 0 && behind > 0 )); then
@@ -323,6 +304,7 @@ check_repo() {
           continue
         fi
         marks+=("${C_YELLOW}${label}↓${behind} (not fast-forwarded: ${GITSCAN_FF_OUT%%$'\n'*})${C_RESET}")
+        # Asked after the scan: this runs as a background job with stdin on /dev/null.
         (( dirty > 0 && ! FF_DIRTY )) && [[ "${branch}" == "${head_branch}" ]] &&
           emit "${rec}" ASK "${branch}" "${upstream}" "${behind}" "${dirty}"
         attention=1
@@ -383,6 +365,7 @@ check_repo() {
     if [[ -n "${parsed}" ]]; then
       while IFS=$'\t' read -r iid title source draft; do
         [[ -z "${iid}" ]] && continue
+        # The draft flag is its own field, not a title prefix, so a parser gets a boolean.
         [[ "${draft}" == true ]] || draft=false
         forge_rows+=("${sigil}${iid}	$(sanitize "${title}")	$(sanitize "${source}")	${draft}")
         attention=1
@@ -429,6 +412,7 @@ check_abort() {
   print -r -u2 -- "gitchecker: ${reason} — aborting"
   print -r -u2 -- "  repo: ${repo}"
   [[ -n "${detail}" ]] && print -r -u2 -- "  ${detail}"
+  # Diagnostics stay on stderr; stdout must still be one parseable document.
   (( JSON )) && jq -n --arg repo "${repo}" --arg reason "${reason}" --arg detail "${detail}" \
     '{ok: false, aborted: {repo: $repo, reason: $reason, detail: $detail}, repos: []}'
   exit 2
@@ -439,6 +423,7 @@ typeset -a job_pids=()
 for (( i = 1; i <= ${#GITDIRS[@]}; i++ )); do
   check_repo "$(printf '%04d' ${i})" "${GITDIRS[i]}" "${GITDIR_ROOTS[i]}" &
   job_pids+=($!)
+  # zsh parses `wait -n` as a job spec and exits 127; waiting on the oldest child bounds concurrency.
   if (( ${#job_pids[@]} >= MAX_JOBS )); then
     wait "${job_pids[1]}" 2>/dev/null || true
     job_pids=("${job_pids[@]:1}")
@@ -459,6 +444,7 @@ field() {
   return 1
 }
 
+# Asks the dirty-tree questions the workers could not, in the foreground, only of a person at a terminal.
 ask_dirty_behind() {
   local rec k kind b up behind dirty repo new_mark ok
   local -a asks lines recs=("${WORKDIR}"/rec.*(N))
@@ -578,6 +564,7 @@ rows_json() {
     | jq -R -s --arg key "${key}" "split(\"\n\") | map(select(length > 0)) | map(split(\"\t\")) | map(${body})"
 }
 
+# One document whatever happened: a caller telling "clean" from "died" by empty stdout gets it wrong once.
 render_json() {
   local rec f
   local -i idx=0

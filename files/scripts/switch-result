@@ -1,7 +1,6 @@
 #!/usr/bin/env zsh
 
-# NOT set -e: every probe below has a defined answer for failing, and errexit would
-# turn a query that cannot answer into a silent exit instead of `unverified`.
+# NOT set -e: errexit would turn a query that cannot answer into a silent exit, not `unverified`.
 set -uo pipefail
 
 show_help() {
@@ -181,6 +180,7 @@ failed_names() {
     line="${line##[[:space:]]#}"
     [[ -n "${line}" ]] && print -r -- "${line%%[[:space:]]*}"
   done
+  # switch-to-configuration counts a service crash-looping in auto-restart as failed; `--failed` never lists it.
   out="$(systemctl "$@" list-units --type=service --state=auto-restart --plain --no-legend --full 2> /dev/null)" || return 1
   for line in "${(@f)out}"; do
     line="${line##[[:space:]]#}"

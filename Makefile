@@ -19,6 +19,7 @@ lint:
 fmt:
 	nix fmt
 
+# Built from the flake so the pinned linter versions run.
 lint-nix:
 	nix fmt
 	git diff --exit-code

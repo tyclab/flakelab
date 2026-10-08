@@ -1,13 +1,8 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 #
-# flakelab build-distro (files/scripts/build-dev-wsl-nix) — stand up (or refresh)
-# a NixOS-WSL dev distro straight from this flake, with NO Nix required on the
-# host distro: the upstream NixOS-WSL base image already ships nix, so
-# `nixos-rebuild switch --flake .#default` applies our config from inside it.
-#
-# The post-build checks are lib/distro-check.zsh, shared with
-# `flakelab test-provision`.
+# flakelab build-distro: a NixOS-WSL dev distro from this flake; the base image ships nix, the host needs none.
+# Post-build checks: lib/distro-check.zsh, shared with `flakelab test-provision`.
 #
 # Usage:
 #   flakelab build-distro [--name NixDev] [--base /path/nixos.wsl]
@@ -43,6 +38,7 @@ while (( $# > 0 )); do
   shift
 done
 
+# Set by the nix wrapper: ${0:A:h:h:h} from a flat store directory resolves to /nix.
 _repo_root="${FLAKELAB_REPO_ROOT:-${0:A:h:h:h}}"
 _flake_ref="${FLAKE_REF:-${_repo_root}#default}"
 _flake_dir="${_flake_ref%%#*}"
@@ -66,6 +62,7 @@ if ! _exists; then
   _base_tmp=""
   if [[ -z "${BASE_TARBALL}" ]]; then
     command -v curl >/dev/null || { _say red "curl not found — pass --base" >&2; exit 1 }
+    # On the Windows mount, not /tmp: wsl.exe --import needs a Windows path.
     _base_tmp="$(mktemp "${_repo_root}/files/.wsl-nixos-base.XXXXXX")"; BASE_TARBALL="${_base_tmp}"
     _say cyan "Downloading NixOS-WSL base image..."
     curl -fL --retry 5 --retry-all-errors --progress-bar -o "${BASE_TARBALL}" "${BASE_URL}"
@@ -79,6 +76,7 @@ else
   _say green "${DISTRO_NAME} exists — applying flake (--reinstall to rebuild from base)"
 fi
 
+# Root reads the /mnt/c repo as another uid; git is not on root's PATH before the flake applies.
 ${_WSL_BIN} -d "${DISTRO_NAME}" -u root -- \
   sh -c "mkdir -p /root && printf '[safe]\n\tdirectory = *\n' >> /root/.gitconfig" \
   < /dev/null || true
@@ -135,6 +133,8 @@ _verdict() {
   [[ "${_v_verdict}" == unanswered ]] && (( _v_rc == 0 )) && _v_rc=3
   return 0
 }
+# NO `wsl --terminate`: it unmounts the shared binfmt_misc and breaks sibling distros' interop.
+# Degraded carries on: a fresh import's first user@1000 start can fail with EBUSY.
 _verdict --rc "${_rc}"
 case "${_v_verdict}" in
   applied)  _say green "Flake applied." ;;

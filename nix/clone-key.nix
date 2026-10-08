@@ -1,3 +1,4 @@
+# Shared by activation and the `flakelab clone` wrapper so both pick the same key: the first sshKeys entry on disk.
 { lib, sshKeys }:
 ''
   _cloneKey=""

@@ -7,6 +7,8 @@
 }:
 let
   cfg = osConfig.flakelab;
+  # Timer: one `tycswap auto --once` per interval; tycswap has no engine on/off, so an installed timer is live.
+  # App: tycswap's dashboard on loopback for the Windows tray (`tycswap app --remote`); no update check, the binary is this pin.
   on = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
   app = cfg.installTycswap && cfg.tycswapAppPort != null;
   inherit (flakelab) neverRestartedByActivation;
@@ -29,6 +31,7 @@ in
         Unit.Description = "flakelab: tycswap moves the live agent login before it hits a rate limit";
         Service = {
           Type = "oneshot";
+          # A tick is a few usage requests and at most one switch per tool.
           TimeoutStartSec = "3min";
           ExecStart = "${lib.getExe pkgs.tycswap} auto --once --json";
           # tycswap's "no action" (2) and "blocked" (3) are outcomes, not failures.
@@ -42,6 +45,7 @@ in
         Unit.Description = "flakelab: tycswap's dashboard on 127.0.0.1:${toString cfg.tycswapAppPort} for the Windows tray";
         Service = {
           ExecStart = "${lib.getExe pkgs.tycswap} app --headless --port ${toString cfg.tycswapAppPort} --no-update-check";
+          # The timer owns rotation: dashboard/tray starts are rejected server-side, a remembered hosted engine included.
           Environment = lib.optional on "TYCSWAP_AUTO_MANAGED_BY=flakelab-tycswap-autoswitch.timer";
           Restart = "on-failure";
           RestartSec = "5s";

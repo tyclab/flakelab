@@ -2,6 +2,10 @@
 
 set -uo pipefail
 
+# web: dashboard for agent sessions and stored logins (lib/web.py, stdlib only) on 127.0.0.1:8321 by default. Every API
+# call but /api/health needs the bearer token (0600 file). Bind to the WireGuard address for a phone, never a public
+# interface. --terminal-socket fronts ttyd, which has no credential of its own, behind a cookie issued against the token.
+# It shells out to tycswap and claude-sessions, so their locks and refusals hold; it never touches a tool's token file.
 
 SCRIPT_DIR="${0:A:h}"
 BIND="${FLAKELAB_WEB_BIND:-127.0.0.1}"
@@ -46,6 +50,7 @@ done
 [[ "$PORT" == <1-65535> ]] || { print -ru2 -- "web: --port takes 1 to 65535"; exit 2 }
 [[ -n "$BIND" ]] || { print -ru2 -- "web: --bind needs an address"; exit 2 }
 [[ -z "$LOGO" || -r "$LOGO" ]] || { print -ru2 -- "web: --logo ${LOGO} is not readable"; exit 2 }
+# Early word for spellings that need no lookup; the server checks the resolved address too.
 case "$BIND" in
   0.0.0.0|::|'*'|0) print -ru2 -- "web: refusing to bind every interface; name the WireGuard address"; exit 2 ;;
 esac
@@ -60,6 +65,7 @@ command -v python3 >/dev/null 2>&1 || { print -ru2 -- "web: python3 is not on PA
 export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ beside lib/web.py
 
 if $ROTATE_TOKEN; then
+  # Temp and rename: the server reads the file on every check, so a running one follows and terminal sessions end.
   (umask 077; mkdir -p -- "${TOKEN_FILE:h}") || { print -ru2 -- "web: cannot make ${TOKEN_FILE:h}"; exit 1 }
   chmod 700 -- "${TOKEN_FILE:h}" 2>/dev/null
   (umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "${TOKEN_FILE}.tmp.$$") &&

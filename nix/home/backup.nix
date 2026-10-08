@@ -1,12 +1,5 @@
-# The user timers that keep this box's state recoverable, each behind its own switch:
-# - flakelab-backup: the daily full `flakelab backup` pass (backupAutostart);
-# - flakelab-state-sync: the short-interval `--state-only` sync (stateRoot +
-#   stateSyncInterval), independent of backupAutostart, so a box that must not
-#   grow an unattended payload writer still converges its state root;
-# - flakelab-sessions-autosave: the running Claude Code sessions snapshotted for
-#   crash recovery (sessionsAutosaveInterval), which needs neither of the above.
-# ExecStart calls the wrappers by store path, since a unit must not depend on the
-# user's PATH.
+# User timers, each behind its own switch: flakelab-backup (daily full pass), flakelab-state-sync (`--state-only`,
+# independent of backupAutostart), flakelab-sessions-autosave. ExecStart uses store paths, never the user's PATH.
 {
   lib,
   pkgs,
@@ -30,6 +23,7 @@ in
         Unit.Description = "flakelab: back up home-dir data to the backup root";
         Service = {
           Type = "oneshot";
+          # Without it a wedged run parks in "activating" and blocks its own timer forever.
           TimeoutStartSec = "2h";
           # --force: no TTY here, so without it every differing file is kept and
           # the run reports failure.
@@ -69,6 +63,7 @@ in
       flakelab-backup = {
         Unit.Description = "flakelab: daily home-dir backup to the backup root";
         Timer = {
+          # After user-manager start, late enough not to compete with home-manager activation.
           OnStartupSec = "2min";
           OnUnitActiveSec = "24h";
           # Jitter: the backup root is shared with whatever else wakes up then.
@@ -94,6 +89,7 @@ in
       flakelab-sessions-autosave = {
         Unit.Description = "flakelab: Claude Code session snapshot every ${cfg.sessionsAutosaveInterval}";
         Timer = {
+          # Early: sessions opened right after login are the ones a crash would otherwise lose.
           OnStartupSec = "1min";
           OnUnitActiveSec = cfg.sessionsAutosaveInterval;
         };

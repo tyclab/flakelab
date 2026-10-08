@@ -2,12 +2,8 @@
 
 set -uo pipefail
 
-# xdg-open for the WSL target: hands a URL or a path to the Windows default
-# handler over interop. A NixOS-WSL box has no xdg-open of its own, and a CLI
-# that never reads $BROWSER (kubelogin, so k9s behind it) execs `xdg-open` by
-# name and nothing else. rundll32.exe rather than `powershell.exe Start`: a
-# third of the start-up time, and it takes the URL as one argument, so `&` and
-# `%` in an OAuth query string need no quoting. Exit codes are xdg-open's.
+# xdg-open for WSL: the Windows default handler over interop, for CLIs that exec `xdg-open` and ignore $BROWSER.
+# rundll32.exe, not `powershell.exe Start`: faster, and `&`/`%` in an OAuth URL need no quoting.
 
 usage() { print -r -u2 -- "usage: xdg-open <url|path>"; exit 1 }
 (( $# == 1 )) || usage
@@ -28,6 +24,7 @@ if ! ${is_url}; then
   target="$(wslpath -w "${shown}")" || { print -r -u2 -- "xdg-open: wslpath could not convert ${shown}"; exit 4 }
 fi
 
+# CreateProcess takes 32767 characters (a draw.io `#create=` URL exceeds it): longer URLs go via a redirect page.
 if ${is_url} && (( ${#target} > 32000 )); then
   js="${target//\\/\\\\}"
   js="${js//\"/\\\"}"
@@ -35,13 +32,13 @@ if ${is_url} && (( ${#target} > 32000 )); then
   page="$(mktemp --suffix=.html -p "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}" xdg-open-XXXXXX)" \
     || { print -r -u2 -- "xdg-open: could not write a redirect page for a ${#target}-character URL"; exit 4 }
   print -r -- "<!DOCTYPE html><meta charset=\"utf-8\"><title>xdg-open</title><script>window.location.replace(\"${js}\");</script>" > "${page}"
+  # No inherited fds, or a caller capturing the output waits the minute out.
   ( sleep 60; rm -f "${page}" ) </dev/null >/dev/null 2>&1 &!
   shown="a ${#target}-character URL, as ${page}"
   target="$(wslpath -w "${page}")" || { print -r -u2 -- "xdg-open: wslpath could not convert ${page}"; exit 4 }
 fi
 
-# FLAKELAB_RUNDLL32 is the offline suite's seam. The absolute fallback covers a
-# PATH without the Windows directories (appendWindowsPath off, a systemd unit).
+# FLAKELAB_RUNDLL32 is a test seam; the absolute fallback covers a PATH without the Windows directories.
 rundll="${FLAKELAB_RUNDLL32:-${commands[rundll32.exe]:-/mnt/c/Windows/System32/rundll32.exe}}"
 if [[ ! -x "${rundll}" ]]; then
   print -r -u2 -- "xdg-open: ${rundll} is unreachable (WSL interop down? see 'flakelab doctor') - open it by hand: ${shown}"

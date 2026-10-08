@@ -1,7 +1,11 @@
-
+# Overlay dir -> repository: one commit on main, no remote, autocrlf off. Used by nix-overlay-generate, nix-update and
+# nix-doctor; setup-wsl-nix.ps1 has the PowerShell twin (Get-OverlayGitLeaks). A leak is anything the first commit
+# would carry that the shipped template ignores; only the sops ciphertext passes, and only when it IS ciphertext.
 typeset -ga OVERLAYGIT_CANDIDATES=() OVERLAYGIT_LEAKS=()
 typeset -g OVERLAYGIT_WHY=""
 
+# True only when every line is sops dotenv output with MAC and version; a `_unencrypted` key or a non-sops `sops_`
+# name fails. A key service sops adds later is a refusal until it is added here.
 overlaygit_is_sops_dotenv() {
   setopt localoptions extendedglob
   local _f="$1" _line _val
@@ -28,12 +32,8 @@ overlaygit_is_sops_dotenv() {
   (( _mac && _ver ))
 }
 
-# overlaygit_leaks <dir> <template .gitignore> - fills OVERLAYGIT_CANDIDATES with
-# what a first `git add -A` in <dir> would stage and OVERLAYGIT_LEAKS with the
-# ones the template ignores. Read-only: the listing runs from a scratch git dir
-# pointed at <dir> as its work tree, so nothing is staged and no .git appears in
-# the overlay before the answer is known. Returns 1, OVERLAYGIT_WHY set, when
-# git could not answer - which is a refusal, never an empty list.
+# overlaygit_leaks <dir> <template>: OVERLAYGIT_CANDIDATES (what `git add -A` would stage), OVERLAYGIT_LEAKS (those the
+# template ignores). Read-only, via a scratch git dir. Returns 1 with OVERLAYGIT_WHY when git cannot answer.
 overlaygit_leaks() {
   local _d="$1" _tpl="$2" _probe _raw _p
   local -i _rc=0
@@ -42,23 +42,22 @@ overlaygit_leaks() {
   _probe="$(mktemp -d)" || { OVERLAYGIT_WHY="mktemp failed"; return 1 }
   {
     git init -q "${_probe}" 2> /dev/null || { OVERLAYGIT_WHY="git init of the scratch repository failed"; return 1 }
-    # -C, with the work tree as `.`: ls-files prints paths relative to the directory
-    # git runs in and only below it, so from a caller standing inside the overlay
-    # the list shrank to that subtree - named from there, matching nothing later.
-    # stderr goes to a file, never into the capture: git warns on a SUCCESSFUL
-    # listing too (a directory it cannot open), and folded into NUL-separated
-    # data the warning becomes part of the first path.
+    # -C with work tree `.`: ls-files only lists below the cwd. stderr to a file: git warns on a successful
+    # listing too, and in NUL-separated data the warning would become part of the first path.
     _raw="$(git -C "${_d}" --git-dir="${_probe}/.git" --work-tree=. -c core.quotePath=false \
       ls-files -o --exclude-standard -z 2> "${_probe}/err")" \
       || { OVERLAYGIT_WHY="listing ${_d} failed: $(< "${_probe}/err")"; return 1 }
     OVERLAYGIT_CANDIDATES=(${(0)_raw})
     (( ${#OVERLAYGIT_CANDIDATES} )) || return 0
+    # The template alone decides: as info/exclude with --no-index, the overlay's own .gitignore is not consulted.
     mkdir -p "${_probe}/.git/info" && cp -- "${_tpl}" "${_probe}/.git/info/exclude" \
       || { OVERLAYGIT_WHY="cannot read ${_tpl}"; return 1 }
     _raw="$(print -rN -- "${OVERLAYGIT_CANDIDATES[@]}" \
       | git -C "${_probe}" -c core.quotePath=false check-ignore --no-index --stdin -z 2> "${_probe}/err")" || _rc=$?
+    # 1 is check-ignore's "none of them is ignored".
     (( _rc <= 1 )) || { OVERLAYGIT_WHY="check-ignore failed: $(< "${_probe}/err")"; return 1 }
     _hits=(${(0)_raw})
+    # Only a dotenv can be the sops exception: a missed payload is thousands of hits on a 9p mount.
     for _p in "${_hits[@]}"; do
       [[ "${_p:t}" == *.env ]] && overlaygit_is_sops_dotenv "${_d}/${_p}" && continue
       OVERLAYGIT_LEAKS+=("${_p}")
@@ -69,6 +68,9 @@ overlaygit_leaks() {
   }
 }
 
+# overlaygit_adopt <dir> <template> <msg>: 0 adopted; 1 git failed (.git removed again); 2 .git exists; 3 no .gitignore;
+# 4 no template; 5 leaks in OVERLAYGIT_LEAKS; 6 not a directory. All or nothing; stages only the checked list;
+# signing and hooks off so the operator's global git config cannot decide it.
 overlaygit_adopt() {
   setopt localoptions localtraps
   local _d="$1" _tpl="$2" _msg="$3" _out
@@ -95,12 +97,8 @@ overlaygit_adopt() {
   return 1
 }
 
-# overlaygit_payload_inside <dir> - fills OVERLAYGIT_PAYLOAD_INSIDE with what is
-# still under <dir>/files/config from the layout that kept keys, secrets.env, the
-# provisioning config and the backup payload INSIDE the overlay. .gitignore never
-# protected those from nix: every `nix` command given the overlay as `path:`
-# copies the whole directory into the world-readable store. They belong in
-# <dir>-payload, and there is no migration - the callers name the one-time move.
+# overlaygit_payload_inside <dir>: old-layout payload still under <dir>/files/config. .gitignore never kept it out of
+# the world-readable store (`path:` copies the whole dir); it belongs in <dir>-payload, no migration.
 typeset -ga OVERLAYGIT_PAYLOAD_INSIDE=()
 overlaygit_payload_inside() {
   local _d="$1" _n

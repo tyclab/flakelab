@@ -1,4 +1,6 @@
 @echo off
+REM Wrapper around setup-wsl-nix.ps1; arguments pass straight through, double-click for a menu.
+REM Its own console matters: a run over interop dies when `nixos-rebuild switch` wipes WSLInterop.
 setlocal
 set "PS1=%~dp0setup-wsl-nix.ps1"
 
@@ -47,6 +49,7 @@ if errorlevel 2 goto :quit
 set "EXTRA="
 goto :overlay_check
 
+REM Mirrors the .ps1's overlay decision; wslnix-config is a legacy sibling name the .ps1 still accepts.
 :overlay_check
 set "CFGARG="
 if exist "%~dp0..\flakelab-config\flake.nix" goto :run

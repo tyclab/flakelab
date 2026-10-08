@@ -30,17 +30,13 @@ in
     # Home Manager writes ~/.zshrc but does not change the login shell, so without
     # this the distro lands in bash and no initContent runs.
     shell = pkgs.zsh;
+    # Each `wsl.exe -u` is its own logind session; lingering keeps user@<uid> and its ssh-agent up between them.
     linger = true;
   };
 
-  # The activation's own result, because nothing else keeps it: switch-to-configuration
-  # reports a failed activation script as 2 but lets a unit failing after it
-  # overwrite that with 4, and stage 2 and the NixOS-WSL init shim ignore the status
-  # of the activation they run at boot. Ordered after every other snippet so
-  # `$_status` - which the activation's ERR trap sets and `exit`s with - is final;
-  # the init's start time tells this boot's record from one left in /run by an
-  # earlier boot of a distro. flakelab-switch-result reads it. Written inside an
-  # `if`, so a failure to record cannot itself fail the activation.
+  # The activation's own result: switch-to-configuration lets a later unit failure overwrite its 2 with 4, and boot
+  # ignores the status. Ordered last so `$_status` is final; the init's start time tells this boot's record apart.
+  # Written inside an `if`, so a failure to record cannot fail the activation. flakelab-switch-result reads it.
   system.activationScripts.flakelab-activation-result =
     lib.stringAfter
       (builtins.attrNames (
@@ -70,6 +66,7 @@ in
   # it a second time, with its audit: 0.16 s of a 0.67 s interactive start.
   programs.zsh.enableGlobalCompInit = false;
 
+  # Keeps contiguous blocks free: a fragmented VM cannot allocate a WSL session's ring buffer and sessions stall.
   boot.kernel.sysctl."vm.compaction_proactiveness" = 60;
 
   # Runs foreign dynamically linked binaries, such as the installed Claude Code.
@@ -91,6 +88,7 @@ in
       figlet
       grc
     ]
+    # Inline, not in targets/wsl.nix (would reorder the system path); hiPrio so a dragged-in xdg-utils cannot shadow it.
     ++ lib.optional (config.flakelab.target == "wsl") (lib.hiPrio scripts.xdg-open)
     ++ (with pkgs; [
       dnsutils

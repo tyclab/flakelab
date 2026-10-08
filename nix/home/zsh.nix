@@ -47,6 +47,7 @@ in
     shellAliases = {
       ll = "ls -alF";
 
+      # `gitcheck` reports, `gitclean` deletes; both take their scripts' own flags appended.
       gitcheck = "gitchecker ${gitRootArgs}";
       gitclean = "gitcleaner ${gitRootArgs}";
 
@@ -61,6 +62,7 @@ in
     // cfg.customAliases;
     oh-my-zsh = {
       enable = true;
+      # For the git segment's colours: git_prompt_info is plain without a theme. The PROMPT below replaces the theme's.
       theme = lib.mkDefault "robbyrussell";
       plugins = [
         "git"

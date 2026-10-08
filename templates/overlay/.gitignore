@@ -1,6 +1,4 @@
-# Key material and secrets never belong in git, even in a private overlay. This
-# file is also what `flakelab update` and the generators measure a first commit
-# against, so a kind of secret missing here is one that commit may carry.
+# No key material or secrets in git; `flakelab update` and the generators also measure a first commit against this.
 id_*
 !id_*.pub
 *.pem
@@ -10,8 +8,10 @@ secrets.env
 files/config/user_data.yaml
 .claude/settings.local.json
 
+# A committed lock pins a local flakelab checkout's NAR hash and the next change there aborts with "NAR hash mismatch".
 flake.lock
 
+# Old payload layout: kept so an overlay not yet moved to <overlay>-payload cannot commit them.
 files/config/instances/
 files/config/shared/
 files/config/snapshots/
