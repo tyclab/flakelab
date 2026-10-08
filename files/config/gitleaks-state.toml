@@ -1,2 +1,3 @@
+# No allowlist: clear false positives with `flakelab backup --review-secrets`.
 [extend]
 useDefault = true
