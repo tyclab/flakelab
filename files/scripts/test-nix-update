@@ -1042,6 +1042,29 @@ check    "it switches"                      "${RC}" "0"
 contains "and counts what came in"          "${OUT}" "— 3 commit(s)"
 rm -rf "${HOME}/git/grp"
 
+print -r -- "a clone six levels down is still counted"
+elsewhere a/b/c/d/grp/flakelab https://gitlab.com/grp/flakelab.git
+relock_between "\"type\":\"gitlab\",\"owner\":\"grp\",\"repo\":\"flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"gitlab\",\"owner\":\"grp\",\"repo\":\"flakelab\",\"rev\":\"${REV_NEW}\""
+contains "and counts what came in"          "${OUT}" "— 3 commit(s)"
+rm -rf "${HOME}/git/a"
+
+# Symlinked node_modules farms and tool caches made the scan take minutes.
+print -r -- "a clone behind a symlink or in a hidden directory is not searched"
+git clone -q "${CLONE}" "${BASE}/outside/grp/flakelab"
+git -C "${BASE}/outside/grp/flakelab" remote set-url origin https://gitlab.com/grp/flakelab.git
+ln -s "${BASE}/outside" "${HOME}/git/linked"
+relock_between "\"type\":\"gitlab\",\"owner\":\"grp\",\"repo\":\"flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"gitlab\",\"owner\":\"grp\",\"repo\":\"flakelab\",\"rev\":\"${REV_NEW}\""
+check    "it switches"                      "${RC}" "0"
+excludes "with no count through the link"   "${OUT}" "commit(s)"
+rm -f "${HOME}/git/linked"
+elsewhere w/.pio/grp/flakelab https://gitlab.com/grp/flakelab.git
+relock_between "\"type\":\"gitlab\",\"owner\":\"grp\",\"repo\":\"flakelab\",\"rev\":\"${REV_OLD}\"" \
+               "\"type\":\"gitlab\",\"owner\":\"grp\",\"repo\":\"flakelab\",\"rev\":\"${REV_NEW}\""
+excludes "or from the hidden directory"     "${OUT}" "commit(s)"
+rm -rf "${HOME}/git/w"
+
 print -r -- "a repo whose path only ends in the same letters is not the input's clone"
 mv "${CLONE}" "${BASE}/clone.aside"
 git clone -q "${BASE}/clone.aside" "${HOME}/git/nottyclab/flakelab"

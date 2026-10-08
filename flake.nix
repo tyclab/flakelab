@@ -381,7 +381,7 @@
             };
             client = import ./nix/mcp-clients.nix {
               inherit pkgs;
-              cfg = {
+              cfg = self.nixosConfigurations.default.config.flakelab // {
                 mcpShared = {
                   gateway = null;
                   servers.fixture = fixtureServer;
@@ -397,6 +397,15 @@
                     servers.fixture = fixtureServer;
                   };
                   flakelab.mcpBrowsers.headless = true;
+                  flakelab.codexSettings.mcp_servers.native-fixture = {
+                    url = "https://example.invalid/native-mcp";
+                    bearer_token_env_var = "FIXTURE_KEY";
+                  };
+                  flakelab.claudeMcpServers.native-fixture = {
+                    type = "http";
+                    url = "https://example.invalid/native-mcp";
+                    headers.Authorization = "Bearer \${FIXTURE_KEY}";
+                  };
                 }
               ];
             };
@@ -434,6 +443,8 @@
               toml2json ${codexSettings} | jq -e '.mcp_servers.fixture | (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]'
               config="$(grep -o '/nix/store/[^ ]*-flakelab-mcp.json' "$(jq -r .mcpServers.fixture.command "$fixtureHome/.claude.json")")"
               jq -e '.gateway == "operator@devbox" and .servers.fixture.callbackPort == 18871' "$config"
+              jq -e '.nativeServers["native-fixture"] | .tokenEnv == "FIXTURE_KEY" and .clientsAgree and .claudeEnabled and .codexEnabled' "$config"
+              jq -e '.nativeSecretFile == "/home/${fixture.config.flakelab.username}/.config/tyc/secrets.env"' "$config"
 
               jq -e '.mcpServers."playwright-headless" | .type == "stdio" and (.command | endswith("/bin/flakelab-playwright-headless")) and .args == []' "$fixtureHome/.claude.json"
               toml2json ${codexSettings} | jq -e '.mcp_servers."playwright-headless".command | endswith("/bin/flakelab-playwright-headless")'

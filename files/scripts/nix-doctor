@@ -762,6 +762,18 @@ if [[ -x "${HOME}/.local/bin/claude" ]]; then
   fi
 fi
 
+if [[ -n "${FLAKELAB_MCP_CONFIG:-}" ]]; then
+  log_head "Native MCP clients"
+  nativeMcpStatus=$(python3 "${0:A:h}/lib/mcp.py" doctor 2>/dev/null)
+  if (( $? == 0 )); then
+    log_ok "native MCP files and credentials agree for a fresh invocation"
+    log_hint "running clients and additional config layers remain unverified; live check: flakelab mcp doctor --live"
+  else
+    log_fail "native MCP configuration or credentials need attention"
+    log_hint "${nativeMcpStatus}"
+  fi
+fi
+
 # Findings the secret gate is sitting on.
 log_head "Shared state"
 # The gate warns into the backup's own output, which a timer sends to a journal
