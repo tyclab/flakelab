@@ -1,15 +1,6 @@
-# lib/prompt.zsh — the questions a person at a terminal answers: pick from a
-# list, type a line, say yes or no. Sourced by the menu and by every command
-# that asks for an argument it was not given. Pure zsh plus stty: no picker
-# binary to pin, and the same `read -k` the confirm prompts always used.
-#
-# Every prompt is for a terminal only. prompt_tty is the gate a caller asks
-# first; without a terminal the caller keeps what it did before (refuse, take
-# the default, need the flag), so an agent's shell, a pipe or a --json run
-# never meets a prompt and never waits on one. FLAKELAB_NO_PROMPT=1 turns them
-# off at a terminal too, and so does an agent's own shell whatever its stdin:
-# Codex can run a command on a pty (1 of about 4800 in a month here), and its
-# shells carry CODEX_THREAD_ID; Claude Code's carry CLAUDECODE=1.
+# lib/prompt.zsh: terminal prompts (pick, type a line, yes/no) in pure zsh plus stty. prompt_tty is the gate:
+# no terminal, FLAKELAB_NO_PROMPT=1 or an agent shell (CODEX_THREAD_ID, CLAUDECODE) means no prompt;
+# Codex can run a command on a pty.
 #
 # Everything is drawn on stderr and answers land in globals, not on stdout, so
 # a caller whose stdout is captured (`eval "$(tycswap env 2)"`) still
@@ -86,17 +77,12 @@ _pc_draw() {
   print -u2 -rn -- "$out"
 }
 
-# The rest of an escape sequence: a key that arrives within 50 ms of the Esc.
-# zselect, because `read -t` on -u 0 answers at once with a NUL instead of
-# waiting out its timeout. Only with the terminal non-canonical: once `read -k`
-# has put a canonical terminal back, zselect reports it readable at once.
+# Rest of an escape sequence within 50 ms. zselect, as `read -t -u 0` answers at once with a NUL; non-canonical only.
 _pc_more() {
   zselect -t 5 -r 0 2>/dev/null && read -rs -k 1 -u 0 "$1"
 }
 
-# _pc_csi <var> — the rest of a sequence after its Esc [: parameter bytes up to
-# the one final byte, which lands in <var>. Delete is Esc [ 3 ~ and Ctrl-Down
-# Esc [ 1 ; 5 B, so none of the middle may land as a typed key.
+# _pc_csi <var>: read a CSI sequence through its final byte (Delete is Esc [ 3 ~), so no middle byte becomes a key.
 _pc_csi() {
   _pc_more "$1" || return 1
   while [[ "${(P)1}" != [@-~] ]]; do _pc_more "$1" || return 1; done
@@ -107,10 +93,7 @@ _pc_restore() {
   print -u2 -n -- $'\e[?25h'
 }
 
-# prompt_choose <question> <label>... — an arrow-key list. Typing filters it
-# (case-insensitive substring), Backspace and Ctrl-U edit the filter, ↑/↓
-# move, Enter picks, Esc/Ctrl-C/Ctrl-D cancel. Sets PROMPT_INDEX; returns 1
-# on cancel.
+# prompt_choose <question> <label>...: typing filters, arrows move, Enter picks, Esc/^C/^D cancel (rc 1). Sets PROMPT_INDEX.
 prompt_choose() {
   emulate -L zsh
   setopt localtraps
@@ -148,9 +131,7 @@ prompt_choose() {
       $'\r'|$'\n') (( ${#shown} > 0 )) && { picked=${shown[cur]}; break } ;;
       $'\x03'|$'\x04') picked=-1; break ;;
       $'\e')
-        # An arrow is Esc [ x (or Esc O x); Esc alone, or
-        # followed by anything else (an Alt chord), cancels. A second Esc is
-        # kept for the list that comes next.
+        # An arrow is Esc [ x or Esc O x; Esc alone or an Alt chord cancels; a second Esc is kept for the next list.
         c1=""
         if ! _pc_more c1 || [[ "$c1" != [\[O] ]]; then
           [[ "${c1:-}" == $'\e' ]] && _PC_PENDING="$c1"
@@ -180,10 +161,7 @@ prompt_choose() {
   return 1
 }
 
-# prompt_input <question> [default] — one line in the zsh line editor, the
-# default already typed: Enter takes it, the usual editing keys work, Tab
-# completes file names. A leading ~ is expanded. Sets PROMPT_TEXT; returns 1
-# on Ctrl-C or Ctrl-D.
+# prompt_input <question> [default]: one zle line, default pre-typed, Tab completes files. Sets PROMPT_TEXT; rc 1 on ^C/^D.
 prompt_input() {
   emulate -L zsh
   setopt localtraps

@@ -533,7 +533,7 @@ in
           {
             cat "$_tmp"
             echo '<!-- BEGIN managed by flakelab -->'
-            cat ${../../files/config/claude/CLAUDE.md}
+            cat ${../../files/config/agent-instructions.md}
             printf '\n'
             cat ${../../files/config/claude/target-${cfg.target}.md}
             ${claudeMdExtraCat}

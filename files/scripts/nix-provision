@@ -1,23 +1,11 @@
 #!/usr/bin/env zsh
 # Drive the Windows provisioning script from inside a WSL distro.
 #
-# The script only works on the Windows side, so it goes through `powershell.exe`,
-# and it must be given an absolute drive path, because a shell sitting on ext4
-# makes PowerShell inherit a `\\wsl.localhost\...` cwd it cannot use.
-#
-# This cannot drive a run that restarts the distro it is running in. `provision`
-# restarts it twice - `wsl --terminate` halfway through to apply the new user,
-# then `wsl --shutdown` at the closing interop heal - and each one kills this
-# shell. Detaching does not save it: a Windows process started over interop
-# belongs to the `wsl` relay of the distro that launched it, so the restart takes
-# the run down too, mid-run, with no way to tell how far it got.
-#
-# As in wslkube ("running from Windows PowerShell is unaffected", wslkube
-# docs/known-issues.md): read-only commands run in the foreground, and the ones
-# that restart the distro print the command for a Windows terminal instead.
+# Via `powershell.exe` with an absolute drive path: from ext4 PowerShell inherits a `\\wsl.localhost` cwd it cannot use.
+# A run that restarts this distro (provision) kills this shell and its interop children, detached or not,
+# so those commands are printed for a Windows terminal; read-only ones run here.
 set -uo pipefail
 
-# The command as the user runs it: the script's own name is not on PATH.
 _self="flakelab provision"
 
 die() { print -ru2 -- "${_self}: $*"; exit 1 }
@@ -67,9 +55,7 @@ while (( $# )); do
     --foreground) _foreground=true ;;
     -h|--help)    usage; exit 0 ;;
     --)           shift; _ps_args+=("$@"); break ;;
-    # The .ps1's own switches are single-dash (-DryRun, -Config) and pass through;
-    # a double-dash flag can only be meant for this script, so an unknown one is
-    # a usage error rather than something to hand PowerShell.
+    # The .ps1's switches are single-dash; an unknown double-dash flag is a usage error, not handed to PowerShell.
     --*)          usage_error "unknown option: $1 (the .ps1's switches are single-dash, or go after --)" ;;
     -*)           _ps_args+=("$1") ;;
     *)            if [[ -z "${_cmd}" ]]; then _cmd="$1"; else _ps_args+=("$1"); fi ;;
@@ -78,8 +64,6 @@ while (( $# )); do
 done
 [[ -n "${_cmd}" ]] || _cmd='status'
 
-# FLAKELAB_PROC_ROOT and FLAKELAB_BINFMT_ROOT are test seams (test-nix-provision),
-# as FLAKELAB_PROC_ROOT is for the doctor: unset, the kernel's own trees.
 grep -qi microsoft "${FLAKELAB_PROC_ROOT:-/proc}/version" 2>/dev/null || die "this only runs inside WSL"
 
 # powershell.exe is itself an interop call, so a wiped WSLInterop handler is the
@@ -95,10 +79,7 @@ fi
 _ps="$(command -v powershell.exe || print -- /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)"
 [[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
 
-# FLAKELAB_REPO_ROOT is the overlay (nix/scripts.nix exports repoPath); the
-# provisioning script lives in the template checkout beside it. Only with the
-# variable set: `:h` of an empty string is `.`, which would make an unset
-# variable a search of the current directory's children.
+# Only with FLAKELAB_REPO_ROOT set: `:h` of an empty string is `.`, a search of the cwd's children.
 if [[ -z "${_repo}" && -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
   _parent="${FLAKELAB_REPO_ROOT:h}"
   if [[ -d "${_parent}" ]]; then
@@ -143,10 +124,7 @@ if ! ${_restarts}; then
   exec "${_ps}" -NoProfile -ExecutionPolicy Bypass -File "${_script_win}" "${_cmd}" "${_ps_args[@]}"
 fi
 
-# Quote for PowerShell so the command can be pasted as printed: inside a
-# single-quoted PowerShell literal the only special sequence is '' for a quote. The
-# quote goes through a variable because `${1//\'/\'\'}` keeps its backslashes and
-# would emit \'\', which is not an escape PowerShell knows.
+# Paste-ready PowerShell quoting; the quote goes through a variable as `${1//\'/\'\'}` keeps its backslashes.
 _psq() { local _q="'"; print -r -- "${_q}${1//$_q/$_q$_q}${_q}" }
 
 _paste="& $(_psq "${_script_win}") ${_cmd}"

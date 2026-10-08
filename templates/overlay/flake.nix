@@ -1,19 +1,13 @@
 {
   description = "Private flakelab overlay - real personal values, kept off the shareable template";
 
-  # Both generators rewrite this whole line, keyed on the marker comment: keep the
-  # marker, exactly once, and keep the line on one line.
-  # Git-ignore this overlay's flake.lock: a committed lock pins a local checkout's
-  # NAR hash and the next edit there aborts the build with "NAR hash mismatch".
+  # Both generators rewrite this line by its marker: keep the marker exactly once, on one line.
   inputs.flakelab.url = "github:tyclab/flakelab"; # flakelab-url: substitution anchor
 
   outputs =
     { flakelab, ... }:
     {
-      # flakelab/nix/options.nix is the schema: a misspelt key or wrong type aborts
-      # evaluation, and every option declared there without a default must be set here.
-      # No plaintext secrets - the Nix store is world-readable; use sopsSecretsFile
-      # or ~/.config/tyc/secrets.env.
+      # flakelab/nix/options.nix is the schema. No plaintext secrets: the Nix store is world-readable.
       nixosConfigurations.default = flakelab.lib.mkSystem {
         # Platform to build for; set on a Proxmox guest, never on a WSL distro.
         # target = "proxmox-vm";
@@ -28,101 +22,25 @@
         gitEditor = null; # null -> leave the git default
         backupAutostart = false;
 
-        # hostName = "flakelab";
-
-        # A second root for the shareable backup state, replicated by your sync
-        # client. Never a git checkout, never inside repoPath.
-        # stateRoot = "/mnt/d/sync/flakelab-state";
-        # Session transcripts too (large, and the verbatim text of every session):
-        # stateTranscripts = true;
-
         # Which flakelab/profiles/ entries apply; an entry may also be an imported
         # profile attrset, which this overlay must `git add` before switching.
         profiles = [
           "example"
         ];
 
-        # Personal full-clone GitLab groups; profile groups are unioned in.
         gitlabGroups = [ ];
 
-        # GitHub discovery is opt-in on each device. Empty owners means your
-        # account and organizations; gh uses its login or GH_TOKEN/GITHUB_TOKEN.
+        # GitHub discovery is opt-in per device; empty owners means your account and organizations.
         cloneGithub = false;
         githubOwners = [ ];
 
-        # Repos to keep out of ~/git.
         cloneExclude = [
           "flakelab"
           "flakelab-config"
         ];
 
-        # Extra roots for the gitcheck/gitclean aliases beyond ~/git.
         extraReposDirs = [ "/mnt/c/Users/WindowsUser/git" ];
 
-        # Keys under <overlay>-payload/shared/ssh/keys/ to load on login; the first is
-        # the git/clone identity.
-        # sshKeys = [ "id_ed25519" ];
-
-        # Non-secret config only - these land in the Nix store. GRAFANA_URL and
-        # WHATSAPP_BRIDGE_HOST also gate a Claude MCP server (flakelab/nix/home/claude.nix);
-        # the rest is plain environment the marketplace MCP plugins read.
-        # sessionVariables = {
-        #   HASS_URL = "http://homeassistant.example.lan:8123";
-        #   PROXMOX_API_URL = "https://pve.example.lan:8006"; # no /api2/json
-        #   PROXMOX_VERIFY_SSL = "false";
-        #   SYNOLOGY_URL = "https://nas.example.com:443"; # scheme, host and port
-        #   SYNOLOGY_VERIFY_SSL = "true";
-        #   SYNOLOGY_USERNAME = "mcp-service"; # non-admin, not in administrators
-        #   GRAFANA_URL = "https://grafana.example.lan";
-        #   WHATSAPP_BRIDGE_HOST = "localhost:8180";
-        # };
-
-        # customAliases = { proxmox-ssh = "ssh root@pve.example.lan"; };
-
-        # Claude plugin marketplaces to register.
-        # claudePluginMarketplaces = [
-        #   {
-        #     # Must match the `name` in the marketplace's own
-        #     # .claude-plugin/marketplace.json - a wrong name installs nothing.
-        #     name = "your-tools";
-        #     url = "git@gitlab.com:you/claude-plugins.git";
-        #   }
-        # ];
-        # Plugins to install from those marketplaces.
-        # claudePlugins = [ "agents" "skills" "hooks" "statusbar" ];
-
-        # Independent Codex marketplace. Clone this path before activation, or use
-        # a Git URL with revision = "<immutable 40-character commit>".
-        # Point at MCP JSON paths from a locked, flake=false input. See CODEX.md.
-        # codexMcpSources = [ ./mcp.json ];
-        # codexAutoReview = true;
-        # codexReadOnlyTools.grafana = [ "list_datasources" ];
-        # codexSettings.tui.status_line = [ "model-with-reasoning" "context-remaining" "git-branch" "current-dir" ];
-
-        # The agent-box bundle: turn on only for a box meant to run agents unattended.
-        # claudeAgentDefaults = true;
-
-        # Your own rules, appended inside the managed block of ~/.claude/CLAUDE.md.
-        # claudeMdExtra = ''
-        #   ## Workflow Preferences
-        #
-        #   - `glab` for the GitLab repos under `~/git`; `gh` only for GitHub remotes.
-        # '';
-
-        # Per-developer Claude user-scope MCP servers, merged into ~/.claude.json.
-        # claudeMcpServers = {
-        #   scratch = {
-        #     type = "stdio";
-        #     command = "node";
-        #     args = [ "/home/CHANGEME/git/.../dist/index.js" ];
-        #   };
-        # };
-
-        # Absolute path to the whatsapp-mcp-server checkout.
-        # whatsappMcpDir = "/home/CHANGEME/git/.../whatsapp-mcp-server";
-
-        # Endpoint `bw config server` is pointed at on every rebuild.
-        # bitwardenServer = "https://vault.bitwarden.eu";
       };
     };
 }

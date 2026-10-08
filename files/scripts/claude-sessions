@@ -22,13 +22,7 @@ set -uo pipefail
 # A CLI client may hold no transcript itself; its session is saved from the
 # server. The newest transcript in a shared directory is never an identity.
 
-# The host: a session started with --start runs in a window of the `agents`
-# tmux session, and the table says so. A terminal — local, a Windows Terminal
-# tab, an SSH client on a phone — is then a view on that window and can close
-# at will: the process belongs to the tmux server, not to the terminal.
-# --attach joins a window; a second terminal joining the same server gets a
-# view session of its own (a grouped session, sharing the windows but with its
-# own current window), so two tabs need not show the same thing.
+# --start runs a session in a window of the `agents` tmux session; terminals are grouped views that can close at will.
 #
 # Usage:
 #   claude-sessions                    table: tool, pid, age, session id, host, directory
@@ -54,32 +48,17 @@ set -uo pipefail
 #                                      newest first: the window closed by mistake
 #   claude-sessions --json             the live sessions as a JSON array
 #
-# The --resume lines are one per terminal: pasted into one shell they run in
-# sequence, the second only after the first session exits. --open is the
-# WSL answer to that. A directory this box does not have (a session saved on
-# another machine) gets no `cd`: `claude --resume <id>` finds a session from
-# any directory, and a failing `cd` would stop the line before it ran.
+# --resume lines are one per terminal. A directory this box lacks gets no `cd`:
+# `claude --resume <id>` works from anywhere, and a failing `cd` would stop the line.
 #
-# Crash recovery: --autosave (the flakelab-sessions-autosave timer) keeps ONE
-# file per boot, <box>-autosave-<boot>.txt beside the saves, rewritten only
-# when the running set changed and never with an empty one — the first ticks
-# after a crash run with nothing open. So the file a crash or a hard reset
-# leaves behind is exactly what was open, untouched by the reboot. With no file
-# named, --resume and --open take this box's newest save that is not this
-# boot's own autosave (that is the live set, not a record of the last one).
+# --autosave keeps ONE <box>-autosave-<boot>.txt per boot, never rewritten empty (the first ticks after a crash
+# see nothing open). --resume/--open default to this box's newest save that is not this boot's autosave.
 #
-# The box, not the host: <box> is <hostname>-<machine>, the first twelve hex
-# digits of /etc/machine-id behind the hostname. Two WSL distros built from one
-# overlay share the hostname AND, through the sync, the save directory; named
-# after the host alone, the other box's autosave is this box's newest file,
-# and a reboot here brought that box's sessions back (2026-10-04). Another
-# box's file — any shape, any name — is still resumed when named explicitly.
+# <box> is <hostname>-<12 hex of machine-id>: two boxes share hostname and save dir, and by host alone a reboot
+# here brought the other box's sessions back (2026-10-04). Another box's file still resumes when named.
 #
-# Save location: $FLAKELAB_STATE_ROOT/claude/sessions/<box>-<date>.txt when a
-# state root is configured (nix/options.nix stateRoot) — the list then
-# replicates with the transcripts it names — else
-# ~/.local/state/flakelab/sessions/. Never ~/.claude/sessions: that directory
-# is Claude Code's own registry.
+# Saves go to $FLAKELAB_STATE_ROOT/claude/sessions/ (else ~/.local/state/flakelab/sessions/);
+# never ~/.claude/sessions, which is Claude Code's own registry.
 #
 # Saved lines: "<tool>  <dir>  <id>", two spaces between fields. A file from
 # before the tool column ("<dir>  <id>") reads as Claude Code.
@@ -98,10 +77,7 @@ BOOT_ID_FILE="${FLAKELAB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 # is a test seam. Unreadable, the box is the host alone.
 MACHINE_ID_FILE="${FLAKELAB_MACHINE_ID_FILE:-/etc/machine-id}"
 REGISTRY="${HOME}/.claude/sessions"
-# A session on a tycswap profile (tycswap run, tycswap env) keeps its registry
-# entry, and with the history unshared its transcript, under that profile:
-# <store>/sessions/<n>-<email>/{sessions,projects}. FLAKELAB_TYCSWAP_ROOT is a
-# test seam over tycswap's XDG store.
+# tycswap profile sessions keep registry and transcript under <store>/sessions/<n>-<email>/; the env var is a test seam.
 TYCSWAP_ROOT="${FLAKELAB_TYCSWAP_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}"
 TYCSWAP_PROFILES="${TYCSWAP_ROOT}/sessions"
 TYCSWAP_GROUPS="${TYCSWAP_ROOT}/groups"
@@ -292,12 +268,7 @@ tool_command() {
   print -r -- "$cmd"
 }
 
-# Create a window in the agents session (the session itself when it does not
-# exist yet) and print its window id. A window's command runs with the
-# server's environment, not the caller's, and the server is born by whoever
-# starts the first window (a terminal, the dashboard's service, ttyd), so the
-# caller's PATH is handed to the window explicitly: the tool resolves the
-# same way it did for the caller, whoever started the server.
+# The window gets the caller's PATH: it runs with the server's env, and any client may have started the server.
 new_window() {
   local name="$1" dir="$2" cmd="$3" handover_cwd="${TYCSWAP_HANDOVER_CWD:-}" digest="${TYCSWAP_HANDOVER_DIGEST:-}"
   local -a env_args=(-e "PATH=${PATH}" -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST=)
@@ -314,14 +285,7 @@ new_window() {
   fi
 }
 
-# A view on the server: a session grouped with the agents session, so it shows
-# the same windows but keeps its own current window, and goes away with its
-# client while the agents session stays. Not `destroy-unattached`: the view
-# is made detached and attached by a later command (this process, a Windows
-# Terminal tab), and since tmux 3.4 a session with that option set is
-# destroyed the moment the command client that set it disconnects, before
-# anything attaches. A client-detached hook on the view kills it instead,
-# and fires for a closed terminal as well as an explicit detach.
+# Not `destroy-unattached`: since tmux 3.4 it kills a detached-made view before anything attaches.
 new_view() {
   local wid="$1" view
   view="${TMUX_SESSION}-${wid#@}-$$"
@@ -350,12 +314,6 @@ attach_window() {
 # ---------------------------------------------------------------------------
 # The live sessions.
 
-# One record per running session, unit-separator delimited (a tab is IFS
-# whitespace to `read`, so an EMPTY id field would collapse and shift the cwd
-# into its place): <tool> US <pid> US <age-seconds> US <session-id> US <cwd>
-# US <window id> US <window name> US <group> US <profile>. A process with no id from any source
-# (starting, or a client whose server owns the session) gets an empty id and a stderr
-# note — it has nothing to resume by id.
 typeset -a ROWS=()
 US=$'\x1f'
 
@@ -434,6 +392,7 @@ process_profile() {
   return 0
 }
 
+# Records are unit-separator delimited: a tab is IFS whitespace to `read`, so an empty id would shift the cwd.
 gather() {
   local tool p cwd sid age reg started now host wid wname record group profile
   local -a pids args sessions
@@ -496,18 +455,8 @@ gather() {
   done
 }
 
-# One row per SESSION, not per process. A session that is open in two
-# processes — `claude --resume <id>` on a session already running, a
-# reattach after a dropped connection — registers both pids under the same
-# id, and everything that saves or resumes works in sessions: the save file
-# carried the pair twice, --resume printed the same command twice and --open
-# opened two tabs onto one session. The OLDEST process wins, so the saved
-# directory is the one the session started in; ties keep the first row. It is
-# picked by age rather than by pgrep's order, which is ascending pid and only
-# usually ascending start time — after a pid wraparound the reattach can hold
-# the lower pid. The table and --json stay per process: they report a pid,
-# which is the thing that differs.
 typeset -a SESSION_ROWS=()
+# One row per session; the oldest process wins by age, not pgrep's pid order, which breaks after pid wraparound.
 dedupe_sessions() {
   local row tool p age sid cwd wid wname group profile key
   local -A best=() best_age=()
@@ -759,16 +708,7 @@ print_resume() {
   done
 }
 
-# One Windows Terminal tab per session, attached to the calling distro.
-# `-w 0` targets the terminal window this shell lives in (a new one when it
-# has none). wt.exe reaches WSL through the interop PATH; when interop is off
-# there is no Windows to open tabs in, and --resume is the answer. A directory
-# this box does not have opens the tab in the home directory instead.
-#
-# With tmux on PATH the session is resumed in a window of the agents server
-# and the tab attaches a view on it, so closing the tab leaves the session
-# running and --attach brings it back; without tmux the tab runs the resume
-# command itself, as before.
+# `-w 0` targets this shell's terminal window; with interop off there is no wt.exe and --resume is the answer.
 open_tabs() {
   local pair tool cwd sid group profile tab_cwd wid view n=0 use_tmux=false
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }

@@ -2,17 +2,7 @@
 
 set -uo pipefail
 
-#
-# Parallel git clone/fetch for WSL provisioning
-#
-# Reads repo specs from stdin (one per line):
-#   ssh_url                        → dest auto-derived under --repos-dir
-#   ssh_url /absolute/dest/path    → explicit dest
-#
-# Usage:
-#   clone-repos --key-file ~/.ssh/id_ed25519 --repos-dir ~/git
-#   clone-repos --key-file ~/.ssh/id_ed25519 --max-jobs 8 --repos-dir ~/git
-#
+# Parallel clone/fetch. Stdin, one per line: `ssh_url` (dest under --repos-dir) or `ssh_url /absolute/dest`.
 
 MAX_JOBS=4
 KEY_FILE=""
@@ -98,17 +88,9 @@ process_repo() {
     fi
     if ! gitnet_retry git -C "${dest}" fetch --prune; then
       out="${GITNET_OUT}"
-      # A blobless clone whose promisor config got clobbered (e.g. by another
-      # tool touching .git/config) reports its filtered-out blobs as corruption
-      # and chokes on thin-pack deltas: "pack has N unresolved deltas /
-      # fetch-pack: invalid index-pack output". Restoring the config and
-      # retrying once is then safe and non-destructive.
-      # Gated on a *.promisor pack marker, which a filtered fetch writes and
-      # which survives the config being unset: an existing checkout this script
-      # did not create is processed too, and those two error strings are not
-      # unique to partial clones. Without the marker the pack really is damaged,
-      # and writing extensions.partialClone would hide the missing objects from
-      # fsck.
+      # A blobless clone with clobbered promisor config reports filtered blobs as corruption ("unresolved deltas");
+      # restoring it and retrying once is safe. Gated on a *.promisor pack marker: without it the pack really is
+      # damaged, and setting extensions.partialClone would hide the missing objects from fsck.
       local -a promisor_packs
       promisor_packs=("${dest}"/.git/objects/pack/*.promisor(N))
       if [[ "${out}" == *"unresolved deltas"* || "${out}" == *"invalid index-pack"* ]] \

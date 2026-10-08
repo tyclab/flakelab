@@ -1,8 +1,4 @@
-# The clone identity: the first sshKeys entry that exists on disk, resolved when
-# the snippet runs. One definition for the activation steps (nix/home/default.nix)
-# and the `flakelab clone` wrapper (nix/scripts.nix), so the two cannot pick
-# different keys. Gating on the first name alone would park clones on a box that
-# carries only a later one. Leaves _cloneKey empty when no configured key exists.
+# Shared by activation and the `flakelab clone` wrapper so both pick the same key: the first sshKeys entry on disk.
 { lib, sshKeys }:
 ''
   _cloneKey=""

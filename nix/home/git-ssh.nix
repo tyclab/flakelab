@@ -1,4 +1,3 @@
-# Git identity, ssh client config, and the systemd user ssh-agent.
 {
   lib,
   pkgs,
@@ -36,13 +35,8 @@ in
         editor = cfg.gitEditor;
       };
       safe.directory = cfg.repoPath;
-      # gh and glab are in the package set, and `gh auth login` / `glab auth login`
-      # end by writing this helper with `git config --global` - which fails here:
-      # both ~/.gitconfig and ~/.config/git/config are store symlinks ("could not
-      # lock config file: read-only file system"), so https pushes kept asking for
-      # a password the CLI already holds. Declared once instead; answer the login's
-      # "Authenticate Git with your ... credentials?" either way. A self-hosted
-      # GitLab is the same one line in the overlay, under its own https://<host>.
+      # Declared here: `gh/glab auth login` cannot write this helper, as ~/.gitconfig is a read-only store symlink.
+      # A self-hosted GitLab is the same one line in the overlay, under its own https://<host>.
       credential = {
         "https://github.com" = forgeCredential pkgs.gh;
         "https://gist.github.com" = forgeCredential pkgs.gh;
@@ -51,11 +45,9 @@ in
     };
   };
 
-  # Not the OMZ ssh-agent plugin: that hangs on a passphrase without a tty. This
-  # agent starts empty and the TTY-gated hook in zsh.nix is what fills it.
+  # Not the OMZ ssh-agent plugin, which hangs on a passphrase without a tty; zsh.nix's TTY-gated hook fills it.
   services.ssh-agent.enable = true;
-  # A restart would silently empty the running agent's keys mid-session, and its
-  # unit file changes on every package bump. Both sections, as in backup.nix.
+  # No restart on switch: it would silently empty the agent's keys mid-session (as in backup.nix).
   systemd.user.services.ssh-agent = {
     Unit."X-RestartIfChanged" = false;
     Service."X-RestartIfChanged" = false;

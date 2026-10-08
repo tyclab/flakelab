@@ -1,33 +1,23 @@
-# Key material and secrets never belong in git, even in a private overlay. This
-# file is also what `flakelab update` and the generators measure a first commit
-# against, so a kind of secret missing here is one that commit may carry.
+# No key material or secrets in git; `flakelab update` and the generators also measure a first commit against this.
 id_*
 !id_*.pub
 *.pem
 secrets.env
 .env
 .env.*
-# A filled-in provisioning config carries the same tokens in cleartext. It is
-# parked in <overlay>-payload now; this is for one left here by the old layout.
 files/config/user_data.yaml
-# Per-machine Claude Code settings: permission rules quote whole command lines.
 .claude/settings.local.json
 
-# A committed lock pins a local flakelab checkout's NAR hash, and the next change
-# over there aborts the build with "NAR hash mismatch".
+# A committed lock pins a local flakelab checkout's NAR hash and the next change there aborts with "NAR hash mismatch".
 flake.lock
 
-# Where keys, secrets.env and the nix-backup payload USED to live. They belong in
-# <overlay>-payload now, beside the overlay: ignoring them never kept them out of
-# the nix store, which takes the whole directory. The rules stay so an overlay
-# still in the old layout cannot commit them - `flakelab doctor` names the move.
+# Old payload layout: kept so an overlay not yet moved to <overlay>-payload cannot commit them.
 files/config/instances/
 files/config/shared/
 files/config/snapshots/
 files/config/.backup.lock
 files/config/.last-restore-kept
 
-# Migration marker written by `setup-wsl-nix.ps1 migrate`.
 .migrated-from-wslkube
 
 result

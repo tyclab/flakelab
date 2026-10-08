@@ -1,5 +1,3 @@
-# Proxmox VM target layer: what a PVE guest needs and a WSL distro does not;
-# everything portable lives in nix/configuration.nix.
 {
   config,
   lib,
@@ -36,8 +34,7 @@ in
     };
   };
 
-  # networkd sorts cloud-init's static unit ahead of the NixOS dhcp fallback, so the
-  # address PVE assigned survives the boot.
+  # networkd sorts cloud-init's static unit ahead of the dhcp fallback, so PVE's address survives boot.
   networking.useNetworkd = true;
 
   services.qemuGuest.enable = true;
@@ -47,8 +44,7 @@ in
   systemd.services.qemu-guest-agent.serviceConfig.ExecStart =
     lib.mkForce "${config.services.qemuGuest.package}/bin/qemu-ga --statedir /run/qemu-ga -b guest-fsfreeze-freeze,guest-fsfreeze-freeze-list,guest-fsfreeze-thaw,guest-fsfreeze-status";
 
-  # mosh over the same keys, for a client that roams or sleeps (a phone on
-  # the WireGuard tunnel); the module opens its UDP range. Off by default.
+  # mosh for a roaming client (a phone on WireGuard); the module opens its UDP range. Off by default.
   programs.mosh.enable = cfg.mosh.enable;
 
   # A bind off loopback is unreachable behind a firewall open only to sshd.
@@ -88,10 +84,7 @@ in
     pkgs.cloud-init
   ];
 
-  # The clones hardcode /bin/bash (`SHELL := /bin/bash` in Makefiles, `#!/bin/bash`
-  # in the Claude statusline), and NixOS-WSL links it on the WSL distro. A plain
-  # NixOS guest only has /bin/sh, so the hook install and the statusline broke here
-  # and nowhere else.
+  # The clones hardcode /bin/bash (Makefiles, the Claude statusline); a plain NixOS guest only has /bin/sh.
   systemd.tmpfiles.rules = [ "L+ /bin/bash - - - - ${pkgs.bashInteractive}/bin/bash" ];
 
   # By label on a single growing partition, as the seed image is built, so PVE's
@@ -116,9 +109,7 @@ in
 
   time.timeZone = lib.mkDefault "UTC";
 
-  # One generic qcow2 an operator imports before any overlay exists. A variant, not a
-  # toplevel import: a toplevel `system.build.image` collides with every variant
-  # beside it. diskSize stays `auto`, and boot.growPartition fills PVE's disk.
+  # A variant, not a toplevel `system.build.image`, which collides with every variant beside it; growPartition fills PVE's disk.
   image.modules.proxmox-vm-seed = {
     imports = [ "${modulesPath}/virtualisation/disk-image.nix" ];
     image.format = "qcow2";

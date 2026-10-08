@@ -1,6 +1,5 @@
 *.log
 
-# WSL base image cache and test instance.
 files/.wsl-*
 
 id_ed25519
@@ -19,14 +18,11 @@ files/config/shared/shell/
 files/config/shared/secrets/
 # A filled-in provisioning config carries the same tokens in cleartext.
 files/config/user_data.yaml
-# Keys live in <overlay>-payload/shared/ssh/keys now; this is for a checkout
-# still in the old layout.
+# Keys live in <overlay>-payload/shared/ssh/keys now; this covers a checkout in the old layout.
 files/config/shared/ssh/
 
-# Claude Code agent scratch.
 .claude/
 
-# Python bytecode from running lib/web.py.
 __pycache__/
 *.pyc
 nixos.wsl

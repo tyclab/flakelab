@@ -2,33 +2,9 @@
 
 set -uo pipefail
 
-#
-# notify — a push when an agent session waits on you (remote-sessions.md,
-# phase 3). Posts one message to an ntfy topic: what happened, in which
-# directory, and the one line that answers it (`flakelab sessions --attach
-# <id>` for Claude Code, `codex resume <id>` for Codex).
-#
-# Usage:
-#   notify                      a Claude Code hook: the Notification hook's JSON on stdin
-#   notify --codex JSON         Codex's notify hook: the JSON it passes as the last argument
-#   notify --title T --message M [--priority 1-5] [--tags a,b]   by hand, or from a script
-#   notify --dry-run ...        print the request instead of sending it
-#
-# The endpoint comes from the environment or, at use time, from
-# ~/.config/tyc/secrets.env (FLAKELAB_SECRETS_ENV points the suite elsewhere):
-#   NTFY_URL     the topic URL, e.g. https://ntfy.example.com/agents
-#   NTFY_TOKEN   an access token for a protected topic (optional)
-# Nothing is stored. A hook run never fails its caller: unconfigured, offline
-# or malformed input exits 0 with a line on stderr. A run by hand exits 2 when
-# unconfigured and 1 when the post fails.
-#
-# Claude Code's Notification hook input (hook_event_name, notification_type,
-# message, session_id, cwd) is recognised on stdin; a Codex payload (type,
-# last-assistant-message, thread-id or turn-id, cwd) with --codex; anything
-# else on stdin is sent as it is. Titles are ASCII (ntfy's header rule): the
-# tool and the directory's name.
-#
-
+# notify: one ntfy push when an agent session waits on you (remote-sessions.md). NTFY_URL/NTFY_TOKEN come from the
+# env or, at use time, ~/.config/tyc/secrets.env. A hook run never fails its caller (exit 0, a line on stderr);
+# by hand: 2 unconfigured, 1 post failed. Titles are ASCII, ntfy's header rule.
 MODE=auto
 TITLE=""
 MESSAGE=""
@@ -69,7 +45,6 @@ done
 [[ -n "$TITLE" || -n "$MESSAGE" ]] && [[ "$MODE" == auto ]] && MODE=manual
 [[ -z "$PRIORITY" || "$PRIORITY" == <1-5> ]] || { print -ru2 -- "notify: --priority takes 1 to 5"; exit 2 }
 
-# --- the endpoint -------------------------------------------------------------
 
 if [[ -z "${NTFY_URL:-}" && -r "$SECRETS" ]]; then
   # Sourced in a subshell: only the two values come out.
@@ -78,9 +53,7 @@ fi
 NTFY_URL="${NTFY_URL:-}"
 NTFY_TOKEN="${NTFY_TOKEN:-}"
 
-# --- the message --------------------------------------------------------------
 
-# ASCII for the header: the tool and the directory's name.
 ascii() { print -rn -- "$1" | LC_ALL=C tr -c '[:print:]\n' '?' }
 short() { local s="$1"; s="${s//$'\n'/ }"; (( ${#s} > 200 )) && s="${s[1,197]}..."; print -r -- "$s" }
 
@@ -104,7 +77,7 @@ case "$MODE" in
     PRIORITY="${PRIORITY:-3}"; TAGS="${TAGS:-robot}"
     ;;
   auto)
-    # Hooks pipe JSON in; on a terminal, show usage instead of waiting on cat.
+    # Hooks pipe JSON in; on a terminal show usage instead of waiting on cat.
     [[ -t 0 ]] && { usage >&2; exit 2 }
     HOOK=true
     input="$(cat 2>/dev/null)"
@@ -140,7 +113,6 @@ if $HOOK && [[ -z "$NTFY_TOKEN" ]]; then
   MESSAGE="${MESSAGE%%$'\n'*}"; MESSAGE="${MESSAGE%%: *}"
 fi
 
-# --- the post -----------------------------------------------------------------
 
 if [[ -z "$NTFY_URL" ]]; then
   note "NTFY_URL is not set (put it in ~/.config/tyc/secrets.env); nothing sent"

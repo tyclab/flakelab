@@ -47,20 +47,6 @@ the public tree explains its own config schema in terms of it —
 hits references they cannot resolve. The example config should describe the
 schema on its own terms regardless of when the code path is retired.
 
-## `gitpublisher` refuses non-GitLab remotes, but AGENTS.md points agents at it
-
-`tech-debt`
-
-This repository lives on GitHub, but `gitpublisher` opens GitLab merge requests
-and refuses any remote that is not GitLab (exit 2). `AGENTS.md` presents it as
-the way to publish work, so a coding agent on a fork hits that refusal with no
-alternative offered. `CONTRIBUTING.md` correctly says "pull request" and does
-not send humans there, so this only affects agents.
-
-Options: teach `gitpublisher` a GitHub backend via `gh`, or scope the
-`AGENTS.md` guidance so it names plain `git push` + `gh pr create` for this
-repo and keeps `gitpublisher` for GitLab clones.
-
 ## Soften the first-run output for someone with no GitLab and no tokens
 
 `enhancement`

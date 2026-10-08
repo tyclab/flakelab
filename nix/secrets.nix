@@ -1,6 +1,4 @@
-# Optional sops-nix wiring: one age-encrypted dotenv file from the overlay,
-# decrypted at activation into /run/secrets. Null `sopsSecretsFile` contributes
-# nothing. The host age identity is enrolled by runbook, never generated here.
+# Optional sops-nix: one age-encrypted dotenv decrypted into /run/secrets; the host identity is enrolled by runbook.
 {
   config,
   lib,
@@ -20,8 +18,7 @@ in
       age = {
         keyFile = cfg.sopsAgeKeyFile;
         generateKey = false;
-        # Do not derive from SSH host keys: they sit on the root disk and rotate
-        # with a re-image, silently orphaning the file.
+        # Not from SSH host keys: they sit on the root disk and rotate with a re-image, silently orphaning the file.
         sshKeyPaths = [ ];
       };
       gnupg.sshKeyPaths = [ ];

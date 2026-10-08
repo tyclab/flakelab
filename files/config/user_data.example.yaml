@@ -3,51 +3,22 @@
 # Same schema as wslkube's files/config/user_data.yaml; no "-" in key names.
 # Copy it out of the repo before filling it in - real tokens must never be committed.
 
-# Linux user (no dashes).
 user: tycuser
 
-# Platform this box is built for: wsl (default) or proxmox-vm.
-# target: wsl
+# target: wsl (default) or proxmox-vm.
 
-# Windows username - the C:\Users\<name> folder. wsl only.
 windows_username: WindowsUser
 
 userlocale: de_DE.UTF-8
 
-# Git identity, both required.
 gitmail: you@example.com
 gitfullname: Your Name
 
-# Which profiles/ entries apply; nothing else installs their groups and tools.
 profiles:
   - example
 
-# Personal full-clone GitLab groups; profile groups are unioned in.
 gitlab_groups:
   - family-recipes
-
-# Repos to skip during group discovery.
-# clone_exclude:
-#   - wslkube
-
-# Claude Code plugins: claude_plugins is always on, claude_mcp_plugins is opt-in.
-# The marketplace name must match its own marketplace.json, or installs fail silently.
-# claude_plugin_marketplace:
-#   name: 'YourMarketplace'
-#   url: 'git@gitlab.com:your-group/plugins/claude-plugins.git'
-# claude_plugins:
-#   - agents
-#   - skills
-# claude_mcp_plugins:
-#   - mcp-playwright
-
-# Second directory for the shareable backup state; a sync folder, never a git checkout.
-# state_transcripts adds the Claude and Codex session transcripts (large).
-# state_root: /mnt/d/sync/flakelab-state
-# state_transcripts: false
-
-# Checkout the whatsapp MCP server runs from; not derived.
-# whatsapp_mcp_dir: '/home/you/git/your-group/plugins/whatsapp-mcp-extended/whatsapp-mcp-server'
 
 # Keys in ~/.ssh to load on login, space-separated; the first is the git identity.
 sshkeyautoadd: id_ed25519
@@ -55,23 +26,14 @@ sshkeyautoadd: id_ed25519
 # No effect under NixOS; kept so this stays a valid wslkube user_data.yaml.
 dockerautostart: true
 
-# Run `flakelab backup --force` daily from a systemd user timer.
 backupautostart: false
 
-# Omit to keep git's default.
 giteditor: 'code'
 
-# This overlay's own git remote, SSH URL like `repos`: added as `origin` (never
-# pushed for you), the drift check's yardstick once pushed, and the repo the
-# clone sweep excludes instead of guessing from the folder name.
+# Added as `origin` (never pushed for you); the drift check's yardstick and the clone sweep's exclusion.
 # overlay_url: git@gitlab.com:your-group/flakelab-config.git
 
-# Extra repos beyond group discovery, SSH URLs only; these bypass clone_exclude.
-# repos:
-#   - rel_path: ''
-#     url: git@gitlab.com:your-group/your-repo.git
 
-# Personal shell aliases, merged with the profile ones.
 custom_aliases:
   - name: proxmox-ssh
     command: ssh root@pve.example.lan
@@ -88,7 +50,6 @@ custom_env_vars:
   SYNOLOGY_USERNAME: 'mcp-service' # non-admin, not in administrators
   GRAFANA_URL: 'https://grafana.example.lan'
   WHATSAPP_BRIDGE_HOST: 'localhost:8180'
-  # Placeholders: replace them outside this repo.
   GITLAB_TOKEN: '<your-gitlab-personal-access-token>'
   GH_TOKEN: '<your-github-personal-access-token>'
   HASS_TOKEN: '<your-home-assistant-long-lived-token>'

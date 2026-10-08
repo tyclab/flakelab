@@ -137,7 +137,9 @@ the private overlay `flakelab-config`, which imports this flake via
   stdout, abort included. To remove a branch, take the plan from
   `gitcleaner --repo . --json` and act with `--only <branch> --yes` — never
   `--yes` alone, which sweeps every repo it can reach.
-- `gitpublisher` publishes the working tree as an MR (branch, commit through
+- `gitpublisher` supports GitLab remotes only. For this GitHub repository,
+  use `git push` and `gh pr create` after the same local checks. On GitLab,
+  `gitpublisher` publishes the working tree as an MR (branch, commit through
   the hooks, push, open or update) and holds those gates itself — `--json` for
   the result, exit 1 for a gate stop, 2 for a refusal. It opens; it never merges.
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
@@ -156,3 +158,22 @@ the private overlay `flakelab-config`, which imports this flake via
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`
   asserts against the tracked `templates/overlay/` and
   `files/config/user_data.example.yaml`.
+
+## Maintenance policy
+
+- Keep one repository instruction source: `AGENTS.md`. Client configuration
+  templates are application inputs, not additional repository instructions.
+- README files and agent instruction files are exempt from the comment limit
+  by design. The limit applies to code and configuration files.
+- Outside the limit (operator, 2026-10-08): vendored third-party code and
+  third-party build output (kept byte-identical to upstream), Hugo site
+  functional files, translation files, and approved runtime text such as MCP
+  tool docstrings. Output of our own generators is inside it: fix the generator.
+- Keep comments at or below 20% of nonblank lines in each code/configuration
+  file. 20% is a ceiling, not a target: delete narrative, keep the one-line why
+  (version pins, security choices, rulings with ids and dates, gotchas, cross-file contracts). Preserve licenses, tool directives and runtime strings; only the
+  operator may grant a documented, file-specific exception. Do not add blank
+  lines or move prose inline to satisfy the limit.
+- Remove unused files or features only after checking references and behavior.
+  Preserve supported workflows and run the relevant checks before reporting
+  a cleanup complete. Keep README commands and process diagrams aligned with code.

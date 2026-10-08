@@ -56,9 +56,7 @@ let
       '';
     };
 
-  # The activation unit has no SSH_AUTH_SOCK: point it at the well-known user agent
-  # socket and record whether it holds a key, since no unattended run can unlock a
-  # passphrase-encrypted key.
+  # The activation unit has no SSH_AUTH_SOCK: use the user agent socket and record whether it holds a key.
   sshAgentPreamble = ''
     if [ -z "''${SSH_AUTH_SOCK:-}" ] && [ -S "/run/user/$(id -u)/ssh-agent" ]; then
       export SSH_AUTH_SOCK="/run/user/$(id -u)/ssh-agent"

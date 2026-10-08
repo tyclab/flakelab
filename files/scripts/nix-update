@@ -5,15 +5,11 @@
 # which errexit would turn into silent aborts.
 set -uo pipefail
 
-# The command as the user runs it: the script's own name is not on PATH.
 _self="flakelab update"
 
-# print -P prompt-expands the whole string, so a `%` in a path, a branch or a
-# URL-encoded hash reads as an escape (`%3D` prints a date), and print without -r
-# turns `\t` in a Windows path into a tab. Only the colour is markup here.
+# -rP with `%` doubled: a `%` in a path reads as a prompt escape, and print without -r turns `\t` into a tab.
 _say() { print -rP -- "%F{$1}${2//\%/%%}%f" }
 
-# Set by the nix wrapper; the fallback lets this run straight from a checkout.
 _repo_is_own_tree=false
 if [[ -n "${FLAKELAB_REPO_ROOT:-}" ]]; then
   _repo="${FLAKELAB_REPO_ROOT}"
@@ -25,20 +21,13 @@ else
   exit 1
 fi
 
-# The same lib the sweep scripts source, so the retry behaviour cannot drift.
 source "${0:A:h}/lib/git-net.zsh" || exit 1
 source "${0:A:h}/lib/overlay-git.zsh" || exit 1
-# The y/N questions, asked the one way every flakelab command asks them.
 source "${0:A:h}/lib/prompt.zsh" || exit 1
 
-# The template .gitignore a plain-directory overlay is measured against before it
-# becomes a repository. The nix wrapper names the store copy; from a checkout it
-# sits three levels up.
 _overlay_gitignore="${FLAKELAB_OVERLAY_GITIGNORE:-${0:A:h:h:h}/templates/overlay/.gitignore}"
 
-# _url_path <filesystem path> -> the body of a `path:` flake URL. Unescaped, a
-# space makes nix read the whole string as a relative path and `#`/`?` truncate it;
-# `%` goes first or the later escapes are escaped again.
+# _url_path <path>: the body of a `path:` URL. `%` first, else later escapes are escaped again; unescaped, a space or `#`/`?` breaks it.
 _url_path() {
   local s="$1"
   s="${s//\%/%25}"
@@ -77,11 +66,8 @@ while (( $# )); do
   shift
 done
 
-# A clean checkout behind its own upstream has nothing to lose, so it is pulled
-# without asking, terminal or not. Uncommitted changes refuse rather than
-# autostash: a stash the operator did not ask for is one they will not look for.
-# A conflict is aborted so nothing half-applied waits for the next run.
-# FLAKELAB_STALE_OK=1 is the one override: rebuild the tree as it is.
+# A clean checkout behind its upstream is pulled without asking; uncommitted changes refuse rather than autostash.
+# A conflict is aborted. FLAKELAB_STALE_OK=1 rebuilds the tree as it is.
 _nix_pull() {
   local _dir="${_repo}" _out
   if [[ "${FLAKELAB_STALE_OK:-}" == 1 ]]; then
@@ -102,10 +88,7 @@ _nix_pull() {
   return 1
 }
 
-# --all --prune: every remote, and refs that are gone upstream go here too, so a
-# merged branch does not linger as a stale origin/ ref. No ControlMaster: one
-# fetch, so there is no second connection to reuse. An explicit GIT_SSH_COMMAND
-# from the environment wins.
+# --all --prune so merged branches do not linger as stale origin/ refs; an explicit GIT_SSH_COMMAND wins.
 _nix_fetch() {
   local _dir="$1"
   local -x GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh ${GITNET_SSH_BASE}}"
@@ -147,10 +130,8 @@ _nix_check_remote() {
   fi
 }
 
-# HEAD against the default branch: a feature branch in sync with its own upstream
-# still misses what landed on the default branch, and rebuilding from it reverts
-# that work here. Declaration and assignment stay separate, because `local x=$(cmd)`
-# takes `local`'s status and `|| return` would never fire.
+# A feature branch in sync with its upstream still misses the default branch; rebuilding from it reverts that work.
+# Declare and assign separately: `local x=$(cmd)` takes local's status and `|| return` never fires.
 _nix_check_base() {
   local _dir="${_repo}" _default _head _behind _out
   _default="$(git -C "$_dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
@@ -187,17 +168,13 @@ _nix_check_base() {
     _say green "✓ rebased ${_head} onto origin/${_default}"
     return 0
   fi
-  # Leave nothing half-applied for the next run to trip over.
   git -C "$_dir" rebase --abort 2>/dev/null || true
   _say red "✗ rebase onto origin/${_default} conflicted — tree restored, refusing to rebuild from a branch behind ${_default}"
   print -r -- "$_out"
   return 1
 }
 
-# A switch overlapping the distro's own boot activation tears down the caller's
-# session mid-run, so wait for the boot to settle: bounded, and never on
-# `degraded`, which is a finished boot. systemctl must resolve from the caller's
-# PATH, so it talks to the running systemd.
+# A switch overlapping the boot activation tears down the caller's session: wait, bounded, never on `degraded`.
 _nix_wait_boot() {
   [[ -n "${FLAKELAB_BOOT_OK:-}" ]] && return 0
   command -v systemctl > /dev/null 2>&1 || return 0
@@ -224,23 +201,12 @@ _nix_wait_boot() {
 }
 _nix_wait_boot || exit 1
 
-# A plain directory becomes the repository the generators leave: one commit, no
-# remote, the same shape `provision` and `flakelab overlay-gen` write today. It
-# is what `provision` wrote before that, and what a hand-made overlay still is.
-# Nothing is lost by it - .git is added, no file is touched - so it happens
-# without asking, terminal or not, like the pull of a clean checkout. What stops
-# it is lib/overlay-git.zsh's to decide, and every refusal leaves the directory as
-# it was, without a .git: no .gitignore, a first commit that would carry what the
-# template .gitignore keeps out of git, or a .git already there that git cannot
-# read - which is someone's damaged history, not a plain directory.
+# A plain directory is adopted without asking (one commit, no remote); lib/overlay-git.zsh decides refusals,
+# and every refusal leaves the directory as it was, without a .git.
 _nix_adopt_overlay() {
   local _d="${_repo}" _p
   local -i _rc=0
-  # Three reasons to leave it plain, one line each way: no git; the tree this
-  # script itself sits in (a flakelab ZIP download, which both generators refuse
-  # to write over as well); and the operator's "as it is", which is also the way
-  # to keep an overlay plain on purpose - a folder-synced one, say, where the sync
-  # client would write conflict copies of .git internals.
+  # Left plain: no git, the tree this script sits in, or the operator's choice (a folder-synced overlay).
   if ! command -v git > /dev/null 2>&1 || ${_repo_is_own_tree}; then
     _say cyan "ℹ ${_d} is not a git checkout — no drift check (git init it to get one)"
     return 1
@@ -261,8 +227,7 @@ _nix_adopt_overlay() {
       ;;
     3)
       _say yellow "⚠ ${_d} is not a git checkout and has no .gitignore — left as it is: the overlay holds key material and secrets that only the template .gitignore keeps out of a commit"
-      # install, not cp: the nix wrapper names a store copy, and cp would carry its
-      # read-only mode onto a file the operator is meant to edit.
+      # install, not cp: cp would carry the store copy's read-only mode.
       _say yellow "  install -m 644 ${(qq)_overlay_gitignore} ${(qq)_d}/.gitignore, then: flakelab update"
       ;;
     6)
@@ -272,9 +237,7 @@ _nix_adopt_overlay() {
       _say cyan "ℹ ${_d} is not a git checkout — no drift check (no template .gitignore at ${_overlay_gitignore} to measure a first commit against)"
       ;;
     5)
-      # Yellow, not the red ✗ that stops a run everywhere else in this file: the
-      # switch goes ahead, the directory is as it was. Capped, because a payload
-      # the .gitignore missed is thousands of paths, again on every update.
+      # Yellow, not red: the switch goes ahead. Capped: a missed payload is thousands of paths.
       _say yellow "⚠ ${_d} not initialised: its .gitignore would let ${#OVERLAYGIT_LEAKS} path(s) into the first commit that the template .gitignore keeps out of git"
       for _p in "${(@)OVERLAYGIT_LEAKS[1,20]}"; do print -r -- "    ${_p}"; done
       (( ${#OVERLAYGIT_LEAKS} > 20 )) && print -r -- "    … and $(( ${#OVERLAYGIT_LEAKS} - 20 )) more"
@@ -288,12 +251,7 @@ _nix_adopt_overlay() {
   return 1
 }
 
-# The overlay comes in three shapes, and the drift check applies to one of
-# them. A plain directory is adopted above; a repository with no remote is what
-# the generator leaves; the proxmox-vm bootstrap clones from one with a remote.
-# Nothing can be behind a remote that does not exist, so the first two get the
-# switch and a line saying so - not a fetch. Uncommitted changes are still worth a
-# warning in a local repository: that is drift against its own history.
+# Drift is checked only for a repo with a remote; a plain dir or a local-only repo gets the switch and a note.
 _nix_repo_shape() {
   if ! git -C "${_repo}" rev-parse --git-dir > /dev/null 2>&1; then
     _nix_adopt_overlay || return 1
@@ -306,11 +264,7 @@ _nix_repo_shape() {
   return 1
 }
 
-# The layout before `<overlay>-payload` kept keys, secrets.env and the backup
-# payload under the overlay's files/config, and every switch below copies the
-# overlay - all of it - into the world-readable store. Nothing is moved for the
-# operator: the payload is theirs, a restore may be reading it, and the move is
-# one command. It is said on every run until it is done.
+# Old-layout payload under files/config is copied into the world-readable store on every switch; said each run, never moved.
 if overlaygit_payload_inside "${_repo}"; then
   _say yellow "⚠ ${_repo}/files/config still holds ${(j:, :)${(@)OVERLAYGIT_PAYLOAD_INSIDE:t}} — this switch copies it into the world-readable nix store"
   _say yellow "  move it beside the overlay, once:  flakelab doctor  prints the commands"
@@ -322,13 +276,9 @@ if _nix_repo_shape; then
   _nix_check_base || exit 1
 fi
 
-# The lock's flakelab entry as `type|path|rev|owner/repo|narHash`, the url in place
-# of the slug when the input is not a forge and empty fields where the shape has
-# none. A tarball locks no rev, so its narHash is what tells a move from none.
-# `nix eval` rather than jq: the wrapper's PATH has no jq. Read on both sides of
-# the re-lock, because `nix flake update` exits 0 whether or not anything moved:
-# its status cannot tell an update from a no-op, and the detail it prints goes to
-# _out, which only a failure shows. `|` separates, so a path with spaces survives.
+# The lock's flakelab entry as `type|path|rev|owner/repo|narHash`. `nix eval`, as the wrapper's PATH has no jq.
+# Read on both sides of the re-lock: `nix flake update` exits 0 whether or not anything moved.
+# A tarball locks no rev, so its narHash tells a move from none; `|` separates, so a path with spaces survives.
 _fl_locked() {
   FLAKELAB_LOCK="${_repo}/flake.lock" nix eval --raw --impure --expr '
     let
@@ -342,9 +292,6 @@ _fl_locked() {
   ' 2> /dev/null
 }
 
-# A repo's path after its host, lowercased, from `git@host:owner/repo`,
-# `https://host/owner/repo`, `ssh://git@host:port/owner/repo` or `file:///dir` —
-# and a lock's `owner/repo`, which has no host and comes back as it is.
 _fl_repo_path() {
   local _u="${${${1:l}%/}%.git}"
   if [[ "${_u}" == *://* ]]; then
@@ -355,16 +302,8 @@ _fl_repo_path() {
   print -r -- "${_u#/}"
 }
 
-# What came in, as the phrase the line ends with, counted in a local clone of the
-# same repo that already has both revs — the operator's own checkout under ~/git
-# (the namespace path from the clone sweep, a GitLab subgroup's included, or
-# `<repo>` by hand), usually the one the change was merged from. Six levels deep,
-# without entering hidden directories or following symlinks: those hold tool
-# caches and node_modules farms, minutes of walking for no clone. A clone matches on whole path
-# segments, so `nottyclab/flakelab` is not `tyclab/flakelab`. Nothing is fetched:
-# an update has to work offline, and someone's working tree is not this command's
-# to move. A clone that has not seen the new rev yet yields nothing, and the revs
-# are then printed on their own.
+# Counts commits in a local clone under ~/git that has both revs, matched on whole path segments,
+# six levels deep, skipping hidden dirs and symlinks (tool caches). Nothing is fetched: offline, not ours to move.
 _fl_commits() {
   local _want _old="$2" _new="$3" _d _url _n
   local -a _tops
@@ -386,28 +325,20 @@ _fl_commits() {
   return 1
 }
 
-# A `path:` flakelab input is mutable but its lock entry is not, so without
-# re-locking a `git pull` over there leaves this flake on the previous snapshot and
-# the switch silently builds the old flakelab. `nix eval` rather than jq: the
-# wrapper's PATH has no jq.
+# A `path:` input's lock entry is not mutable: without a re-lock the switch silently builds the old flakelab.
 _nix_relock_flakelab() {
   local _lock="${_repo}/flake.lock" _out
   local -a _b _a
   [[ -f "${_lock}" ]] || return 0
-  # `:-` on every field: the eval yields nothing when it cannot read the lock, or
-  # when there is no `nix` on PATH at all, and `set -u` makes
-  # an index past the end of a short array fatal.
+  # `:-` on every field: the eval may yield nothing, and set -u makes an index past the end fatal.
   _b=("${(@s:|:)$(_fl_locked)}")
   local _ty="${_b[1]:-}" _where="${_b[2]:-}" _rev0="${_b[3]:-}" _nar0="${_b[5]:-}"
   [[ -n "${_ty}" ]] || return 0
-  # A `git+file:` input is locked as type `git` with a file:// url. It re-locks to
-  # that checkout's last commit like any git input, but serves committed content
-  # only, so the edit under test may be absent.
+  # A `git+file:` input serves committed content only, so the edit under test may be absent.
   if [[ "${_ty}" == git && "${_b[4]:-}" == file://* ]]; then
     _say yellow "⚠ LOCAL flakelab (git+file: ${_b[4]#file://}) — only committed content is in this build"
   fi
-  # Unprivileged: a root-written lock on the 9p mount breaks the operator's next
-  # `nix` command with "opening file flake.lock: Permission denied".
+  # Unprivileged: a root-written lock on the 9p mount breaks the operator's next `nix` command.
   if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
     _a=("${(@s:|:)$(_fl_locked)}")
     local _rev1="${_a[3]:-}" _id1="${_a[3]:-${_a[5]:-}}"
@@ -417,7 +348,6 @@ _nix_relock_flakelab() {
       # A rev in the input's URL: `nix flake update` can never move it.
       _say yellow "⚠ flakelab input unchanged (${_a[6][1,7]}): inputs.flakelab.url in ${_repo}/flake.nix names that rev, so update cannot move it; drop the rev from the URL"
     elif [[ -z "${_id1}" || "${_rev0:-${_nar0}}" == "${_id1}" ]]; then
-      # Said, not skipped: "already current" is the answer an update was asked for.
       _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"
     elif [[ -z "${_rev1}" ]]; then
       _say cyan "ℹ flakelab input updated: the ${_ty} input has no rev to name, but its content hash moved"
@@ -438,16 +368,8 @@ _nix_relock_flakelab() {
   fi
 }
 
-# nix rewrites the overlay's lock whenever an input moves, so one the caller cannot
-# write fails the re-lock above and the switch evaluates the stale snapshot:
-# silently while that is still in the store, as "NAR hash mismatch" once it is
-# collected. Root leaves one behind whenever its switch had to lock - an overlay
-# with no lock yet, which is every overlay right after setup-wsl-nix.ps1, or a
-# re-lock that failed. The directory is the caller's, so a copy renamed over the
-# lock takes it back without sudo and keeps every pin. `cat`, not `cp`, which
-# would carry the read-only mode across; braced so a failed redirection is quiet.
-# A symlinked lock is the operator's arrangement, and the rename would replace the
-# link, so it is left alone. Warns only: the re-lock decides whether it matters.
+# A root-written lock fails the re-lock and the switch builds the stale snapshot. The dir is the caller's, so a copy
+# renamed over the lock takes it back without sudo (`cat`, not `cp`, which keeps the read-only mode). Symlinks are left alone.
 _nix_reclaim_lock() {
   local _lock="${_repo}/flake.lock" _tmp="${_repo}/.flake.lock.reclaim.$$"
   [[ -e "${_lock}" && ! -L "${_lock}" && ! -w "${_lock}" ]] || return 0
@@ -463,10 +385,7 @@ _nix_reclaim_lock() {
 _nix_reclaim_lock
 _nix_relock_flakelab || exit 1
 
-# The switch evaluates as root, which has no ssh key: a private git+ssh input that
-# a garbage collection took out of the store cannot be fetched back there. Fetched
-# here first as the caller, whose agent can; an input still in the store costs
-# nothing. Warns only: the switch gives the verdict.
+# Root has no ssh key: fetch private git+ssh inputs a GC removed as the caller first. Warns only.
 _nix_fetch_inputs() {
   local _out
   [[ -f "${_repo}/flake.lock" ]] || return 0
@@ -477,15 +396,8 @@ _nix_fetch_inputs() {
 }
 _nix_fetch_inputs
 
-# `nixos-rebuild switch` restarts home-manager-<user>.service only when that unit
-# changed, which a switch building the same closure never does — so every step the
-# activation deferred for want of an ssh key stays deferred behind a green run.
-# That is the fresh-provision shape exactly: the key arrives between the two
-# switches, and the second one builds what the first did. The unit's own start
-# timestamp is what tells a restart from a no-op apart, and a 0 there is a unit
-# that has not activated at all this boot. It is the one systemd moves on every
-# start, failed or not: a failed start never enters `active`, so the active one
-# would read a restart the switch made and saw fail as a unit left alone.
+# nixos-rebuild restarts home-manager-<user>.service only when it changed, so steps deferred for want of an ssh key
+# stay deferred behind a green run (the fresh-provision shape). The unit's start timestamp tells a restart from a no-op.
 _hm_unit="home-manager-${USER:-$(id -un)}.service"
 _hm_stamp() {
   command -v systemctl > /dev/null 2>&1 || return 0
@@ -500,24 +412,15 @@ _hm_before="$(_hm_stamp)"
 _fetched_log="$HOME/.local/state/flakelab/marketplaces-fetched"
 rm -f -- "${_fetched_log}"
 
-# `path:`, not a bare path: a bare path resolves as `git+file:`, which sees only
-# tracked files, so it finds no lock, rewrites one as root, and the operator's next
-# unprivileged `nix` command in that checkout dies on a permission error.
-# sudo and nixos-rebuild resolve from the caller's PATH, so the rebuild uses the
-# running system's nixos-rebuild. Only the path is encoded: the `#` after it is the
-# flake URL's fragment.
-# The lock is taken back after it too, failed or not: nix locks before it evaluates,
-# so even a failed switch can leave a root-written lock, which breaks the operator's
-# own `nix` commands in the overlay until the next run.
+# `path:`, not a bare path: `git+file:` sees only tracked files and rewrites the lock as root.
+# The lock is taken back afterwards, failed or not: nix locks before it evaluates.
+# sudo and nixos-rebuild resolve from the caller's PATH: the running system's nixos-rebuild. Only the path is encoded.
 _switch_rc=0
 sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || _switch_rc=$?
 _nix_reclaim_lock
 
-# The switch's status is not its result - a 4 can stand over a failed activation -
-# so flakelab-switch-result reads what the system recorded (its header has the
-# contract). Applied and degraded carry on, degraded to an exit 4 at the end; every
-# other verdict stops here with its own code. Without the classifier (a checkout run
-# outside the wrapper's PATH) only a clean status carries on.
+# The switch's status is not its result (a 4 can stand over a failed activation): flakelab-switch-result decides.
+# Applied and degraded carry on, degraded exits 4 at the end; without the classifier only a clean status carries on.
 _result_rc=0
 if command -v flakelab-switch-result > /dev/null 2>&1; then
   _result="$(flakelab-switch-result --rc "${_switch_rc}")" || _result_rc=$?
@@ -547,17 +450,8 @@ esac
 _deferred="$HOME/.local/state/flakelab/activation-deferred"
 _failures="$HOME/.local/state/flakelab/activation-failures"
 
-# The switch left the activation alone, so run it here instead — but only when
-# there is something to re-run: steps the last activation recorded as failed or
-# deferred, or a unit that is not in effect — failed, inactive (a failed one after
-# `reset-failed`), or never activated this boot, which is the same gap before any
-# log exists. `flakelab doctor` answers a failure with "Re-run: flakelab update",
-# and this is what makes that true. Nothing recorded and a unit already active is
-# a no-op restart, so it is skipped rather than announced. The stamp cannot see a generation, only
-# whether this unit was restarted, and a generation that changed elsewhere in the
-# system leaves this one untouched too — so nothing here says the generation is
-# unchanged. Failures warn only — the switch itself is applied. Read with zsh's
-# own split: this runs before any PATH beyond the wrapper's is assumed.
+# The switch left the activation alone: re-run it only for recorded failed/deferred steps or a unit not in effect,
+# which is what makes doctor's "Re-run: flakelab update" true. Failures warn only.
 if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
   _hm_failed=() _hm_pending=()
   [[ -s "${_failures}" ]] && _hm_failed=("${(@f)$(< "${_failures}")}")
@@ -582,20 +476,13 @@ if [[ -n "${_hm_before}" && "$(_hm_stamp)" == "${_hm_before}" ]]; then
   fi
 fi
 
-# What is still deferred after all that, named once, whether the restart above
-# ran or not.
 if [[ -s "${_deferred}" ]]; then
   _deferred_lines=("${(@f)$(< "${_deferred}")}")
   _say yellow "⚠ activation deferred ${#_deferred_lines} step(s), also listed by flakelab doctor:"
   print -l -- "${_deferred_lines[@]/#/    }"
 fi
 
-# The activation that does this only re-runs when the built config changed, while
-# the marketplace clone is runtime data, so replay it after every switch — except
-# for the marketplaces this run's activation fetched itself: a second fetch costs
-# time, and one that fails would warn over a clone that is current. One added by
-# hand is never in the record, so it is always refreshed. Failures warn only: the
-# switch itself is applied.
+# Marketplace clones are runtime data: replay after every switch, skipping those this run's activation fetched.
 _claude_marketplaces="$HOME/.claude/plugins/marketplaces"
 if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   _fetched=()
@@ -605,10 +492,7 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     claude plugin marketplace update "${_m:t}" > /dev/null 2>&1 \
       || _say yellow "⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch"
   done
-  # `plugin install` is a no-op on an installed plugin, so a merged bump would stay
-  # on its installed version; only plugins whose fetched version differs are updated,
-  # which is readable only for marketplace-tree sources. </dev/null bounds the
-  # confirmation prompt an install command would raise, so it warns instead of hanging.
+  # `plugin install` is a no-op on an installed plugin, so changed versions are updated; </dev/null bounds its prompt.
   _installed="$HOME/.claude/plugins/installed_plugins.json"
   if [ -f "${_installed}" ] && command -v jq > /dev/null 2>&1; then
     for _m in "${_claude_marketplaces}"/*(N/); do
@@ -637,7 +521,6 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     fi
     rm -f "${_tmp}"
   fi
-  # A marketplace without the file leaves permissions.ask alone.
   _recommendedask="$(find "${_claude_marketplaces}" -type f -name recommended-ask.json 2> /dev/null | head -1)"
   if [ -n "${_recommendedask}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
     _tmp="$(mktemp)"

@@ -37,14 +37,8 @@ in
     rm -f "${warnLog}" "${deferredLog}"
   '';
 
-  # ── Post-activation health check (must be the LAST activation entry) ───────
-  # The installers (claude.nix, codex.nix) are warn-not-fail by design, which is
-  # why a rebuild can report success on a distro with no claude, no plugins and
-  # no repos. This turns that silence back into a failed activation:
-  # it fails on anything flakelab-warn recorded, plus the post-conditions that
-  # must hold unattended.
-  # Interactive state (an agent holding a key, a browser login) is deliberately
-  # NOT asserted — it needs a TTY, so it lives in `flakelab doctor` instead.
+  # Must be the LAST activation entry: the installers warn, not fail, so this turns recorded warnings into a failed
+  # activation. Interactive state (an agent key, a browser login) needs a TTY and is left to `flakelab doctor`.
   home.activation.flakelabHealthCheck =
     lib.hm.dag.entryAfter
       [

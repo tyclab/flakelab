@@ -71,10 +71,8 @@ gitscan_ssh_mux() {
   export GIT_SSH_COMMAND="ssh ${GITNET_SSH_BASE} -o ControlMaster=auto -o ControlPath=${workdir}/ssh-%r@%h:%p -o ControlPersist=60"
 }
 
-# gitscan_discover <max-depth> <root>... — every repo under each root into
-# GITSCAN_GITDIRS, with its root at the same index in GITSCAN_GITDIR_ROOTS.
-# GITSCAN_SKIP_WORKTREES=1 drops worktrees, whose .git points into the parent's
-# admin dir: deleting from there writes the parent's ref store under a live checkout.
+# gitscan_discover <max-depth> <root>...: repos into GITSCAN_GITDIRS, roots at the same index in GITSCAN_GITDIR_ROOTS.
+# GITSCAN_SKIP_WORKTREES=1 drops worktrees: deleting from one writes the parent's ref store under a live checkout.
 gitscan_discover() {
   local max_depth="$1"; shift
   local root gd
@@ -106,9 +104,8 @@ gitscan_require_gh() {
   return 0
 }
 
-# gitscan_forge_of <url> — "<forge>\t<project>", rc 1 for a host neither CLI can
-# query. Must be the configured URL, not `git remote get-url`, which applies
-# insteadOf rewrites and would report the rewrite target's host.
+# gitscan_forge_of <url>: "<forge>\t<project>", rc 1 for an unknown host. The configured URL, not
+# `git remote get-url`, which applies insteadOf rewrites.
 gitscan_forge_of() {
   local url="$1" project=""
   case "${url}" in
@@ -186,10 +183,8 @@ gitscan_open_requests() {
   return 0
 }
 
-# gitscan_branch_merged <forge> <project> <branch> — rc 0 when the forge has a merged
-# MR/PR for exactly this source branch, 1 when it has none, 2 when it could not be
-# asked. Per branch, because a paged list of merged MRs turns an older merge into
-# "not merged".
+# gitscan_branch_merged <forge> <project> <branch>: rc 0 merged MR/PR for this branch, 1 none, 2 not asked.
+# Per branch: a paged merged-MR list turns an older merge into "not merged".
 gitscan_branch_merged() {
   local forge="$1" project="$2" branch="$3" n=0
   typeset -g GITSCAN_FORGE_WHY=""
@@ -230,11 +225,8 @@ gitscan_jq() {
   return 0
 }
 
-# Fast-forward. Strictly behind (ahead == 0, behind > 0) is the only state that
-# fast-forwards; diverged, ahead, gone and no-upstream are left alone. Without `+`,
-# `git fetch . <upstream>:<branch>` refuses a non-fast-forward, so git enforces that
-# rather than this code trusting its own arithmetic.
-# GITSCAN_FF_OUT carries git's message for the caller's report.
+# Only strictly behind fast-forwards. Without `+`, `git fetch . <up>:<branch>` refuses a non-fast-forward,
+# so git enforces it. GITSCAN_FF_OUT carries git's message for the caller's report.
 GITSCAN_FF_OUT=""
 
 # gitscan_ff_branch <repo> <branch> <upstream> <head_branch> <dirty> <allow_dirty>

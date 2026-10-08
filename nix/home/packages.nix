@@ -104,8 +104,7 @@ in
     GLAB_NO_PROMPT = "1";
   }
   // lib.optionalAttrs isWsl {
-    # The flake's xdg-open hands the URL to the Windows default browser; a headless
-    # target has none. Same command a CLI that ignores BROWSER execs by name.
+    # xdg-open reaches the Windows browser; a headless target has none.
     BROWSER = "xdg-open";
   }
   // lib.optionalAttrs (whatsappMcpDir != null) {
@@ -113,21 +112,12 @@ in
     WHATSAPP_MCP_DIR = whatsappMcpDir;
   }
   // lib.optionalAttrs (builtins.elem "ansible" profileCliTools) {
-    # The bundled collections (community.general, community.docker, ansible.posix)
-    # ship in the ansible DISTRIBUTION, not in pkgs.ansible — that attribute is
-    # ansible-core, and its ansible_collections tree does not exist. ansible-lint
-    # cannot see them either way: pre-commit runs it from an isolated venv carrying
-    # its own ansible-core, so naming the tree here is what resolves them there.
-    # The writable entry stays FIRST: ansible-galaxy installs into the head of this
-    # list, and the store is read-only.
+    # Collections ship in the ansible distribution, not pkgs.ansible (ansible-core); naming them lets pre-commit's ansible-lint
+    # venv see them. The writable entry stays FIRST: ansible-galaxy installs into the head, and the store is read-only.
     ANSIBLE_COLLECTIONS_PATH = "${config.home.homeDirectory}/.ansible/collections:${pkgs.python3Packages.ansible}/${pkgs.python3.sitePackages}/ansible_collections";
   }
   // cfg.sessionVariables;
 
-  # The session host for `flakelab sessions --start`: an agent session runs in
-  # a window of the `agents` tmux session and outlives the terminal, the SSH
-  # connection or the Windows Terminal tab it was started from. The config is
-  # the shipped file, defaults a guest already knows.
   programs.tmux = {
     enable = true;
     extraConfig = builtins.readFile ../../files/config/tmux/tmux.conf;
@@ -137,9 +127,7 @@ in
     # NPM_CONFIG_PREFIX only covers processes inheriting the session env; ~/.npmrc
     # covers every npm invocation, and must name the same directory.
     ".npmrc".text = "prefix=${config.home.homeDirectory}/.npm-global\n";
-    # git reads ~/.gitconfig after ~/.config/git/config, so a real file here would
-    # silently shadow every key programs.git sets; owning it with an include stops that.
-    # Consequence: `git config --global` fails, since this path is in the store.
+    # git reads ~/.gitconfig after ~/.config/git/config, so a real file would shadow programs.git; hence `git config --global` fails.
     ".gitconfig".text = "[include]\n  path = ~/.config/git/config\n";
   };
 }

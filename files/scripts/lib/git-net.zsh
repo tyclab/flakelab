@@ -1,10 +1,7 @@
-# The one copy of this repo's network-facing plumbing: SSH options and one retry
-# helper. Sourced, not executed, by clone-repos and lib/gitscan.zsh.
-
+# Network plumbing shared by clone-repos and lib/gitscan.zsh: SSH options and one retry helper.
 typeset -g GITNET_SSH_BASE="-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
 
-# Callers may set this to a timeout wrapper (e.g. `timeout -k 5 30`); an array,
-# because zsh does not word-split a plain expansion.
+# Optional timeout wrapper (`timeout -k 5 30`); an array, as zsh does not word-split a plain expansion.
 typeset -ga GITNET_TIMEOUT_CMD=()
 
 # gitnet_retry <command> [arg...] — GITNET_OUT holds the combined output, and on
