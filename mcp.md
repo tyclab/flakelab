@@ -1,5 +1,39 @@
 # Shared MCP accounts and the headless browser
 
+Native HTTPS MCP endpoints configured with Codex's `bearer_token_env_var` also
+have a provisioning check. `flakelab mcp doctor` checks credentials and activated
+client files for a **fresh invocation**. The wrapper starts zsh, which reloads
+secrets before the check; credentials held by already-running Claude or Codex
+processes remain unverified. `flakelab doctor` includes this local check.
+
+The secret source is chosen at build time, exactly as for the shell:
+`/run/secrets/tyc-env` when `sopsSecretsFile` is configured, otherwise the configured
+user's `~/.config/tyc/secrets.env`. An enrolled box never falls back to the home
+file. Missing, unreadable or malformed sources fail the check. A
+`fresh-environment-source-mismatch` means this invocation's environment differs
+from that source; no credential value or exception content is printed.
+
+The doctor compares the activated `~/.claude.json` entry with the declared URL
+and bearer reference, respects `claudeMcpDisabledServers`, and checks Codex's
+system configuration plus the user configuration (`CODEX_HOME` when set).
+Missing activation, stale endpoints, disabled Codex entries and overriding
+Authorization headers fail. Claude with `CLAUDE_CONFIG_DIR` is reported as
+unverified. Codex CLI, profile, trusted-project and cloud configuration layers,
+and Claude project or command-line overrides, remain unverified; those can
+change the effective client configuration. See the
+[Codex configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence).
+
+After provisioning or rotating a key, run `flakelab mcp doctor --live`: it
+initializes each endpoint and lists tools, without invoking application actions
+or printing credentials or tool content. Each endpoint has a 15-second wall-clock
+deadline, including DNS, headers and streaming bodies, and a 1 MiB response limit.
+Redirects are refused so a bearer cannot be forwarded to a different endpoint.
+This establishes authentication and discovery for the fresh invocation; provider
+identity and real account reads remain the hub's onboarding acceptance checks.
+Refresh shells and restart affected agent clients before retiring an old key,
+then verify their actual connections; a green doctor does not prove those
+running processes have replaced their credentials.
+
 `mcpShared.servers` registers OAuth MCP accounts in Claude and Codex under the
 same names, and both clients use one authorization per account.
 

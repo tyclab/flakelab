@@ -13,6 +13,46 @@ let
     builtins.toJSON {
       inherit remoteVersion;
       inherit (cfg.mcpShared) gateway servers;
+      nativeSecretFile =
+        if cfg.sopsSecretsFile != null then
+          "/run/secrets/tyc-env"
+        else
+          "/home/${cfg.username}/.config/tyc/secrets.env";
+      nativeClientFiles = {
+        claude = "/home/${cfg.username}/.claude.json";
+        codexSystem = "/etc/codex/config.toml";
+        codexUser = "/home/${cfg.username}/.codex/config.toml";
+      };
+      nativeServers =
+        lib.mapAttrs
+          (
+            name: server:
+            let
+              claudeDisabled = builtins.elem name cfg.claudeMcpDisabledServers;
+              claudeEnabled = cfg.installClaude && !claudeDisabled && cfg.claudeMcpServers ? ${name};
+            in
+            {
+              inherit (server) url;
+              inherit claudeEnabled claudeDisabled;
+              claudeInstalled = cfg.installClaude;
+              codexEnabled = cfg.installCodex;
+              tokenEnv = server.bearer_token_env_var;
+              clientsAgree =
+                !claudeEnabled
+                || (
+                  (cfg.claudeMcpServers.${name}.url or null) == server.url
+                  &&
+                    (cfg.claudeMcpServers.${name}.headers.Authorization or null)
+                    == "Bearer \${${server.bearer_token_env_var}}"
+                );
+            }
+          )
+          (
+            lib.filterAttrs (
+              _: server:
+              cfg.installCodex && server ? url && server ? bearer_token_env_var && (server.enabled or true)
+            ) (cfg.codexSettings.mcp_servers or { })
+          );
     }
   );
   launcher = pkgs.writeShellScriptBin "flakelab-mcp" ''
@@ -85,7 +125,7 @@ assert lib.assertMsg (
   !(cfg.mcpBrowsers.headless && cfg.mcpShared.servers ? playwright-headless)
 ) "mcpShared.servers: playwright-headless is the name mcpBrowsers.headless registers";
 {
-  inherit launcher windowsChromePath;
+  inherit launcher windowsChromePath settings;
   servers =
     lib.mapAttrs (name: _: {
       command = "${launcher}/bin/flakelab-mcp";
