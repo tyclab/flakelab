@@ -358,17 +358,21 @@ _fl_repo_path() {
 # What came in, as the phrase the line ends with, counted in a local clone of the
 # same repo that already has both revs — the operator's own checkout under ~/git
 # (the namespace path from the clone sweep, a GitLab subgroup's included, or
-# `<repo>` by hand), usually the one the change was merged from. Six levels, as
-# deep as gitchecker looks. A clone matches on whole path segments, so
-# `nottyclab/flakelab` is not `tyclab/flakelab`. Nothing is fetched: an update
-# has to work offline, and someone's working tree is not this command's to move.
-# A clone that has not seen the new rev yet yields nothing, and the revs are
-# then printed on their own.
+# `<repo>` by hand), usually the one the change was merged from. Six levels deep,
+# without entering hidden directories or following symlinks: those hold tool
+# caches and node_modules farms, minutes of walking for no clone. A clone matches on whole path
+# segments, so `nottyclab/flakelab` is not `tyclab/flakelab`. Nothing is fetched:
+# an update has to work offline, and someone's working tree is not this command's
+# to move. A clone that has not seen the new rev yet yields nothing, and the revs
+# are then printed on their own.
 _fl_commits() {
   local _want _old="$2" _new="$3" _d _url _n
+  local -a _tops
   _want="$(_fl_repo_path "$1")"
   [[ -n "${_want}" && -n "${_old}" && -n "${_new}" ]] || return 1
-  for _d in "$HOME"/git/{*,*/*,*/*/*,*/*/*/*,*/*/*/*/*,*/*/*/*/*/*}/.git(N/); do
+  _tops=("$HOME"/git/*(N/))
+  (( ${#_tops} )) || return 1
+  for _d in ${(0)"$(find "${_tops[@]}" -maxdepth 6 -name '.?*' ! -name .git -prune -o -name .git -type d -print0 -prune 2> /dev/null)"}; do
     _url="$(git -C "${_d:h}" remote get-url origin 2> /dev/null)" || continue
     [[ "/$(_fl_repo_path "${_url}")" == */"${_want}" ]] || continue
     # rev-list fails on a rev this clone has never seen, which is the next clone's

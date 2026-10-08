@@ -333,6 +333,7 @@ rec {
         pkgs.zsh
         pkgs.git
         pkgs.coreutils
+        pkgs.findutils
         nix-clone-repos
         switch-result
       ]
@@ -350,6 +351,7 @@ rec {
         pkgs.zsh
         pkgs.git
         pkgs.coreutils
+        pkgs.findutils
         nix-clone-repos
         switch-result
       ]
