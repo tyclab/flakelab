@@ -289,6 +289,25 @@ print -r -- "dashboard: no user manager"
 stub systemctl 1
 contains "is a note" "$(section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "[ OK ] note: no user manager, so no dashboard unit to check"
 
+# native_mcp <config JSON>: the whole doctor run with FLAKELAB_MCP_CONFIG naming that
+# configuration, colours stripped.
+native_mcp() {
+  print -r -- "$1" > "${BASE}/mcp-config.json"
+  local out
+  out="$(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_MCP_CONFIG="${BASE}/mcp-config.json" zsh "${DOCTOR}" 2>&1 < /dev/null)"
+  print -r -- "${out//$'\e'\[[0-9;]#m/}"
+}
+
+print -r -- "native MCP: no native server declared"
+out="$(native_mcp '{"servers": {}, "nativeServers": {}}')"
+lacks "no section for an empty check" "${out}" "==> Native MCP clients"
+lacks "and no pass for it"            "${out}" "native MCP files and credentials agree"
+
+print -r -- "native MCP: a declared server that fails the check"
+out="$(native_mcp '{"servers": {}, "nativeServers": {"hub": {"url": "http://hub.invalid/mcp", "tokenEnv": "HUB_TOKEN"}}}')"
+contains "the section is there" "${out}" "==> Native MCP clients"
+contains "and it fails"         "${out}" "[FAIL] native MCP configuration or credentials need attention"
+
 print -r -- "systemd cgroup: another target"
 contains "no WSL, nothing to check" "$(cgroup_section other)" "[ OK ] target other: systemd starts at the top of its own cgroup tree"
 
