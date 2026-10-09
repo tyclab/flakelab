@@ -1,0 +1,20 @@
+--- a/pre_commit/lang_base.py
++++ b/pre_commit/lang_base.py
+@@ -16,6 +16,7 @@
+ import pre_commit.constants as C
+ from pre_commit import parse_shebang
+ from pre_commit import xargs
++from pre_commit.git import no_git_env
+ from pre_commit.prefix import Prefix
+ from pre_commit.util import cmd_output_b
+ 
+@@ -84,6 +85,9 @@
+ 
+ 
+ def setup_cmd(prefix: Prefix, cmd: tuple[str, ...], **kwargs: Any) -> None:
++    # An installer that runs git (npm cloning a node hook) must not see the
++    # GIT_INDEX_FILE of the commit: it writes its clone's index over that one.
++    kwargs['env'] = no_git_env(kwargs.get('env'))
+     cmd_output_b(*cmd, cwd=prefix.prefix_dir, **kwargs)
+ 
+ 

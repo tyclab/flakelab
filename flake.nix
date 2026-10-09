@@ -59,10 +59,15 @@
       };
 
       # nixpkgs' pre-commit installs node hooks with a flag current npm rejects
-      # (EUNKNOWNCONFIG), so every node hook is unbuildable without this override.
-      # Drop it once nixpkgs, unstable included, reaches 4.6.2.
+      # (EUNKNOWNCONFIG), so every node hook is unbuildable without this override;
+      # the version pin can go once nixpkgs, unstable included, reaches 4.6.2.
+      # The patch stays until upstream's installers drop the commit's GIT_* as its
+      # own clones do: a cold hook cache in a linked worktree, or under `commit -a`,
+      # otherwise gets the commit's index overwritten by npm's clone of the hook.
+      # pre-commit/pre-commit#3773; #3774 covers npm only, pip's git+ deps leak too.
       preCommitOverlay = _final: prev: {
-        pre-commit = prev.pre-commit.overridePythonAttrs (_old: {
+        pre-commit = prev.pre-commit.overridePythonAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./nix/pre-commit-installer-env.patch ];
           version = "4.6.2";
           src = prev.fetchFromGitHub {
             owner = "pre-commit";
@@ -358,6 +363,24 @@
         # The pinned switcher builds: a tag bump with a stale hash fails here, not
         # on a box's `flakelab update`.
         inherit tycswap;
+        # The distro's pre-commit gives a hook installer no GIT_* of the commit: npm's
+        # clone of a node hook wrote its own index over the one being committed.
+        pre-commit-installer-env =
+          let
+            pc = pkgsDev.pre-commit;
+            py = pkgsDev.python3.withPackages (
+              _: builtins.filter (p: p ? pythonModule) pc.propagatedBuildInputs
+            );
+          in
+          pkgs.runCommandLocal "flakelab-check-pre-commit-installer-env" { } ''
+            GIT_INDEX_FILE="$TMPDIR/index" GIT_DIR="$TMPDIR/git" PYTHONPATH=${pc}/${pkgsDev.python3.sitePackages} \
+              ${py}/bin/python3 -c '
+            from pre_commit import lang_base
+            from pre_commit.prefix import Prefix
+            lang_base.setup_cmd(Prefix("."), ("bash", "-c", "! env | grep -E \"^GIT_(INDEX_FILE|DIR)=\""))
+            '
+            touch $out
+          '';
         clone-repos = suiteCheck "clone-repos";
         gh-repos = suiteCheck "gh-repos";
         gitchecker = suiteCheck "gitchecker";
