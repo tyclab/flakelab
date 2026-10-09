@@ -470,7 +470,8 @@
         ] "web";
         # The input report reads the lock with `nix eval`, which is under test too.
         nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
-        nix-doctor = suiteCheck "nix-doctor";
+        # The native MCP section runs lib/mcp.py, a python3 program.
+        nix-doctor = suiteCheckWith [ pkgs.python3 ] "nix-doctor";
         switch-result = suiteCheck "switch-result";
         wsl-init-cgroup = suiteCheck "wsl-init-cgroup";
         xdg-open = suiteCheck "xdg-open";
