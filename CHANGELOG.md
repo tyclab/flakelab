@@ -76,6 +76,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab doctor` shows the "Native MCP clients" section only when there is a native server to check or the check fails. A box that declares no Codex bearer-token endpoint, including every box with `installCodex = false`, passed an empty check and printed "native MCP files and credentials agree" for nothing.
+
 - `flakelab update` finds the clone it counts the flakelab input's commits in with `find` instead of a six-level zsh glob, which followed symlinked `node_modules` farms and took 5 to 8 minutes on a full `~/git`; the search now takes about a second, skips hidden directories and does not follow symlinks.
 
 - `flakelab sessions --save` succeeds with exactly one session and replaces snapshots atomically using sync-excluded temporary files. Discovery includes version-named Claude processes and every user conversation held by a shared Codex server, using each rollout's directory and excluding daemon supervisors and internal subagents. Machine-specific save names and cross-instance resume/pruning isolation are preserved.

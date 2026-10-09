@@ -763,9 +763,13 @@ if [[ -x "${HOME}/.local/bin/claude" ]]; then
 fi
 
 if [[ -n "${FLAKELAB_MCP_CONFIG:-}" ]]; then
-  log_head "Native MCP clients"
   nativeMcpStatus=$(python3 "${0:A:h}/lib/mcp.py" doctor 2>/dev/null)
-  if (( $? == 0 )); then
+  nativeMcpRc=$?
+fi
+# An empty check passes: with no native server declared the section would be a green line for nothing.
+if [[ -n "${FLAKELAB_MCP_CONFIG:-}" ]] && { (( nativeMcpRc != 0 )) || [[ "${nativeMcpStatus}" != "[]" ]]; }; then
+  log_head "Native MCP clients"
+  if (( nativeMcpRc == 0 )); then
     log_ok "native MCP files and credentials agree for a fresh invocation"
     log_hint "running clients and additional config layers remain unverified; live check: flakelab mcp doctor --live"
   else
