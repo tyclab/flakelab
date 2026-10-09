@@ -76,6 +76,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- A commit whose pre-commit hooks still had to install a node hook no longer has its index overwritten. pre-commit ran npm with the commit's `GIT_INDEX_FILE`, and npm's clone of the hook wrote the hook repository's index over it: under `git commit -a` the commit aborted with `fatal: unable to read` and an object id, and in a linked worktree the worktree's own index was left holding the hook's files. The distro's pre-commit now gives every hook installer the environment it already gives its own clones, without the commit's `GIT_*` variables.
+
 - `flakelab doctor` shows the "Native MCP clients" section only when there is a native server to check or the check fails. A box that declares no Codex bearer-token endpoint, including every box with `installCodex = false`, passed an empty check and printed "native MCP files and credentials agree" for nothing.
 
 - `flakelab update` finds the clone it counts the flakelab input's commits in with `find` instead of a six-level zsh glob, which followed symlinked `node_modules` farms and took 5 to 8 minutes on a full `~/git`; the search now takes about a second, skips hidden directories and does not follow symlinks.
