@@ -50,17 +50,17 @@
       unstableOverlay = _final: _prev: {
         # opentofu: stable is below the `required_version` floor the infra repos set.
         # glab: stable predates the `ci status --wait` and `--jq` the agent skills use.
+        # pre-commit: stable's installs node hooks with a flag current npm rejects
+        # (EUNKNOWNCONFIG), so every node hook is unbuildable with it.
         inherit (pkgsUnstable)
           bitwarden-cli
           glab
           opentofu
           playwright-driver
+          pre-commit
           ;
       };
 
-      # nixpkgs' pre-commit installs node hooks with a flag current npm rejects
-      # (EUNKNOWNCONFIG), so every node hook is unbuildable without this override;
-      # the version pin can go once nixpkgs, unstable included, reaches 4.6.2.
       # The patch stays until upstream's installers drop the commit's GIT_* as its
       # own clones do: a cold hook cache in a linked worktree, or under `commit -a`,
       # otherwise gets the commit's index overwritten by npm's clone of the hook.
@@ -68,14 +68,8 @@
       preCommitOverlay = _final: prev: {
         pre-commit = prev.pre-commit.overridePythonAttrs (old: {
           patches = (old.patches or [ ]) ++ [ ./nix/pre-commit-installer-env.patch ];
-          version = "4.6.2";
-          src = prev.fetchFromGitHub {
-            owner = "pre-commit";
-            repo = "pre-commit";
-            tag = "v4.6.2";
-            hash = "sha256-aCEN9dVz/3lB2gy7U+6dVj3jSM7cmVsstOp+LHvYRsU=";
-          };
-          # The inherited test suite targets the packaged version's fixtures. Both
+          # No binary cache holds the patched build, so nixpkgs' suite would rerun
+          # on every CI job; checks.pre-commit-installer-env covers the patch. Both
           # flags are needed: the pytest setup-hook gates only on dontUsePytestCheck,
           # while doCheck drops nativeCheckInputs from the closure.
           doCheck = false;
@@ -368,12 +362,13 @@
         pre-commit-installer-env =
           let
             pc = pkgsDev.pre-commit;
-            py = pkgsDev.python3.withPackages (
+            # The interpreter pre-commit was built for: unstable's, not pkgs.python3.
+            py = pkgsUnstable.python3.withPackages (
               _: builtins.filter (p: p ? pythonModule) pc.propagatedBuildInputs
             );
           in
           pkgs.runCommandLocal "flakelab-check-pre-commit-installer-env" { } ''
-            GIT_INDEX_FILE="$TMPDIR/index" GIT_DIR="$TMPDIR/git" PYTHONPATH=${pc}/${pkgsDev.python3.sitePackages} \
+            GIT_INDEX_FILE="$TMPDIR/index" GIT_DIR="$TMPDIR/git" PYTHONPATH=${pc}/${pkgsUnstable.python3.sitePackages} \
               ${py}/bin/python3 -c '
             from pre_commit import lang_base
             from pre_commit.prefix import Prefix
