@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- pre-commit comes from nixpkgs-unstable, which ships the 4.6.2 the overlay pinned by hand, so Renovate's lock maintenance moves it from now on; the overlay keeps only the installer patch. Python hooks reinstall once per box under its Python 3.14.
 - Tycswap is pinned to v0.7.19: the Windows tray separates each table from its details with a divider line and frames the detail text.
 - Tycswap is pinned to v0.7.18: the Windows tray switches by double-click with a destination confirmation, and the panel sizes everything from its font, so columns, buttons and tabs fit their text.
 - Tycswap is pinned to v0.7.17, adding a compact tray overview and shared settings for the default, Fable and Opus/other scopes in both tray and web. Flake-managed automation remains separate from editable runtime policy.
