@@ -33,7 +33,7 @@ let
   # Pins live in variables so renovate.json's customManagers can see them; an inline
   # pin in an args list has no manager watching it.
   # renovate: datasource=pypi depName=mcp-grafana
-  grafanaMcpVersion = "2.0.0";
+  grafanaMcpVersion = "2.0.2";
 
   # One server covering Grafana, Prometheus and Loki; GRAFANA_* is inherited.
   grafanaServer = {
