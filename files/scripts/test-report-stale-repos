@@ -37,11 +37,16 @@ git config --global user.email "stale@example.invalid"
 
 # The glab stand-in: `glab api --paginate --output ndjson groups/<group>/projects?…`
 # answers from fixtures/<group>.ndjson (a subgroup's %2F spelled __), records
-# the query, and fails outright under FAKE_GLAB_FAIL.
+# the query, fails outright under FAKE_GLAB_FAIL, and under FAKE_GLAB_TRANSIENT=n
+# times out on the first n calls the way glab reports a hung TLS handshake.
 cat > "${STUBS}/glab" <<'STUB'
 #!/usr/bin/env zsh
 print -r -- "glab $*" >> "${CALLS}"
 [[ -n "${FAKE_GLAB_FAIL:-}" ]] && { print -ru2 -- "glab: 401 Unauthorized"; exit 1 }
+if [[ -n "${FAKE_GLAB_TRANSIENT:-}" ]] && (( $(grep -c . "${CALLS}") <= FAKE_GLAB_TRANSIENT )); then
+  print -ru2 -- 'ERROR Get "https://gitlab.com/api/v4/groups/acme/projects": net/http: TLS handshake timeout.'
+  exit 1
+fi
 q="${@[-1]}"
 grp="${${q#groups/}%%/projects*}"
 f="${FIXTURES}/${grp//\%2F/__}.ndjson"
@@ -117,6 +122,9 @@ print -r -- "refusals and usage"
 FAKE_GLAB_FAIL=1 run --repos-dir "${REPOS}" --group acme
 check    "a failed listing exits 1"   "${RC}" "1"
 contains "naming the group"           "${ERR}" "Error: could not list projects for acme"
+FAKE_GLAB_TRANSIENT=1 run --repos-dir "${REPOS}" --group acme
+check    "one timed-out listing does not abort the report" "${RC}" "0"
+contains "and its rows still come through" "${OUT}" "  SAFE TO REMOVE  archived  ${REPOS}/acme/old-archived"
 run --repos-dir "${REPOS}"
 check    "no group is nothing to do"  "${RC}" "0"
 check    "and prints nothing"         "${OUT}" ""
@@ -141,6 +149,16 @@ contains "with a warning"             "${ERR}" "WARNING: nobody returned 0 proje
 FAKE_GLAB_FAIL=1 list --group acme
 check    "a failed call exits 1"      "${RC}" "1"
 contains "with glab's own words"      "${ERR}" "Error: glab api groups/acme/projects failed: glab: 401 Unauthorized"
+check    "a status error is not retried" "$(calls | grep -c .)" "1"
+FAKE_GLAB_TRANSIENT=1 list --group acme
+check    "a hung TLS handshake is retried" "${RC}" "0"
+check    "and the second attempt's projects come through" "$(print -r -- "${OUT}" | grep -c .)" "6"
+check    "after two calls"            "$(calls | grep -c .)" "2"
+contains "the retry is announced"     "${ERR}" "retrying (1/3)"
+FAKE_GLAB_TRANSIENT=3 list --group acme
+check    "three timeouts exit 1"      "${RC}" "1"
+check    "after three calls"          "$(calls | grep -c .)" "3"
+contains "with the last error"        "${ERR}" "Error: glab api groups/acme/projects failed: ERROR Get"
 list
 check    "no --group is a usage error" "${RC}" "2"
 list --group acme --per-page 0
