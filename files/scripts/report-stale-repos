@@ -75,6 +75,7 @@ done
 
 typeset -i checked_out=0 remote_only=0 removable=0
 typeset reason="" repo_path="" repo="" work=""
+typeset -a removable_paths=()
 
 while IFS='|' read -r reason repo_path; do
   [[ -z "${repo_path}" ]] && continue
@@ -95,6 +96,7 @@ while IFS='|' read -r reason repo_path; do
 
   if [[ -z "${work}" ]]; then
     (( removable++ ))
+    removable_paths+=("${repo}")
     print -r -- "  SAFE TO REMOVE  ${reason}  ${repo}"
   else
     print -r -- "  KEEP —${work}  ${reason}  ${repo}"
@@ -104,5 +106,13 @@ done < <(sort -u "${ENTRIES}")
 print -r -- "SUMMARY archived/deletion-scheduled: ${checked_out} checked out locally (${removable} with no local work), ${remote_only} remote-only"
 if (( checked_out > 0 )); then
   echo "Excluded from clone/fetch — these never update again."
-  echo "Move aside when confirmed stale: mkdir -p ~/.stale-repos && mv <path> ~/.stale-repos/"
+fi
+if (( removable > 0 )); then
+  echo "The remote holds everything a SAFE TO REMOVE clone has; delete it:"
+  for repo in "${removable_paths[@]}"; do
+    print -r -- "  rm -rf ${(q)repo}"
+  done
+fi
+if (( checked_out > removable )); then
+  echo "A KEEP clone holds work its read-only remote never got; copy that out before deleting it."
 fi
