@@ -265,6 +265,10 @@ let
   claudeMcpRecord = renderedRecord "claude-mcp-servers" "~/.claude.json mcpServers" (
     builtins.attrNames claudeMcpServers
   );
+  # Declared but disabled: out of ~/.claude.json, and in a file `claude --mcp-config` loads for one session.
+  claudeMcpOptional = lib.filterAttrs (
+    name: _: lib.elem name cfg.claudeMcpDisabledServers
+  ) cfg.claudeMcpServers;
 
   jqPath = ''export PATH="${
     lib.makeBinPath [
@@ -274,6 +278,13 @@ let
   }:$PATH"'';
 in
 {
+  xdg.configFile = lib.mapAttrs' (
+    name: server:
+    lib.nameValuePair "flakelab/claude-mcp/${name}.json" {
+      text = builtins.toJSON { mcpServers.${name} = server; };
+    }
+  ) (lib.optionalAttrs installClaude claudeMcpOptional);
+
   # The nixpkgs build lags what this environment needs, so bootstrap the official
   # installer once; its auto-updater keeps it current, and nix-ld runs the binary.
   home.activation.installClaudeCode = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
@@ -387,8 +398,8 @@ in
       );
 
   # The settings.json policy in one pass: attribution off, feedback and error
-  # reporting off with the plugin env, installMethod, the update channel, autoMode
-  # and the deny floor asserted whole, then the opt-in bundle and statusline.
+  # reporting off with the plugin env, installMethod, the update channel, autoMode,
+  # the deny floor and the MCP denylist asserted whole, then the opt-in bundle and statusline.
   # permissions.allow/ask are not here: the marketplace clone they come from is
   # runtime data, so nix-update asserts them after every switch.
   home.activation.claudeSettings =
@@ -400,11 +411,16 @@ in
           _attrs='{"commit":"","pr":"","sessionUrl":false}'
           _env=${lib.escapeShellArg (builtins.toJSON claudeEnv)}
           _deny=${lib.escapeShellArg (builtins.toJSON claudeDeny)}
+          _deniedMcp=${
+            lib.escapeShellArg (
+              builtins.toJSON (map (serverName: { inherit serverName; }) cfg.claudeDeniedMcpServers)
+            )
+          }
           ${claudeEnvRecord.load}
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
+          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --argjson dm "$_deniedMcp" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .env += $e
@@ -413,6 +429,8 @@ in
             | .autoUpdatesChannel = "${claudeAutoUpdatesChannel}"
             | .autoMode = $am[0]
             | .permissions.deny = $d
+            | .deniedMcpServers = $dm
+            | if .deniedMcpServers == [] then del(.deniedMcpServers) else . end
             ${claudeOutputStyleJq}
             ${claudeAgentDefaultsJq}
             ${claudeRemoteControlJq}

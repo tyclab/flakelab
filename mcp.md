@@ -1,21 +1,25 @@
 # Shared MCP accounts and the headless browser
 
-Native HTTPS MCP endpoints configured with Codex's `bearer_token_env_var` also
-have a provisioning check. `flakelab mcp doctor` checks credentials and activated
-client files for a **fresh invocation**. The wrapper starts zsh, which reloads
-secrets before the check; credentials held by already-running Claude or Codex
-processes remain unverified. `flakelab doctor` includes this local check.
+Native HTTPS MCP endpoints configured with Codex's `bearer_token_env_var` or
+`http_headers_helper` also have a provisioning check. `flakelab mcp doctor`
+checks credentials and activated client files for a **fresh invocation**. The
+wrapper starts zsh, which reloads secrets before the check; credentials held by
+already-running Claude or Codex processes remain unverified. `flakelab doctor`
+includes this local check.
 
 The secret source is chosen at build time, exactly as for the shell:
 `/run/secrets/tyc-env` when `sopsSecretsFile` is configured, otherwise the configured
 user's `~/.config/tyc/secrets.env`. An enrolled box never falls back to the home
 file. Missing, unreadable or malformed sources fail the check. A
 `fresh-environment-source-mismatch` means this invocation's environment differs
-from that source; no credential value or exception content is printed.
+from that source; no credential value or exception content is printed. A
+helper-configured endpoint is checked by running its helper, the command both
+clients run (`credential-helper-failed` when it yields no bearer); keeping its
+key out of the shell is what `sopsKeyFiles` is for.
 
 The doctor compares the activated `~/.claude.json` entry with the declared URL
-and bearer reference, respects `claudeMcpDisabledServers`, and checks Codex's
-system configuration plus the user configuration (`CODEX_HOME` when set).
+and bearer reference or helper, respects `claudeMcpDisabledServers`, and checks
+Codex's system configuration plus the user configuration (`CODEX_HOME` when set).
 Missing activation, stale endpoints, disabled Codex entries and overriding
 Authorization headers fail. Claude with `CLAUDE_CONFIG_DIR` is reported as
 unverified. Codex CLI, profile, trusted-project and cloud configuration layers,

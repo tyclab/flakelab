@@ -283,7 +283,7 @@ in
     codexMcpSources = mkOption {
       type = types.listOf types.path;
       default = [ ];
-      description = "MCP JSON files from locked flake inputs or local Nix paths. Their mcpServers entries become native Codex mcp_servers in the system defaults. No plugin installer, skills, agents or Claude changes.";
+      description = "MCP JSON files from locked flake inputs or local Nix paths. Their mcpServers entries become native Codex mcp_servers in the system defaults; a codexSettings.mcp_servers entry of the same name is merged over one, so `enabled = false` keeps it configured but off. No plugin installer, skills, agents or Claude changes.";
     };
 
     codexAutoReview = mkOption {
@@ -366,7 +366,14 @@ in
       type = types.listOf types.str;
       default = [ ];
       example = [ "whatsapp" ];
-      description = "Claude user-scope native MCP server names to exclude and remove from ~/.claude.json. Also remove the corresponding plugin from claudePlugins. Prevents automatic native fallback from restoring an opted-out server; other clients are unchanged.";
+      description = "Claude user-scope native MCP server names to exclude and remove from ~/.claude.json. Also remove the corresponding plugin from claudePlugins. Prevents automatic native fallback from restoring an opted-out server; other clients are unchanged. A name also declared in claudeMcpServers stays available for one session: `claude --mcp-config ~/.config/flakelab/claude-mcp/<name>.json`.";
+    };
+
+    claudeDeniedMcpServers = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [ "claude.ai Gmail" ];
+      description = "MCP server names Claude Code refuses to load from any source, a claude.ai connector by its display name included; asserted whole as settings.deniedMcpServers.";
     };
 
     claudePluginMarketplaces = mkOption {
@@ -520,6 +527,15 @@ in
       type = types.nullOr types.path;
       default = null;
       description = "The overlay's age-encrypted sops DOTENV file (the encrypted twin of ~/.config/tyc/secrets.env). Non-null wires sops-nix (nix/secrets.nix): the file is decrypted at activation into the /run/secrets ramfs and the zsh init sources it from there, falling back to the legacy home file only when the render is absent. A `path`, so the ciphertext is copied into the world-readable Nix store — which is exactly what ciphertext is for; the plaintext never leaves /run. Decryption needs the host identity at `sopsAgeKeyFile` to be enrolled in the file's .sops.yaml recipients BEFORE this is set, or the next activation fails loudly.";
+    };
+
+    sopsKeyFiles = mkOption {
+      type = types.attrsOf (types.nullOr types.str);
+      default = { };
+      example = {
+        HUB_KEY = ".config/tyc/hub.key";
+      };
+      description = "Variables of the sops render that never reach the shell: each is written to its own owner-only file (attribute: the variable, value: the path under the home directory) after every render, for a client that reads its credential from a file, such as an MCP headers helper, and the zsh init leaves it out of the environment it exports. A variable missing from the render removes its file; null keeps a variable out of the shell without writing one. Needs sopsSecretsFile.";
     };
 
     sopsAgeKeyFile = mkOption {

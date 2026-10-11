@@ -140,6 +140,27 @@ class NativeMcpTest(unittest.TestCase):
         self.assertEqual(result[0]['status'], 'client-config-unreadable-or-invalid')
         self.assertNotIn('fixture-secret-value', json.dumps(result))
 
+    def test_headers_helper_supplies_the_bearer_both_clients_must_run(self):
+        helper = "printf '{\"Authorization\":\"Bearer fixture\"}'"
+        files = self.client_files()
+        self.servers['hub'].update(tokenEnv=None, helper=helper)
+        Path(files['claude']).write_text(json.dumps({'mcpServers': {'hub': {
+            'type': 'http', 'url': self.servers['hub']['url'], 'headersHelper': helper}}}))
+        Path(files['codexSystem']).write_text('[mcp_servers.hub]\nurl = "https://mcp.example.test/mcp"\n'
+                                             'http_headers_helper = %s\n' % json.dumps(helper))
+        with patch.object(mcp.mcp_native, 'probe', return_value=3) as probe:
+            self.assertEqual(self.check(env={}, client_files=files, live=True)[0]['status'], 'authenticated')
+            probe.assert_called_once_with('https://mcp.example.test/mcp', 'fixture')
+        Path(files['codexUser']).write_text('[mcp_servers.hub]\nbearer_token_env_var = "FIXTURE_KEY"\n')
+        self.assertEqual(self.check(env={}, client_files=files)[0]['status'], 'codex-client-config-mismatch')
+        Path(files['codexUser']).unlink()
+        self.servers['hub']['helper'] = 'echo fixture-secret-value; exit 1'
+        Path(files['claude']).write_text('{}')
+        self.servers['hub']['claudeEnabled'] = False
+        result = self.check(env={}, client_files=None)
+        self.assertEqual(result[0]['status'], 'credential-helper-failed')
+        self.assertNotIn('fixture-secret-value', json.dumps(result))
+
     def test_sse_multiline_events_are_assembled_before_json_parsing(self):
         class Response(io.BytesIO):
             headers = {'Content-Type': 'text/event-stream', 'Mcp-Session-Id': 'fixture-session'}

@@ -7,6 +7,7 @@
 }:
 let
   cfg = config.flakelab;
+  keyFiles = lib.filterAttrs (_: file: file != null) cfg.sopsKeyFiles;
 in
 {
   config = lib.mkIf (cfg.sopsSecretsFile != null) {
@@ -28,7 +29,31 @@ in
         # Explicit, not sops-nix's default: the shell contract depends on it.
         mode = "0400";
         owner = cfg.username;
+        restartUnits = lib.optional (keyFiles != { }) "flakelab-sops-key-files.service";
       };
+    };
+
+    systemd.services.flakelab-sops-key-files = lib.mkIf (keyFiles != { }) {
+      description = "Split the sops key files out of the render";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "sops-install-secrets.service" ];
+      path = [ pkgs.coreutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = cfg.username;
+        UMask = "0077";
+      };
+      script = ''
+        set -a; . <(tr -d '\r' < ${config.sops.secrets.tyc-env.path}); set +a
+      ''
+      + lib.concatStrings (
+        lib.mapAttrsToList (name: file: ''
+          _f=${lib.escapeShellArg "/home/${cfg.username}/${file}"}
+          mkdir -p "$(dirname "$_f")"
+          if [ -n "''${${name}:-}" ]; then printf '%s\n' "''$${name}" > "$_f.tmp" && mv "$_f.tmp" "$_f"; else rm -f "$_f"; fi
+        '') keyFiles
+      );
     };
 
     # Enrolment and rotation tools on the box that uses them.

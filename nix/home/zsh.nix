@@ -26,6 +26,11 @@ let
 
   '';
 
+  # sopsKeyFiles variables live in their own files; the shell never carries them.
+  keyFilesFilter =
+    lib.optionalString (cfg.sopsKeyFiles != { })
+      " | ${pkgs.gnugrep}/bin/grep -vE ${lib.escapeShellArg "^(${lib.concatStringsSep "|" (builtins.attrNames cfg.sopsKeyFiles)})="}";
+
   # Built once so the reporter and the deleter cannot disagree about the scan scope.
   inherit (cfg) extraReposDirs;
   gitRootArgs = lib.concatStringsSep " " (
@@ -93,7 +98,7 @@ in
         if cfg.sopsSecretsFile != null then
           ''
             if [[ -r /run/secrets/tyc-env ]]; then
-              set -a; source =(tr -d '\r' < /run/secrets/tyc-env); set +a
+              set -a; source =(tr -d '\r' < /run/secrets/tyc-env${keyFilesFilter}); set +a
             fi
           ''
         else

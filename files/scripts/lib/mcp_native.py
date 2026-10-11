@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import time
 import tomllib
 import urllib.error
@@ -153,8 +154,9 @@ def _client_status(name, server, files, env):
             if server.get("claudeEnabled") and not active:
                 return "claude-activation-missing"
             if active is not None:
+                auth = active.get("headersHelper") if server.get("helper") else active.get("headers", {}).get("Authorization")
                 if (active.get("url") != server["url"] or active.get("type") != "http"
-                        or active.get("headers", {}).get("Authorization") != "Bearer ${" + server["tokenEnv"] + "}"):
+                        or auth != (server.get("helper") or "Bearer ${" + server["tokenEnv"] + "}")):
                     return "claude-client-config-mismatch"
                 if name in claude.get("disabledMcpServers", []):
                     return "claude-server-disabled"
@@ -173,7 +175,8 @@ def _client_status(name, server, files, env):
                 effective.update(override)
             if not effective:
                 return "codex-activation-missing"
-            if (effective.get("url") != server["url"] or effective.get("bearer_token_env_var") != server["tokenEnv"]
+            if (effective.get("url") != server["url"] or effective.get("bearer_token_env_var") != server.get("tokenEnv")
+                    or effective.get("http_headers_helper") != server.get("helper")
                     or effective.get("enabled") is False or effective.get("command")
                     or any(key.lower() == "authorization" for field in ("http_headers", "env_http_headers")
                            for key in effective.get(field, {}))):
@@ -210,6 +213,17 @@ def _secrets(secret_file, names):
         return {}, set(), "secret-source-unreadable"
 
 
+def helper_token(command, env):
+    """The bearer a headers helper hands both clients; empty on any failure, its output never kept."""
+    try:
+        done = subprocess.run(["sh", "-c", command], env=dict(env), stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=10, check=True)
+        value = json.loads(done.stdout).get("Authorization", "")
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return ""
+    return value.removeprefix("Bearer ") if isinstance(value, str) and value.startswith("Bearer ") else ""
+
+
 def check(servers, live=False, env=None, secret_file="/run/secrets/tyc-env", client_files=None):
     if not servers:
         return []
@@ -223,9 +237,9 @@ def check(servers, live=False, env=None, secret_file="/run/secrets/tyc-env", cli
         results.append(row)
         try:
             url = urllib.parse.urlsplit(server.get("url", ""))
-            key = server.get("tokenEnv", "")
+            key, helper = server.get("tokenEnv") or "", server.get("helper")
             if (url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment
-                    or url.port == 0 or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)):
+                    or url.port == 0 or not (helper or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key))):
                 continue
             if not server.get("clientsAgree", True):
                 row["status"] = "client-config-mismatch"
@@ -234,16 +248,22 @@ def check(servers, live=False, env=None, secret_file="/run/secrets/tyc-env", cli
             if client_error:
                 row["status"] = client_error
                 continue
-            token = env.get(key, "")
-            if not token or "${" in token:
-                row["status"] = "credential-missing-from-environment"
-                continue
-            if source_error or key in invalid or not stored.get(key):
-                row["status"] = source_error or ("secret-source-invalid" if key in invalid else "credential-missing-from-source")
-                continue
-            if token != stored[key]:
-                row["status"] = "fresh-environment-source-mismatch"
-                continue
+            if helper:
+                token = helper_token(helper, env)
+                if not token:
+                    row["status"] = "credential-helper-failed"
+                    continue
+            else:
+                token = env.get(key, "")
+                if not token or "${" in token:
+                    row["status"] = "credential-missing-from-environment"
+                    continue
+                if source_error or key in invalid or not stored.get(key):
+                    row["status"] = source_error or ("secret-source-invalid" if key in invalid else "credential-missing-from-source")
+                    continue
+                if token != stored[key]:
+                    row["status"] = "fresh-environment-source-mismatch"
+                    continue
             row["status"] = "configured"
             if live:
                 row["tools"] = probe(server["url"], token)

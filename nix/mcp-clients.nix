@@ -36,21 +36,29 @@ let
               inherit claudeEnabled claudeDisabled;
               claudeInstalled = cfg.installClaude;
               codexEnabled = cfg.installCodex;
-              tokenEnv = server.bearer_token_env_var;
+              tokenEnv = server.bearer_token_env_var or null;
+              helper = server.http_headers_helper or null;
               clientsAgree =
                 !claudeEnabled
                 || (
                   (cfg.claudeMcpServers.${name}.url or null) == server.url
-                  &&
-                    (cfg.claudeMcpServers.${name}.headers.Authorization or null)
-                    == "Bearer \${${server.bearer_token_env_var}}"
+                  && (
+                    if server ? http_headers_helper then
+                      (cfg.claudeMcpServers.${name}.headersHelper or null) == server.http_headers_helper
+                    else
+                      (cfg.claudeMcpServers.${name}.headers.Authorization or null)
+                      == "Bearer \${${server.bearer_token_env_var}}"
+                  )
                 );
             }
           )
           (
             lib.filterAttrs (
               _: server:
-              cfg.installCodex && server ? url && server ? bearer_token_env_var && (server.enabled or true)
+              cfg.installCodex
+              && server ? url
+              && (server ? bearer_token_env_var || server ? http_headers_helper)
+              && (server.enabled or true)
             ) (cfg.codexSettings.mcp_servers or { })
           );
     }
