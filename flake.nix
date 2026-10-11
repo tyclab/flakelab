@@ -639,9 +639,15 @@
                   flakelab = {
                     sessionVariables.WHATSAPP_BRIDGE_HOST = "localhost:8180";
                     whatsappMcpDir = "/example/whatsapp-mcp-server";
-                    claudeMcpDisabledServers = [ "whatsapp" ];
+                    claudeMcpDisabledServers = [
+                      "whatsapp"
+                      "optional"
+                    ];
                     claudeMcpServers.custom = {
                       command = "example-mcp";
+                    };
+                    claudeMcpServers.optional = {
+                      command = "optional-mcp";
                     };
                   };
                 }
@@ -677,6 +683,10 @@
             none = rendered "claude-mcp-none-activation" self.nixosConfigurations.default;
           in
           assert nixpkgs.lib.hasInfix "whatsapp" hm.home.activation.claudeMcpMerge.data;
+          assert
+            builtins.fromJSON hm.xdg.configFile."flakelab/claude-mcp/optional.json".text == {
+              mcpServers.optional.command = "optional-mcp";
+            };
           pkgs.runCommandLocal "flakelab-check-claude-mcp-exclusion"
             {
               nativeBuildInputs = [
@@ -689,7 +699,7 @@
               mkdir -p "$fixtureHome"
               printf '%s\n' '{"account":{"opaque":"sentinel"},"mcpServers":{"whatsapp":{"command":"old"},"manual":{"command":"keep"}}}' > "$fixtureHome/.claude.json"
               bash -euo pipefail ${entry}
-              jq -e '.account.opaque == "sentinel" and (.mcpServers | has("whatsapp") | not) and .mcpServers.manual.command == "keep" and .mcpServers.custom.command == "example-mcp"' "$fixtureHome/.claude.json"
+              jq -e '.account.opaque == "sentinel" and (.mcpServers | has("whatsapp") | not) and (.mcpServers | has("optional") | not) and .mcpServers.manual.command == "keep" and .mcpServers.custom.command == "example-mcp"' "$fixtureHome/.claude.json"
               cp "$fixtureHome/.claude.json" before.json
               bash -euo pipefail ${entry}
               cmp before.json "$fixtureHome/.claude.json"
@@ -1594,7 +1604,13 @@
           let
             forced = self.nixosConfigurations.default.extendModules {
               modules = [
-                { flakelab.sopsSecretsFile = ./files/config/secrets.env.example; }
+                {
+                  flakelab.sopsSecretsFile = ./files/config/secrets.env.example;
+                  flakelab.sopsKeyFiles = {
+                    FIXTURE_KEY = ".config/fixture.key";
+                    FIXTURE_ENV_ONLY = null;
+                  };
+                }
               ];
             };
             secret = forced.config.sops.secrets.tyc-env;
@@ -1615,6 +1631,11 @@
           assert forced.config.sops.gnupg.home == null;
           assert forced.config.sops.useSystemdActivation;
           assert self.nixosConfigurations.default.config.sops.secrets == { };
+          # A key file is re-split on every render and never exported.
+          assert secret.restartUnits == [ "flakelab-sops-key-files.service" ];
+          assert hasInfix "FIXTURE_KEY" forced.config.systemd.services.flakelab-sops-key-files.script;
+          assert !hasInfix "FIXTURE_ENV_ONLY" forced.config.systemd.services.flakelab-sops-key-files.script;
+          assert hasInfix "grep -vE '^(FIXTURE_ENV_ONLY|FIXTURE_KEY)='" zshOn;
           # Exactly one secrets source per box, no runtime fallback.
           assert hasInfix "/run/secrets/tyc-env" zshOn;
           assert !hasInfix ".config/tyc/secrets.env" zshOn;

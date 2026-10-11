@@ -12,7 +12,9 @@ let
   names = lib.concatMap builtins.attrNames sources;
   servers = lib.foldl' (acc: source: acc // source) { } sources;
   nativeServers = lib.mapAttrs (_: server: builtins.removeAttrs server [ "type" ]) servers;
-  allServers = nativeServers // shared.servers // (cfg.codexSettings.mcp_servers or { });
+  allServers = lib.recursiveUpdate (nativeServers // shared.servers) (
+    cfg.codexSettings.mcp_servers or { }
+  );
   commandRules = import ./codex-rules.nix;
   localRules = lib.concatMapStringsSep "\n" (
     rule:

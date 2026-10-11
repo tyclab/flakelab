@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab.sopsKeyFiles`: render variables written to their own owner-only files after every render (`flakelab-sops-key-files.service`) and left out of the shell environment, for MCP headers helpers; a null entry is only left out.
+- `flakelab.claudeDeniedMcpServers`: Claude Code's `deniedMcpServers`, by name, claude.ai connectors included.
+- A server named in both `claudeMcpServers` and `claudeMcpDisabledServers` is written to `~/.config/flakelab/claude-mcp/<name>.json` for `claude --mcp-config`; a `codexSettings.mcp_servers` entry merges over a `codexMcpSources` one, so `enabled = false` turns it off; `flakelab mcp doctor` checks helper-configured endpoints by running the helper.
 - `flakelab sessions --start claude --group fable|opus` selects a tycswap rotation group; discovery and recovery snapshots preserve the profile and actual continuation id. Explicit group selection on `--resume` / `--open` moves older conversations through tycswap's native fork. Tmux launches forward validated handover context and clear stale handover markers on ordinary starts. `session-groups.md` explains account capability, group recovery and reviewed handover workflows.
 - `flakelab.tycswapAppPort`: `tycswap app --headless --port <n>` as the user service `flakelab-tycswap-app`, the dashboard the Windows tray (`tycswap.exe app --remote`) drives through WSL2's localhost forwarding; the tray is registered once per PC with `--autostart on`. Null, the default, installs no service.
 - `flakelab doctor` has a "Dashboard" section: it warns when `flakelab-web.service` still runs a previous generation's code after `flakelab update` (activation never restarts it) and names the restart, and when the unit is loaded but down.
