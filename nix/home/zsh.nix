@@ -118,6 +118,17 @@ in
     initContent = ''
       export GPG_TTY="$(tty)"
 
+      # A systemd unit has no WSL_DISTRO_NAME and no interop socket for wsl.exe,
+      # so the shell leaves the name where `flakelab distro-name` and the
+      # backup units read it.
+      if [[ -n "''${WSL_DISTRO_NAME:-}" ]]; then
+        _f="''${XDG_STATE_HOME:-$HOME/.local/state}/flakelab/distro-name"
+        if [[ ! -r "$_f" || "$(<"$_f")" != "$WSL_DISTRO_NAME" ]]; then
+          { mkdir -p "''${_f:h}" && print -r -- "$WSL_DISTRO_NAME" > "$_f"; } 2>/dev/null
+        fi
+        unset _f
+      fi
+
       ${homeJump}
 
       # `bwu` unlocks on the TTY and parks the per-unlock token in a mode-600 file

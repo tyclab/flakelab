@@ -14,6 +14,23 @@ case "${1:-}" in
   *) print -ru2 -- "distro-name: takes no arguments (got '$1'); see --help"; exit 2 ;;
 esac
 
+# The shell has the name in WSL_DISTRO_NAME. A systemd unit has neither that nor
+# the interop socket wsl.exe needs (it hangs on a dead one until the timeout),
+# so every interactive shell leaves the name in a record read before Windows
+# is asked.
+if [[ -n "${WSL_DISTRO_NAME:-}" ]]; then
+  print -rn -- "${WSL_DISTRO_NAME}"
+  exit 0
+fi
+_RECORD="${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name"
+if [[ -s "${_RECORD}" ]]; then
+  IFS= read -r _RECORDED < "${_RECORD}" || true
+  if [[ -n "${_RECORDED}" ]]; then
+    print -rn -- "${_RECORDED}"
+    exit 0
+  fi
+fi
+
 _WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
 if ! [[ -x ${_WSL_BIN} ]]
 then

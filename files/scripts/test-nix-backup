@@ -266,6 +266,10 @@ transcript_fixture() {
 RUN_BOX_NAME=""
 RUN_WSL_NAME="TestDistro"
 RUN_INSTANCE=""
+# Where the shell's distro-name record lives; empty here, so this box's own
+# record never names an instance in a case that left every variable unset.
+RUN_STATE_HOME="${BASE}/xdg-state"
+mkdir -p "${RUN_STATE_HOME}"
 typeset -i RC=0
 OUT=""
 run_backup() {
@@ -281,7 +285,7 @@ run_backup() {
     FAKE_GITLEAKS_LINE_OFF="${FAKE_LINE_OFF}" FAKE_GITLEAKS_DECODE="${FAKE_DECODE}" \
     FLAKELAB_GATE_ANSWERS="${ANSWERS}" \
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}" \
-    FLAKELAB_BOX_NAME="${RUN_BOX_NAME}" \
+    FLAKELAB_BOX_NAME="${RUN_BOX_NAME}" XDG_STATE_HOME="${RUN_STATE_HOME}" \
     "${BACKUP}" "$@" < /dev/null 2>&1)"
   RC=$?
 }
@@ -338,6 +342,22 @@ RUN_INSTANCE=""
 contains "the payload path uses FLAKELAB_INSTANCE" "${OUT}" "instances/vmbox"
 excludes "not the TestDistro every other case runs under" "${OUT}" "instances/TestDistro"
 check    "the run exits clean"                     "${RC}"  "0"
+
+print -r -- "a unit with no name in its environment reads the shell's record"
+fixture instance-record
+mkdir -p "${BASE}/instance-record/state/flakelab"
+print -r -- "RecordedBox" > "${BASE}/instance-record/state/flakelab/distro-name"
+RUN_WSL_NAME=""
+RUN_STATE_HOME="${BASE}/instance-record/state"
+run_backup --dry-run
+contains "the payload path uses the recorded name" "${OUT}" "instances/RecordedBox"
+check    "and the run exits clean, wsl.exe never asked" "${RC}" "0"
+HELPER_OUT="$(WSL_DISTRO_NAME="" XDG_STATE_HOME="${RUN_STATE_HOME}" "${BACKUP:h}/get_current_wsl_distro_name" 2>&1)"
+check    "flakelab distro-name reads the same record"  "${HELPER_OUT}" "RecordedBox"
+HELPER_OUT="$(WSL_DISTRO_NAME="ShellBox" XDG_STATE_HOME="${RUN_STATE_HOME}" "${BACKUP:h}/get_current_wsl_distro_name" 2>&1)"
+check    "and a shell's own WSL_DISTRO_NAME wins over it" "${HELPER_OUT}" "ShellBox"
+RUN_WSL_NAME="TestDistro"
+RUN_STATE_HOME="${BASE}/xdg-state"
 
 print -r -- "WSL_DISTRO_NAME wins when both are set"
 fixture instance-precedence
