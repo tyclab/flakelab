@@ -81,6 +81,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- On WSL, `flakelab-state-sync` and `flakelab-backup` no longer depend on Windows interop to learn the distro name. A systemd unit has no `WSL_DISTRO_NAME`, so both asked `wsl.exe`, which hangs on a unit's dead interop socket until its timeout, and both failed on every run. Every interactive shell now records the name under `~/.local/state/flakelab/distro-name`, and `flakelab distro-name` reads that before asking Windows.
 - `flakelab clone` no longer aborts its stale-clone report, and so `update-all`, on one stalled GitLab request: the group listing retries a timeout, a reset or a hung TLS handshake twice, one and two seconds apart; a status error such as 401 still fails at once.
 - A commit whose pre-commit hooks still had to install a node hook no longer has its index overwritten. pre-commit ran npm with the commit's `GIT_INDEX_FILE`, and npm's clone of the hook wrote the hook repository's index over it: under `git commit -a` the commit aborted with `fatal: unable to read` and an object id, and in a linked worktree the worktree's own index was left holding the hook's files. The distro's pre-commit now gives every hook installer the environment it already gives its own clones, without the commit's `GIT_*` variables.
 
