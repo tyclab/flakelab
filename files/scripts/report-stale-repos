@@ -91,8 +91,10 @@ while IFS='|' read -r reason repo_path; do
   git -C "${repo}" diff --quiet 2>/dev/null || work="${work} uncommitted"
   git -C "${repo}" diff --cached --quiet 2>/dev/null || work="${work} staged"
   [[ -n "$(git -C "${repo}" ls-files --others --exclude-standard 2>/dev/null)" ]] && work="${work} untracked"
-  [[ -n "$(git -C "${repo}" log --branches --not --remotes --oneline 2>/dev/null)" ]] && work="${work} unpushed-commits"
+  [[ -n "$(git -C "${repo}" ls-files --others --ignored --exclude-standard --directory --no-empty-directory 2>/dev/null)" ]] && work="${work} ignored-files"
+  [[ -n "$(git -C "${repo}" log HEAD --branches --tags --not --remotes --oneline 2>/dev/null)" ]] && work="${work} unpushed-commits"
   [[ -n "$(git -C "${repo}" stash list 2>/dev/null)" ]] && work="${work} stash"
+  (( $(git -C "${repo}" worktree list --porcelain 2>/dev/null | grep -c '^worktree ') > 1 )) && work="${work} linked-worktrees"
 
   if [[ -z "${work}" ]]; then
     (( removable++ ))
@@ -108,11 +110,11 @@ if (( checked_out > 0 )); then
   echo "Excluded from clone/fetch — these never update again."
 fi
 if (( removable > 0 )); then
-  echo "The remote holds everything a SAFE TO REMOVE clone has; delete it:"
+  echo "These clones have no detected local work or linked worktrees; delete them:"
   for repo in "${removable_paths[@]}"; do
     print -r -- "  rm -rf ${(q)repo}"
   done
 fi
 if (( checked_out > removable )); then
-  echo "A KEEP clone holds work its read-only remote never got; copy that out before deleting it."
+  echo "Inspect and preserve local files, commits, stashes or linked worktrees before deleting a KEEP clone."
 fi
