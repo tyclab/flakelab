@@ -104,10 +104,40 @@ contains "the summary counts checkouts, removable ones and remote-only" "${OUT}"
 contains "and says what the listing means"            "${OUT}" "Excluded from clone/fetch — these never update again."
 contains "a safe clone gets its delete command"        "${OUT}" "  rm -rf ${REPOS}/acme/old-archived"
 excludes "a kept clone gets none"                      "${OUT}" "rm -rf ${REPOS}/acme/doomed"
-contains "and is told its work exists only here"       "${OUT}" "A KEEP clone holds work its read-only remote never got"
+contains "and is told to inspect and preserve local work" "${OUT}" "Inspect and preserve local files, commits, stashes or linked worktrees"
+excludes "no claim that every local file is backed up" "${OUT}" "The remote holds everything"
 excludes "nothing suggests parking a clone elsewhere"  "${OUT}" ".stale-repos"
 contains "the query asks for subgroups and the full page" "$(calls)" "groups/acme/projects?include_subgroups=true&per_page=100"
 excludes "and not for membership"                      "$(calls)" "membership=true"
+
+print -r -- "local data outside the main worktree's ordinary status"
+for name in ignored detached tagged clean-linked dirty-linked; do
+  mkclone "local-work/${name}"
+  project "local-work/${name}" true
+done > "${FIXTURES}/local-work.ndjson"
+print -r -- "local-only.conf" > "${REPOS}/local-work/ignored/.git/info/exclude"
+print -r -- "fixture-only payload" > "${REPOS}/local-work/ignored/local-only.conf"
+git -C "${REPOS}/local-work/detached" checkout -q --detach
+print -r -- "unpublished detached work" >> "${REPOS}/local-work/detached/README"
+git -C "${REPOS}/local-work/detached" commit -qam detached
+git -C "${REPOS}/local-work/tagged" checkout -q --detach
+print -r -- "unpublished tagged work" >> "${REPOS}/local-work/tagged/README"
+git -C "${REPOS}/local-work/tagged" commit -qam tagged
+git -C "${REPOS}/local-work/tagged" tag local-only
+git -C "${REPOS}/local-work/tagged" checkout -q main
+git -C "${REPOS}/local-work/clean-linked" worktree add -q --detach "${BASE}/clean-linked" HEAD
+git -C "${REPOS}/local-work/dirty-linked" worktree add -q --detach "${BASE}/dirty-linked" HEAD
+print -r -- "uncommitted linked work" >> "${BASE}/dirty-linked/README"
+run --repos-dir "${REPOS}" --group local-work
+check "local-data report exits 0" "${RC}" "0"
+contains "ignored local data keeps its clone" "${OUT}" "KEEP — ignored-files  archived  ${REPOS}/local-work/ignored"
+contains "an unpublished detached HEAD keeps its clone" "${OUT}" "KEEP — unpushed-commits  archived  ${REPOS}/local-work/detached"
+contains "an unpublished tag-only commit keeps its clone" "${OUT}" "KEEP — unpushed-commits  archived  ${REPOS}/local-work/tagged"
+contains "a clean linked worktree keeps the shared git directory" "${OUT}" "KEEP — linked-worktrees  archived  ${REPOS}/local-work/clean-linked"
+contains "a dirty linked worktree also keeps the shared git directory" "${OUT}" "KEEP — linked-worktrees  archived  ${REPOS}/local-work/dirty-linked"
+excludes "none of these clones gets a delete command" "${OUT}" "rm -rf"
+excludes "none is called safe to remove" "${OUT}" "SAFE TO REMOVE"
+excludes "nothing reintroduces a graveyard" "${OUT}" ".stale-repos"
 
 print -r -- ""
 print -r -- "overlapping groups"
