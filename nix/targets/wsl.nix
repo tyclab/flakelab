@@ -38,9 +38,6 @@ in
     ];
   };
 
-  # Do not terminate a distro from in here: it wipes WSLInterop for every distro
-  # and only `wsl --shutdown` from Windows recovers it (known-issues.md).
-
   # Pinned to the release whose stateful defaults this system adopted.
   system.stateVersion = "25.11";
 }

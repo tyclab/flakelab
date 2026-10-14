@@ -19,16 +19,10 @@ Planned work: [`BACKLOG.md`](BACKLOG.md).
 Driving a Windows browser from inside WSL (Chrome DevTools across the WSL2 NAT):
 [`browser-debugging-from-wsl.md`](browser-debugging-from-wsl.md).
 
-> ⚠️ **Provisioning wipes host interop, and the stable channel has no
-> protection.** Building a NixOS distro removes `WSLInterop` for every distro in
-> the WSL2 VM (`binfmt_misc` is kernel-global); recovery is `wsl --shutdown` from
-> Windows. The upstream fix
-> ([#40621](https://github.com/microsoft/WSL/pull/40621)) reached the
-> **pre-release channel only, from 2.9.3 on** — no stable release through 2.7.12
-> carries it. Run `flakelab build-distro` / `flakelab test-provision` only from
-> an expendable session.
-> **[`known-issues.md`](known-issues.md) is the full account** — read it before
-> provisioning.
+> Run `flakelab build-distro` and `flakelab test-provision` in a disposable
+> session: they create and stop distros. WSL 3.0.3 includes upstream interop
+> protection, but the full provisioning repro has not been rerun here.
+> See [known-issues.md](known-issues.md) for the verified behavior and older releases.
 
 ## Process
 
@@ -92,9 +86,8 @@ generates the private overlay next door (`..\flakelab-config`), downloads the
 base image, imports the `flakelab` distro, applies the overlay twice and prints
 `wsl -d flakelab`. **No token, key or secret is needed** — the steps that want
 one defer and say so. `-Shutdown` pre-answers the `wsl --shutdown` the run
-offers after each rebuild (the rebuild wipes WSL interop VM-wide, a shutdown is
-the only heal, and it kills every WSL session on the machine); leave it off to
-be asked instead. The answers land in
+offers if its interop check fails after a rebuild. A shutdown kills every WSL
+session on the machine; leave the flag off to be asked instead. The answers land in
 `..\flakelab-config\files\config\user_data.yaml` — the same schema as
 [`files/config/user_data.example.yaml`](files/config/user_data.example.yaml),
 so everything optional (locale, aliases, env vars, MCP servers, plugins, extra
@@ -270,7 +263,7 @@ them all, and the table has the daily ones.
 | `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start          |
 | `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)                           |
 | `flakelab overlay-gen`    | write the private overlay from a config                                      |
-| `flakelab test-provision` | throwaway-distro smoke test (interop-wiping)                                 |
+| `flakelab test-provision` | throwaway-distro smoke test                                                  |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean

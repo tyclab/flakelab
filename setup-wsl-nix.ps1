@@ -1060,7 +1060,7 @@ function Show-InteropState([string]$when, [bool]$runningOnly = $false, [bool]$ad
     }
     if (-not $healthy) {
         if ($advisory) {
-            Write-Host '    Not blocking - the rebuild below wipes interop anyway. The heal is offered after the switch.' -ForegroundColor DarkGray
+            Write-Host '    Not blocking - interop is checked again after the switch, with recovery offered if needed.' -ForegroundColor DarkGray
         }
         else {
             Write-Host "    Recovery: wsl --shutdown from Windows, then re-enter the distro (/init re-registers the handler on VM boot)." -ForegroundColor Yellow
@@ -1328,7 +1328,7 @@ function Copy-OverlayFilesIntoDistro {
 }
 
 function Invoke-NixosRebuild([string]$why) {
-    Say "nixos-rebuild switch - $why (reloads systemd and WILL wipe WSL interop VM-wide)"
+    Say "nixos-rebuild switch - $why (interop is checked after the switch)"
     # A committed lock pins a moved checkout's NAR hash ("NAR hash mismatch"); only an UNTRACKED lock is dropped.
     $lockWin = Join-Path $OverlayWin 'flake.lock'
     # Initialized outside the Test-Path block: the cleanup reads it, and StrictMode throws on unset.
