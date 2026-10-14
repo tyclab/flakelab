@@ -81,7 +81,7 @@ if ${KEEP}; then
   _say yellow "Retained ${DISTRO_NAME} (--keep). Remove: wsl --unregister ${DISTRO_NAME}"
 else
   ${_WSL_BIN} --unregister "${DISTRO_NAME}" >/dev/null 2>&1 || true
-  # Unregistering a systemd test distro wipes WSLInterop fleet-wide, with no heal.
+  # Older WSL releases could lose sibling interop when the test distro stopped.
   interop_present || _say yellow \
     "⚠ WSLInterop wiped by test-distro shutdown — run 'wsl --shutdown' from a Windows terminal before the next interop-dependent command."
 fi

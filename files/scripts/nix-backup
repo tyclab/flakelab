@@ -328,10 +328,18 @@ check_state_root() {
     probe_roots+=("${STATE_ROOT:A}")
   fi
   local probe probe_root
+  local -a git_entries
   for probe_root in "${probe_roots[@]}"; do
     probe="${probe_root}"
     while [[ -n "${probe}" && "${probe}" != "/" ]]; do
-      if [[ -e "${probe}/.git" ]]; then
+      if [[ -e "${probe}/.git" || -L "${probe}/.git" ]]; then
+        git_entries=("${probe}"/.git/*(DN))
+        # Some tools create empty markers without initializing a repository.
+        if [[ -d "${probe}/.git" && ! -L "${probe}/.git" &&
+              -r "${probe}/.git" && -x "${probe}/.git" && ${#git_entries} -eq 0 ]]; then
+          probe="${probe:h}"
+          continue
+        fi
         log_error "State root ${STATE_ROOT} is inside a git checkout (${probe}/.git)."
         log_error "A synced directory must never hold a repository: point FLAKELAB_STATE_ROOT / flakelab.stateRoot at a plain folder."
         exit 1

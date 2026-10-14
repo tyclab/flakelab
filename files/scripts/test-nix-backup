@@ -742,7 +742,8 @@ exists   "the conflict copy is still there" "${FIX_STATE}/shell/.zsh_history_mer
 
 print -r -- "a state root inside a git checkout is refused"
 fixture state-git
-mkdir -p "${BASE}/state-git/checkout/.git" "${BASE}/state-git/checkout/state"
+mkdir -p "${BASE}/state-git/checkout/state"
+git -C "${BASE}/state-git/checkout" init -q
 STATE="${BASE}/state-git/checkout/state"
 rec 1000 0 "x" > "${FIX_HOME}/.zsh_history"
 
@@ -753,8 +754,8 @@ absent   "nothing was written there"                  "${STATE}/shell"
 
 print -r -- "a state root that is a symlink into a git checkout is refused too"
 fixture state-git-symlink
-mkdir -p "${BASE}/state-git-symlink/checkout/.git" \
-         "${BASE}/state-git-symlink/checkout/inner"
+mkdir -p "${BASE}/state-git-symlink/checkout/inner"
+git -C "${BASE}/state-git-symlink/checkout" init -q
 ln -s "${BASE}/state-git-symlink/checkout/inner" "${BASE}/state-git-symlink/state"
 STATE="${BASE}/state-git-symlink/state"
 rec 1000 0 "x" > "${FIX_HOME}/.zsh_history"
@@ -763,6 +764,37 @@ run_backup --force
 check    "the run fails"                              "${RC}" "1"
 contains "and says why"                               "${OUT}" "git checkout"
 absent   "nothing was written through the link"       "${BASE}/state-git-symlink/checkout/inner/shell"
+
+print -r -- "an empty tool-created .git marker does not block state backup"
+fixture state-git-empty
+mkdir -p "${BASE}/state-git-empty/checkout/.git" "${BASE}/state-git-empty/checkout/state"
+STATE="${BASE}/state-git-empty/checkout/state"
+rec 1000 0 "empty-marker-history" > "${FIX_HOME}/.zsh_history"
+run_backup --force
+check "the backup succeeds" "${RC}" "0"
+exists "state was written" "${STATE}/shell/.zsh_history_merged"
+
+print -r -- "other Git metadata remains protected"
+for kind in file nonempty hidden symlink unreadable; do
+  fixture "state-git-${kind}"
+  checkout="${BASE}/state-git-${kind}/checkout"
+  mkdir -p "${checkout}/state"
+  case "${kind}" in
+    file) git init -q --separate-git-dir "${checkout:h}/metadata" "${checkout}" ;;
+    nonempty) mkdir "${checkout}/.git"; : > "${checkout}/.git/config" ;;
+    hidden) mkdir "${checkout}/.git"; : > "${checkout}/.git/.metadata" ;;
+    symlink) mkdir "${checkout:h}/empty"; ln -s "${checkout:h}/empty" "${checkout}/.git" ;;
+    unreadable)
+      (( EUID != 0 )) || continue
+      mkdir "${checkout}/.git"; chmod 000 "${checkout}/.git"
+      ;;
+  esac
+  STATE="${checkout}/state"
+  run_backup --force
+  check "${kind} metadata is refused" "${RC}" "1"
+  absent "${kind} metadata received no state" "${STATE}/shell"
+  [[ "${kind}" != unreadable ]] || chmod 700 "${checkout}/.git"
+done
 
 print -r -- "an unmounted state root is reported, and the state categories are skipped"
 fixture state-unmounted

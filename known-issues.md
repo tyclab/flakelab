@@ -18,119 +18,37 @@ After updating, `systemctl status wsl-mnt-guard.service` should show
 WSL shutdown is needed to apply the workaround. The generated unit comes
 from [WSL's init](https://github.com/microsoft/WSL/blob/master/src/linux/init/init.cpp).
 
-## WSL interop break when provisioning the NixOS distro (unfixed on stable through 2.7.12)
+## WSL interop during provisioning
 
-**Provisioning wipes host interop.** A full `flakelab build-distro` run on **WSL
-2.7.10 / kernel 6.18** (imports a NixOS-WSL distro and applies the flake)
-completes `nixos-rebuild switch` **successfully**, and the host distro's
-`WSLInterop` handler is **gone** from `/proc/sys/fs/binfmt_misc/` afterward —
-`.exe` calls fail with `exec format error`. Recovery is `wsl --shutdown`.
+On WSL 2.7.10 and 2.7.11, provisioning or stopping a systemd distro could remove
+`WSLInterop` from the VM-wide `binfmt_misc` registry. Windows executables then
+failed with `exec format error`; recovery required `wsl --shutdown` from Windows.
+Those observations describe the old releases, not a verified failure on WSL 3.
 
-**Upstream status (corrected 2026-08-21).** PR
-[#40621](https://github.com/microsoft/WSL/pull/40621) (closing
-[#13885](https://github.com/microsoft/WSL/issues/13885)) bind-mounts
-`/proc/sys/fs/binfmt_misc/status` read-only, re-registers `WSLInterop` with
-the `F` flag from `mini_init`, and ships a regression test
-(`BinfmtSurvivesDistroTermination`) that matches our repro exactly. But it has
-**never shipped to a stable release**: it landed on `master` and reached only
-the **pre-release channel, from 2.9.3 on**. `release/2.7` carries no binfmt
-commits through 2.7.12 (2026-08-18) — the widely repeated "fixed in 2.7.x"
-claims (including the maintainer's closing comment on #13885) are wrong. Every
-stable-channel install therefore has **no protection at all**, and the
-2.7.10/2.7.11 observations below are the original, entirely-unfixed bug — an
-earlier revision of this section claimed a residual "per-entry" gap in the
-fix; that misread a compatibility note in the PR body.
+Stable [WSL 3.0.3](https://github.com/microsoft/WSL/releases/tag/3.0.3) includes
+[the registry protection](https://github.com/microsoft/WSL/pull/40621) first
+shipped in the 2.9.3 prerelease. Its
+[writable shadow status file](https://github.com/microsoft/WSL/pull/41808) also
+fixes the earlier `systemd-binfmt` read-only startup failure: writes succeed
+without flushing the shared registry, and WSL restores its interpreter entry.
+There is no need to disable `protectBinfmt` for that old failure.
 
-**Retirement path.** On a throwaway host: `wsl.exe --update --pre-release`
-(≥ 2.9.3), re-run the repro (provision the systemd NixOS distro, terminate
-it), then check a peer distro still has
-`/proc/sys/fs/binfmt_misc/WSLInterop` **with the `F` flag** (flag loss is the
-subtler regression). Field report
-[#41016](https://github.com/microsoft/WSL/issues/41016) suggests the fix
-holds. If it does, this hazard downgrades to "stable channel only". Known
-side effect on ≥ 2.9.3: every systemd distro's `systemd-binfmt.service` fails
-benignly at boot with `Read-only file system`
-([#41226](https://github.com/microsoft/WSL/issues/41226)); `wsl.conf`
-`[boot] protectBinfmt=false` is the escape hatch if the flush failure ever
-matters (e.g. `boot.binfmt` qemu-user setups).
+On 2026-10-14, this flake's running WSL 3.0.3 installation had the protected
+`WSLInterop` entry with `PF` flags and working Windows executable calls. The
+full sibling-distro provisioning and termination repro has not been rerun on
+that version. Keep provisioning tests in a disposable session until it has;
+`flakelab build-distro` and `flakelab test-provision` still perform distro
+lifecycle operations, and `wsl --shutdown` still ends every active WSL session.
 
-**Mechanism.** `binfmt_misc` is a single **kernel-global registry shared by every
-distro** in the WSL2 VM (confirmed by the `wsl-interop-bug` repro: `systemd=true`
-→ handler GONE after terminate; `systemd=false` → PRESENT). The Ansible-provisioned
-predecessor distro dodged it by running its test distro with `systemd=false`;
-**NixOS-WSL requires systemd**, so that escape hatch is closed here — there is no
-known way to provision the NixOS distro from a sibling without wiping host interop.
+A missing handler and a stale `WSL_INTEROP` socket are different failures.
+Check the handler and whether the inherited socket exists before assuming that
+Windows integration is unavailable. A successful command through a live socket
+proves interop works; it does not prove an authenticated browser connection.
+Do not manually replace WSL's VM-wide handler or disable its protection.
 
-**Symptom:** `exec format error` calling any Windows `.exe` (e.g. `wsl.exe`,
-`powershell.exe`) from the host distro after building/running the NixOS distro.
-
-**Practical guidance — treat every provisioning run as costing at least one
-interop wipe:**
-
-- Run `flakelab build-distro` / `flakelab test-provision` **only from an expendable
-  session** you can afford to `wsl --shutdown` — never from a session doing other
-  work. Both are host-side and are on PATH: their wrappers export
-  `FLAKELAB_REPO_ROOT` from `repoPath`, so neither derives its repo root from its
-  own location any more (`${0:A:h:h:h}` stays as the fallback for a plain
-  checkout, where `files/scripts/<name>` still works). Automation/agents must
-  **not** run these from a session that needs interop, and must **not** run
-  `wsl --shutdown` themselves.
-- `flakelab build-distro` still avoids `wsl --terminate` (so it does not add a
-  _second_ wipe), and derives the expected user/locale from
-  `nix/users/default.nix` for its checks.
-- `flakelab test-provision` hard-fails its precheck when interop is already broken.
-- **Recovery:** `wsl --shutdown` from a Windows terminal, then re-enter the host
-  distro (`/init` re-registers the handler on VM boot). The heal holds only until
-  the next stop of a systemd distro in the VM wipes the handler again, so it goes
-  after a run's last `wsl --terminate`, never before it, as `setup-wsl-nix.ps1`
-  orders it. The durable fix is upstream's
-  [#40621](https://github.com/microsoft/WSL/pull/40621), which only the
-  pre-release channel carries (see the retirement path above).
-- **There is no in-distro repair — do not attempt one.** Registering the handler
-  by hand puts unmanaged state into a VM-global registry that WSL rewrites on its
-  own schedule; `wsl --shutdown` re-creates the real entry, at the price of
-  killing every WSL session in the VM, which is why it is the recovery step and
-  not a routine one, and never an agent step.
-
-### The wipe is not bounded to a rebuild — trigger unidentified
-
-The "one wipe per provisioning run" framing above is the floor, not the scope.
-Observed 2026-08-12: the handler went away with **no `nixos-rebuild` and no
-distro termination in between** — a provisioning run's own interop check
-reported OK, and `.exe` calls were dead minutes later with nothing in the
-journal for that window but a user `systemd-tmpfiles` cleanup.
-
-Two candidate mechanisms are **ruled out for this distro**:
-
-- **A sibling systemd distro shutting down.** A stock Ubuntu WSL distro runs
-  **without** systemd unless `[boot] systemd=true` is set: measured on one,
-  `/proc/1/comm` is its own init rather than systemd. Unless another systemd
-  distro has been imported, the flakelab distro is the only one in the VM.
-- **`systemd-binfmt.service` flushing inherited registrations**
-  ([systemd#28126](https://github.com/systemd/systemd/issues/28126),
-  [ubuntu/WSL#334](https://github.com/ubuntu/WSL/issues/334)). This flake declares
-  no `boot.binfmt`, so that unit is not in the closure at all —
-  `systemctl status systemd-binfmt.service` returns "could not be found" and
-  `/etc/binfmt.d/nixos.conf` is empty, so it never runs here.
-
-The trigger is therefore **unidentified**. Do not read a cause into the two
-exclusions; they only narrow the search.
-
-**Untested candidate, not a fix:** NixOS-WSL's `wsl.interop.register` option
-(default `false`) declares the handler through `boot.binfmt.registrations`, which
-would make it system state this flake owns rather than something inherited.
-NixOS-WSL's own release notes warn that enabling it "may lead to WSLInterop
-breaking in other WSL distributions as a side effect", so it trades one VM-global
-failure mode for another and has not been tried here.
-
-Upstream: [microsoft/WSL#13885](https://github.com/microsoft/WSL/issues/13885)
-(closed by [#40621](https://github.com/microsoft/WSL/pull/40621) for the
-distro-**termination** wipe; the wipe documented here persists on 2.7.11.0, and
-the observation above shows it is not tied to a rebuild either). The issue still
-open is [#8203](https://github.com/microsoft/WSL/issues/8203) — `binfmt_misc`
-namespacing, which would isolate the registry per distro and close the whole
-class rather than one trigger. That is what `flakelab doctor` links when it reports a
-missing handler.
+The [mount-guard workaround](#wsl-mount-guard-fails-to-start-on-nixos-worked-around)
+remains necessary on 3.0.3: WSL still generates `ExecStart=/bin/true`, which this
+NixOS installation does not provide.
 
 ---
 

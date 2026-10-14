@@ -25,8 +25,8 @@ lint-nix:
 	git diff --exit-code
 	nix build --no-link .#checks.x86_64-linux.statix .#checks.x86_64-linux.deadnix
 
-# The offline suites. test-provision-nix is not here: it imports a distro, which
-# wipes host interop. All suites run, then the target fails if any of them did.
+# The offline suites. test-provision-nix imports a distro and needs a disposable
+# session. All suites run, then the target fails if any of them did.
 test:
 	@rc=0; for suite in test-clone-repos test-gh-repos test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-sessions test-notify test-web test-mcp test-nix-update test-nix-doctor test-switch-result test-wsl-init-cgroup test-xdg-open test-activate-hooks test-report-stale-repos test-nix-provision; do \
 		echo "==> $$suite"; \

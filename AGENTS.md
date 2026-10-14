@@ -121,12 +121,12 @@ the private overlay `flakelab-config`, which imports this flake via
     `wsl --shutdown` from Windows recovers it.
   - `setup-wsl-nix.cmd` / `setup-wsl-nix.ps1` (Windows): provision a distro on
     a machine — the fresh-PC path. Runs from a real Windows console because a
-    provision restarts distros and can wipe interop mid-run. Its in-distro
+    provision restarts distros; old WSL versions could also wipe interop mid-run. Its in-distro
     calls feature-detect `flakelab` and fall back to the old names, so it also
     drives a box provisioned before the CLI landed.
   - `flakelab build-distro` / `flakelab test-provision`: stand up a THROWAWAY
     distro (`NixDev`) to test the flake end to end. Not the update path for
-    this one. Interop-wiping — expendable sessions only.
+    this one. Distro lifecycle tests belong in expendable sessions only.
   - These, plus `provision` and `distro-name`, refuse with exit 2 on any
     `flakelab.target` other than `wsl` — a `proxmox-vm` box has no distro to
     provision, wipe interop for, or name — and drop out of `--help` and its
