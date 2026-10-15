@@ -3,9 +3,9 @@
 set -uo pipefail
 
 # Offline suite for notify (files/scripts/notify): a curl stand-in on PATH
-# that records the request, a secrets.env fixture, and the three input shapes
-# (a Claude Code Notification hook on stdin, Codex's --codex JSON, --message
-# by hand). No network.
+# that records each request, secrets.env and sops-render fixtures, the two
+# targets (ntfy, a JSON webhook) and the three input shapes (a Claude Code
+# Notification hook on stdin, Codex's --codex JSON, --message by hand). No network.
 #
 # Usage: files/scripts/test-notify
 
@@ -23,15 +23,17 @@ BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
 export HOME="${BASE}/home"
 mkdir -p "${HOME}/.config/tyc" "${BASE}/bin"
-unset NTFY_URL NTFY_TOKEN
+unset NTFY_URL NTFY_TOKEN NOTIFY_WEBHOOK_URL
 
-# The curl stand-in: records the URL, the headers and the body; answers
-# FAKE_CURL_CODE (200) or fails outright with FAKE_CURL_DOWN.
+# The curl stand-in: appends the URL, its own argv, the headers and the body;
+# answers FAKE_CURL_CODE (200), 500 for a URL containing FAKE_CURL_FAIL_ON, or
+# fails outright with FAKE_CURL_DOWN.
 cat > "${BASE}/bin/curl" <<'STUB'
 #!/usr/bin/env zsh
-typeset url="" hdrs="" body=""
+typeset url="" hdrs="" body="" args="$*"
 while (( $# > 0 )); do
   case $1 in
+    -K) url="$(<"$2")"; url="${${url#url = \"}%\"}"; shift ;;
     -H) if [[ "$2" == @* ]]; then hdrs+="$(<"${2#@}")"$'\n'; else hdrs+="$2"$'\n'; fi; shift ;;
     -o|-w|-m|-X) shift ;;
     --data-binary) [[ "$2" == @- ]] && body="$(cat)"; shift ;;
@@ -41,7 +43,8 @@ while (( $# > 0 )); do
   shift
 done
 [[ -n "${FAKE_CURL_DOWN:-}" ]] && exit 7
-{ print -r -- "URL ${url}"; print -rn -- "${hdrs}"; print -r -- "BODY ${body}"; } > "${FAKE_LOG}"
+{ print -r -- "URL ${url}"; print -r -- "ARGV ${args}"; print -rn -- "${hdrs}"; print -r -- "BODY ${body}"; } >> "${FAKE_LOG}"
+[[ -n "${FAKE_CURL_FAIL_ON:-}" && "${url}" == *"${FAKE_CURL_FAIL_ON}"* ]] && { print -n -- 500; exit 0 }
 print -n -- "${FAKE_CURL_CODE:-200}"
 STUB
 chmod +x "${BASE}/bin/curl"
@@ -49,12 +52,18 @@ export PATH="${BASE}/bin:${PATH}"
 export FAKE_LOG="${BASE}/request.log"
 SECRETS="${HOME}/.config/tyc/secrets.env"
 export FLAKELAB_SECRETS_ENV="${SECRETS}"
+# Never the box's own render: a missing fixture until the fallback cases write it.
+RENDER="${BASE}/tyc-env"
+export FLAKELAB_SECRETS_RENDER="${RENDER}"
 
 typeset -i RC=0
 OUT=""; ERR=""
-run()    { OUT="$("${CMD}" "$@" 2>"${BASE}/err" </dev/null)"; RC=$?; ERR="$(<"${BASE}/err")"; }
-run_in() { OUT="$(print -r -- "$1" | "${CMD}" "${@:2}" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+# Each run starts from an empty log, so a request a check left unread never counts twice.
+run()    { : > "${FAKE_LOG}"; OUT="$("${CMD}" "$@" 2>"${BASE}/err" </dev/null)"; RC=$?; ERR="$(<"${BASE}/err")"; }
+run_in() { : > "${FAKE_LOG}"; OUT="$(print -r -- "$1" | "${CMD}" "${@:2}" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
 logged() { cat "${FAKE_LOG}" 2>/dev/null; : > "${FAKE_LOG}" }
+# The JSON body of the webhook request in a log, by its first key.
+json_of() { print -r -- "$1" | sed -n 's/^BODY \({"title".*\)$/\1/p' }
 
 CLAUDE_HOOK='{"session_id": "11111111-2222-3333-4444-555555555555", "transcript_path": "/x", "cwd": "/home/u/git/work dir", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "notification_type": "permission_prompt"}'
 
@@ -66,11 +75,11 @@ contains "with the usage" "${OUT}" "Usage: flakelab notify"
 
 print -r -- "unconfigured"
 run_in "${CLAUDE_HOOK}"
-check "a hook run without NTFY_URL exits 0" "${RC}" "0"
-contains "and says why on stderr" "${ERR}" "NTFY_URL is not set"
+check "a hook run with neither target exits 0" "${RC}" "0"
+contains "and says why on stderr" "${ERR}" "NTFY_URL and NOTIFY_WEBHOOK_URL are not set"
 check "and sends nothing" "$(logged)" ""
 run --message hi
-check "a run by hand without NTFY_URL exits 2" "${RC}" "2"
+check "a run by hand with neither target exits 2" "${RC}" "2"
 
 print -r -- ""
 print -r -- "the endpoint from secrets.env, at use time"
@@ -79,6 +88,7 @@ run_in "${CLAUDE_HOOK}"
 check "a Claude Code permission prompt exits 0" "${RC}" "0"
 REQ="$(logged)"
 contains "posts to the topic" "${REQ}" "URL https://ntfy.example.com/agents"
+excludes "whose URL is not on curl's command line" "$(print -r -- "${REQ}" | grep '^ARGV')" "ntfy.example.com"
 contains "with the tool and the directory as the title" "${REQ}" "Title: claude - work dir"
 contains "a permission prompt is high priority" "${REQ}" "Priority: 4"
 contains "and tagged as a question" "${REQ}" "Tags: question"
@@ -139,18 +149,114 @@ print -r -- ""
 print -r -- "--dry-run and failures"
 run --dry-run --message 'would send' --title T
 check "--dry-run exits 0" "${RC}" "0"
-contains "and prints the request" "${OUT}" "POST https://ntfy.example.com/agents"
+contains "and prints the request" "${OUT}" "POST <NTFY_URL>"
+excludes "naming the topic URL, never printing it" "${OUT}" "ntfy.example.com"
 contains "with the token masked" "${OUT}" "Authorization: Bearer ****"
 excludes "and never the token itself" "${OUT}" "tk_secret"
 check "and sends nothing" "$(logged)" ""
 FAKE_CURL_CODE=500 run_in "${CLAUDE_HOOK}"
 check "a failed post from a hook exits 0" "${RC}" "0"
-contains "and says so" "${ERR}" "failed (HTTP 500)"
+contains "and says so" "${ERR}" "post to <NTFY_URL> failed (HTTP 500)"
+excludes "without the topic URL" "${ERR}" "ntfy.example.com"
 FAKE_CURL_CODE=500 run --message x
 check "a failed post by hand exits 1" "${RC}" "1"
 FAKE_CURL_DOWN=1 run --message x
 check "an unreachable endpoint by hand exits 1" "${RC}" "1"
 contains "as HTTP 000" "${ERR}" "HTTP 000"
+print -r -- ""
+print -r -- "a JSON webhook (Home Assistant's /api/webhook/<id>)"
+HOOK_URL="https://ha.example.com/api/webhook/wh-secret-id"
+: > "${SECRETS}"
+NOTIFY_WEBHOOK_URL="${HOOK_URL}" run_in "${CLAUDE_HOOK}"
+check "a webhook-only hook run exits 0" "${RC}" "0"
+REQ="$(logged)"
+check "one request" "$(print -r -- "${REQ}" | grep -c '^URL ')" "1"
+contains "to the webhook" "${REQ}" "URL ${HOOK_URL}"
+contains "as JSON" "${REQ}" "Content-Type: application/json"
+excludes "whose URL is not on curl's command line" "$(print -r -- "${REQ}" | grep '^ARGV')" "wh-secret-id"
+J="$(json_of "${REQ}")"
+check "the body is the four fields" "$(print -r -- "${J}" | jq -c 'keys')" '["message","priority","tags","title"]'
+check "the full title: its URL is the secret, no redaction" "$(print -r -- "${J}" | jq -r .title)" "claude - work dir"
+check "the full message" "$(print -r -- "${J}" | jq -r .message)" \
+  $'permission_prompt: Claude needs your permission to use Bash\nin /home/u/git/work dir\nflakelab sessions --attach 11111111-2222-3333-4444-555555555555'
+check "the priority is a number" "$(print -r -- "${J}" | jq -c .priority)" "4"
+check "the tags a list" "$(print -r -- "${J}" | jq -c .tags)" '["question"]'
+check "nothing on stdout or stderr" "${OUT}${ERR}" ""
+
+TRICKY=$'say "hi" \\ back\nsecond line\tümlaut ✓ 日本'
+NOTIFY_WEBHOOK_URL="${HOOK_URL}" run --title 'a "quoted" title' --message "${TRICKY}" --tags a,b
+check "by hand exits 0" "${RC}" "0"
+J="$(json_of "$(logged)")"
+check "quotes, newlines and unicode stay valid JSON" "$(print -r -- "${J}" | jq -r .message)" "${TRICKY}"
+check "and the title too" "$(print -r -- "${J}" | jq -r .title)" 'a "quoted" title'
+check "tags split on commas" "$(print -r -- "${J}" | jq -c .tags)" '["a","b"]'
+NOTIFY_WEBHOOK_URL="${HOOK_URL}" run --message x
+check "no tags is an empty list" "$(json_of "$(logged)" | jq -c .tags)" '[]'
+
+NOTIFY_WEBHOOK_URL="${HOOK_URL}" run --dry-run --message 'would send'
+check "--dry-run exits 0" "${RC}" "0"
+contains "naming the webhook" "${OUT}" "POST <NOTIFY_WEBHOOK_URL>"
+contains "with the JSON it would send" "${OUT}" '{"title":"flakelab","message":"would send","priority":3,"tags":[]}'
+excludes "never its URL" "${OUT}" "wh-secret-id"
+check "and sends nothing" "$(logged)" ""
+NOTIFY_WEBHOOK_URL="${HOOK_URL}" FAKE_CURL_CODE=500 run --message x
+check "a failed webhook post by hand exits 1" "${RC}" "1"
+contains "and says so" "${ERR}" "post to <NOTIFY_WEBHOOK_URL> failed (HTTP 500)"
+excludes "without its URL" "${ERR}" "wh-secret-id"
+NOTIFY_WEBHOOK_URL="${HOOK_URL}" FAKE_CURL_DOWN=1 run_in "${CLAUDE_HOOK}"
+check "an unreachable webhook from a hook exits 0" "${RC}" "0"
+contains "as HTTP 000" "${ERR}" "<NOTIFY_WEBHOOK_URL> failed (HTTP 000)"
+excludes "without its URL" "${ERR}" "wh-secret-id"
+
+print -r -- ""
+print -r -- "both targets"
+NTFY_URL="https://ntfy.example.com/agents" NTFY_TOKEN="" NOTIFY_WEBHOOK_URL="${HOOK_URL}" run_in "${CLAUDE_HOOK}"
+check "exits 0" "${RC}" "0"
+REQ="$(logged)"
+check "two requests" "$(print -r -- "${REQ}" | grep -c '^URL ')" "2"
+contains "one to the topic" "${REQ}" "URL https://ntfy.example.com/agents"
+contains "one to the webhook" "${REQ}" "URL ${HOOK_URL}"
+contains "the open topic still gets the tool and the event alone" "${REQ}" $'Title: claude\n'
+excludes "no session id goes to it" "$(print -r -- "${REQ}" | grep -v '^BODY {')" "11111111-2222"
+contains "while the webhook gets the session line" "$(json_of "${REQ}" | jq -r .message)" "flakelab sessions --attach 11111111"
+NTFY_URL="https://ntfy.example.com/agents" NOTIFY_WEBHOOK_URL="${HOOK_URL}" FAKE_CURL_FAIL_ON=ntfy.example.com run --message x
+check "one failed post by hand exits 1" "${RC}" "1"
+contains "the webhook was still posted" "$(logged)" "URL ${HOOK_URL}"
+check "the note names the one that failed" "${ERR}" "notify: post to <NTFY_URL> failed (HTTP 500)"
+NTFY_URL="https://ntfy.example.com/agents" NOTIFY_WEBHOOK_URL="${HOOK_URL}" FAKE_CURL_CODE=500 run_in "${CLAUDE_HOOK}"
+check "both failing from a hook exits 0" "${RC}" "0"
+check "with one line on stderr" "$(print -r -- "${ERR}" | wc -l)" "1"
+contains "naming both" "${ERR}" "<NTFY_URL> failed (HTTP 500); post to <NOTIFY_WEBHOOK_URL> failed (HTTP 500)"
+NTFY_URL="https://ntfy.example.com/agents" NOTIFY_WEBHOOK_URL="${HOOK_URL}" run --dry-run --message x
+contains "--dry-run prints both" "${OUT}" "POST <NTFY_URL>"
+contains "requests" "${OUT}" "POST <NOTIFY_WEBHOOK_URL>"
+
+print -r -- ""
+print -r -- "the sops render for what the environment lacks"
+print -rl -- 'NTFY_URL="https://ntfy.example.com/home"' 'NOTIFY_WEBHOOK_URL="https://home.example.com/api/webhook/home-id"' > "${SECRETS}"
+print -rn -- $'GITLAB_TOKEN="x"\r\nNTFY_URL="https://ntfy.example.com/render"\r\nNTFY_TOKEN="tk_render"\r\nNOTIFY_WEBHOOK_URL="https://ha.example.com/api/webhook/render-id"\r\n' > "${RENDER}"
+FLAKELAB_SECRETS_ENV="" run --message x
+check "exits 0" "${RC}" "0"
+REQ="$(logged)"
+contains "the render beats ~/.config/tyc/secrets.env" "${REQ}" "URL https://ha.example.com/api/webhook/render-id"$'\n'
+excludes "with its carriage returns stripped" "${REQ}" $'\r'
+excludes "and nothing from the file it beat" "${REQ}" "example.com/home"
+contains "the token too" "${REQ}" $'Authorization: Bearer tk_render\n'
+run --message x
+contains "FLAKELAB_SECRETS_ENV beats the render" "$(logged)" "URL https://home.example.com/api/webhook/home-id"
+# sopsKeyFiles.NOTIFY_WEBHOOK_URL = null: the shell exports the ntfy pair but never the webhook URL.
+NTFY_URL="https://ntfy.example.com/env" NTFY_TOKEN="" FLAKELAB_SECRETS_ENV="" run_in "${CLAUDE_HOOK}"
+REQ="$(logged)"
+contains "a webhook URL the env lacks comes from the render" "${REQ}" "URL https://ha.example.com/api/webhook/render-id"
+contains "while an ntfy topic in the env stays" "${REQ}" "URL https://ntfy.example.com/env"
+excludes "with the env's empty token, not the render's" "${REQ}" "tk_render"
+chmod 000 "${RENDER}"
+FLAKELAB_SECRETS_ENV="" run --message x
+check "an unreadable render falls back to ~/.config/tyc/secrets.env" \
+  "$(logged | grep '^URL ')" $'URL https://ntfy.example.com/home\nURL https://home.example.com/api/webhook/home-id'
+rm -f -- "${RENDER}"
+
+print -r -- ""
 run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus

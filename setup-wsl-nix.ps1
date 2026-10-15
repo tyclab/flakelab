@@ -505,7 +505,7 @@ $SecretKeyNames = @('GITLAB_TOKEN', 'GH_TOKEN', 'HASS_TOKEN',
     'PROXMOX_TOKEN_ID', 'PROXMOX_TOKEN_SECRET',
     'SYNOLOGY_PASSWORD', 'SYNOLOGY_DEVICE_ID',
     'GRAFANA_SERVICE_ACCOUNT_TOKEN',
-    'NTFY_URL', 'NTFY_TOKEN')
+    'NTFY_URL', 'NTFY_TOKEN', 'NOTIFY_WEBHOOK_URL')
 # Secret NAMES no longer harvested or asked for (the feature behind them is not
 # shipped), but still never allowed into the flake: a config that carries one
 # must not see it land in the world-readable store just because it left the list.

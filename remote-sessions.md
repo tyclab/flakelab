@@ -97,11 +97,17 @@ Mechanics worth knowing:
 
 `flakelab notify` is the push: a Claude Code `Notification` hook
 (`flakelab.notify.enable`, the types in `flakelab.notify.events`) and Codex's
-`notify` hook call it, and it posts to an ntfy topic the event, the directory
-and the one line that answers it (`flakelab sessions --attach <id>`,
-`codex resume <id>`). The topic URL and token are `NTFY_URL` and `NTFY_TOKEN`
-in `secrets.env`, read at use time; a hook run never fails its caller, so an
-unconfigured or offline box costs nothing. `--dry-run` shows the request,
+`notify` hook call it, and it posts the event, the directory and the one line
+that answers it (`flakelab sessions --attach <id>`, `codex resume <id>`) to an
+ntfy topic (`NTFY_URL`, `NTFY_TOKEN`), to a JSON webhook (`NOTIFY_WEBHOOK_URL`,
+a body of `title`, `message`, `priority` 1-5 and `tags`; Home Assistant's
+`/api/webhook/<id>` takes it as `trigger.json`), or to both. A target the
+environment lacks is read at use time from the sops render or `secrets.env`;
+the webhook URL is its credential, so it is never on a command line or in
+output, and `sopsKeyFiles.NOTIFY_WEBHOOK_URL = null;` keeps it out of the
+shell's environment too.
+A hook run never fails its caller, so an unconfigured or offline box costs
+nothing. `--dry-run` shows the request,
 `--title`/`--message` send one by hand. For Codex, the
 line in `~/.codex/config.toml` is:
 
@@ -250,7 +256,7 @@ Phases, each shippable on its own. All five are built.
 
 ```nix
 flakelab = {
-  notify.enable       = false;   # the Notification hook into ntfy; endpoint from secrets.env
+  notify.enable       = false;   # the Notification hook into ntfy/a webhook; endpoints from the secrets
   notify.events       = [ "permission_prompt" "idle_prompt" "agent_needs_input"
                           "quota_auto_resume_pending" "quota_auto_resume_fired" ];
   mosh.enable         = false;   # proxmox-vm only; mosh-server beside sshd

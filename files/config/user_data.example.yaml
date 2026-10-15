@@ -99,3 +99,4 @@ custom_env_vars:
   GRAFANA_SERVICE_ACCOUNT_TOKEN: '<your-grafana-service-account-token>'
   NTFY_URL: 'https://ntfy.example.com/agents' # the topic `flakelab notify` posts to
   NTFY_TOKEN: '<your-ntfy-access-token>'
+  NOTIFY_WEBHOOK_URL: 'https://ha.example.com/api/webhook/<your-webhook-id>' # a JSON webhook `flakelab notify` posts to
