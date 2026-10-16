@@ -2,9 +2,10 @@
 
 set -uo pipefail
 
-# notify: one ntfy push when an agent session waits on you (remote-sessions.md). NTFY_URL/NTFY_TOKEN come from the
-# env or, at use time, ~/.config/tyc/secrets.env. A hook run never fails its caller (exit 0, a line on stderr);
-# by hand: 2 unconfigured, 1 post failed. Titles are ASCII, ntfy's header rule.
+# notify: a push when an agent session waits on you (remote-sessions.md), to an ntfy topic (NTFY_URL, NTFY_TOKEN)
+# and a JSON webhook (NOTIFY_WEBHOOK_URL), whichever are set. One the env lacks comes, at use time, from the first
+# readable of $FLAKELAB_SECRETS_ENV, the sops render, ~/.config/tyc/secrets.env. A hook run never fails its caller
+# (exit 0, a line on stderr); by hand: 2 unconfigured, 1 a post failed. Titles are ASCII, ntfy's header rule.
 MODE=auto
 TITLE=""
 MESSAGE=""
@@ -12,7 +13,6 @@ PRIORITY=""
 TAGS=""
 DRY_RUN=false
 CODEX_JSON=""
-SECRETS="${FLAKELAB_SECRETS_ENV:-${HOME}/.config/tyc/secrets.env}"
 
 usage() {
   cat <<'USAGE'
@@ -21,9 +21,11 @@ Usage: flakelab notify                       (a Claude Code Notification hook: J
        flakelab notify --title T --message M [--priority 1-5] [--tags a,b]
        flakelab notify --dry-run ...         print the request, send nothing
 
-Posts to the ntfy topic NTFY_URL (NTFY_TOKEN for a protected one), from the
-environment or ~/.config/tyc/secrets.env at use time. A hook run exits 0
-whatever happens; by hand, 2 unconfigured, 1 when the post fails.
+Posts to the ntfy topic NTFY_URL (NTFY_TOKEN for a protected one) and the
+JSON webhook NOTIFY_WEBHOOK_URL (Home Assistant's /api/webhook/<id>), whichever
+are set. One the environment lacks is read at use time from the sops render
+/run/secrets/tyc-env or ~/.config/tyc/secrets.env. A hook run exits 0 whatever
+happens; by hand, 2 unconfigured, 1 when a post fails.
 USAGE
 }
 
@@ -46,12 +48,22 @@ done
 [[ -z "$PRIORITY" || "$PRIORITY" == <1-5> ]] || { print -ru2 -- "notify: --priority takes 1 to 5"; exit 2 }
 
 
-if [[ -z "${NTFY_URL:-}" && -r "$SECRETS" ]]; then
-  # Sourced in a subshell: only the two values come out.
-  eval "$( ( set -a; source "$SECRETS" >/dev/null 2>&1; print -r -- "NTFY_URL=${(qq)NTFY_URL:-}; NTFY_TOKEN=${(qq)NTFY_TOKEN:-}" ) 2>/dev/null )"
+# Per target: sopsKeyFiles keeps the webhook URL out of the env while the ntfy pair may be in it. The pair moves
+# together, so a topic from the env never gets the file's token.
+if [[ -z "${NTFY_URL:-}" || -z "${NOTIFY_WEBHOOK_URL:-}" ]]; then
+  for f in "${FLAKELAB_SECRETS_ENV:-}" "${FLAKELAB_SECRETS_RENDER:-/run/secrets/tyc-env}" "${HOME}/.config/tyc/secrets.env"; do
+    [[ -r "$f" ]] || continue
+    # Sourced in a subshell, CRs stripped (a CRLF render puts one in every value): only the three values come out.
+    eval "from=($( ( unset NTFY_URL NTFY_TOKEN NOTIFY_WEBHOOK_URL; set -a; source =(tr -d '\r' < "$f") >/dev/null 2>&1
+      print -r -- "${(qq)NTFY_URL:-} ${(qq)NTFY_TOKEN:-} ${(qq)NOTIFY_WEBHOOK_URL:-}" ) 2>/dev/null ))"
+    [[ -n "${NTFY_URL:-}" ]] || { NTFY_URL="${from[1]:-}"; NTFY_TOKEN="${from[2]:-}" }
+    [[ -n "${NOTIFY_WEBHOOK_URL:-}" ]] || NOTIFY_WEBHOOK_URL="${from[3]:-}"
+    break
+  done
 fi
 NTFY_URL="${NTFY_URL:-}"
 NTFY_TOKEN="${NTFY_TOKEN:-}"
+NOTIFY_WEBHOOK_URL="${NOTIFY_WEBHOOK_URL:-}"
 
 
 ascii() { print -rn -- "$1" | LC_ALL=C tr -c '[:print:]\n' '?' }
@@ -107,42 +119,68 @@ esac
 
 # A topic with no token is one anyone who guesses its name can read: a hook
 # tells it the tool and the event, never a path, a session id or what the
-# model said.
+# model said. The webhook's URL is its secret, so it gets them all.
+ntfy_title="$TITLE" ntfy_body="$MESSAGE"
 if $HOOK && [[ -z "$NTFY_TOKEN" ]]; then
-  TITLE="${TITLE%% - *}"
-  MESSAGE="${MESSAGE%%$'\n'*}"; MESSAGE="${MESSAGE%%: *}"
+  ntfy_title="${TITLE%% - *}"
+  ntfy_body="${MESSAGE%%$'\n'*}"; ntfy_body="${ntfy_body%%: *}"
 fi
 
 
-if [[ -z "$NTFY_URL" ]]; then
-  note "NTFY_URL is not set (put it in ~/.config/tyc/secrets.env); nothing sent"
+if [[ -z "$NTFY_URL" && -z "$NOTIFY_WEBHOOK_URL" ]]; then
+  note "NTFY_URL and NOTIFY_WEBHOOK_URL are not set (the sops render or ~/.config/tyc/secrets.env); nothing sent"
   $HOOK && exit 0 || exit 2
 fi
 
+# jq, so quotes, newlines and non-ASCII stay valid JSON; the message goes on stdin, not argv.
+[[ -n "$NOTIFY_WEBHOOK_URL" ]] && json="$(print -rn -- "$MESSAGE" | jq -cRs --arg t "$TITLE" --arg p "$PRIORITY" --arg g "$TAGS" \
+  '{title: $t, message: ., priority: ($p | tonumber), tags: ($g | split(",") | map(select(. != "")))}')"
+
+# Both URLs are credentials (a webhook id, an open topic's name), so neither is ever printed.
 if $DRY_RUN; then
-  print -r -- "POST ${NTFY_URL}"
-  print -r -- "Title: ${TITLE}"
-  print -r -- "Priority: ${PRIORITY}"
-  [[ -n "$TAGS" ]] && print -r -- "Tags: ${TAGS}"
-  [[ -n "$NTFY_TOKEN" ]] && print -r -- "Authorization: Bearer ****"
-  print -r -- ""
-  print -r -- "$MESSAGE"
+  if [[ -n "$NTFY_URL" ]]; then
+    print -r -- "POST <NTFY_URL>"
+    print -r -- "Title: ${ntfy_title}"
+    print -r -- "Priority: ${PRIORITY}"
+    [[ -n "$TAGS" ]] && print -r -- "Tags: ${TAGS}"
+    [[ -n "$NTFY_TOKEN" ]] && print -r -- "Authorization: Bearer ****"
+    print -r -- ""
+    print -r -- "$ntfy_body"
+  fi
+  if [[ -n "$NOTIFY_WEBHOOK_URL" ]]; then
+    [[ -n "$NTFY_URL" ]] && print -r -- ""
+    print -r -- "POST <NOTIFY_WEBHOOK_URL>"
+    print -r -- "Content-Type: application/json"
+    print -r -- ""
+    print -r -- "$json"
+  fi
   exit 0
 fi
 
-# Every header goes to curl in a private file (mktemp makes it 0600): the
-# token never sits on a command line, where /proc shows it to every user.
-HDRF="$(mktemp)" || { note "cannot make a temp file"; $HOOK && exit 0 || exit 1 }
-{
-  print -r -- "Title: ${TITLE}"
-  print -r -- "Priority: ${PRIORITY}"
-  [[ -n "$TAGS" ]] && print -r -- "Tags: ${TAGS}"
-  [[ -n "$NTFY_TOKEN" ]] && print -r -- "Authorization: Bearer ${NTFY_TOKEN}"
-} > "$HDRF"
-code="$(print -rn -- "$MESSAGE" | curl -sS -m 10 -o /dev/null -w '%{http_code}' -X POST -H @"$HDRF" --data-binary @- "$NTFY_URL" 2>/dev/null)" || code=000
-rm -f -- "$HDRF"
-if [[ "$code" == 2* ]]; then
-  exit 0
+# post VAR [curl args] < body. The URL reaches curl as a config file (=() makes
+# it 0600), never on a command line, where /proc shows it to every user.
+typeset -a failed=()
+post() {
+  local code
+  code="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -K =(print -r -- "url = \"${(P)1}\"") -X POST "${@:2}" --data-binary @- 2>/dev/null)" || code=000
+  [[ "$code" == 2* ]] || failed+=("post to <$1> failed (HTTP ${code})")
+}
+
+if [[ -n "$NTFY_URL" ]]; then
+  # Every header goes to curl in a private file (mktemp makes it 0600): the
+  # token never sits on a command line either.
+  HDRF="$(mktemp)" || { note "cannot make a temp file"; $HOOK && exit 0 || exit 1 }
+  {
+    print -r -- "Title: ${ntfy_title}"
+    print -r -- "Priority: ${PRIORITY}"
+    [[ -n "$TAGS" ]] && print -r -- "Tags: ${TAGS}"
+    [[ -n "$NTFY_TOKEN" ]] && print -r -- "Authorization: Bearer ${NTFY_TOKEN}"
+  } > "$HDRF"
+  print -rn -- "$ntfy_body" | post NTFY_URL -H @"$HDRF"
+  rm -f -- "$HDRF"
 fi
-note "post to ${NTFY_URL} failed (HTTP ${code})"
+[[ -n "$NOTIFY_WEBHOOK_URL" ]] && print -r -- "$json" | post NOTIFY_WEBHOOK_URL -H 'Content-Type: application/json'
+
+(( ${#failed} == 0 )) && exit 0
+note "${(j:; :)failed}"
 $HOOK && exit 0 || exit 1

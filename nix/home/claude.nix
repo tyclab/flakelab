@@ -136,7 +136,7 @@ let
 
   # The push when a session waits on you (remote-sessions.md, phase 3): a
   # Notification hook on the configured types runs `flakelab notify`, which
-  # reads the endpoint from secrets.env at use time. Owned by its command:
+  # reads the endpoints from the secrets at use time. Owned by its command:
   # the store path of this flake's `notify`, never a bare substring, so a
   # hook of the user's that merely runs something called notify-send stays.
   notifyHook = cfg.notify.enable;

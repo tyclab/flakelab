@@ -410,7 +410,7 @@ in
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Write a Claude Code Notification hook that runs `flakelab notify`, which posts the event, the directory and the `flakelab sessions --attach <id>` line to an ntfy topic. The topic URL and token come from ~/.config/tyc/secrets.env (NTFY_URL, NTFY_TOKEN) at use time, never from the store. Redundant with the Claude app's own push where Remote Control is on; it is for Codex (whose `notify` hook in ~/.codex/config.toml calls `flakelab notify --codex`) and for anyone without the app. Off, a hook this option wrote is removed again; a hand-added one is left alone.";
+        description = "Write a Claude Code Notification hook that runs `flakelab notify`, which posts the event, the directory and the `flakelab sessions --attach <id>` line to an ntfy topic (NTFY_URL, NTFY_TOKEN), a JSON webhook such as Home Assistant's /api/webhook/<id> (NOTIFY_WEBHOOK_URL), or both. A target the environment lacks is read at use time from the sops render /run/secrets/tyc-env or ~/.config/tyc/secrets.env, never from the store; with sopsSecretsFile, set sopsKeyFiles.NOTIFY_WEBHOOK_URL = null so the webhook URL, its credential, stays out of every process's environment. Redundant with the Claude app's own push where Remote Control is on; it is for Codex (whose `notify` hook in ~/.codex/config.toml calls `flakelab notify --codex`) and for anyone without the app. Off, a hook this option wrote is removed again; a hand-added one is left alone.";
       };
       events = mkOption {
         type = types.listOf types.str;

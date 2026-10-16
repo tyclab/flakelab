@@ -178,7 +178,7 @@ rec {
     exec ${zsh} ${s}/flakelab-menu "$@"
   '';
 
-  # The endpoint is read from secrets.env at use time; nothing is baked in.
+  # The endpoints are read from the secrets at use time; nothing is baked in.
   notify = pkgs.writeShellScriptBin "notify" ''
     export PATH=${
       bin [

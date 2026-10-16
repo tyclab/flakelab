@@ -62,11 +62,14 @@ the private overlay `flakelab-config`, which imports this flake via
     and `tycswap switch`. The store is `~/.local/share/tycswap`; nothing reads
     the retired engine's `~/.local/state/flakelab/accounts` except the doctor's
     warning (README, "Migrating from flakelab accounts").
-  - `notify` (new, `notify`): a push to an ntfy topic when a session waits
-    on you; the Claude Code `Notification` hook (`flakelab.notify.enable`)
-    and Codex's `notify` hook call it, `--message` sends one by hand.
-    `NTFY_URL`/`NTFY_TOKEN` from `secrets.env` at use time; a hook run never
-    fails its caller. Remote reach: `flakelab.mosh.enable` on the VM,
+  - `notify` (new, `notify`): a push to an ntfy topic, a JSON webhook, or
+    both, when a session waits on you; the Claude Code `Notification` hook
+    (`flakelab.notify.enable`) and Codex's `notify` hook call it, `--message`
+    sends one by hand. `NTFY_URL`/`NTFY_TOKEN` (a pair) and
+    `NOTIFY_WEBHOOK_URL` (a secret: never on a command line or in output,
+    `sopsKeyFiles.NOTIFY_WEBHOOK_URL = null` keeps it out of the env) each
+    from the env, else at use time from the sops render or `secrets.env`; a
+    hook run never fails its caller. Remote reach: `flakelab.mosh.enable` on the VM,
     `files/config/windows/enable-openssh-host.ps1` for a WSL host, both over
     WireGuard (`remote-sessions.md`).
   - `web` (new, `web`): the dashboard in a browser (`lib/web.py`, python3

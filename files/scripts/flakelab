@@ -101,7 +101,7 @@ _desc=(
   doctor          'diagnose this distro and print what to run next'
   backup          'back up home-dir data to the backup root (--restore to read it back)'
   sessions        'the running agent sessions; --start/--attach host one in tmux, --save before a restart, --open after'
-  notify          'a push (ntfy) when a session waits on you; the Claude and Codex hooks call it'
+  notify          'a push (ntfy, a JSON webhook) when a session waits on you; the Claude and Codex hooks call it'
   web             'the dashboard in a browser: the tycswap logins, sessions, switch and start; token-protected'
   mcp             'MCP accounts shared by Claude and Codex: connect, login, status, import-codex'
   clone           'discover and clone the configured GitLab groups and repos'

@@ -259,7 +259,7 @@ them all, and the table has the daily ones.
 | `flakelab backup`         | payload + optional shared state root                                         |
 | `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux                |
 | `tycswap`                 | the account switcher: stored logins per agent CLI; a switch without a logout |
-| `flakelab notify`         | a push (ntfy) when a session waits on you; the hooks call it                 |
+| `flakelab notify`         | a push (ntfy, a JSON webhook) when a session waits on you; the hooks call it |
 | `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start          |
 | `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)                           |
 | `flakelab overlay-gen`    | write the private overlay from a config                                      |
@@ -452,6 +452,7 @@ by `flakelab backup --restore`, which `provision` runs for you.
 | `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki) |
 | `NTFY_URL`                      | `flakelab notify` (the topic it posts to)        |
 | `NTFY_TOKEN`                    | `flakelab notify` (a protected topic)            |
+| `NOTIFY_WEBHOOK_URL`            | `flakelab notify` (a JSON webhook it posts to)   |
 
 The non-secret half of each pair (`HASS_URL`, `PROXMOX_API_URL`, …) lives in
 `sessionVariables`; the MCP servers inherit both halves from the shell, so a
@@ -592,9 +593,12 @@ A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`) runs it in a window of the `agents` tmux session
 and attaches; close the tab, drop the SSH connection, and
 `flakelab sessions --attach` from any terminal joins it again. The table's
-`HOST` column names the window. `notify.enable = true;` sends a push (ntfy,
-endpoint in `secrets.env`) when a session waits on a permission or a prompt,
-with the line that answers it; `mosh.enable = true;` puts mosh beside the
+`HOST` column names the window. `notify.enable = true;` sends a push (an ntfy
+topic, a JSON webhook such as Home Assistant's `/api/webhook/<id>`, or both;
+endpoints in the secrets, and `sopsKeyFiles.NOTIFY_WEBHOOK_URL = null;` keeps
+the webhook URL out of every process's environment, since notify reads it from
+the render) when a session waits on a permission or a prompt, with the line
+that answers it; `mosh.enable = true;` puts mosh beside the
 VM's sshd, and `files/config/windows/enable-openssh-host.ps1` opens a WSL
 distro's Windows host on the WireGuard subnet. `web.enable = true;` with
 `web.bind` set to the box's WireGuard address serves a dashboard (the logins

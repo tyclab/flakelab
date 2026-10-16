@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `flakelab.mcpBrowsers.headless`: a `playwright-headless` MCP server in Claude and Codex on any target.
 - `flakelab.mcpShared` and `flakelab mcp` (`connect`, `login`, `status`, `import-codex`): OAuth MCP accounts shared by Claude and Codex, one credential host; a refusal (unknown or `login-required` account, wrong host, an overwriting `import-codex`) exits 2.
 - `flakelab notify`: an ntfy push when an agent session waits (`NTFY_URL`, `NTFY_TOKEN`); `flakelab.notify.enable` and `flakelab.notify.events` write the hook; a bare run at a terminal prints its usage.
+- `flakelab notify` also posts to a JSON webhook, `NOTIFY_WEBHOOK_URL` (Home Assistant's `/api/webhook/<id>`), beside or instead of ntfy: `{"title", "message", "priority", "tags"}` with the full message. Neither URL is put on a command line, in `--dry-run` output or in an error. A target missing from the environment is read from the sops render `/run/secrets/tyc-env` before `~/.config/tyc/secrets.env`, so `sopsKeyFiles.NOTIFY_WEBHOOK_URL = null` keeps the webhook URL out of the shell.
 - `flakelab.mosh.enable` (default `false`, proxmox-vm only) and `files/config/windows/enable-openssh-host.ps1` for OpenSSH Server on a WSL host.
 - `flakelab sessions --start <tool> [dir]` and `--attach [id|window]`: sessions hosted in the `agents` tmux session; `tmux` joins the package set.
 - `flakelab sessions` lists Codex sessions and sessions started by `tycswap run`; saved lines carry a tool column.
