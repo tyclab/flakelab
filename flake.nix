@@ -97,7 +97,7 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-VpYYdBK7aKA9YCsVyfaVrvqXDhJJwhgjwfMEhIo6poE=";
+            hash = "sha256-BmvkMutGmegfp+i9arOQbPLXkkOSs9NME45mha1485c=";
           };
           vendorHash = "sha256-ltzD3JGwaMseO0RmUYVxA3pijVoSvp4gl2JJYyZPEPY=";
           subPackages = [ "cmd/tycswap" ];
