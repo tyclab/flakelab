@@ -88,7 +88,7 @@
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
-          version = "0.7.20";
+          version = "0.7.21";
         in
         pkgs.buildGo127Module {
           pname = "tycswap";
@@ -97,7 +97,7 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-QvNrOQbOYaMowAdzT1o9n7P4UMLOklrbks3+OLc6nKQ=";
+            hash = "sha256-+/LkhnefP7g3yW83q0eNOrnp5xGvWuF04Jp9KfpZCgE=";
           };
           vendorHash = "sha256-ltzD3JGwaMseO0RmUYVxA3pijVoSvp4gl2JJYyZPEPY=";
           subPackages = [ "cmd/tycswap" ];
