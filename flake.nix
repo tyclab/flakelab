@@ -1593,6 +1593,10 @@
               "$k/config:$k/a.yaml:$k/b.yaml" "unset"
             expect "$(KUBECONFIG="/own:$k/a.yaml" zsh -fc '. ./block.zsh; print -r -- $KUBECONFIG')" \
               "/own:$k/a.yaml:$k/b.yaml" "an existing value is kept and extended"
+            expect "$(KUBECONFIG= zsh -fc '. ./block.zsh; print -r -- $KUBECONFIG')" \
+              "$k/config:$k/a.yaml:$k/b.yaml" "an empty value counts as unset"
+            expect "$(env -u KUBECONFIG zsh -fc '. ./block.zsh; print -r -- ''${+f}')" \
+              "0" "the loop variable does not leak"
             expect "$(env -u KUBECONFIG zsh -fc '. ./block.zsh; . ./block.zsh; print -r -- $KUBECONFIG')" \
               "$k/config:$k/a.yaml:$k/b.yaml" "a nested shell adds nothing"
             rm "$k"/*.yaml

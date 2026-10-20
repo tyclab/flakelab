@@ -82,7 +82,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
-- An interactive zsh keeps the `KUBECONFIG` it inherits and appends every `~/.kube/*.yaml` to it, each path once, starting from `~/.kube/config` only when none is set. It replaced the variable outright, so a `sessionVariables.KUBECONFIG` from the overlay was lost in every interactive shell, and each run left a trailing `:`.
+- An interactive zsh keeps the `KUBECONFIG` it inherits and appends each `~/.kube/*.yaml` it does not already list, starting from `~/.kube/config` only when none is set. It replaced the variable outright, so a `sessionVariables.KUBECONFIG` from the overlay was lost in every interactive shell, and each run left a trailing `:`.
 
 - Backups accept an empty `.git` marker created by workspace tools. Actual repositories, Git files, symlinks and unreadable metadata still prevent shared-state writes.
 
