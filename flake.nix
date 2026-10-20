@@ -1570,6 +1570,37 @@
               touch $out
             '';
 
+        # The KUBECONFIG block of the rendered ~/.zshrc, run as written: it extends an
+        # existing value instead of replacing it, and never lists a path twice.
+        kubeconfig-env =
+          let
+            sys = self.nixosConfigurations.default.config;
+            zshrc = sys.home-manager.users.${sys.flakelab.username}.home.file."./.zshrc".text;
+          in
+          pkgs.runCommandLocal "flakelab-check-kubeconfig-env" { nativeBuildInputs = [ pkgs.zsh ]; } ''
+            set -eu
+            printf '%s' ${nixpkgs.lib.escapeShellArg zshrc} > zshrc
+            sed -n '/^# Every ~\/.kube\/\*.yaml/,/^}$/p' zshrc > block.zsh
+            grep -q 'export KUBECONFIG' block.zsh
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME/.kube"
+            : > "$HOME/.kube/a.yaml"; : > "$HOME/.kube/b.yaml"
+            k=$HOME/.kube
+            expect() {
+              if [ "$1" != "$2" ]; then echo "$3: got '$1', want '$2'" >&2; exit 1; fi
+            }
+            expect "$(env -u KUBECONFIG zsh -fc '. ./block.zsh; print -r -- $KUBECONFIG')" \
+              "$k/config:$k/a.yaml:$k/b.yaml" "unset"
+            expect "$(KUBECONFIG="/own:$k/a.yaml" zsh -fc '. ./block.zsh; print -r -- $KUBECONFIG')" \
+              "/own:$k/a.yaml:$k/b.yaml" "an existing value is kept and extended"
+            expect "$(env -u KUBECONFIG zsh -fc '. ./block.zsh; . ./block.zsh; print -r -- $KUBECONFIG')" \
+              "$k/config:$k/a.yaml:$k/b.yaml" "a nested shell adds nothing"
+            rm "$k"/*.yaml
+            expect "$(env -u KUBECONFIG zsh -fc '. ./block.zsh; print -r -- $KUBECONFIG')" \
+              "$k/config" "no yaml files"
+            touch "$out"
+          '';
+
         # `gh auth login` and `glab auth login` cannot write their credential helper
         # into a store link, so git-ssh.nix declares it. Read back through git, because
         # the shape is the point: the empty value has to come first or it resets the
