@@ -82,6 +82,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- An interactive zsh keeps the `KUBECONFIG` it inherits and appends each `~/.kube/*.yaml` it does not already list, starting from `~/.kube/config` only when none is set. It replaced the variable outright, so a `sessionVariables.KUBECONFIG` from the overlay was lost in every interactive shell, and each run left a trailing `:`.
+
 - Backups accept an empty `.git` marker created by workspace tools. Actual repositories, Git files, symlinks and unreadable metadata still prevent shared-state writes.
 
 - On WSL, `flakelab-state-sync` and `flakelab-backup` no longer depend on Windows interop to learn the distro name. A systemd unit has no `WSL_DISTRO_NAME`, so both asked `wsl.exe`, which hangs on a unit's dead interop socket until its timeout, and both failed on every run. Every interactive shell now records the name under `~/.local/state/flakelab/distro-name`, and `flakelab distro-name` reads that before asking Windows.

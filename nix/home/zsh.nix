@@ -164,10 +164,15 @@ in
         unset _key _fp _loaded
       fi
 
-      export KUBECONFIG="$HOME/.kube/config:"
-      for file in $HOME/.kube/*.yaml(N); do
-        export KUBECONFIG="$KUBECONFIG$file:"
-      done
+      # Every ~/.kube/*.yaml after an existing KUBECONFIG (sessionVariables keep theirs),
+      # else after ~/.kube/config; each path once, so a nested shell adds nothing.
+      () {
+        local kc="''${KUBECONFIG:-$HOME/.kube/config}" f
+        for f in $HOME/.kube/*.yaml(N); do
+          [[ ":$kc:" == *":$f:"* ]] || kc="$kc:$f"
+        done
+        export KUBECONFIG="$kc"
+      }
 
       # Prompt: [exit-code] time user git cwd / %#
       setopt PROMPT_SUBST
