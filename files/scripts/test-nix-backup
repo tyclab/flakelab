@@ -3460,6 +3460,18 @@ contains "each removal is reported"                    "${OUT}" "Removed from ba
 is_file  "a kubeconfig still at home stays"            "${GK}/kubeconfig_keep.yaml"
 is_file  "a file no glob covers stays"                 "${GK}/config"
 is_file  "the shared ssh keys stay: another box may own them" "${GS}/id_gone"
+print -r -- "linked" > "${BASE}/glob-prune/link-target"
+ln -s "${BASE}/glob-prune/link-target" "${FIX_HOME}/.kube/kubeconfig_link.yaml"
+run_backup --force
+is_file  "a linked kubeconfig is backed up" "${GK}/kubeconfig_link.yaml"
+rm -- "${BASE}/glob-prune/link-target"
+run_backup --force
+is_file  "its target gone (not mounted), the backup keeps the copy" "${GK}/kubeconfig_link.yaml"
+# The payload may sit on NTFS, where kubeconfig_Prod.yaml and kubeconfig_prod.yaml are one file.
+print -r -- "renamed" > "${GK}/kubeconfig_Case.yaml"
+print -r -- "renamed" > "${FIX_HOME}/.kube/kubeconfig_case.yaml"
+run_backup --force
+is_file  "a name that differs only in case keeps its copy" "${GK}/kubeconfig_Case.yaml"
 rm -rf -- "${FIX_HOME}/.kube"
 run_backup --force
 is_file  "no ~/.kube at all removes nothing (a box not restored yet)" "${GK}/kubeconfig_keep.yaml"

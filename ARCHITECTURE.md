@@ -383,7 +383,7 @@ inside the synced folder.
 The restore is additive: it no longer deletes local files the backup does not
 have. The backup mirrors a box's own categories instead: a file deleted at home,
 in a backed-up directory or matched by a glob such as `~/.kube/kubeconfig_*`,
-leaves the payload on the next run (a dry run names it), while `shared/ssh`, which
+leaves the payload on the next run (a dry run names a globbed one), while `shared/ssh`, which
 several boxes write into, stays additive. Rollback snapshots (`snapshots/` beside the payload) cover the payload
 only; the state root is not snapshotted, because every write into it is additive
 or a union, and the sync client's own version history is the rollback there.

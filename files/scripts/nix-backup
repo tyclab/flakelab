@@ -858,9 +858,18 @@ backup_glob() {
   fi
 
   { ${purge} && [[ -d "${src_dir}" ]] } || return 0
-  local old
+  prune_glob "${src_dir}" "${pattern}" "${dst_dir}"
+}
+
+# A name still at home keeps its copy, matched by directory listing (a dangling link
+# whose target is not mounted counts) and without case: the payload may sit on NTFS.
+prune_glob() {
+  setopt local_options extended_glob
+  local src_dir="$1" pattern="$2" dst_dir="$3" old
+  local -a here
   for old in ${dst_dir}/${~pattern}(N.); do
-    [[ -e "${src_dir}/${old:t}" ]] && continue
+    here=(${src_dir}/(#i)${(b)old:t}(N))
+    (( ${#here} )) && continue
     if ${DRY_RUN}; then
       log_dry "remove ${old} (gone from ${src_dir})"
     elif rm -f -- "${old}"; then
