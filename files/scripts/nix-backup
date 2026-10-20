@@ -836,10 +836,14 @@ backup_dir() {
   return 0
 }
 
+# $4 = purge, as for backup_dir: a match deleted at home leaves the backup too, or a
+# restore brings it back. Skipped when the source directory itself is missing (a box
+# not restored yet), and false for a destination several machines write into.
 backup_glob() {
   local src_dir="$1"
   local pattern="$2"
   local dst_dir="$3"
+  local purge="${4:-true}"
 
   ensure_dir "${dst_dir}"
 
@@ -852,6 +856,28 @@ backup_glob() {
   if ! ${found}; then
     log_warn "No files matching '${pattern}' in ${src_dir}"
   fi
+
+  { ${purge} && [[ -d "${src_dir}" ]] } || return 0
+  prune_glob "${src_dir}" "${pattern}" "${dst_dir}"
+}
+
+# A name still at home keeps its copy, matched by directory listing (a dangling link
+# whose target is not mounted counts) and without case: the payload may sit on NTFS.
+prune_glob() {
+  setopt local_options extended_glob
+  local src_dir="$1" pattern="$2" dst_dir="$3" old
+  local -a here
+  for old in ${dst_dir}/${~pattern}(N.); do
+    here=(${src_dir}/(#i)${(b)old:t}(N))
+    (( ${#here} )) && continue
+    if ${DRY_RUN}; then
+      log_dry "remove ${old} (gone from ${src_dir})"
+    elif rm -f -- "${old}"; then
+      log_ok "Removed from backup, gone from source: ${old}"
+    else
+      record_failure "Cannot remove from backup: ${old}"
+    fi
+  done
 }
 
 # $3 = local_wins: activation rewrites the destination on this box, so the source
@@ -1276,7 +1302,8 @@ do_backup() {
   log_info "--- SSH keys and config ---"
   # Private keys: 700 like secrets; the files' modes are re-derived on restore.
   ensure_private_dir "${BACKUP_SSH}"
-  backup_glob "${HOME_DIR}/.ssh" "id_*" "${BACKUP_SSH}"
+  # Shared between boxes: another machine's keys must survive this one's run.
+  backup_glob "${HOME_DIR}/.ssh" "id_*" "${BACKUP_SSH}" false
   backup_file "${HOME_DIR}/.ssh/config" "${BACKUP_SSH_ROOT}/config"
 
   log_info "--- Git configuration ---"

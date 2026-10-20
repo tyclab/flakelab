@@ -3435,6 +3435,47 @@ has_match "the local branch is parked on this box" "${PARK_CX}" "rollout-a.*-Tes
 contains  "the parked copy is the local branch"  "$(cat "${PARK_CX}"/rollout-a.*.jsonl)" "t2-here"
 excludes  "no Claude reopen hint for a Codex session" "${OUT}" "--fork-session"
 
+print -r -- "a globbed file deleted at home leaves the per-box backup too"
+fixture glob-prune
+mkdir -p "${FIX_HOME}/.kube" "${FIX_HOME}/.ssh"
+print -r -- "apiVersion: v1" > "${FIX_HOME}/.kube/config"
+print -r -- "keep"           > "${FIX_HOME}/.kube/kubeconfig_keep.yaml"
+print -r -- "gone"           > "${FIX_HOME}/.kube/kubeconfig_gone.yaml"
+print -r -- "gone"           > "${FIX_HOME}/.kube/cert-gone.pem"
+print -r -- "PRIVATE"        > "${FIX_HOME}/.ssh/id_gone"
+run_backup --force
+GK="${FIX_ROOT}/instances/TestDistro/kube"
+GS="${FIX_ROOT}/shared/ssh/keys"
+is_file "the first run backs the kubeconfig up" "${GK}/kubeconfig_gone.yaml"
+is_file "and the key"                           "${GS}/id_gone"
+rm -- "${FIX_HOME}/.kube/kubeconfig_gone.yaml" "${FIX_HOME}/.kube/cert-gone.pem" "${FIX_HOME}/.ssh/id_gone"
+run_backup --dry-run
+contains "a dry run names the removal" "${OUT}" "remove ${GK}/kubeconfig_gone.yaml"
+is_file  "and removes nothing"          "${GK}/kubeconfig_gone.yaml"
+run_backup --force
+check    "the run exits clean"                         "${RC}" "0"
+absent   "the deleted kubeconfig leaves the backup"    "${GK}/kubeconfig_gone.yaml"
+absent   "so does its certificate"                     "${GK}/cert-gone.pem"
+contains "each removal is reported"                    "${OUT}" "Removed from backup, gone from source: ${GK}/cert-gone.pem"
+is_file  "a kubeconfig still at home stays"            "${GK}/kubeconfig_keep.yaml"
+is_file  "a file no glob covers stays"                 "${GK}/config"
+is_file  "the shared ssh keys stay: another box may own them" "${GS}/id_gone"
+print -r -- "linked" > "${BASE}/glob-prune/link-target"
+ln -s "${BASE}/glob-prune/link-target" "${FIX_HOME}/.kube/kubeconfig_link.yaml"
+run_backup --force
+is_file  "a linked kubeconfig is backed up" "${GK}/kubeconfig_link.yaml"
+rm -- "${BASE}/glob-prune/link-target"
+run_backup --force
+is_file  "its target gone (not mounted), the backup keeps the copy" "${GK}/kubeconfig_link.yaml"
+# The payload may sit on NTFS, where kubeconfig_Prod.yaml and kubeconfig_prod.yaml are one file.
+print -r -- "renamed" > "${GK}/kubeconfig_Case.yaml"
+print -r -- "renamed" > "${FIX_HOME}/.kube/kubeconfig_case.yaml"
+run_backup --force
+is_file  "a name that differs only in case keeps its copy" "${GK}/kubeconfig_Case.yaml"
+rm -rf -- "${FIX_HOME}/.kube"
+run_backup --force
+is_file  "no ~/.kube at all removes nothing (a box not restored yet)" "${GK}/kubeconfig_keep.yaml"
+
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

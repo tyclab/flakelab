@@ -82,6 +82,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab backup` drops a globbed file from the payload once it is deleted at home (`~/.kube/kubeconfig_*`, `cert-*`, `ca-*`, `~/.config/glab-cli`, `~/.config/helm`), as directories already did: the copies stayed for good, so a restore or a migration brought deleted kubeconfigs and their client certificates back. `--dry-run` names each removal; the shared `ssh/keys` stays additive, a missing source directory removes nothing, and a name still at home keeps its copy even as a link whose target is not mounted or spelled in another case (the payload may sit on NTFS).
+
 - An interactive zsh keeps the `KUBECONFIG` it inherits and appends each `~/.kube/*.yaml` it does not already list, starting from `~/.kube/config` only when none is set. It replaced the variable outright, so a `sessionVariables.KUBECONFIG` from the overlay was lost in every interactive shell, and each run left a trailing `:`.
 
 - Backups accept an empty `.git` marker created by workspace tools. Actual repositories, Git files, symlinks and unreadable metadata still prevent shared-state writes.
