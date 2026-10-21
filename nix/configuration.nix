@@ -24,7 +24,19 @@ in
     "en_US.UTF-8/UTF-8"
   ];
 
-  virtualisation.docker.enable = true;
+  virtualisation.docker = {
+    enable = true;
+    # Unused images, stopped containers and build cache a week old; volumes stay.
+    autoPrune = {
+      enable = config.flakelab.pruneSchedule != null;
+      dates = lib.mkIf (config.flakelab.pruneSchedule != null) config.flakelab.pruneSchedule;
+      flags = [
+        "--all"
+        "--filter"
+        "until=168h"
+      ];
+    };
+  };
   users.users.${config.flakelab.username} = {
     extraGroups = [ "docker" ];
     # Home Manager writes ~/.zshrc but does not change the login shell, so without

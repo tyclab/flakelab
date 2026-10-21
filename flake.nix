@@ -1605,6 +1605,32 @@
             touch "$out"
           '';
 
+        # flakelab-prune keeps the release `current` names, absolute or relative, and
+        # leaves a package whose link dangles alone.
+        prune =
+          let
+            sys = self.nixosConfigurations.default.config;
+            svc = sys.home-manager.users.${sys.flakelab.username}.systemd.user.services.flakelab-prune;
+            prune = builtins.head svc.Service.ExecStart;
+          in
+          pkgs.runCommandLocal "flakelab-check-prune" { } ''
+            set -eu
+            export HOME="$TMPDIR/home"
+            p="$HOME/.codex/packages"
+            mkdir -p "$p"/a/releases/1 "$p"/a/releases/2 "$p"/b/releases/1 "$p"/b/releases/2 "$p"/c/releases/1
+            ln -s "$p/a/releases/2" "$p/a/current"
+            ln -s releases/1 "$p/b/current"
+            ln -s "$p/c/releases/gone" "$p/c/current"
+            ${prune}
+            expect() {
+              if [ "$1" != "$2" ]; then echo "$3: got '$1', want '$2'" >&2; exit 1; fi
+            }
+            expect "$(ls "$p/a/releases")" "2" "an absolute current link"
+            expect "$(ls "$p/b/releases")" "1" "a relative current link"
+            expect "$(ls "$p/c/releases")" "1" "a dangling current link"
+            touch "$out"
+          '';
+
         # `gh auth login` and `glab auth login` cannot write their credential helper
         # into a store link, so git-ssh.nix declares it. Read back through git, because
         # the shape is the point: the empty value has to come first or it resets the
