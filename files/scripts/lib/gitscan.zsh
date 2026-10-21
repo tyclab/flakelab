@@ -104,6 +104,15 @@ gitscan_require_gh() {
   return 0
 }
 
+# gitscan_remote_gone <fetch output>: the forge answered that this project is not
+# there (deleted, or not visible to this login): a fact about one repo, unlike a
+# network failure, which leaves every result of the sweep in doubt.
+gitscan_remote_gone() {
+  [[ "$1" == *"could not be found or you don't have permission"* \
+    || "$1" == *"Repository not found"* \
+    || "$1" == *"does not appear to be a git repository"* ]]
+}
+
 # gitscan_forge_of <url>: "<forge>\t<project>", rc 1 for an unknown host. The configured URL, not
 # `git remote get-url`, which applies insteadOf rewrites.
 gitscan_forge_of() {

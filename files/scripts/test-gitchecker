@@ -410,8 +410,9 @@ write_stub glab 0 /dev/null
 
 # An abort must still be one document: a caller that tells "clean" from "died"
 # by whether stdout was empty gets it wrong exactly once.
-mk_repo "${TESTROOT}/roots/deadjson" deadjson gitlab.com t/deadjson >/dev/null
-rm -rf "${TESTROOT}/bare/t/deadjson.git"
+dj="$(mk_repo "${TESTROOT}/roots/deadjson" deadjson gitlab.com t/deadjson)"
+git -C "${dj}" config --unset-all "url.${TESTROOT}/bare/t/deadjson.git.insteadOf"
+git -C "${dj}" config "url.http://127.0.0.1:9/t/deadjson.git.insteadOf" "git@gitlab.com:t/deadjson.git"
 run_gc --repos-dir "${TESTROOT}/roots/deadjson" --json
 assert_rc 2 "--json exits 2 on abort"
 assert_has '"ok": false' "the abort document says so"
@@ -483,12 +484,40 @@ assert_rc 2 "a gh reply that fills the limit aborts"
 assert_has "refusing to work from a truncated list" "the gh truncation is named"
 write_stub gh 0 /dev/null
 
-# A dead remote must abort — a stale 'current' is the bug this replaces.
+# A project the forge says is gone is that repo's state, never 'current': it is
+# skipped as attention and the sweep goes on. Only the network aborts.
 mk_repo "${TESTROOT}/roots/dead" dead gitlab.com t/dead >/dev/null
+mk_repo "${TESTROOT}/roots/dead" alive gitlab.com t/alive >/dev/null
 rm -rf "${TESTROOT}/bare/t/dead.git"
 run_gc --repos-dir "${TESTROOT}/roots/dead"
-assert_rc 2 "unreachable remote exits 2"
+assert_rc 1 "a deleted project is attention, not an abort"
+assert_has "skipped: remote gone" "the gone remote is named"
+assert_lacks "aborting" "the sweep is not aborted"
+assert_has "alive" "the sibling repo is still examined"
+assert_has "current" "and still reported"
+
+# A remote that cannot be reached at all still aborts: every result is in doubt.
+net="$(mk_repo "${TESTROOT}/roots/net" net gitlab.com t/net)"
+git -C "${net}" config --unset-all "url.${TESTROOT}/bare/t/net.git.insteadOf"
+git -C "${net}" config "url.http://127.0.0.1:9/t/net.git.insteadOf" "git@gitlab.com:t/net.git"
+run_gc --repos-dir "${TESTROOT}/roots/net"
+assert_rc 2 "an unreachable remote exits 2"
 assert_has "git fetch --prune failed" "fetch failure is named"
+
+# The forges' own words for a missing project; a network error is not one.
+source "${SCRIPT_DIR}/lib/gitscan.zsh"
+gone_says() {
+  if gitscan_remote_gone "$2"; then (( PASSED++ )); print -r -- "  ok   $1"
+  else (( FAILED++ )); print -r -- "  FAIL $1"; fi
+}
+net_says() {
+  if ! gitscan_remote_gone "$2"; then (( PASSED++ )); print -r -- "  ok   $1"
+  else (( FAILED++ )); print -r -- "  FAIL $1"; fi
+}
+gone_says "GitLab's missing project" "remote: ERROR: The project you were looking for could not be found or you don't have permission to view it."
+gone_says "GitHub's missing repository" "ERROR: Repository not found."
+net_says  "a DNS failure is the network" "ssh: Could not resolve hostname gitlab.com: Name or service not known"
+net_says  "a refused connection is the network" "fatal: unable to access 'https://gitlab.com/x.git/': Failed to connect to gitlab.com port 443: Connection refused"
 
 # ── At a terminal ────────────────────────────────────────────────────
 print -r -- "at a terminal:"

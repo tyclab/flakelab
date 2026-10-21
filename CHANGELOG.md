@@ -83,6 +83,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `gitchecker` lists a repo whose project the forge says is gone (GitLab's "could not be found or you don't have permission", GitHub's "Repository not found", a missing repository path) as `skipped: remote gone` and goes on with the sweep, as it already did for a repo with no origin or an unsupported host; such a repo is attention, never "current", and its local state is still checked. One deleted project anywhere under a root aborted every run, so the sweep never reported. A network failure or a timeout still aborts.
+
 - `flakelab backup` drops a globbed file from the payload once it is deleted at home (`~/.kube/kubeconfig_*`, `cert-*`, `ca-*`, `~/.config/glab-cli`, `~/.config/helm`), as directories already did: the copies stayed for good, so a restore or a migration brought deleted kubeconfigs and their client certificates back. `--dry-run` names each removal; the shared `ssh/keys` stays additive, a missing source directory removes nothing, and a name still at home keeps its copy even as a link whose target is not mounted or spelled in another case (the payload may sit on NTFS).
 
 - An interactive zsh keeps the `KUBECONFIG` it inherits and appends each `~/.kube/*.yaml` it does not already list, starting from `~/.kube/config` only when none is set. It replaced the variable outright, so a `sessionVariables.KUBECONFIG` from the overlay was lost in every interactive shell, and each run left a trailing `:`.
