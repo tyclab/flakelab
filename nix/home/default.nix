@@ -95,6 +95,7 @@ in
     ./git-ssh.nix
     ./claude.nix
     ./codex.nix
+    ./prune.nix
     ./tycswap.nix
     ./web.nix
     ./tooling.nix
