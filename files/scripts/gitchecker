@@ -8,7 +8,8 @@ set -uo pipefail
 # Per repo: dirty state, every local branch vs its upstream, gone upstreams, detached HEAD, stashes, open MRs/PRs.
 # Only STRICTLY BEHIND branches fast-forward (not checked out: `git fetch . <up>:<branch>`); a dirty tree asks first
 # (--ff-dirty), --no-ff only reports. Never stashes, rebases or checks out.
-# Any network failure aborts the run rather than print a stale "current"; no origin or an unknown forge is a skip.
+# Any network failure aborts the run rather than print a stale "current"; no origin, an unknown forge or a project
+# the forge says is gone is a skip.
 # --json prints one document on stdout, abort included; --repo narrows the sweep to named repos.
 #
 # Usage:
@@ -18,7 +19,7 @@ set -uo pipefail
 # Exit status:
 #   0  every repo current
 #   1  at least one repo needs attention
-#   2  preflight failure, per-repo fetch/forge failure, or usage error
+#   2  preflight failure, network or forge failure, or usage error
 #
 
 # Sibling lookup: works from the nix store copy the wrapper runs and from the repo.
@@ -53,8 +54,10 @@ It changes one thing: a branch strictly behind its upstream is fast-forwarded
 `gitcleaner` is the half that removes what this one reports; `clone-repos` is
 the half that updates it.
 
-Every run fetches and queries the forge, and any failure aborts the run rather
-than printing a stale "current". Needs git, jq and an authenticated glab — plus
+Every run fetches and queries the forge, and a network or forge failure aborts
+the run rather than printing a stale "current"; a repo with no origin, on an
+unknown forge, or whose project the forge says is gone is skipped and needs
+attention. Needs git, jq and an authenticated glab — plus
 gh when a scanned repo has a github.com remote.
 
 Options:
@@ -386,6 +389,7 @@ check_repo() {
   emit "${rec}" UNTRACKED "${untracked}"
   emit "${rec}" STASHES "${stashes}"
   [[ "${head_branch}" == "(detached)" ]] && emit "${rec}" DETACHED 1
+  [[ -n "${skip_reason}" ]] && emit "${rec}" SKIP "${skip_reason}"
   for m in "${marks[@]}"; do
     emit "${rec}" MARK "${m}"
   done
@@ -585,9 +589,11 @@ render_json() {
       --argjson untracked "$(field "${rec}" UNTRACKED)" \
       --argjson stashes "$(field "${rec}" STASHES)" \
       --argjson detached "$([[ -n "$(field "${rec}" DETACHED)" ]] && print -n true || print -n false)" \
+      --arg skipped "$(field "${rec}" SKIP)" \
       --argjson branches "$(rows_json "${rec}" BR '{name: .[0], upstream: (if .[1] == "" then null else .[1] end), ahead: (.[2] | tonumber), behind: (.[3] | tonumber), state: .[4]}')" \
       --argjson open_requests "$(rows_json "${rec}" FORGE '{id: .[0], title: .[1], source_branch: .[2], draft: (.[3] == "true")}')" \
       '{path: $path, root: $root, rel: $rel, branch: $branch, state: $state,
+        skipped: (if $skipped == "" then null else $skipped end),
         dirty: {tracked: $tracked, untracked: $untracked},
         detached: $detached, stashes: $stashes,
         branches: $branches, open_requests: $open_requests}' \

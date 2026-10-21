@@ -494,7 +494,11 @@ assert_rc 1 "a deleted project is attention, not an abort"
 assert_has "skipped: remote gone" "the gone remote is named"
 assert_lacks "aborting" "the sweep is not aborted"
 assert_has "alive" "the sibling repo is still examined"
-assert_has "current" "and still reported"
+assert_has ": 1 current, 1 need attention" "and still reported current"
+run_gc --repos-dir "${TESTROOT}/roots/dead" --json
+assert_rc 1 "--json: attention, not an abort"
+assert_has '"skipped": "remote gone' "--json names why the gone repo is skipped"
+assert_has '"skipped": null' "and the live one is not skipped"
 
 # A remote that cannot be reached at all still aborts: every result is in doubt.
 net="$(mk_repo "${TESTROOT}/roots/net" net gitlab.com t/net)"
