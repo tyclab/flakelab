@@ -544,6 +544,14 @@ gate_redact_line_strings() {
   return 0
 }
 
+# "<n>\x01<text>" for each line number <n>... of <file>, in one read of it.
+gate_numbered_lines() {
+  local file="$1"
+  shift
+  (( $# )) || return 0
+  print -rl -- "$@" | LC_ALL=C awk 'NR == FNR { want[$1 + 0] = 1; next } (FNR in want) { print FNR "\001" $0 }' - "${file}"
+}
+
 # Lines of <file> that hold <needle> literally, one number per line.
 gate_literal_lines() {
   local file="$1" needle="$2"
@@ -600,6 +608,11 @@ gate_redact_transcript() {
   local start end rule desc match secret fp decision red pv ptext id entry now needle trail carrier
   local -i held=0 countable=0 ln
   local -a checked=() secrets=() carriers=()
+  # The scanner reports a secret once per line that holds it, and the literal
+  # pass already clears every such line: grepping and recording them again per
+  # finding grew the spec with the square of the count (403 findings of one
+  # secret: 162,812 spec lines and a run past the timer).
+  local -A literal_done=() hold_done=()
   now="$(gate_now)"
   gate_decisions_load
   if [[ -n "${held_file}" ]]; then
@@ -634,8 +647,10 @@ gate_redact_transcript() {
     # finding where a line holds the token twice — else the encoded runs on the
     # reported lines that decode to it, else the reported span itself, which
     # the literal pass then fails and the string pass holds the file for.
-    carriers=(${(f)"$(gate_literal_lines "${src}" "${needle}")"})
-    if (( ${#carriers} )); then
+    if [[ -n "${literal_done[${fp}]:-}" ]]; then
+      :
+    elif carriers=(${(f)"$(gate_literal_lines "${src}" "${needle}")"}) && (( ${#carriers} )); then
+      literal_done[${fp}]=1
       for ln in "${carriers[@]}"; do
         print -r -- "${ln}"$'\x01'"${ln}"$'\x01'"${rule}"$'\x01'"${needle}" >> "${spec}"
         checked+=("${ln}")
@@ -670,13 +685,14 @@ gate_redact_transcript() {
     # offered: this box owns the file it names.
     [[ "${TRANSCRIPT_SECRETS}" == redact && -z "${decision}" ]] && continue
     countable=$(( countable + 1 ))
-    if [[ -n "${held_file}" ]]; then
+    # gate_hold keeps one entry per fingerprint and file: the first with a preview stands.
+    if [[ -n "${held_file}" && -z "${hold_done[${fp}]:-}" ]]; then
       if [[ -z "${decision}" || "${decision}" == delete ]] \
         || { [[ "${decision}" == keep ]] && ${REVISIT_KEEPS} }; then
         red="$(gate_mask "${match}" "${secrets[@]}")"
         (( ${#red} > 200 )) && red="${red[1,200]}…"
         id="$(gate_id transcript "${fp}" "${live_src:t}")"
-        ptext="$(sed -n "${start},${end}p" "${src}")" || ptext=""
+        ptext="$(sed -n "${start},${end}p;${end}q" "${src}")" || ptext=""
         pv="$(gate_preview "${ptext}" "${secrets[@]}")"
         entry="$(jq -c -n --arg id "${id}" --arg fingerprint "${fp}" \
           --arg rule "${rule}" --arg desc "${desc}" --arg redacted "${red}" \
@@ -686,6 +702,7 @@ gate_redact_transcript() {
             redacted:$redacted,preview:$preview,file:$file,path:$path,
             first_seen:$first_seen}')" \
           && gate_hold "${held_file}" "${entry}" "${id}"
+        [[ -n "${pv}" ]] && hold_done[${fp}]=1
       fi
     fi
   done < <(gate_findings_for_file "${findings}" "${src}")
@@ -770,15 +787,25 @@ gate_redact_transcript() {
   # line the literal pass tore, or still holds a needle, is redone string by
   # string from the ORIGINAL line; one that cannot be cleared that way either
   # holds the whole file.
-  local -A redo=()
+  # One read of the spec and of each file, not one per checked line.
+  local -A redo=() needles_at=() rule_at=() out_at=() src_at=()
   local -a line_needles
-  local orig fixed
+  local orig fixed rec
+  while IFS=$'\x01' read -r start end rule needle; do
+    for (( ln = start; ln <= end; ln++ )); do
+      [[ -n "${rule_at[${ln}]:-}" ]] || rule_at[${ln}]="${rule}"
+      needles_at[${ln}]+="${needle}"$'\x01'
+    done
+  done < "${spec}"
+  while IFS= read -r rec; do
+    out_at[${rec%%$'\x01'*}]="${rec#*$'\x01'}"
+  done < <(gate_numbered_lines "${out}" "${(@u)checked}")
+  while IFS= read -r rec; do
+    src_at[${rec%%$'\x01'*}]="${rec#*$'\x01'}"
+  done < <(gate_numbered_lines "${src}" "${(@u)checked}")
   for ln in "${(@u)checked}"; do
-    line_needles=()
-    while IFS=$'\x01' read -r start end rule needle; do
-      (( ln >= start && ln <= end )) && line_needles+=("${needle}")
-    done < "${spec}"
-    fixed="$(sed -n "${ln}p" "${out}")"
+    line_needles=(${(ps:\x01:)needles_at[${ln}]})
+    fixed="${out_at[${ln}]:-}"
     if print -r -- "${fixed}" | jq -e . > /dev/null 2>&1; then
       for needle in "${line_needles[@]}"; do
         [[ "${fixed}" == *"${needle}"* ]] && { fixed=""; break }
@@ -789,8 +816,8 @@ gate_redact_transcript() {
       done
       [[ -n "${fixed}" ]] && continue
     fi
-    orig="$(sed -n "${ln}p" "${src}")"
-    rule="$(awk -F $'\x01' -v ln="${ln}" '$1 <= ln && ln <= $2 { print $3; exit }' "${spec}")"
+    orig="${src_at[${ln}]:-}"
+    rule="${rule_at[${ln}]:-}"
     if ! fixed="$(gate_redact_line_strings "${orig}" "${rule}" "${line_needles[@]}")"; then
       rm -f "${spec}"
       return 1

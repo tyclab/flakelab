@@ -49,6 +49,7 @@ trap 'rm -rf "${BASE}"' EXIT
 #   FAKE_GITLEAKS_RELPATH=1         report basenames instead of the staged paths
 #   FAKE_GITLEAKS_DUP=1             emit every finding twice — the duplicate
 #                                   accounting the real scanner produces (#36)
+#   FAKE_GITLEAKS_HANG=<file>       write the scanner's pid there and hang, for a kill
 if ! command -v jq > /dev/null 2>&1; then
   print -r -u2 -- "  FAIL jq is required to run this suite"
   exit 1
@@ -74,6 +75,10 @@ while (( $# > 0 )); do
   esac
   shift
 done
+if [[ -n "${FAKE_GITLEAKS_HANG:-}" ]]; then
+  print -r -- $$ > "${FAKE_GITLEAKS_HANG}"
+  exec sleep 60
+fi
 if [[ "${FAKE_GITLEAKS_BROKEN:-}" == 1 ]]; then
   print -r -u2 -- "fake gitleaks: scanner failed"
   exit 2
@@ -1607,6 +1612,49 @@ check    "the run exits clean"                    "${RC}" "0"
 is_file  "the transcript is synced, not held whole" "${synced}"
 excludes "the secret is gone"                     "$(< "${synced}")" "hunter2-secret"
 excludes "nothing was held back whole"            "${OUT}" "held back whole"
+
+# 2026-10-21: a live session held one secret on 403 lines, the scanner reported
+# each, and the redactor's per-finding passes ran the state sync past its timer.
+print -r -- "a secret repeated on many lines redacts in linear time"
+transcript_fixture gate-repeated-secret
+FAKE_SECRET="hunter2-secret-and-a-good-deal-more"
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+for (( i = 1; i <= 200; i++ )); do
+  print -r -- '{"type":"user","uuid":"u'"${i}"'","text":"token hunter2-secret-and-a-good-deal-more here"}'
+done > "${SLUG_HOME}/abc.jsonl"
+started=${SECONDS}
+run_backup --force
+synced="${SLUG_STATE}/abc.jsonl"
+check    "the run exits clean"                    "${RC}" "0"
+check    "every line is redacted"                 "$(grep -c 'REDACTED:fake-rule' "${synced}")" "200"
+excludes "the secret is gone"                     "$(< "${synced}")" "hunter2-secret"
+check    "one held entry for the one secret"      "$(grep_c_held)" "1"
+(( SECONDS - started < 60 )) && ok "200 findings take well under a minute" \
+  || bad "200 findings took $(( SECONDS - started ))s"
+
+# systemd ends a unit past TimeoutStartSec with TERM to every process in it.
+print -r -- "a run killed mid-scan leaves no work files behind"
+transcript_fixture gate-killed
+secret_transcript
+KILL_TMP="${BASE}/gate-killed/tmp"
+HANG="${BASE}/gate-killed/gitleaks.pid"
+mkdir -p "${KILL_TMP}"
+FLAKELAB_BACKUP_ROOT="${FIX_ROOT}" FLAKELAB_HOME_DIR="${FIX_HOME}" \
+  FLAKELAB_STATE_ROOT="${STATE}" FLAKELAB_STATE_TRANSCRIPTS=1 \
+  PATH="${BASE}/bin:${PATH}" TMPDIR="${KILL_TMP}" \
+  FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_HANG="${HANG}" \
+  WSL_DISTRO_NAME="${RUN_WSL_NAME}" XDG_STATE_HOME="${RUN_STATE_HOME}" \
+  "${BACKUP}" --force < /dev/null > /dev/null 2>&1 &
+pid=$!
+for (( i = 0; i < 300; i++ )); do
+  [[ -s "${HANG}" ]] && break
+  sleep 0.1
+done
+is_file  "the scan was reached"                   "${HANG}"
+kill -TERM "${pid}" "$(< "${HANG}")" 2> /dev/null
+wait "${pid}"
+check    "the run ends with TERM's status"        "$?" "143"
+check    "its work directory is gone"             "$(ls -A "${KILL_TMP}")" ""
 
 # gitleaks' private-key rule matches `[\s\S-]*` between the BEGIN and END
 # markers, so on a JSON line it runs straight through the `\"` that closes a
