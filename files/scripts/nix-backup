@@ -1613,6 +1613,19 @@ if ${STATE_ONLY}; then
   fi
 fi
 
+# Every bare mktemp of the run lands in this directory, and it goes with the
+# run, a signal included: the state-sync timer's TERM left each killed run's
+# staged transcripts, and the findings naming their secrets, behind in /tmp.
+if ! RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/flakelab-backup.XXXXXX")"; then
+  log_error "Cannot create a work directory under ${TMPDIR:-/tmp}"
+  exit 1
+fi
+export TMPDIR="${RUN_TMP}"
+trap 'rm -rf -- "${RUN_TMP}"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 acquire_lock
 
 if ${REVIEW_SECRETS}; then
