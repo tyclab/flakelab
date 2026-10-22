@@ -55,6 +55,7 @@ in
         "codexWritableConfig"
         "pinNpm"
         "bwConfigServer"
+        "flakelabSecretsDir"
       ]
       ''
         export PATH="${

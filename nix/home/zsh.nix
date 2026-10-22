@@ -11,7 +11,7 @@
 }:
 let
   cfg = osConfig.flakelab;
-  inherit (flakelab) isWsl sshKeys;
+  inherit (flakelab) isWsl sshKeys flakelabWarn;
 
   homeJump = lib.optionalString (isWsl && cfg.windowsUsername != null) ''
     # Jump to the Linux home only from the two Windows default entry paths, so a
@@ -205,7 +205,10 @@ in
 
   # The secrets share ~/.config/flakelab with home-manager's own files, which would
   # leave it 755; owner-only, like bwu makes it.
-  home.activation.flakelabSecretsDir = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-    $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -d -m700 "$HOME/.config/flakelab"
-  '';
+  home.activation.flakelabSecretsDir =
+    lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ]
+      ''
+        $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -d -m700 "$HOME/.config/flakelab" || \
+          ${flakelabWarn} "could not make ~/.config/flakelab owner-only; the secrets in it keep their own 600."
+      '';
 }

@@ -553,7 +553,11 @@ fi
 # The secrets directory before ~/.config/flakelab; nothing reads it any more.
 if [[ -e "${HOME}/.config/tyc" ]]; then
   log_warn "~/.config/tyc is the old secrets directory; nothing reads it any more"
-  log_hint "mv -n ~/.config/tyc/*(DN) ~/.config/flakelab/ && rmdir ~/.config/tyc  (a name left behind clashes with a newer file in ~/.config/flakelab)"
+  if [[ -n "$(ls -A "${HOME}/.config/tyc" 2>/dev/null)" ]]; then
+    log_hint "mv -n ~/.config/tyc/*(DN) ~/.config/flakelab/ && rmdir ~/.config/tyc  (a name left behind clashes with a newer file in ~/.config/flakelab)"
+  else
+    log_hint "rmdir ~/.config/tyc"
+  fi
 fi
 
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
