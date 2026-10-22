@@ -54,7 +54,7 @@ repos:
   # Narrow select on purpose: E9 + F are the defect rules, so each red is a new
   # defect rather than a taste argument.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 44b5042edab9382aba712eed4f9c7bab7a3d6a3e  # frozen: v0.17.0
+    rev: 38bfb07c0c64c304f47eb52090f8288150c77730  # frozen: v0.17.1
     hooks:
       - id: ruff-check
         args: [--select, "E9,F"]
