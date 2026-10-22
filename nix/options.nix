@@ -526,7 +526,7 @@ in
     sopsSecretsFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "The overlay's age-encrypted sops DOTENV file (the encrypted twin of ~/.config/flakelab/secrets.env). Non-null wires sops-nix (nix/secrets.nix): the file is decrypted at activation into the /run/secrets ramfs and the zsh init sources it from there, falling back to the legacy home file only when the render is absent. A `path`, so the ciphertext is copied into the world-readable Nix store — which is exactly what ciphertext is for; the plaintext never leaves /run. Decryption needs the host identity at `sopsAgeKeyFile` to be enrolled in the file's .sops.yaml recipients BEFORE this is set, or the next activation fails loudly.";
+      description = "The overlay's age-encrypted sops DOTENV file (the encrypted twin of ~/.config/flakelab/secrets.env). Non-null wires sops-nix (nix/secrets.nix): the file is decrypted at activation into the /run/secrets ramfs and the zsh init sources it from there, and never the legacy home file: an enrolled box whose render is absent starts with no secrets rather than stale ones. A `path`, so the ciphertext is copied into the world-readable Nix store — which is exactly what ciphertext is for; the plaintext never leaves /run. Decryption needs the host identity at `sopsAgeKeyFile` to be enrolled in the file's .sops.yaml recipients BEFORE this is set, or the next activation fails loudly.";
     };
 
     sopsKeyFiles = mkOption {

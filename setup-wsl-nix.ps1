@@ -1250,7 +1250,7 @@ function Copy-OverlayFilesIntoDistro {
     if (-not (Test-Path $KeyWin)) { $missing += 'SSH key' }
     if (Test-SecretsSeedNeeded) { $missing += 'secrets.env' }
     if ($missing.Count -gt 0) {
-        Show-ManualSeedInstructions ("overlay is missing {0} - the distro is built but unconfigured." -f ($missing -join ' + '))
+        Show-ManualSeedInstructions ("no {0} in the overlay yet - the distro is built, and only the steps that need it wait." -f ($missing -join ' + '))
     }
 }
 
@@ -1686,17 +1686,16 @@ function Restore-Backup {
     if ($LASTEXITCODE -ne 0) { Warn "flakelab backup --restore (instance '$RestoreInstance') returned $LASTEXITCODE - nothing staged yet, or see its output above" }
 }
 
-# secrets.env is sourced from .zshrc (interactive only), so a login shell alone
-# leaves GITLAB_TOKEN unset and `flakelab clone` hard-exits on its guard.
+# .zshenv sources the secrets for every zsh, the sops render or secrets.env, so nothing is sourced here.
+# Exit 3 is the clone's own refusal for a missing GITLAB_TOKEN, which it has already explained.
 function Invoke-CloneRepos {
     if ($SkipCloneRepos) { Warn 'flakelab clone skipped (-SkipCloneRepos)'; return }
     Say 'flakelab clone (GitLab group discovery)'
-    $cmd = '[ -r ~/.config/flakelab/secrets.env ] && { set -a; . ~/.config/flakelab/secrets.env; set +a; }; ' `
-        + 'flakelab clone'
+    $cmd = 'flakelab clone'
     if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
     & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd
-    if ($LASTEXITCODE -ne 0) {
-        Warn "flakelab clone failed - is GITLAB_TOKEN in ~/.config/flakelab/secrets.env?"
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) {
+        Warn "flakelab clone returned $LASTEXITCODE - see its output above"
     }
 }
 
