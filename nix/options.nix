@@ -379,7 +379,7 @@ in
     claudePluginMarketplaces = mkOption {
       type = types.listOf types.attrs;
       default = [ ];
-      description = "Claude Code plugin marketplaces as `{ name; url; }`. `name` must match the marketplace's own .claude-plugin/marketplace.json — a wrong name fails every install silently.";
+      description = "Claude Code plugin marketplaces as `{ name; url; }`. `name` must match the marketplace's own .claude-plugin/marketplace.json — a wrong name fails every install silently. The first one that ships `recommended-permissions.json` or `recommended-ask.json` sets Claude's allow or ask tier on every `flakelab update`; a marketplace not listed here never does.";
     };
 
     claudePlugins = mkOption {

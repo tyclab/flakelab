@@ -315,10 +315,14 @@ symlinks, because Claude rewrites these files itself:
   installed mode 600, since the same file holds Claude's account and OAuth
   state.
 - **`permissions.allow`** and **`permissions.ask`** — asserted by
-  `flakelab update` after every switch from the marketplace clone's
-  `recommended-permissions.json` and `recommended-ask.json`, located by
-  searching the clone rather than by a fixed path (it has moved once already).
-  Not an activation: the clone is runtime data, and activation reruns only
+  `flakelab update` after every switch from `recommended-permissions.json` and
+  `recommended-ask.json` in the first marketplace `claudePluginMarketplaces`
+  declares that ships them, located by searching that clone rather than by a
+  fixed path (it has moved once already). A marketplace added by hand is never
+  read. A file that is not a list of rule strings, or an allow file that
+  approves a whole command, write or fetch tool (`Bash`, `Bash(*)`,
+  `WebFetch(domain:*)`), is refused with a warning and the tier stays as it
+  was. Not an activation: the clone is runtime data, and activation reruns only
   when the built config changed.
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
   shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.

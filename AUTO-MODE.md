@@ -66,8 +66,9 @@ All four layers are asserted whole on every `flakelab update`, so a hand edit
 to the file is undone. Fix rules in the flake or the marketplace, never in the
 file.
 
-Layers 2 and 3 come from the marketplace clone, found by name:
-`recommended-ask.json` and `recommended-permissions.json`, written by
-`flakelab update` after every switch. A union could only grow: the 72 rules the
+Layers 2 and 3 come from the first declared marketplace that ships them, found
+by name: `recommended-ask.json` and `recommended-permissions.json`, written by
+`flakelab update` after every switch. A hand-added marketplace is never read,
+and a malformed file or a whole-tool allow rule leaves the tier as it was. A union could only grow: the 72 rules the
 marketplace withdrew on 2026-09-10 would have stayed in `permissions.ask`, and
 251 withdrawn allow rules sat in one box's `permissions.allow` on 2026-09-13.
