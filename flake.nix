@@ -1437,6 +1437,13 @@
                 repos = [ ];
               }
             );
+            withSops = cloneOf (
+              cfg
+              // {
+                gitlabGroups = [ "example/group" ];
+                sopsSecretsFile = ./statix.toml;
+              }
+            );
           in
           pkgs.runCommandLocal "flakelab-check-clone-args" { } ''
             for s in ${withWork}/bin/nix-clone-repos ${withGithub}/bin/nix-clone-repos ${githubOff}/bin/nix-clone-repos ${noWork}/bin/nix-clone-repos; do
@@ -1449,6 +1456,15 @@
             done
             grep -q 'gh-repos --owner example-owner' ${withGithub}/bin/nix-clone-repos
             ! grep -q 'gh-repos' ${githubOff}/bin/nix-clone-repos
+            # Groups and no token: exit 3 before any listing, naming where the token goes.
+            mkdir -p home/.ssh
+            touch home/.ssh/${builtins.head cfg.sshKeys}
+            rc=0
+            env -u GITLAB_TOKEN HOME="$PWD/home" ${withWork}/bin/nix-clone-repos 2> err || rc=$?
+            test "$rc" = 3
+            grep -q 'GITLAB_TOKEN is not set' err
+            grep -q 'Add it to ~/.config/flakelab/secrets.env' err
+            grep -q 'Add it to the sops secrets file' ${withSops}/bin/nix-clone-repos
             touch $out
           '';
 
