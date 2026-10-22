@@ -118,10 +118,9 @@ the private overlay `flakelab-config`, which imports this flake via
     GC-able `/nix/store` path; it refuses rather than write that into an
     overlay you would then be pinned to.
   - `flakelab update`: update THIS distro to the current flake + overlay.
-    `sudo nixos-rebuild switch` under a pre-flight. A switch from
-    inside the running distro completed with interop intact on 2026-08-20;
-    the wipe remains a documented historical hazard (`known-issues.md`), and
-    `wsl --shutdown` from Windows recovers it.
+    `sudo nixos-rebuild switch` under a pre-flight. Older WSL releases could
+    wipe interop during a switch (`known-issues.md`); `wsl --shutdown` from
+    Windows recovers it.
   - `setup-wsl-nix.cmd` / `setup-wsl-nix.ps1` (Windows): provision a distro on
     a machine — the fresh-PC path. Runs from a real Windows console because a
     provision restarts distros; old WSL versions could also wipe interop mid-run. Its in-distro
@@ -134,7 +133,9 @@ the private overlay `flakelab-config`, which imports this flake via
     `flakelab.target` other than `wsl` — a `proxmox-vm` box has no distro to
     provision, wipe interop for, or name — and drop out of `--help` and its
     did-you-mean suggestions there too.
-- Docs live in the repo root — no `docs/` folder; every `.md` sits at the top level.
+- Docs live in the repo root — no `docs/` folder. The only other `.md` files are
+  the client config templates under `files/config/`, `icons/README.md` and the
+  PR template.
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
   stdout, abort included. To remove a branch, take the plan from
@@ -148,12 +149,15 @@ the private overlay `flakelab-config`, which imports this flake via
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
 - Changing any of these means running its offline suite. `make test` runs every
-  offline `test-*` under `files/scripts/` (the Makefile's `test` target is the
-  list of record) and stays the required local gate. These are TEST HARNESSES,
-  not user commands, so the `flakelab` CLI did not rename them:
-  `test-nix-backup`, `test-nix-doctor` and `test-nix-overlay-generate` keep the
-  old prefix on purpose, because renaming them would drag `Makefile` and
-  `flake.nix`'s `checks.<system>.*` along for no change in behaviour. They run
+  offline `test-*` under `files/scripts/` except `test-provision-nix` (the
+  Makefile's `test` target is the list of record); run it while iterating, and
+  `nix flake check` is the full gate. A new suite goes into that list and into
+  `flake.nix` as a `checks.<system>.<name>` entry by hand: nothing discovers it.
+  These are TEST HARNESSES, not user commands, so the `flakelab` CLI did not
+  rename them: `test-nix-backup`, `test-nix-doctor`, `test-nix-overlay-generate`,
+  `test-nix-update` and `test-nix-provision` keep the old prefix on purpose,
+  because renaming them would drag `Makefile` and `flake.nix`'s
+  `checks.<system>.*` along for no change in behaviour. They run
   the scripts by path, not by command name. CI runs the same suites as flake
   checks — `nix flake check` (the `test` job) builds one `checks.<system>.<suite>`
   per suite, plus `statix` and `deadnix` — so a red suite blocks the pull
@@ -161,6 +165,11 @@ the private overlay `flakelab-config`, which imports this flake via
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`
   asserts against the tracked `templates/overlay/` and
   `files/config/user_data.example.yaml`.
+- CI's other jobs are `lint` (`make lint && nix fmt && git diff --exit-code`)
+  and `gitleaks`. Neither `make lint` nor `nix flake check` formats, so run
+  `make lint-nix` (or `nix fmt`) before pushing a `.nix` change. Run
+  `make install-hooks` once per clone, inside `nix develop`. Flake outputs and
+  checks exist for `x86_64-linux` only.
 
 ## Maintenance policy
 
@@ -178,7 +187,8 @@ the private overlay `flakelab-config`, which imports this flake via
   file. 20% is a ceiling, not a target: delete narrative, keep the one-line why
   (version pins, security choices, rulings with ids and dates, gotchas, cross-file contracts). Preserve licenses, tool directives and runtime strings; only the
   operator may grant a documented, file-specific exception. Do not add blank
-  lines or move prose inline to satisfy the limit.
+  lines or move prose inline to satisfy the limit. No hook enforces it; review
+  does.
 - Remove unused files or features only after checking references and behavior.
   Preserve supported workflows and run the relevant checks before reporting
   a cleanup complete. Keep README commands and process diagrams aligned with code.

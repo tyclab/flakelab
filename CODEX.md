@@ -50,8 +50,8 @@ Existing regular user files are preserved. Auth, OAuth tokens, sessions and cach
 remain runtime state. Do not also enable the same servers as Codex plugins: that
 creates duplicate tools. Plugins remain available outside Flakelab.
 
-The TycLabs launchers obtain credentials from flakelab's existing zsh runtime
-secret source. `~/.config/flakelab/codex-mcp.env` contains only the configured
+The launchers in the MCP repository obtain credentials from flakelab's existing
+zsh runtime secret source. `~/.config/flakelab/codex-mcp.env` contains only the configured
 WhatsApp checkout and, on WSL, Chrome settings. Claude files, skills, agents and
 hooks are independent and unchanged.
 
