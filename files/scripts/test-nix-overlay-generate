@@ -158,6 +158,7 @@ print -r -- "the shipped user_data.example.yaml generates a filled-in overlay"
 o="$(out fromexample)"
 run_gen --out "${o}" --config "${EXAMPLE}"
 check "exits clean" "${RC}" "0"
+excludes "its locale is read, not defaulted" "${OUT}" "no locale in the config"
 f="$(flake_of "${o}")"
 excludes "nothing is left to hand-edit" "${f}" "CHANGEME"
 check    "the anchor survives"          "$(markers_in "${o}/flake.nix")" "1"
@@ -165,10 +166,10 @@ check    "the anchor survives"          "$(markers_in "${o}/flake.nix")" "1"
 # Every option declared without a default must be emitted even when the config is
 # silent about it, or mkSystem aborts.
 print -r -- "every option with no default is emitted"
-contains "username"        "${f}" 'username = "tycuser";'
+contains "username"        "${f}" 'username = "devuser";'
 contains "gitName"         "${f}" 'gitName = "Your Name";'
 contains "gitEmail"        "${f}" 'gitEmail = "you@example.com";'
-contains "locale"          "${f}" 'locale = "de_DE.UTF-8";'
+contains "locale"          "${f}" 'locale = "en_US.UTF-8";'
 contains "windowsUsername" "${f}" 'windowsUsername = "WindowsUser";'
 contains "repoPath"        "${f}" "repoPath = \"${o}\";"
 contains "backupAutostart" "${f}" 'backupAutostart = false;'
@@ -210,7 +211,7 @@ excludes "neither ntfy value reaches the flake" "${f}" 'ntfy.example.com'
 excludes "nor the webhook's" "${f}" 'api/webhook'
 excludes "nor is a token VALUE from the config" "${f}" 'your-gitlab-personal-access-token'
 contains "and the run says which ones it dropped" "${OUT}" "GITLAB_TOKEN"
-contains "saying where they belong instead"       "${OUT}" ".config/tyc/secrets.env"
+contains "saying where they belong instead"       "${OUT}" ".config/flakelab/secrets.env"
 check "the stub it wrote is still empty" \
   "$(wc -c < "${o}-payload/shared/secrets/secrets.env")" "0"
 
@@ -229,7 +230,7 @@ check    "the run still exits clean" "${RC}" "0"
 check    "the hand edit survives"    "$(flake_of "${o}")" "# hand-edited"
 contains "and it says so"            "${OUT}" "keeping existing flake.nix"
 run_gen --out "${o}" --config "${EXAMPLE}" --force
-contains "--force overwrites it" "$(flake_of "${o}")" 'username = "tycuser";'
+contains "--force overwrites it" "$(flake_of "${o}")" 'username = "devuser";'
 
 # The one file --force must not touch: it can already hold real tokens.
 print -r -- "--force never overwrites a secrets.env that already has content"
@@ -707,7 +708,7 @@ o="$(out proxmoxvm)"
 run_gen --out "${o}" --config "${EXAMPLE}" --target proxmox-vm
 check    "exits clean"                       "${RC}" "0"
 f="$(flake_of "${o}")"
-contains "target is emitted"                 "${f}" $'mkSystem {\n        target = "proxmox-vm";\n        username = "tycuser";'
+contains "target is emitted"                 "${f}" $'mkSystem {\n        target = "proxmox-vm";\n        username = "devuser";'
 excludes "windowsUsername is absent"         "${f}" "windowsUsername"
 contains "and the config's value is named as dropped" "${OUT}" "windows_username applies to target wsl only - dropped"
 contains "repoPath is still present"         "${f}" "repoPath = \"${o}\";"

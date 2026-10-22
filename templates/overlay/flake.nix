@@ -13,7 +13,7 @@
       # flakelab/nix/options.nix is the schema: a misspelt key or wrong type aborts
       # evaluation, and every option declared there without a default must be set here.
       # No plaintext secrets - the Nix store is world-readable; use sopsSecretsFile
-      # or ~/.config/tyc/secrets.env.
+      # or ~/.config/flakelab/secrets.env.
       nixosConfigurations.default = flakelab.lib.mkSystem {
         # Platform to build for; set on a Proxmox guest, never on a WSL distro.
         # target = "proxmox-vm";

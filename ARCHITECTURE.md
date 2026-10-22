@@ -20,7 +20,7 @@ How flakelab is put together, and why. Usage lives in
 4. **Secrets never enter repo or store in plaintext.** They arrive either as
    the overlay's age-encrypted sops dotenv file (`sopsSecretsFile`, decrypted
    by sops-nix into the `/run/secrets` ramfs — only ciphertext is committed or
-   stored) or, as the fallback, from a vault as `~/.config/tyc/secrets.env`;
+   stored) or, as the fallback, from a vault as `~/.config/flakelab/secrets.env`;
    the shell sources whichever is present, sops first (nix/secrets.nix,
    nix/home/zsh.nix).
 5. **Reuse the repo-discovery logic** rather than rewriting it: `clone-repos` and

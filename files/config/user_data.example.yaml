@@ -4,7 +4,7 @@
 # Copy it out of the repo before filling it in - real tokens must never be committed.
 
 # Linux user (no dashes).
-user: tycuser
+user: devuser
 
 # Platform this box is built for: wsl (default) or proxmox-vm.
 # target: wsl
@@ -12,7 +12,7 @@ user: tycuser
 # Windows username - the C:\Users\<name> folder. wsl only.
 windows_username: WindowsUser
 
-userlocale: de_DE.UTF-8
+userlocale: en_US.UTF-8
 
 # Git identity, both required.
 gitmail: you@example.com
@@ -78,7 +78,7 @@ custom_aliases:
   - name: gs
     command: git status
 
-# Known secret names go to ~/.config/tyc/secrets.env, the rest become sessionVariables.
+# Known secret names go to ~/.config/flakelab/secrets.env, the rest become sessionVariables.
 custom_env_vars:
   HASS_URL: 'http://homeassistant.example.lan:8123'
   PROXMOX_API_URL: 'https://pve.example.lan:8006' # base URL, no /api2/json

@@ -22,7 +22,7 @@ excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
 BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
 export HOME="${BASE}/home"
-mkdir -p "${HOME}/.config/tyc" "${BASE}/bin"
+mkdir -p "${HOME}/.config/flakelab" "${BASE}/bin"
 unset NTFY_URL NTFY_TOKEN NOTIFY_WEBHOOK_URL
 
 # The curl stand-in: appends the URL, its own argv, the headers and the body;
@@ -50,10 +50,10 @@ STUB
 chmod +x "${BASE}/bin/curl"
 export PATH="${BASE}/bin:${PATH}"
 export FAKE_LOG="${BASE}/request.log"
-SECRETS="${HOME}/.config/tyc/secrets.env"
+SECRETS="${HOME}/.config/flakelab/secrets.env"
 export FLAKELAB_SECRETS_ENV="${SECRETS}"
 # Never the box's own render: a missing fixture until the fallback cases write it.
-RENDER="${BASE}/tyc-env"
+RENDER="${BASE}/flakelab-env"
 export FLAKELAB_SECRETS_RENDER="${RENDER}"
 
 typeset -i RC=0
@@ -238,7 +238,7 @@ print -rn -- $'GITLAB_TOKEN="x"\r\nNTFY_URL="https://ntfy.example.com/render"\r\
 FLAKELAB_SECRETS_ENV="" run --message x
 check "exits 0" "${RC}" "0"
 REQ="$(logged)"
-contains "the render beats ~/.config/tyc/secrets.env" "${REQ}" "URL https://ha.example.com/api/webhook/render-id"$'\n'
+contains "the render beats ~/.config/flakelab/secrets.env" "${REQ}" "URL https://ha.example.com/api/webhook/render-id"$'\n'
 excludes "with its carriage returns stripped" "${REQ}" $'\r'
 excludes "and nothing from the file it beat" "${REQ}" "example.com/home"
 contains "the token too" "${REQ}" $'Authorization: Bearer tk_render\n'
@@ -252,7 +252,7 @@ contains "while an ntfy topic in the env stays" "${REQ}" "URL https://ntfy.examp
 excludes "with the env's empty token, not the render's" "${REQ}" "tk_render"
 chmod 000 "${RENDER}"
 FLAKELAB_SECRETS_ENV="" run --message x
-check "an unreadable render falls back to ~/.config/tyc/secrets.env" \
+check "an unreadable render falls back to ~/.config/flakelab/secrets.env" \
   "$(logged | grep '^URL ')" $'URL https://ntfy.example.com/home\nURL https://home.example.com/api/webhook/home-id'
 rm -f -- "${RENDER}"
 

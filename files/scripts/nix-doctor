@@ -93,8 +93,8 @@ installs() { (( ${AI_CLIS[(Ie)$1]} )) }
 # the explicit repos — needs the SSH identity.
 needs_glab() { (( GITLAB_GROUPS > 0 )) }
 needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) }
-SECRETS="${HOME}/.config/tyc/secrets.env"
-SOPS_RENDER="/run/secrets/tyc-env"
+SECRETS="${HOME}/.config/flakelab/secrets.env"
+SOPS_RENDER="/run/secrets/flakelab-env"
 WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
 # What activation structurally could not do (no agent key, offline) rather than
 # got wrong: never fatal, and invisible everywhere else once the switch scrolls by.
@@ -495,7 +495,7 @@ if [[ -r "${SOPS_RENDER}" ]]; then
     log_ok "sops render mode 400"
   else
     log_fail "sops render is mode ${rmode}, expected 400"
-    log_hint "sops-nix sets this from secrets.tyc-env.mode; a drifted mode means a hand-edit under /run"
+    log_hint "sops-nix sets this from secrets.flakelab-env.mode; a drifted mode means a hand-edit under /run"
   fi
   if grep -q $'\r' "${SOPS_RENDER}"; then
     log_fail "sops render has CRLF line endings; every token carries a trailing CR"
@@ -548,6 +548,15 @@ else
   else
     log_fail "secrets.env defines no keys"
     log_hint "populate it from your secret store; see files/config/secrets.env.example"
+  fi
+fi
+# The secrets directory before ~/.config/flakelab; nothing reads it any more.
+if [[ -e "${HOME}/.config/tyc" ]]; then
+  log_warn "~/.config/tyc is the old secrets directory; nothing reads it any more"
+  if [[ -n "$(ls -A "${HOME}/.config/tyc" 2>/dev/null)" ]]; then
+    log_hint "mv -n ~/.config/tyc/*(DN) ~/.config/flakelab/ && rmdir ~/.config/tyc  (a name left behind clashes with a newer file in ~/.config/flakelab)"
+  else
+    log_hint "rmdir ~/.config/tyc"
   fi
 fi
 

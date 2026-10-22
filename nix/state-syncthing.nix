@@ -94,9 +94,9 @@ in
         pkgs.gnused
       ];
       script = ''
-        value="$(${readPassword} /run/secrets/tyc-env)"
+        value="$(${readPassword} /run/secrets/flakelab-env)"
         if [ -z "$value" ]; then
-          echo "${st.passwordEnvKey} is missing from /run/secrets/tyc-env: seal it into the overlay's secrets file first" >&2
+          echo "${st.passwordEnvKey} is missing from /run/secrets/flakelab-env: seal it into the overlay's secrets file first" >&2
           exit 1
         fi
         install -d -m 0700 -o ${cfg.username} -g users ${secretDir}

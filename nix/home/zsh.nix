@@ -11,7 +11,7 @@
 }:
 let
   cfg = osConfig.flakelab;
-  inherit (flakelab) isWsl sshKeys;
+  inherit (flakelab) isWsl sshKeys flakelabWarn;
 
   homeJump = lib.optionalString (isWsl && cfg.windowsUsername != null) ''
     # Jump to the Linux home only from the two Windows default entry paths, so a
@@ -97,14 +97,14 @@ in
       ${
         if cfg.sopsSecretsFile != null then
           ''
-            if [[ -r /run/secrets/tyc-env ]]; then
-              set -a; source =(tr -d '\r' < /run/secrets/tyc-env${keyFilesFilter}); set +a
+            if [[ -r /run/secrets/flakelab-env ]]; then
+              set -a; source =(tr -d '\r' < /run/secrets/flakelab-env${keyFilesFilter}); set +a
             fi
           ''
         else
           ''
-            if [[ -r "$HOME/.config/tyc/secrets.env" ]]; then
-              set -a; source =(tr -d '\r' < "$HOME/.config/tyc/secrets.env"); set +a
+            if [[ -r "$HOME/.config/flakelab/secrets.env" ]]; then
+              set -a; source =(tr -d '\r' < "$HOME/.config/flakelab/secrets.env"); set +a
             fi
           ''
       }
@@ -133,20 +133,20 @@ in
 
       # `bwu` unlocks on the TTY and parks the per-unlock token in a mode-600 file
       # every shell exports from, so it never rides a command line or a transcript.
-      if [[ -r "$HOME/.config/tyc/bw-session" ]]; then
-        export BW_SESSION="$(tr -d '\r\n' < "$HOME/.config/tyc/bw-session")"
+      if [[ -r "$HOME/.config/flakelab/bw-session" ]]; then
+        export BW_SESSION="$(tr -d '\r\n' < "$HOME/.config/flakelab/bw-session")"
       fi
       bwu() {
-        local _f="$HOME/.config/tyc/bw-session" _t
+        local _f="$HOME/.config/flakelab/bw-session" _t
         _t="$(bw unlock --raw)" || return 1
-        mkdir -p "$HOME/.config/tyc" && chmod 700 "$HOME/.config/tyc"
+        mkdir -p "$HOME/.config/flakelab" && chmod 700 "$HOME/.config/flakelab"
         (umask 077; printf '%s\n' "$_t" > "$_f") || return 1
         export BW_SESSION="$_t"
         echo "bw: unlocked — token in $_f, exported to new shells (bwl to lock)"
       }
       bwl() {
         bw lock
-        rm -f "$HOME/.config/tyc/bw-session"
+        rm -f "$HOME/.config/flakelab/bw-session"
         unset BW_SESSION
       }
 
@@ -202,4 +202,13 @@ in
       zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
     '';
   };
+
+  # The secrets share ~/.config/flakelab with home-manager's own files, which would
+  # leave it 755; owner-only, like bwu makes it.
+  home.activation.flakelabSecretsDir =
+    lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ]
+      ''
+        $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -d -m700 "$HOME/.config/flakelab" || \
+          ${flakelabWarn} "could not make ~/.config/flakelab owner-only; the secrets in it keep their own 600."
+      '';
 }

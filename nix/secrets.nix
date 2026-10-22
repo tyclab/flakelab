@@ -23,7 +23,7 @@ in
         sshKeyPaths = [ ];
       };
       gnupg.sshKeyPaths = [ ];
-      secrets.tyc-env = {
+      secrets.flakelab-env = {
         # Renders the whole decrypted file; there is no per-key lookup on this path.
         format = "dotenv";
         # Explicit, not sops-nix's default: the shell contract depends on it.
@@ -45,7 +45,7 @@ in
         UMask = "0077";
       };
       script = ''
-        set -a; . <(tr -d '\r' < ${config.sops.secrets.tyc-env.path}); set +a
+        set -a; . <(tr -d '\r' < ${config.sops.secrets.flakelab-env.path}); set +a
       ''
       + lib.concatStrings (
         lib.mapAttrsToList (name: file: ''

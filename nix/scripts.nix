@@ -475,7 +475,7 @@ rec {
       discoveryBlock = lib.optionalString (groups != [ ] || cfg.cloneGithub) ''
         ${lib.optionalString (
           groups != [ ]
-        ) '': "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/tyc/secrets.env}"''}
+        ) '': "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/flakelab/secrets.env}"''}
         set -e
         {
         ${lib.concatMapStringsSep "\n        " listGroup groups}

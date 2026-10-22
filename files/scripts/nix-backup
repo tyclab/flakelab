@@ -35,7 +35,7 @@ case "${FLAKELAB_STATE_TRANSCRIPTS:-}" in
   1|true|yes) STATE_TRANSCRIPTS=true ;;
 esac
 # Set by the nix wrapper when sops-nix renders the secrets: the legacy
-# ~/.config/tyc/secrets.env is then neither read by the shell nor part of the
+# ~/.config/flakelab/secrets.env is then neither read by the shell nor part of the
 # seed — the ciphertext lives in the overlay, the host's age identity stays on
 # the host — so it is neither archived nor restored. Restoring it would put a
 # plaintext copy back that nothing reads and everything has to be rid of again.
@@ -212,7 +212,7 @@ while (( $# > 0 )); do
       echo "                       redact: the redacted synced copy is the ruling, nothing is held or asked"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
       echo "  FLAKELAB_SOPS_RENDER        1 when sops-nix renders the secrets (set by the nix wrapper): the legacy"
-      echo "                       ~/.config/tyc/secrets.env is neither archived nor restored"
+      echo "                       ~/.config/flakelab/secrets.env is neither archived nor restored"
       echo ""
       echo "Exits non-zero if any file failed to copy or failed verification."
       echo ""
@@ -1124,8 +1124,8 @@ do_restore() {
   if ${SOPS_RENDER}; then
     log_info "Skipped: secrets come from the sops render, the legacy file is not restored"
   else
-    mkdir -p "${HOME_DIR}/.config/tyc" && chmod 700 "${HOME_DIR}/.config/tyc"
-    restore_private_file "${BACKUP_SECRETS}/secrets.env" "${HOME_DIR}/.config/tyc/secrets.env"
+    mkdir -p "${HOME_DIR}/.config/flakelab" && chmod 700 "${HOME_DIR}/.config/flakelab"
+    restore_private_file "${BACKUP_SECRETS}/secrets.env" "${HOME_DIR}/.config/flakelab/secrets.env"
   fi
 
   log_info "--- k9s ---"
@@ -1318,7 +1318,7 @@ do_backup() {
       && log_warn "A plaintext secrets.env is still in the backup root: ${BACKUP_SECRETS}/secrets.env — the sops file supersedes it; remove it"
   else
     ensure_private_dir "${BACKUP_SECRETS}"
-    backup_private_file "${HOME_DIR}/.config/tyc/secrets.env" "${BACKUP_SECRETS}/secrets.env"
+    backup_private_file "${HOME_DIR}/.config/flakelab/secrets.env" "${BACKUP_SECRETS}/secrets.env"
   fi
 
   log_info "--- k9s ---"

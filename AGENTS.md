@@ -7,8 +7,8 @@ Shareable NixOS dev environment (`nixosConfigurations.default` — the WSL distr
 the private overlay `flakelab-config`, which imports this flake via
 `lib.mkSystem`.
 
-- Secrets reach the shell at use time from the sops render (`/run/secrets/tyc-env`) or `~/.config/tyc/secrets.env`, never from the flake.
-- The Bitwarden session token is the exception: `bwu` takes the Bitwarden master password, parks the token in `~/.config/tyc/bw-session`, and the shell exports it as `BW_SESSION`. A locked vault waits on `bwu` — never ask for the token or put it on a command line.
+- Secrets reach the shell at use time from the sops render (`/run/secrets/flakelab-env`) or `~/.config/flakelab/secrets.env`, never from the flake.
+- The Bitwarden session token is the exception: `bwu` takes the Bitwarden master password, parks the token in `~/.config/flakelab/bw-session`, and the shell exports it as `BW_SESSION`. A locked vault waits on `bwu` — never ask for the token or put it on a command line.
 - **`flakelab` is the CLI.** One binary, subcommands; `flakelab --help` lists
   them all. It is a ROUTER (`files/scripts/flakelab`): each subcommand still
   execs the same per-command wrapper `nix/scripts.nix` builds, so every one

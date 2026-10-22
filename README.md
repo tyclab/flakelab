@@ -411,7 +411,7 @@ other:
    file it commits as ciphertext - the template `.gitignore` ignores every
    `secrets.env`, so the overlay re-includes this one with
    `!secrets/secrets.env`. sops-nix decrypts it at activation into the
-   `/run/secrets` ramfs (`/run/secrets/tyc-env`, mode 0400, owned by the login)
+   `/run/secrets` ramfs (`/run/secrets/flakelab-env`, mode 0400, owned by the login)
    and the zsh init sources it from there — plaintext never touches a disk, a
    repo, or a backup. `sops` and `age` ship _with_ the option
    (`nix/secrets.nix` installs them under the same `mkIf`), so a first enrolment
@@ -423,7 +423,7 @@ other:
    on PATH for every rotation after that.
    Rotation: `sops <file>` edits values; `.sops.yaml` + `sops updatekeys`
    changes recipients.
-2. **Without sops** — `~/.config/tyc/secrets.env` (git-ignored), populated
+2. **Without sops** — `~/.config/flakelab/secrets.env` (git-ignored), populated
    from your secret store or by hand;
    `files/config/secrets.env.example` is a copyable skeleton.
 
@@ -431,13 +431,13 @@ other:
 for you from the `custom_env_vars` of the config it provisions from (it asks
 first): the names in the table below go there, everything else becomes
 `sessionVariables` in the generated flake, so no token reaches the
-world-readable store. (`tyc` there is a fixed namespace this repo hardcodes,
-not a setting.)
+world-readable store. On a box set up while these files lived in `~/.config/tyc`,
+`flakelab doctor` warns and prints the one `mv` that moves them.
 
 There are **two** files, and only one of them exists before a distro does. The
 Windows side — `provision`, and anything you edit by hand on a fresh PC — reads
 and writes `<overlay>-payload\shared\secrets\secrets.env`. The in-distro
-`~/.config/tyc/secrets.env` that the shell actually sources is restored from it
+`~/.config/flakelab/secrets.env` that the shell actually sources is restored from it
 by `flakelab backup --restore`, which `provision` runs for you.
 
 | Key                             | Needed by                                        |
@@ -462,7 +462,7 @@ The Bitwarden CLI (`bw`) keeps whatever endpoint it already has unless
 `bitwardenServer` names one (default `null`); set it — `"https://vault.bitwarden.eu"`
 for the EU region — and every rebuild points `bw config server` there. Unlocking
 stays interactive: `bwu` runs `bw unlock` on your TTY and parks the session token
-it prints in mode-600 `~/.config/tyc/bw-session`, which every shell exports as
+it prints in mode-600 `~/.config/flakelab/bw-session`, which every shell exports as
 `BW_SESSION` — agents and MCP servers inherit it without the token ever appearing
 on a command line or in a transcript; `bwl` locks the vault and removes the file.
 The token is per-unlock (valid until `bw lock`/`bw logout`), so it is not a
