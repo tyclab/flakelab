@@ -462,6 +462,12 @@ rec {
       inherit (cfg) repos sshKeys;
       cloneKeyResolve = import ./clone-key.nix { inherit lib sshKeys; };
       hasWork = groups != [ ] || cfg.cloneGithub || repos != [ ];
+      # Where the shell's GITLAB_TOKEN comes from, as zsh.nix sources it.
+      tokenSource =
+        if cfg.sopsSecretsFile != null then
+          "the sops secrets file (sopsSecretsFile)"
+        else
+          "~/.config/flakelab/secrets.env";
 
       # --include-subgroups also returns projects shared INTO the group, and the "/"
       # boundary keeps sibling namespaces out. The jq keeps `.archived != true` and is
@@ -478,10 +484,14 @@ rec {
       # Fail fast: a truncated list is indistinguishable from "those repos are gone".
       # The exclusion grep stays outside that fence, because under pipefail filtering
       # everything out looks like a failed glab call.
+      # Exit 3 is this refusal alone, so setup-wsl-nix.ps1 can tell it from a failed clone.
       discoveryBlock = lib.optionalString (groups != [ ] || cfg.cloneGithub) ''
-        ${lib.optionalString (
-          groups != [ ]
-        ) '': "''${GITLAB_TOKEN:?GITLAB_TOKEN not set — source ~/.config/flakelab/secrets.env}"''}
+        ${lib.optionalString (groups != [ ]) ''
+          if [ -z "''${GITLAB_TOKEN:-}" ]; then
+            echo "nix-clone-repos: GITLAB_TOKEN is not set, so the GitLab groups cannot be listed and nothing was cloned. Add it to ${tokenSource}, open a new shell, then run flakelab clone." >&2
+            exit 3
+          fi
+        ''}
         set -e
         {
         ${lib.concatMapStringsSep "\n        " listGroup groups}
@@ -519,7 +529,8 @@ rec {
             echo "~/git, fetches and rebases the clones already there, installs their"
             echo "pre-commit hooks, and reports clones whose project is archived or"
             echo "scheduled for deletion. No options: the groups, the repos and the"
-            echo "exclusions come from the overlay."
+            echo "exclusions come from the overlay. Exits 3, cloning nothing, when"
+            echo "GitLab groups are configured and GITLAB_TOKEN is not set."
             exit 0
             ;;
           *)

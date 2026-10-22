@@ -568,7 +568,7 @@ if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   # variable IS set, configured groups or not: a broken token is broken.
   if [[ "${GITLAB_TOKEN}" == *[[:cntrl:]]* ]]; then
     log_fail "GITLAB_TOKEN carries a control character (${#GITLAB_TOKEN} chars)"
-    log_hint "the value in THIS shell is stale, even if secrets.env is already fixed"
+    log_hint "the value in THIS shell is stale, even if the secrets are already fixed"
     log_hint "start a fresh login shell: exec zsh -l"
   else
     log_ok "GITLAB_TOKEN exported in this shell (${#GITLAB_TOKEN} chars, no control characters)"
@@ -576,7 +576,7 @@ if [[ -n "${GITLAB_TOKEN:-}" ]]; then
 elif needs_glab; then
   log_fail "GITLAB_TOKEN not exported in this shell"
   log_hint "flakelab clone needs it for group discovery (${GITLAB_GROUPS} group(s) configured)"
-  log_hint "the zsh hook sources secrets.env at login; start a login shell (exec zsh -l)"
+  log_hint "every zsh sources the secrets (the sops render, or secrets.env) at start; start a new one (exec zsh -l)"
 else
   log_ok "no gitlabGroups configured for this user — skipping the GITLAB_TOKEN check"
 fi
