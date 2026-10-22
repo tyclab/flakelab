@@ -18,6 +18,12 @@ with no PowerShell and no WSL, so a Linux or macOS host can write an overlay —
 and only write one, since applying it needs an `x86_64-linux` NixOS box, WSL2
 or a Proxmox guest.
 
+A clone made with `--filter=blob:none` cannot be evaluated in place: nix's
+libgit2 rejects `extensions.partialclone`, so `nix flake check` and `nix fmt`
+fail. Convert it with `git fetch --refetch --no-filter origin`, then unset
+`extensions.partialclone`, `remote.origin.promisor` and
+`remote.origin.partialclonefilter`; `nix flake check path:.` works meanwhile.
+
 ## Required local gate
 
 ```bash
