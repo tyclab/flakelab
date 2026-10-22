@@ -577,8 +577,6 @@ contains "warns that it kept the local copy"    "${OUT}" "--skip-conflicts"
 contains "and lists it in the summary"          "${OUT}" "Kept 1 existing file"
 live="$(< "${FIX_HOME}/.claude/CLAUDE.md")"
 contains "the local copy is the one still there" "${live}" "rewritten here"
-contains "and the kept list is written for the caller" \
-  "$(< "${FIX_ROOT}/.last-restore-kept")" ".claude/CLAUDE.md"
 
 # run_backup_tty <keys> <args...> — run_backup on a pseudo-terminal (util-linux
 # `script`), the keys typed ahead; the escape codes stripped from OUT.
@@ -617,8 +615,7 @@ check    "the restore exits clean without --skip-conflicts" "${RC}"  "0"
 contains "and says it kept the local copy"                  "${OUT}" "keeping local"
 live="$(< "${FIX_HOME}/.claude/plugins/installed_plugins.json")"
 contains "this box's list is untouched" "${live}" "this box"
-excludes "it is not counted as a skipped conflict" \
-  "$(< "${FIX_ROOT}/.last-restore-kept")" "installed_plugins.json"
+excludes "it is not counted as a skipped conflict" "${OUT}" "(--skip-conflicts):"
 
 run_restore --force
 check "--force still overrides activation ownership" \
@@ -957,8 +954,8 @@ absent   "and the payload's stale memory copy is not read"  "${MEM_HOME}/stale.m
 # memory is read beside the root's, first, so the root's tombstones have the last word.
 print -r -- "a --from restore with a state root reads the source's memory too"
 memory_fixture state-memory-from
-SRC_MEM="${BASE}/state-memory-from/source/files/config/instances/TestDistro/claude/projects/some-slug/memory"
-SRC_CODEX="${BASE}/state-memory-from/source/files/config/instances/TestDistro/codex/memories"
+SRC_MEM="${BASE}/state-memory-from/source/instances/TestDistro/claude/projects/some-slug/memory"
+SRC_CODEX="${BASE}/state-memory-from/source/instances/TestDistro/codex/memories"
 mkdir -p "${SRC_MEM}" "${SRC_CODEX}" "${FIX_STATE}/claude/projects/some-slug/memory-tombstones"
 print -r -- "- [migrated](migrated.md)" > "${SRC_MEM}/MEMORY.md"
 print -r -- "from the old repo"         > "${SRC_MEM}/migrated.md"
@@ -986,8 +983,8 @@ is_file  "and the state root's"                         "${FIX_HOME}/.codex/memo
 print -r -- "a --from restore whose state root is unavailable still reads the source's memory"
 fixture from-memory-offline
 STATE="${BASE}/from-memory-offline/no-such-parent/state"
-SRC_MEM="${BASE}/from-memory-offline/source/files/config/instances/TestDistro/claude/projects/some-slug/memory"
-SRC_CODEX="${BASE}/from-memory-offline/source/files/config/instances/TestDistro/codex/memories"
+SRC_MEM="${BASE}/from-memory-offline/source/instances/TestDistro/claude/projects/some-slug/memory"
+SRC_CODEX="${BASE}/from-memory-offline/source/instances/TestDistro/codex/memories"
 mkdir -p "${SRC_MEM}" "${SRC_CODEX}"
 print -r -- "from the old repo"       > "${SRC_MEM}/migrated.md"
 print -r -- "codex from the old repo" > "${SRC_CODEX}/migrated.md"

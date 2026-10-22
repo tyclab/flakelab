@@ -7,11 +7,12 @@
     carries only what must not be pushed here: flake.nix (username, git identity,
     GitLab groups, profiles, sessionVariables), secrets.env and the SSH keys.
 
-    ONE command does all of it, because every value the overlay needs is already
-    in a wslkube-shaped user_data.yaml: `provision` GENERATES the overlay flake
-    from that config and harvests secrets.env out of the same file, then imports
-    and applies. With a wslkube checkout next door it needs no arguments; on a
-    machine without one, -Config names the config file. Nothing to hand-edit.
+    ONE command does all of it, because every value the overlay needs is in one
+    user_data.yaml (files\config\user_data.example.yaml is the schema):
+    `provision` GENERATES the overlay flake from that config and harvests
+    secrets.env out of the same file, then imports and applies. -Config names
+    the config file; without it the copy beside the overlay is read. Nothing to
+    hand-edit.
 
     FRESH PC, NO CONFIG: in an interactive console `provision` asks for the four
     values a config cannot do without (Linux user, git name, git mail, profiles)
@@ -36,10 +37,6 @@
                  `nixos-rebuild switch` runs (see Invoke-Bootstrap for why),
                  seeding the SSH key + secrets.env and loading the key into the
                  distro's ssh-agent in between.
-      migrate    ONE-OFF pull of remaining state out of a wslkube-provisioned
-                 checkout: secrets.env from its user_data.yaml, then
-                 `flakelab backup --restore --from`. wslkube stays READ-ONLY and a
-                 done-marker makes it one-off.
       status     Show what is present, what is missing, and interop health.
 
     WARNING (known-issues.md): `nixos-rebuild` boots systemd and wipes WSL
@@ -68,12 +65,10 @@
     scaffolds it for hand-editing.
 
 .PARAMETER Config
-    A wslkube-shaped user_data.yaml. `generate`/`provision` build the overlay
-    flake from it and harvest secrets.env from it, so nothing has to be
-    hand-edited. Defaults to the sibling wslkube checkout's
-    files\config\user_data.yaml; pass this on a machine that has no wslkube (start
-    from files\config\user_data.example.yaml in this repo). It is the SAME schema
-    either way - wslkube's own - so there is no second format to keep in sync.
+    A user_data.yaml (start from files\config\user_data.example.yaml in this
+    repo). `generate`/`provision` build the overlay flake from it and harvest
+    secrets.env from it, so nothing has to be hand-edited. Defaults to
+    <overlay>-payload\user_data.yaml, the file the first-run questions write.
 
     The generated flake is the profile from then on: it is never overwritten
     without -Force, so a hand-edit survives every later `provision`.
@@ -109,17 +104,12 @@
     SHARED categories until that name is passed here. A name the payload has no
     directory for is refused, listing the ones it has. Default: -DistroName.
 
-    It does not reach the wslkube path: with a wslkube checkout present, that
-    restore runs first and wins, and -WslkubeInstance is what names an instance
-    there. Passing this one while that happens warns and changes nothing.
-
 .PARAMETER CopyLiveCredentials
-    Pre-authorise the credential copy. `provision`/`migrate` read LIVE tokens out
-    of the config they provision from and the private key out of the running
-    wslkube distro, and write them UNENCRYPTED into the overlay - so without this
-    flag an interactive run asks first, and a non-interactive one skips the copy
-    rather than doing it silently. Names of what would be copied are shown; values
-    never are.
+    Pre-authorise the credential copy. `provision` reads LIVE tokens out of the
+    config it provisions from and writes them UNENCRYPTED into the overlay - so
+    without this flag an interactive run asks first, and a non-interactive one
+    skips the copy rather than doing it silently. Names of what would be copied
+    are shown; values never are.
 
 .PARAMETER Shutdown
     Answer yes up front to the `wsl --shutdown` this script offers after each
@@ -130,16 +120,13 @@
 .PARAMETER Force
     Overwrite existing overlay files on `init`, REGENERATE the overlay flake from
     the config on `generate` and `provision` (both keep an existing flake.nix
-    without it, so a hand-edit survives), and re-run a completed `migrate`.
+    without it, so a hand-edit survives).
 
 .PARAMETER DryRun
     Print every step without touching WSL, the overlay or the network.
 
 .EXAMPLE
-    # ONE command, wslkube checkout next door: flake, secrets and key all derived.
-    .\setup-wsl-nix.ps1 provision
-.EXAMPLE
-    # ONE command on a machine with no wslkube - same schema, same result.
+    # ONE command: flake and secrets derived from the config.
     .\setup-wsl-nix.ps1 provision -Config D:\configs\user_data.yaml
 .EXAMPLE
     # Generate the overlay and stop, to read it (or `nix eval` it) first.
@@ -159,7 +146,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('init', 'generate', 'provision', 'bootstrap', 'migrate', 'status')]
+    [ValidateSet('init', 'generate', 'provision', 'bootstrap', 'status')]
     [string]$Command = 'status',
 
     [string]$FlakeRef,
@@ -171,9 +158,6 @@ param(
     # Derived from the distro name so a second distro cannot import onto the first one's VHD.
     [string]$InstallDir = "$env:LOCALAPPDATA\WSL\$DistroName",
     [string]$SshPassphrase,
-    # The predecessor distro `migrate` and seeding read; a wrong name skips every step and still reports success.
-    [string]$WslkubeDistro = 'wslkube',
-    [string]$WslkubeInstance = '',
     # See .PARAMETER RestoreInstance; defaults to this distro's name, as `flakelab backup --restore` does.
     [string]$RestoreInstance = $DistroName,
     [switch]$CopyLiveCredentials,
@@ -189,10 +173,6 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is ~10x slower with it
 $started = Get-Date
 
-# Whether -RestoreInstance was NAMED: its default is $DistroName, so the value
-# alone cannot say whether the caller chose it, and the wslkube preemption
-# warning below has to tell those apart.
-$RestoreInstanceNamed = $PSBoundParameters.ContainsKey('RestoreInstance')
 # Nothing escapes a single quote across into zsh; refused before the distro is built.
 if ($RestoreInstance.Contains("'")) {
     throw ("-RestoreInstance {0}: a single quote in an instance name cannot cross the wsl.exe boundary. Rename the instance directory." -f $RestoreInstance)
@@ -259,13 +239,6 @@ function Invoke-Wsl([string]$dn, [string]$asUser, [string[]]$cmd, [int[]]$AllowE
     if ($LASTEXITCODE -ne 0 -and $AllowExit -notcontains $LASTEXITCODE) { throw "wsl.exe failed (exit $LASTEXITCODE) for: $($cmd[0])" }
 }
 
-# Feature-detect the `flakelab` subcommands: `migrate` may target a distro built before the CLI.
-# if/else on presence, not `new || old`, which would rerun real failures under the old name.
-function DistroCmd([string]$Sub, [string]$Legacy, [string]$CmdArgs = '') {
-    $a = if ($CmdArgs) { " $CmdArgs" } else { '' }
-    "if command -v flakelab >/dev/null 2>&1; then flakelab $Sub$a; else $Legacy$a; fi"
-}
-
 $RepoWin = $PSScriptRoot
 $RepoWsl = ToWslPath $RepoWin
 $TemplateWin = Join-Path $RepoWin 'templates\overlay'
@@ -274,33 +247,20 @@ $TemplateWin = Join-Path $RepoWin 'templates\overlay'
 if (-not $FlakeRef) {
     $siblingDir = Split-Path $RepoWin -Parent
     $FlakeRef = Join-Path $siblingDir 'flakelab-config'
-    # Transitional (rename 2026-08-21): without it the fallback retargets this repo and a credential-writing command
-    # copies cleartext tokens into the checkout (observed 2026-08-22). Delete once the overlays are renamed.
-    if (-not (Test-Path (Join-Path $FlakeRef 'flake.nix'))) {
-        $legacyRef = Join-Path $siblingDir 'wslnix-config'
-        if (Test-Path (Join-Path $legacyRef 'flake.nix')) {
-            Warn "using the pre-rename overlay $legacyRef - rename it to flakelab-config, or pass -FlakeRef to silence this."
-            $FlakeRef = $legacyRef
-        }
-    }
 }
 # Resolve-Path throws on a missing path, and generation targets an overlay that does not exist yet.
 if (Test-Path $FlakeRef) { $FlakeRefFull = (Resolve-Path $FlakeRef).Path }
 elseif ([IO.Path]::IsPathRooted($FlakeRef)) { $FlakeRefFull = [IO.Path]::GetFullPath($FlakeRef) }
 else { $FlakeRefFull = [IO.Path]::GetFullPath((Join-Path (Get-Location).Path $FlakeRef)) }
 
-$GitRoot = Split-Path $FlakeRefFull -Parent
-$WslkubeWin = Join-Path $GitRoot 'wslkube'
-
-# One config (wslkube schema) drives the overlay flake and secrets.env; empty means hand-seeding.
+# One config drives the overlay flake and secrets.env; empty means hand-seeding.
 if ($Config) {
     if (-not (Test-Path $Config)) { throw "-Config '$Config' not found" }
     $ConfigPath = (Resolve-Path $Config).Path
 }
 else {
-    $ConfigPath = Join-Path $WslkubeWin 'files\config\user_data.yaml'
-    # Then the copy beside the overlay (beside, not in: it carries cleartext tokens).
-    if (-not (Test-Path $ConfigPath)) { $ConfigPath = Join-Path (Get-PayloadRoot $FlakeRefFull) 'user_data.yaml' }
+    # The copy beside the overlay (beside, not in: it carries cleartext tokens).
+    $ConfigPath = Join-Path (Get-PayloadRoot $FlakeRefFull) 'user_data.yaml'
     if (-not (Test-Path $ConfigPath)) { $ConfigPath = '' }
 }
 
@@ -400,10 +360,6 @@ if (-not $ConfigPath -and $Command -eq 'provision' -and -not $DryRun -and
     -not (Test-Path (Join-Path $FlakeRefFull 'flake.nix')) -and (Test-InteractiveConsole)) {
     $ConfigPath = Invoke-ConfigWizard (Join-Path (Get-PayloadRoot $FlakeRefFull) 'user_data.yaml')
 }
-if ($Config -and $ConfigPath -match '(?i)\\files\\config\\user_data[^\\]*\.yaml$') {
-    $candidate = Split-Path (Split-Path (Split-Path $ConfigPath -Parent) -Parent) -Parent
-    if (Test-Path (Join-Path $candidate 'files\scripts\wsl-backup')) { $WslkubeWin = $candidate }
-}
 
 $OverlayIsFallback = $false
 $CanGenerate = (($Command -eq 'generate') -or ($Command -eq 'provision')) -and $ConfigPath
@@ -414,9 +370,9 @@ elseif (Test-Path (Join-Path $FlakeRefFull 'flake.nix')) {
     $OverlayWin = $FlakeRefFull
 }
 else {
-    # migrate/-CopyLiveCredentials write live keys and tokens under the overlay: falling back to this repo is an error
+    # -CopyLiveCredentials writes live tokens under the overlay: falling back to this repo is an error
     # (observed 2026-08-22, secrets.env landed in the checkout).
-    if ($Command -eq 'migrate' -or $CopyLiveCredentials) {
+    if ($CopyLiveCredentials) {
         throw ("no overlay flake at $FlakeRef, and '$Command' writes credentials into the overlay - " +
                "refusing to write them into this repo. Pass -FlakeRef <your overlay>, " +
                "or create one first with: .\setup-wsl-nix.ps1 init")
@@ -454,11 +410,10 @@ $PayloadWsl = ToWslPath $PayloadWin
 $KeyDirWin = Join-Path $PayloadWin 'shared\ssh\keys'
 $KeyWin = Join-Path $KeyDirWin 'id_ed25519'
 # The path nix-backup already owns on both ends (files/scripts/nix-backup, the
-# `secrets` shared category), so a migrated payload lands exactly where seeding
+# `secrets` shared category), so a restored payload lands exactly where seeding
 # reads it and no second location is invented.
 $SecretsDirWin = Join-Path $PayloadWin 'shared\secrets'
 $SecretsWin = Join-Path $SecretsDirWin 'secrets.env'
-$Marker = Join-Path $OverlayWin '.migrated-from-wslkube'
 # Old-layout payload under the overlay: not moved for the operator, but said, since nix still copies it into the store.
 $OldPayloadHere = @('shared', 'instances', 'snapshots', 'user_data.yaml') |
     Where-Object { Test-Path (Join-Path $OverlayWin "files\config\$_") }
@@ -499,7 +454,7 @@ else {
 }
 
 # NAMES of the runtime secrets ~/.config/flakelab/secrets.env must define - the same
-# set as files/config/secrets.env.example. Shared by the wslkube harvester and
+# set as files/config/secrets.env.example. Shared by the config harvester and
 # the manual-seed instructions; values never live here.
 $SecretKeyNames = @('GITLAB_TOKEN', 'GH_TOKEN', 'HASS_TOKEN',
     'PROXMOX_TOKEN_ID', 'PROXMOX_TOKEN_SECRET',
@@ -526,7 +481,7 @@ $SshPassphraseResolved = $false
 # initialise before first use.
 $FlakeFromConfig = $false
 
-# wslkube's user_data.yaml is the one schema. Parsed by hand: PS 5.1 has no YAML reader, and the file is flat.
+# user_data.yaml is the one schema. Parsed by hand: PS 5.1 has no YAML reader, and the file is flat.
 # A line outside that subset is named by number, never quoted: its value may be a token.
 function ConvertFrom-YamlScalar([string]$raw) {
     $s = $raw.Trim()
@@ -632,28 +587,14 @@ function Get-UserDataList($ud, [string]$key) {
     return @(@($v) | Where-Object { $null -ne $_ })
 }
 
-# Layer wslkube's variables.yaml under user_data.yaml as Ansible does: reading only user_data gave an overlay with no
-# groups and a silently empty ~/git.
-function Read-WslkubeConfig([string]$udPath, [string]$wslkubeRoot) {
-    $ud = Read-UserDataYaml $udPath
-    if (-not $wslkubeRoot) { return $ud }
-    $varsPath = Join-Path $wslkubeRoot 'variables.yaml'
-    if (-not (Test-Path $varsPath)) { return $ud }
-    $vars = Read-UserDataYaml $varsPath
-    $merged = [ordered]@{}
-    foreach ($k in $vars.Keys) { $merged[$k] = $vars[$k] }
-    foreach ($k in $ud.Keys) { $merged[$k] = $ud[$k] }
-    return $merged
-}
-
 # Every top-level key is mapped, harvested or named; s scalar, l list, m map, i list of maps.
 # Keep in step with nix-overlay-generate's _shape and _fields.
 $ConfigShape = @{
     user = 's'; target = 's'; gitfullname = 's'; gitmail = 's'; userlocale = 's'; windows_username = 's'
-    backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'; dockerautostart = 's'
+    backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'
     whatsapp_mcp_dir = 's'; overlay_url = 's'
     profiles = 'l'; teams = 'l'; team = 'l'; gitlab_groups = 'l'; sshkeyautoadd = 'l'
-    claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'; extra_task_files = 'l'
+    claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'
     custom_env_vars = 'm'; claude_plugin_marketplace = 'm'; repos = 'i'; custom_aliases = 'i'
 }
 $ConfigFields = @('repos.url', 'repos.rel_path', 'custom_aliases.name', 'custom_aliases.command',
@@ -665,7 +606,7 @@ function Write-DroppedKey([string]$k) {
 
 # Names what the overlay has no field for, and removes a key whose shape the
 # mapping does not read, so the flake never carries half of it.
-function Remove-UnmappedConfig($ud, [string]$udPath) {
+function Remove-UnmappedConfig($ud) {
     $shapeName = @{ s = 'scalar'; l = 'list'; m = 'map'; i = 'list of maps' }
     foreach ($k in @($ud.Keys)) {
         $v = $ud[$k]
@@ -692,18 +633,6 @@ function Remove-UnmappedConfig($ud, [string]$udPath) {
     $market = Get-UserDataValue $ud 'claude_plugin_marketplace'
     if ($market -is [Collections.IDictionary]) { $seen += @($market.Keys | ForEach-Object { "claude_plugin_marketplace.$_" }) }
     foreach ($f in @($seen | Sort-Object -Unique)) { if ($ConfigFields -notcontains $f) { Write-DroppedKey $f } }
-
-    $tasks = @(Get-UserDataList $ud 'extra_task_files' | Where-Object { $_ -is [string] -and $_ })
-    if ($tasks.Count -gt 0) { Warn ("  extra_task_files names wslkube Ansible tasks nothing here runs: {0}" -f ($tasks -join ', ')) }
-    $fromWslkube = $udPath -and ([IO.Path]::GetFullPath((Split-Path $udPath -Parent)).TrimEnd('\') -eq
-        [IO.Path]::GetFullPath((Join-Path $WslkubeWin 'files\config')).TrimEnd('\'))
-    if (-not $fromWslkube) { return }
-    $customDir = Join-Path $WslkubeWin 'files\config\custom'
-    $custom = @(Get-ChildItem -Path $customDir -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notlike '.*' } | Sort-Object Name | Select-Object -ExpandProperty Name)
-    if ($custom.Count -gt 0) {
-        Warn ("  {0}\ holds {1} - wslkube additions nothing here reads; port them to the overlay by hand" -f $customDir, ($custom -join ', '))
-    }
 }
 
 function Get-ProfileGroupMap {
@@ -764,7 +693,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     }
     $username = [string](Get-UserDataValue $ud 'user')
     if (-not $username) { throw "no 'user:' in $udPath - that is the Linux username, there is no sane default for it" }
-    # Required, as in wslkube: git would otherwise commit as a placeholder identity.
+    # Required: git would otherwise commit as a placeholder identity.
     $gitName = [string](Get-UserDataValue $ud 'gitfullname')
     $gitEmail = [string](Get-UserDataValue $ud 'gitmail')
     if (-not $gitName -or -not $gitEmail) { throw "no 'gitfullname:'/'gitmail:' in $udPath - the git identity has no default" }
@@ -803,7 +732,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     $body += "        repoPath = $(ConvertTo-NixString $OverlayWsl);"
     $body += ''
     $body += '        # Keep this overlay and flakelab itself out of ~/git.'
-    # wslkube's clone_exclude is unioned in, not replaced: dropping it re-clones Windows-mount repos into ~/git.
+    # clone_exclude is unioned in, not replaced: dropping it re-clones Windows-mount repos into ~/git.
     $overlayUrl = [string](Get-UserDataValue $ud 'overlay_url')
     $overlayName = if ($overlayUrl) { (($overlayUrl -replace '/$', '') -replace '\.git$', '') -replace '^.*[/:]', '' } else { Split-Path $OverlayWin -Leaf }
     if ($overlayUrl -and -not $overlayName) { throw "overlay_url names no repository: '$overlayUrl'" }
@@ -821,7 +750,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     }
     $known = @(Get-KnownProfileName)
 
-    # A wslkube config has no profiles: derive them from gitlab_groups so a migration selects them.
+    # No profiles named: a group a profile declares selects that profile.
     $groups = @(Get-UserDataList $ud 'gitlab_groups' | Where-Object { $_ })
     $groupMap = Get-ProfileGroupMap
     if ($profiles.Count -eq 0 -and $groups.Count -gt 0) {
@@ -842,7 +771,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     $namedRepos = @(Get-UserDataList $ud 'repos' | Where-Object { [string](Get-UserDataValue $_ 'url') })
     # No profile, group or repo yields an empty box that reports success: refuse.
     if ($profiles.Count -eq 0 -and $personalGroups.Count -eq 0 -and $namedRepos.Count -eq 0) {
-        throw ("no profiles, no gitlab_groups and no repos resolved from {0} - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: {1}), 'gitlab_groups:' or 'repos:'; a wslkube checkout keeps gitlab_groups in its variables.yaml, which is read only when the config sits inside that checkout." -f $udPath, ($known -join ', '))
+        throw ("no profiles, no gitlab_groups and no repos resolved from {0} - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: {1}), 'gitlab_groups:' or 'repos:'." -f $udPath, ($known -join ', '))
     }
     if ($profiles.Count -eq 0) {
         Warn ("  no profiles selected - the box gets NO profile packages or profile GitLab groups; 'repos:' entries are still cloned. Known: {0}" -f ($known -join ', '))
@@ -858,7 +787,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += Format-NixList 'gitlabGroups' $personalGroups '        '
     }
 
-    # Space-separated in wslkube; the FIRST key is the git identity.
+    # Space-separated; the FIRST key is the git identity.
     $sshRaw = [string](Get-UserDataValue $ud 'sshkeyautoadd')
     if ($sshRaw) {
         $sshKeys = @($sshRaw -split '\s+' | Where-Object { $_ })
@@ -917,7 +846,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += '        # default on a proxmox-vm seed built from it.'
         $body += ("        overlayUrl = {0};" -f (ConvertTo-NixString $overlayUrl))
     }
-    # wslkube hardcodes this in its task files, so regeneration would silently drop it.
+    # A config key, not a constant: it names a private checkout path.
     $whatsappDir = [string](Get-UserDataValue $ud 'whatsapp_mcp_dir')
     if ($whatsappDir) {
         $body += ''
@@ -997,7 +926,6 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
 $InProvision = $false
 # Flags, not return values: wsl.exe output in the pipeline makes a returned $false a truthy array.
 $BootstrapStopped = $false
-$PayloadRestored = $false
 $SwitchVerdict = $null
 $CarriedUnits = @()
 $ExitCode = 0
@@ -1287,7 +1215,6 @@ function Show-ManualSeedInstructions([string]$reason) {
         Write-Host ("      2. secrets.env      : not needed - sops-nix renders them from {0}" -f (Get-SopsSecretsPath)) -ForegroundColor DarkGray
     }
     Write-Host ("    then inside the distro:  flakelab update   (and  flakelab doctor  to see what is still deferred)") -ForegroundColor DarkGray
-    Write-Host ("    (With a wslkube checkout at {0}, 'migrate' seeds both for you.)" -f $WslkubeWin) -ForegroundColor DarkGray
 }
 
 # Runs BETWEEN the switches: no ~ before the first, and the second consumes the key via the agent.
@@ -1541,14 +1468,14 @@ function Invoke-Init {
     Write-Host  "     (or skip steps 1-3 entirely: 'provision -Config <user_data.yaml>' generates all of it)" -ForegroundColor DarkGray
     Write-Host ("  2. drop the private SSH key(s) named in sshKeys into {0}" -f $KeyDirWin) -ForegroundColor DarkGray
     Write-Host  "     (LF line endings only - OpenSSH rejects a CRLF private key)" -ForegroundColor DarkGray
-    Write-Host ("  3. write {0} (from files\config\secrets.env.example), or let 'provision'/'migrate' harvest it from a config" -f $SecretsWin) -ForegroundColor DarkGray
+    Write-Host ("  3. write {0} (from files\config\secrets.env.example), or let 'provision' harvest it from a config" -f $SecretsWin) -ForegroundColor DarkGray
     Write-Host ("  4. .\setup-wsl-nix.ps1 provision -FlakeRef {0}" -f $OverlayWin) -ForegroundColor DarkGray
 }
 
 function Set-OverlayFromConfig([string]$udPath) {
     Say "overlay flake from config: $udPath"
-    $ud = Read-WslkubeConfig $udPath $WslkubeWin
-    Remove-UnmappedConfig $ud $udPath
+    $ud = Read-UserDataYaml $udPath
+    Remove-UnmappedConfig $ud
     $flakeExisted = Test-Path $OverlayFlakeWin
     New-OverlaySkeleton $OverlayWin ((New-OverlayFlakeText $ud $udPath) -join "`n") ([string](Get-UserDataValue $ud 'overlay_url'))
     if ($flakeExisted -and -not $Force) {
@@ -1750,10 +1677,10 @@ function Restore-Backup {
         # A dry run reports and carries on, so later steps stay visible.
         if ($DryRun) { Warn $msg } else { throw $msg }
     }
-    # Only when it differs (older nix-backup lacks --instance); -cne: the payload is on a case-sensitive filesystem.
+    # Only when it differs from the default; -cne: the payload is on a case-sensitive filesystem.
     $inst = if ($RestoreInstance -and $RestoreInstance -cne $DistroName) { " --instance '$RestoreInstance'" } else { '' }
     if ($inst) { Say "  restoring backup instance '$RestoreInstance'" 'DarkGray' }
-    $cmd = DistroCmd 'backup' 'nix-backup' "--restore$inst"
+    $cmd = "flakelab backup --restore$inst"
     if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
     & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd
     if ($LASTEXITCODE -ne 0) { Warn "flakelab backup --restore (instance '$RestoreInstance') returned $LASTEXITCODE - nothing staged yet, or see its output above" }
@@ -1765,23 +1692,12 @@ function Invoke-CloneRepos {
     if ($SkipCloneRepos) { Warn 'flakelab clone skipped (-SkipCloneRepos)'; return }
     Say 'flakelab clone (GitLab group discovery)'
     $cmd = '[ -r ~/.config/flakelab/secrets.env ] && { set -a; . ~/.config/flakelab/secrets.env; set +a; }; ' `
-        + (DistroCmd 'clone' 'nix-clone-repos')
+        + 'flakelab clone'
     if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
     & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd
     if ($LASTEXITCODE -ne 0) {
         Warn "flakelab clone failed - is GITLAB_TOKEN in ~/.config/flakelab/secrets.env?"
     }
-}
-
-function Get-WslkubeInstance {
-    if ($WslkubeInstance) { return $WslkubeInstance }
-    $instRoot = Join-Path $WslkubeWin 'files\config\instances'
-    $cand = Get-ChildItem -Path $instRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { Test-Path (Join-Path $_.FullName 'kube') } |
-        Sort-Object { @(Get-ChildItem -Path $_.FullName -Recurse -File -ErrorAction SilentlyContinue).Count } -Descending |
-        Select-Object -First 1
-    if ($cand) { return $cand.Name }
-    return ''
 }
 
 # Copies live tokens and the private key UNENCRYPTED to the Windows mount: consented (-CopyLiveCredentials or a prompt),
@@ -1791,10 +1707,6 @@ function Confirm-CredentialCopy([string]$udPath, [int]$tokenCount = 0) {
     Warn 'about to copy LIVE credentials into the overlay, unencrypted on the Windows mount:'
     Write-Host ("    from  {0}" -f $udPath) -ForegroundColor DarkGray
     Write-Host ("      ->  {0}   ({1} token(s))" -f $SecretsWin, $tokenCount) -ForegroundColor DarkGray
-    if (Test-Distro $WslkubeDistro) {
-        Write-Host ("    from  {0}:~/.ssh (private key)" -f $WslkubeDistro) -ForegroundColor DarkGray
-        Write-Host ("      ->  {0}" -f $KeyDirWin) -ForegroundColor DarkGray
-    }
     if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
         Warn 'no interactive console - skipping. Pass -CopyLiveCredentials to authorise it, or seed the two files yourself.'
         return $false
@@ -1805,7 +1717,7 @@ function Confirm-CredentialCopy([string]$udPath, [int]$tokenCount = 0) {
     return $false
 }
 
-function Set-OverlaySecretsAndKey([string]$udPath) {
+function Set-OverlaySecrets([string]$udPath) {
     if ($udPath -and (Test-Path $udPath)) {
         $ud = Read-UserDataYaml $udPath
         $envVars = Get-UserDataValue $ud 'custom_env_vars'
@@ -1861,69 +1773,7 @@ function Set-OverlaySecretsAndKey([string]$udPath) {
 
     if (-not (Test-Path $KeyWin)) {
         Do-Step "mkdir $KeyDirWin" { New-Item -ItemType Directory -Force -Path $KeyDirWin | Out-Null }
-        if (Test-Distro $WslkubeDistro) {
-            Do-Step "pull id_ed25519 from '$WslkubeDistro'" {
-                $k = (& wsl.exe -d $WslkubeDistro -- sh -c "cat ~/.ssh/id_ed25519 2>/dev/null")
-                # LF only: OpenSSH refuses a private key whose lines end in CRLF.
-                if ($k) { Write-LfFile $KeyWin $k }
-            }
-        }
-        if (-not (Test-Path $KeyWin)) { Write-Host "  no SSH key at $KeyWin (optional; the SSH-dependent steps defer)" -ForegroundColor DarkGray }
-    }
-}
-
-# Needs a built distro. $PayloadRestored only when the restore ran, or the marker turns `migrate` into a silent skip.
-function Restore-FromWslkube {
-    $script:PayloadRestored = $false
-    if (-not (Test-Path $WslkubeWin)) { return }
-    if (-not (Test-Distro $DistroName)) { Warn "distro '$DistroName' not present - build it first (provision/bootstrap)"; return }
-    $wkWsl = ToWslPath $WslkubeWin
-    if ($WslkubeInstance) {
-        $inst = $WslkubeInstance
-    }
-    elseif (Test-Distro $WslkubeDistro) {
-        Say "Fresh backup of live '$WslkubeDistro' before migrating"
-        Invoke-Wsl $WslkubeDistro '' @('zsh', "$wkWsl/files/scripts/wsl-backup", '--force')
-        $inst = $WslkubeDistro
-    }
-    else {
-        $inst = Get-WslkubeInstance
-        Warn "source distro '$WslkubeDistro' not running - migrating last saved instance '$inst'"
-    }
-    if (-not $inst) { Warn "no wslkube instance found (pass -WslkubeInstance)"; return }
-    Say "Migrating wslkube instance '$inst' into '$DistroName'"
-    # --skip-conflicts: this runs over wsl.exe with no TTY, and the files that
-    # differ are the ones activation rewrites here - they must keep the local
-    # copy. Without it the restore exits 1 and the throw below skips the marker.
-    Invoke-Wsl $DistroName $User @('zsh', '-lc', (DistroCmd 'backup' 'nix-backup' "--restore --skip-conflicts --from '$wkWsl' --instance '$inst'"))
-    $script:PayloadRestored = $true
-}
-
-function Invoke-Migrate {
-    if ((Test-Path $Marker) -and -not $Force) {
-        Say "Already migrated: $(Get-Content $Marker -TotalCount 1). Use -Force to re-run." 'Green'; return
-    }
-    if (-not (Test-Path $WslkubeWin)) { throw "no wslkube checkout at $WslkubeWin - nothing to migrate from." }
-    Say "Migrate wslkube -> nix (prep secrets/key, then flakelab backup --restore; wslkube stays READ-ONLY)"
-    Set-OverlaySecretsAndKey $ConfigPath
-    Restore-FromWslkube
-    if ($PayloadRestored -or $DryRun) {
-        # --skip-conflicts keeps local copies rather than failing, and that list
-        # scrolls past in the restore's own output. Repeat it here, and put the
-        # count in the marker, so "Migration done." can never be the whole story.
-        $keptFile = Join-Path $PayloadWin '.last-restore-kept'
-        $kept = if (Test-Path $keptFile) { @(Get-Content $keptFile | Where-Object { $_.Trim() }) } else { @() }
-        $note = if ($kept.Count -gt 0) { "; {0} file(s) kept local" -f $kept.Count } else { "" }
-        Do-Step "write marker" { Write-LfFile $Marker ("migrated {0} via flakelab backup --from wslkube{1}" -f (Get-Date -Format o), $note) }
-        if ($kept.Count -gt 0) {
-            Warn ("{0} file(s) were NOT restored - the local copy was kept:" -f $kept.Count)
-            foreach ($k in $kept) { Warn "    $k" }
-            Warn "Those are rewritten by this box's activation or hold its own credentials. Pass -Force (flakelab backup --force) only if you mean to overwrite them."
-        }
-        Say "Migration done." 'Green'
-    }
-    else {
-        Warn "no payload restored - not marking the migration done. Build the distro first, then re-run 'migrate'."
+        Write-Host "  no SSH key at $KeyWin (optional; the SSH-dependent steps defer)" -ForegroundColor DarkGray
     }
 }
 
@@ -1933,24 +1783,17 @@ function Invoke-Provision {
     if ($ConfigPath) {
         # One command: the flake is generated from the config; the credential copy is still consented.
         Set-OverlayFromConfig $ConfigPath
-        Set-OverlaySecretsAndKey $ConfigPath
+        Set-OverlaySecrets $ConfigPath
     }
     if ((-not (Test-Path $KeyWin)) -or (Test-SecretsSeedNeeded)) {
         $what = @(); if (-not (Test-Path $KeyWin)) { $what += 'SSH key' }; if (Test-SecretsSeedNeeded) { $what += 'secrets.env' }
         $why = if ($ConfigPath) { "no {0} in the overlay ({1} carries none)." -f ($what -join ' and '), (Split-Path $ConfigPath -Leaf) }
-        else { "no {0} in the overlay - no config to harvest them from (no -Config, no wslkube checkout at {1})." -f ($what -join ' and '), $WslkubeWin }
+        else { "no {0} in the overlay - no config to harvest them from (no -Config, and no user_data.yaml beside it)." -f ($what -join ' and ') }
         Show-ManualSeedInstructions $why
     }
     Invoke-Bootstrap
     if ($BootstrapStopped) { return }
-    Restore-FromWslkube
-    if ($PayloadRestored) {
-        # Silence here would read as "the instance you named was restored".
-        if ($RestoreInstanceNamed) {
-            Warn "-RestoreInstance '$RestoreInstance' was not used: the wslkube checkout's payload won. -WslkubeInstance names an instance there."
-        }
-    }
-    else { Restore-Backup }
+    Restore-Backup
     Invoke-CloneRepos
     Complete-SwitchResult
     Invoke-InteropHeal '' 'at end of run' | Out-Null
@@ -1973,8 +1816,6 @@ function Invoke-Status {
     elseif ($sopsSecretsWin -and (Test-Path $sopsSecretsWin)) { 'sops: {0}' -f $sopsSecretsWin }
     else { 'MISSING' }
     $payloadState = if (Test-Path (Join-Path $PayloadWin "instances\$DistroName")) { 'staged' } else { 'none' }
-    $migratedState = if (Test-Path $Marker) { Get-Content $Marker -TotalCount 1 } else { 'no' }
-    $wslkubeState = if (Test-Path $WslkubeWin) { $WslkubeWin } else { 'absent' }
     $configState = if ($ConfigPath) { $ConfigPath } else { 'none (pass -Config to generate the flake)' }
     Write-Host ("  overlay       : {0} ({1})" -f $OverlayWin, $overlayState)
     Write-Host ("  payload root  : {0}" -f $PayloadWin)
@@ -1985,8 +1826,6 @@ function Invoke-Status {
     Write-Host ("  SSH key       : {0}" -f $keyState)
     Write-Host ("  secrets.env   : {0}" -f $secretsState)
     Write-Host ("  backup payload: {0}" -f $payloadState)
-    Write-Host ("  wslkube       : {0}" -f $wslkubeState)
-    Write-Host ("  migrated      : {0}" -f $migratedState)
     if ($overlayState -ne 'present') {
         if ($ConfigPath) { Warn "Next:  .\setup-wsl-nix.ps1 provision   (generates the overlay flake from $ConfigPath)" }
         else { Warn "Next:  .\setup-wsl-nix.ps1 provision -Config <path to user_data.yaml>   (or 'init' to write the flake by hand)" }
@@ -2002,7 +1841,6 @@ switch ($Command) {
     'generate' { Invoke-Generate }
     'provision' { Invoke-Provision }
     'bootstrap' { Invoke-Bootstrap }
-    'migrate' { Invoke-Migrate }
     default { Invoke-Status }
 }
 # The one non-throwing non-zero close: the closing verdict's code (Complete-SwitchResult).

@@ -149,8 +149,8 @@ STATE_GC=false
 SRC_FROM=""
 SRC_INSTANCE=""
 
-# Keep a differing file without a TTY instead of failing: activation-rewritten
-# files conflict on every unattended migrate, and setup-wsl-nix.ps1 needs exit 0.
+# Keep a differing file without a TTY instead of failing, for an unattended restore
+# over files this box's activation has already rewritten.
 SKIP_CONFLICTS=false
 typeset -a CONFLICTS_KEPT=()
 
@@ -197,7 +197,7 @@ while (( $# > 0 )); do
       echo "                       synced recently — a missing or stale manifest aborts the collection"
       echo "  --skip-conflicts     on restore without a TTY, keep a differing file instead of failing"
       print -r -- "  --keep <n>           rollback snapshots to retain (default ${KEEP}); the newest is never pruned"
-      echo "  --from <repo>        restore FROM another repo's backup (a repo root or its files/config dir)"
+      echo "  --from <payload>     restore FROM another payload root (the one holding shared/ and instances/)"
       echo "  --instance <name>    per-instance files come from this SOURCE instance, not the current"
       echo "                       distro; the shared categories restore either way"
       echo "  --help               show this help message"
@@ -215,9 +215,6 @@ while (( $# > 0 )); do
       echo "                       ~/.config/flakelab/secrets.env is neither archived nor restored"
       echo ""
       echo "Exits non-zero if any file failed to copy or failed verification."
-      echo ""
-      echo "Migrate a wslkube environment into this distro:"
-      echo "  flakelab backup --restore --from /mnt/c/Users/<you>/git/wslkube --instance <distro>"
       exit 0
       ;;
     *)
@@ -255,12 +252,10 @@ if [[ -n "${SRC_FROM}" || -n "${SRC_INSTANCE}" ]]; then
     echo "Error: --from/--instance are only valid with --restore" >&2; exit 1
   fi
   if [[ -n "${SRC_FROM}" ]]; then
-    if [[ -d "${SRC_FROM}/files/config" ]]; then
-      BACKUP_ROOT="${SRC_FROM%/}/files/config"
-    elif [[ -d "${SRC_FROM}/shared" || -d "${SRC_FROM}/instances" ]]; then
+    if [[ -d "${SRC_FROM}/shared" || -d "${SRC_FROM}/instances" ]]; then
       BACKUP_ROOT="${SRC_FROM%/}"
     else
-      print -r -- "Error: no backup data under '${SRC_FROM}' (expected files/config/ or shared/+instances/)" >&2
+      print -r -- "Error: no backup data under '${SRC_FROM}' (expected shared/ or instances/)" >&2
       exit 1
     fi
   fi
@@ -272,7 +267,7 @@ fi
 
 # Beside the payload, not /tmp: every WSL instance has its own /tmp, so a /tmp
 # lock cannot serialise two distros writing one SHARED_ROOT. After the --from
-# override, so a migration read locks the payload it reads.
+# override, so a --from restore locks the payload it reads.
 SNAPSHOT_ROOT="${BACKUP_ROOT}/snapshots/${DISTRO_NAME}"
 LOCK_FILE="${BACKUP_ROOT}/.backup.lock"
 LOCK_WAIT=300
@@ -1249,16 +1244,11 @@ do_restore() {
   fi
 
   echo ""
-  # Also written to a file: setup-wsl-nix.ps1 streams this output, and "Migration
-  # done." must not be the last word when files were kept. Truncated even when empty.
-  local keptFile="${BACKUP_ROOT}/.last-restore-kept"
-  : > "${keptFile}" 2> /dev/null || true
   if (( ${#CONFLICTS_KEPT} > 0 )); then
     log_warn "Kept ${#CONFLICTS_KEPT} existing file(s) (--skip-conflicts):"
     local kept
     for kept in "${CONFLICTS_KEPT[@]}"; do
       log_warn "  ${kept}"
-      print -r -- "${kept}" >> "${keptFile}" 2> /dev/null || true
     done
   fi
   if (( FAILURES > 0 )); then

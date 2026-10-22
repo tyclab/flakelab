@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Removed
+
+- The wslkube migration path: `setup-wsl-nix.ps1 migrate`, `-WslkubeDistro`, `-WslkubeInstance`, the sibling wslkube checkout as the default `-Config`, the private-key pull from a running wslkube distro, and the `.migrated-from-wslkube` marker; `flakelab overlay-gen --wslkube` and its `variables.yaml` layering; `flakelab backup --restore --from` reading a `files/config/` layout (a payload root with `shared/` or `instances/` still works). `-Config` now defaults to `<overlay>-payload\user_data.yaml` only. The v0.4.0 tag keeps the old path for a box that still needs it.
+- `dockerautostart` and `extra_task_files` are no longer config keys: a config carrying one is told it maps to nothing, like any other unmapped key.
+- The fallback to a pre-rename `wslnix-config` overlay.
+
 ### Security
 
 - `flakelab update` reads `recommended-permissions.json` and `recommended-ask.json` only from a marketplace `claudePluginMarketplaces` declares, not from any clone under `~/.claude/plugins/marketplaces`, and refuses a file that is not a list of rule strings or an allow rule that approves every use of `Bash`, `PowerShell`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit` or `WebFetch`.
