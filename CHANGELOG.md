@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
 ### Added
 
 - `flakelab.pruneSchedule` (default `weekly`): `virtualisation.docker.autoPrune` (unused images, stopped containers and build cache older than a week) and the `flakelab-prune` user timer (Codex releases other than the current one and those a running process still executes from, `uv cache prune`, `pre-commit gc`); null schedules none.
@@ -286,7 +288,8 @@ First tagged release.
 - Flow-style YAML lists (`profiles: [a, b]`) are parsed as lists by both overlay generators.
 - `gitpublisher` no longer reads pre-commit's "Installing environment" line as a secret finding.
 
-[Unreleased]: https://github.com/tyclab/flakelab/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tyclab/flakelab/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tyclab/flakelab/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tyclab/flakelab/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tyclab/flakelab/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tyclab/flakelab/releases/tag/v0.1.0
