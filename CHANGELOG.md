@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `flakelab clone` with GitLab groups and no `GITLAB_TOKEN` exits 3 before listing anything and names where the token goes: the sops secrets file on an enrolled box, `~/.config/flakelab/secrets.env` otherwise. `setup-wsl-nix.ps1 provision` no longer sources `secrets.env` itself before the clone (`.zshenv` does, and an enrolled box must not read the fallback file), stays quiet on that refusal, and calls a missing key or `secrets.env` steps that wait rather than a distro "built but unconfigured".
 - The `sopsSecretsFile` option text no longer claims a fallback to `secrets.env` that the zsh init deliberately does not make.
 - `flakelab doctor`, `gitchecker` and `gitcleaner` name the sops secrets as the token source too, not `secrets.env` alone, and doctor no longer says the secrets are read only at login.
+- A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
 
 ### Removed
 

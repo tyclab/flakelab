@@ -30,15 +30,24 @@ in
         ]
       }:$HOME/.local/bin:$PATH"
       export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+      _codexUrl=https://chatgpt.com/codex/install.sh
       if [ -x "$HOME/.local/bin/codex" ]; then
-        _codexMiss="Codex CLI not updated (offline?); it stays on its installed version."
+        _codexMiss="Codex CLI not updated"
+        _codexThen="; it stays on its installed version."
       else
-        _codexMiss="Codex CLI not installed: its installer could not be fetched or run (offline?). Retry: flakelab update, or curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+        _codexMiss="Codex CLI not installed"
+        _codexThen=". Retry: flakelab update, or curl -fsSL $_codexUrl | sh"
       fi
-      # pipefail: a failed fetch otherwise pipes an empty script into sh, which exits 0.
+      # Fetched to a file, not piped: a failed fetch never reaches sh, and curl's
+      # own error (a 404, no DNS) goes into the deferral.
+      _codexSh="$(mktemp)"
+      if ! _codexErr="$($DRY_RUN_CMD curl -fsSL -o "$_codexSh" "$_codexUrl" 2>&1)"; then
+        ${flakelabDefer} "$_codexMiss: ''${_codexErr:-its installer could not be fetched}$_codexThen"
       # CODEX_NON_INTERACTIVE: no "Start Codex now?" prompt.
-      $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh' || \
-        ${flakelabDefer} "$_codexMiss"
+      elif ! $DRY_RUN_CMD env CODEX_NON_INTERACTIVE=1 sh "$_codexSh"; then
+        ${flakelabDefer} "$_codexMiss: its installer failed$_codexThen"
+      fi
+      rm -f "$_codexSh"
     ''
   );
 }
