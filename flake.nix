@@ -1184,7 +1184,13 @@
             noWarn() { test ! -e "$HOME/.local/state/flakelab/activation-failures"; }
             # Offline on a builder without the sandbox too: a failing curl, exported so
             # the entry's inner bash takes it over the store curl on its PATH.
-            offline() { curl() { return 6; }; export -f curl; }
+            offline() { curl() { echo "curl: (6) Could not resolve host: chatgpt.com" >&2; return 6; }; export -f curl; }
+            # fetches <installer line>…: curl writes them as the installer to its -o file.
+            fetches() {
+              printf '%s\n' "$@" > "$TMPDIR/installer"
+              curl() { while [ "$1" != -o ]; do shift; done; cp "$TMPDIR/installer" "$2"; }
+              export -f curl
+            }
             offline
 
             echo "claude: an offline first install is deferred"
@@ -1198,7 +1204,7 @@
             fresh codex-absent
             activate ${entry "installCodexCli"}
             test ! -e "$HOME/.local/bin/codex"
-            deferred "Codex CLI not installed"
+            deferred "Codex CLI not installed: curl: (6) Could not resolve host"
             noWarn
 
             echo "codex: an offline update is deferred and keeps the installed CLI"
@@ -1206,20 +1212,27 @@
             stub codex 'echo stale'
             activate ${entry "installCodexCli"}
             test "$("$HOME/.local/bin/codex")" = stale
-            deferred "Codex CLI not updated"
+            deferred "Codex CLI not updated: curl: (6) Could not resolve host"
+            noWarn
+
+            echo "codex: a failing installer is deferred as that, not as a fetch"
+            fresh codex-broken
+            stub codex 'echo stale'
+            fetches 'exit 3'
+            activate ${entry "installCodexCli"}
+            offline
+            test "$("$HOME/.local/bin/codex")" = stale
+            deferred "Codex CLI not updated: its installer failed"
             noWarn
 
             # The fetch returns a stand-in installer that records what the real one
             # would be run with.
             echo "codex: the installer runs unprompted, with ~/.local/bin on PATH"
             fresh codex-online
-            curl() {
-              printf '%s\n' \
-                'printf "%s\n" "$PATH" > "$HOME/installer-path"' \
-                'printf "%s\n" "''${CODEX_NON_INTERACTIVE-}" > "$HOME/installer-prompt"' \
-                'touch "$HOME/.local/bin/codex" && chmod +x "$HOME/.local/bin/codex"'
-            }
-            export -f curl
+            fetches \
+              'printf "%s\n" "$PATH" > "$HOME/installer-path"' \
+              'printf "%s\n" "''${CODEX_NON_INTERACTIVE-}" > "$HOME/installer-prompt"' \
+              'touch "$HOME/.local/bin/codex" && chmod +x "$HOME/.local/bin/codex"'
             activate ${entry "installCodexCli"}
             offline
             test -x "$HOME/.local/bin/codex"
