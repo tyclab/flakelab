@@ -7,27 +7,15 @@ things we intend to change.
 Tracked here rather than in the GitHub issue tracker: the work is decided in
 the repository, alongside the code it describes.
 
-## Agent-surface hardening
+## Validate the marketplace permission files
 
-`security` · mostly closed
+`security`
 
-Every adopter used to inherit the operator's full-trust agent setup without
-opting in. The agent-surface items are now gated behind options that default off:
-
-| surface                                                                         | option                         |
-| ------------------------------------------------------------------------------- | ------------------------------ |
-| `cc` = `claude --dangerously-skip-permissions`                                  | `flakelab.claudeTrustAll`      |
-| `permissions.defaultMode = "auto"`, `skipAutoPermissionPrompt`                  | `flakelab.claudeAgentDefaults` |
-| `remoteControlAtStartup`, the four env vars Remote Control's feature flags need | `flakelab.claudeRemoteControl` |
-
-`claudeSettings` is gated on `installClaude` like every sibling activation.
-
-**Still open:** the marketplace `recommended-permissions.json` assertion
-(`files/scripts/nix-update`) is neither validated nor pinned. It searches the
-marketplace clone for a file of that name and writes whatever it finds as
-Claude's pre-approved permission set. A malformed or hostile file there widens
-the allowlist with no check. Validate the shape before writing, and decide
-whether the source should be pinned rather than discovered.
+`files/scripts/nix-update` searches the marketplace clone for
+`recommended-permissions.json` and `recommended-ask.json` and writes whatever it
+finds as Claude's `permissions.allow` and `permissions.ask`. A malformed or
+hostile file there widens the allowlist with no check. Validate the shape before
+writing, and decide whether the source should be pinned rather than discovered.
 
 ## Retire the wslkube migration path
 
@@ -62,37 +50,10 @@ only make sense to the original author:
 Skip the clone when there is no token, and drop the wslkube wording from
 anything a first-time user sees.
 
-## Clone hygiene for consumers
+## Verify remote sessions on a real box
 
-A clone made with a partial-clone filter (`--filter=blob:none`) cannot be
-evaluated in place: `nix flake check` and `nix fmt` fail with
-`unsupported extension name extensions.partialclone`, because nix's libgit2
-rejects the extension. `nix flake check path:.` works around it; converting the
-clone with `git fetch --refetch --no-filter <remote>` and dropping the promisor
-config fixes it properly. Worth a line in CONTRIBUTING.md.
+`enhancement`
 
-## Account switching for the agent CLIs
-
-`enhancement` · done another way: tycswap
-
-Account switching is tycswap's (`installTycswap`); flakelab keeps the glue —
-the `flakelab-tycswap-autoswitch` timer, the `tycswap` backup category, the
-doctor's `Switcher` section, `claude-sessions` reading its profiles, the
-dashboard over `tycswap list --json`. The zsh engine (`flakelab accounts`) and
-`accounts.md` were removed before a release carried them; README, "Migrating
-from flakelab accounts", moves a stored login over.
-
-## Remote sessions
-
-`enhancement` · built; the box-side verifications remain
-
-Sessions that outlive their terminal and can be reached from another device.
-Done: tmux as the session host behind `flakelab sessions --start` /
-`--attach`, Codex in the sessions registry beside Claude Code,
-Remote Control on its own option, `flakelab notify` with its hooks, mosh on
-the VM and the Windows-host OpenSSH script for a WSL distro (both over
-WireGuard), `--recent` over the state root, and `flakelab web` as the browser
-front end. Open: the verifications
-[remote-sessions.md](remote-sessions.md) lists (a tmux-hosted session under
-Remote Control, the host route from a phone, mosh through a network change,
-the ntfy payload).
+The verifications [remote-sessions.md](remote-sessions.md) lists: a tmux-hosted
+session under Remote Control, the host route from a phone, mosh through a
+network change, the ntfy payload.
