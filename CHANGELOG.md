@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `dockerautostart` and `extra_task_files` are no longer config keys: a config carrying one is told it maps to nothing, like any other unmapped key.
 - The fallback to a pre-rename `wslnix-config` overlay.
 
+### Security
+
+- `flakelab update` reads `recommended-permissions.json` and `recommended-ask.json` only from a marketplace `claudePluginMarketplaces` declares, not from any clone under `~/.claude/plugins/marketplaces`, and refuses a file that is not a list of rule strings or an allow rule that approves every use of `Bash`, `PowerShell`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit` or `WebFetch`.
+
 ## [0.4.0] - 2026-10-22
 
 ### Added

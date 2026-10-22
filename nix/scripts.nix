@@ -328,6 +328,9 @@ rec {
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
     export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
+    export FLAKELAB_CLAUDE_MARKETPLACES=${
+      lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
+    }
     export PATH=${
       bin [
         pkgs.zsh
@@ -346,6 +349,9 @@ rec {
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
     export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
+    export FLAKELAB_CLAUDE_MARKETPLACES=${
+      lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
+    }
     export PATH=${
       bin [
         pkgs.zsh

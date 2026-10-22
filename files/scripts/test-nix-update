@@ -914,6 +914,60 @@ run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 check    "the marketplace is fetched"       "$(refreshed team-tools)" "1"
 check    "and the record is gone"           "$([[ -e "${FETCHED_LOG}" ]] && print yes || print no)" "no"
+
+# The permission tiers come from the first declared marketplace that ships the file;
+# FLAKELAB_CLAUDE_MARKETPLACES is what the wrapper declares. by-hand is never declared.
+SETTINGS="${HOME}/.claude/settings.json"
+MP="${HOME}/.claude/plugins/marketplaces"
+mkdir -p "${MP}"/{team-tools,by-hand,no-file}/permissions
+reset_settings() {
+  print -r -- '{"model":"keep","permissions":{"allow":["Old"],"ask":["OldAsk"],"deny":["Bash(git push --force:*)"]}}' > "${SETTINGS}"
+}
+tier() { jq -c ".permissions.$1" "${SETTINGS}" }
+print -r -- '["Bash(rm:*)"]' > "${MP}/by-hand/permissions/recommended-permissions.json"
+print -r -- '["Bash"]' > "${MP}/by-hand/permissions/recommended-ask.json"
+
+print -r -- "the allow and ask tiers come from a declared marketplace only"
+reset_settings
+print -r -- '["Read","mcp__srv__tool","Bash(git status:*)"]' > "${MP}/team-tools/permissions/recommended-permissions.json"
+print -r -- '[]' > "${MP}/team-tools/permissions/recommended-ask.json"
+FLAKELAB_CLAUDE_MARKETPLACES="no-file team-tools" run_update "${d}"
+check    "it switches"                      "${RC}" "0"
+check    "allow is the declared one's"      "$(tier allow)" '["Read","mcp__srv__tool","Bash(git status:*)"]'
+check    "ask is the declared one's"        "$(tier ask)" '[]'
+check    "deny is left alone"               "$(tier deny)" '["Bash(git push --force:*)"]'
+check    "and so is the rest"               "$(jq -r .model "${SETTINGS}")" "keep"
+
+print -r -- "with no marketplace declared, a hand-added one's files are not read"
+reset_settings
+FLAKELAB_CLAUDE_MARKETPLACES="" run_update "${d}"
+check    "allow is unchanged"               "$(tier allow)" '["Old"]'
+check    "and ask"                          "$(tier ask)" '["OldAsk"]'
+
+print -r -- "a file that is not a list of rule strings is refused"
+for _bad in '{"allow":["Read"]}' '"Read"' '["Read",3]' '["Read",""]'; do
+  reset_settings
+  print -r -- "${_bad}" > "${MP}/team-tools/permissions/recommended-permissions.json"
+  FLAKELAB_CLAUDE_MARKETPLACES=team-tools run_update "${d}"
+  check    "${_bad}: allow is unchanged"     "$(tier allow)" '["Old"]'
+  contains "${_bad}: and it says why"        "${OUT}" "is not a list of permission rules, or approves a whole tool"
+done
+
+print -r -- "an allow rule that approves a whole command, write or fetch tool is refused"
+for _all in Bash 'Bash(*)' 'Bash(:*)' 'Bash()' PowerShell Write 'Edit(//**)' 'Edit(~/**)' 'WebFetch(domain:*)'; do
+  reset_settings
+  jq -cn --arg r "${_all}" '["Read",$r]' > "${MP}/team-tools/permissions/recommended-permissions.json"
+  FLAKELAB_CLAUDE_MARKETPLACES=team-tools run_update "${d}"
+  check    "${_all}: allow is unchanged"     "$(tier allow)" '["Old"]'
+done
+
+print -r -- "the ask tier may name a whole tool: it only adds prompts"
+reset_settings
+print -r -- '["Read"]' > "${MP}/team-tools/permissions/recommended-permissions.json"
+print -r -- '["Bash"]' > "${MP}/team-tools/permissions/recommended-ask.json"
+FLAKELAB_CLAUDE_MARKETPLACES=team-tools run_update "${d}"
+check    "ask is asserted"                  "$(tier ask)" '["Bash"]'
+check    "and allow beside it"              "$(tier allow)" '["Read"]'
 rm -f "${SHIM}/claude"
 rm -rf "${HOME}/.claude"
 rm -f "${SHIM}/systemctl"
