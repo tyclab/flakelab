@@ -405,7 +405,7 @@ in
       description = "Connect Claude Code's Remote Control at the start of every interactive session (settings.remoteControlAtStartup = true), so each one is steerable from claude.ai/code and the Claude app, and remove the four env vars (DISABLE_TELEMETRY, DO_NOT_TRACK, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK) that would defeat the feature-flag evaluation Remote Control depends on. Off by default: the session transcript is stored on Anthropic's servers while a session is connected, which an adopter must choose. Independent of claudeAgentDefaults: neither implies the other. Needs a full claude.ai login on the box and, on Team and Enterprise, the admin toggle.";
     };
 
-    # A push when a session waits on you (remote-sessions.md, phase 3).
+    # A push when a session waits on you (remote-sessions.md).
     notify = {
       enable = mkOption {
         type = types.bool;
@@ -425,7 +425,7 @@ in
       };
     };
 
-    # mosh beside sshd on the VM (remote-sessions.md, phase 4): roaming and a
+    # mosh beside sshd on the VM (remote-sessions.md): roaming and a
     # sleeping phone survive; the UDP range 60000-61000 is opened by the
     # NixOS module. Nothing for wsl, where no port can be opened from inside.
     mosh.enable = mkOption {

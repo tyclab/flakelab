@@ -134,7 +134,7 @@ let
     | if .hooks == {} then del(.hooks) else . end
   '';
 
-  # The push when a session waits on you (remote-sessions.md, phase 3): a
+  # The push when a session waits on you (remote-sessions.md): a
   # Notification hook on the configured types runs `flakelab notify`, which
   # reads the endpoints from the secrets at use time. Owned by its command:
   # the store path of this flake's `notify`, never a bare substring, so a
