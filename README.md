@@ -592,7 +592,13 @@ A session need not die with its terminal either: `flakelab sessions --start
 claude` (or `codex`) runs it in a window of the `agents` tmux session
 and attaches; close the tab, drop the SSH connection, and
 `flakelab sessions --attach` from any terminal joins it again. The table's
-`HOST` column names the window. `notify.enable = true;` sends a push (an ntfy
+`HOST` column names the window. `questions.enable = true;` gives Claude and Codex
+the same `ask_question` tool: the full question stays in Home Assistant's Agent
+questions inbox and a phone or inbox reply returns to the originating call.
+It requires hatyc's `flakelab_questions` integration and the existing
+`NOTIFY_WEBHOOK_URL` secret; see [remote-sessions.md](remote-sessions.md).
+Native dialogs and tool approvals are not intercepted.
+The legacy `notify.enable = true;` sends a push (an ntfy
 topic, a JSON webhook such as Home Assistant's `/api/webhook/<id>`, or both;
 endpoints in the secrets, and `sopsKeyFiles.NOTIFY_WEBHOOK_URL = null;` keeps
 the webhook URL out of every process's environment, since notify reads it from

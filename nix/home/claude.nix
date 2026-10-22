@@ -259,7 +259,17 @@ let
             type = "stdio";
           };
         }
-    // lib.mapAttrs (_: server: server // { type = "stdio"; }) sharedMcp.servers
+    // lib.mapAttrs (
+      name: server:
+      server
+      // {
+        type = "stdio";
+      }
+      // lib.optionalAttrs (name == "flakelab-questions") {
+        env.FLAKELAB_QUESTIONS_AGENT = "claude";
+        timeout = 1560000;
+      }
+    ) sharedMcp.servers
     // cfg.claudeMcpServers
   ) cfg.claudeMcpDisabledServers;
   claudeMcpRecord = renderedRecord "claude-mcp-servers" "~/.claude.json mcpServers" (
@@ -552,6 +562,7 @@ in
             cat "$_tmp"
             echo '<!-- BEGIN managed by flakelab -->'
             cat ${../../files/config/agent-instructions.md}
+            ${lib.optionalString cfg.questions.enable "cat ${../../files/config/question-instructions.md}"}
             printf '\n'
             cat ${../../files/config/claude/target-${cfg.target}.md}
             ${claudeMdExtraCat}
