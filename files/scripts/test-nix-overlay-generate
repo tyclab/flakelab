@@ -412,7 +412,6 @@ run_gen --out "${o}" --config "${BASE}/noprofiles.yaml"
 check    "it fails"                  "${RC}" "1"
 contains "saying what would happen"  "${OUT}" "no profile packages and clone no repos"
 contains "and what to add"           "${OUT}" "example"
-contains "and where wslkube hides it" "${OUT}" "variables.yaml"
 [[ -e "${o}/flake.nix" ]] && bad "no flake.nix is left behind" || ok "no flake.nix is left behind"
 
 print -r -- "groups without a profile is still only a warning"
@@ -474,7 +473,7 @@ contains "a bare '#' inside a value survives" "${f}" 'GRAFANA_URL = "https://g.e
 
 # merge.nix still honours the older name, and dropping it silently is the no-profiles
 # failure above with no warning, because the key was in the file.
-print -r -- "a wslkube-era teams: block is read as profiles:"
+print -r -- "a pre-rename teams: block is read as profiles:"
 cat > "${BASE}/teams.yaml" <<'YAML'
 user: legacy
 gitfullname: Legacy Person
@@ -487,91 +486,47 @@ run_gen --out "${o}" --config "${BASE}/teams.yaml"
 contains "the profile is selected" "$(flake_of "${o}")" 'profiles = [ "example" ];'
 excludes "and no no-profiles warning is printed" "${OUT}" "no profiles selected"
 
-# Reading only user_data.yaml misses the shared defaults and the overlay selects
-# nothing: green build, empty ~/git, nothing said. main_playbook.yaml is in the fixture
-# because auto-detection keys on it too.
-print -r -- "a wslkube checkout is read as two layered files"
-# Not ${BASE}/wslkube: `out wslkube` below would rm -rf this fixture.
-WK="${BASE}/wk-src"
-mkdir -p "${WK}/files/config"
-print -r -- '# stub' > "${WK}/main_playbook.yaml"
-cat > "${WK}/variables.yaml" <<'YAML'
+# A config naming only groups gets its profiles from them; the rest comes across
+# as the overlay's own options.
+print -r -- "a config with groups and no profiles"
+cat > "${BASE}/derived.yaml" <<'YAML'
+user: grpuser
+gitfullname: Group Person
+gitmail: grp@example.com
 gitlab_groups:
   - example-group
   - family-recipes
 clone_exclude:
-  - wslkube
+  - mounted-repo
 claude_plugin_marketplace:
   name: 'Example-tools'
   url: 'git@example.com:group/plugins.git'
 claude_plugins:
   - agents
   - skills
-userlocale: de_DE.UTF-8
-YAML
-cat > "${WK}/files/config/user_data.yaml" <<'YAML'
-user: wkuser
-gitfullname: Wslkube Person
-gitmail: wk@example.com
 claude_mcp_plugins:
   - mcp-whatsapp
 YAML
-o="$(out wslkube)"
-run_gen --out "${o}" --config "${WK}/files/config/user_data.yaml"
+o="$(out derived)"
+run_gen --out "${o}" --config "${BASE}/derived.yaml"
 f="$(flake_of "${o}")"
 check    "it generates"                     "${RC}" "0"
-contains "it says it layered them"          "${OUT}" "layering ${WK}/variables.yaml"
-# Neither key is in user_data.yaml.
 contains "profiles are DERIVED from the groups" "${OUT}" "profiles derived from gitlab_groups"
 contains "example, from example-group"      "${f}" 'profiles = [ "example" ];'
 # No profile claims family-recipes, while example-group is already unioned in.
 contains "only the unclaimed group is personal" "${f}" 'gitlabGroups = [ "family-recipes" ];'
-contains "clone_exclude is unioned in"      "${f}" '"wslkube"'
+contains "clone_exclude is unioned in"      "${f}" '"mounted-repo"'
 contains "and the overlay itself still excluded" "${f}" '"flakelab"'
 contains "the marketplace comes across"     "${f}" 'name = "Example-tools";'
 contains "as the canonical PLURAL option"   "${f}" 'claudePluginMarketplaces = ['
 excludes "not the legacy singular"          "${f}" 'claudePluginMarketplace ='
-# mkSystem takes one list, so the two files' plugin sets concatenate.
-contains "always-on plugins from variables.yaml" "${f}" '"agents"'
-contains "opt-in MCP plugins from user_data.yaml" "${f}" '"mcp-whatsapp"'
+# mkSystem takes one list, so the two plugin sets concatenate.
+contains "always-on plugins"                "${f}" '"agents"'
+contains "and opt-in MCP plugins"           "${f}" '"mcp-whatsapp"'
 contains "an enabled mcp-whatsapp with no dir warns" "${OUT}" "whatsapp_mcp_dir is unset"
 excludes "and no whatsappMcpDir is invented" "${f}" 'whatsappMcpDir'
 
-# The shape change is the interesting half: block lists and scalars land in different
-# arrays, so an inline override would leave the losing value for _as_list to find.
-print -r -- "user_data.yaml overrides variables.yaml, across shapes"
-cat > "${WK}/files/config/user_data.yaml" <<'YAML'
-user: wkuser
-gitfullname: Wslkube Person
-gitmail: wk@example.com
-userlocale: en_GB.UTF-8
-gitlab_groups: family-recipes
-YAML
-o="$(out wslkube-override)"
-run_gen --out "${o}" --config "${WK}/files/config/user_data.yaml"
-f="$(flake_of "${o}")"
-check    "it generates"                  "${RC}" "0"
-contains "the scalar override wins"      "${f}" 'locale = "en_GB.UTF-8";'
-contains "and so does the inline list"   "${f}" 'gitlabGroups = [ "family-recipes" ];'
-excludes "the overridden block list is gone" "${f}" '"example-group"'
-contains "so no profile is derived"      "${OUT}" "no profiles selected"
-
-# Auto-detection needs the config at <root>/files/config/; a copy elsewhere needs the
-# flag.
-print -r -- "--wslkube finds variables.yaml for a config copied out of the tree"
-cp "${WK}/files/config/user_data.yaml" "${BASE}/copied.yaml"
-o="$(out copied-nowk)"
-run_gen --out "${o}" --config "${BASE}/copied.yaml"
-excludes "without the flag nothing is layered" "${OUT}" "layering"
-o="$(out copied-wk)"
-run_gen --out "${o}" --config "${BASE}/copied.yaml" --wslkube "${WK}"
-check    "with it the run succeeds"      "${RC}" "0"
-contains "and variables.yaml is layered" "${OUT}" "layering ${WK}/variables.yaml"
-contains "so clone_exclude comes across" "$(flake_of "${o}")" '"wslkube"'
-run_gen --out "$(out nowk)" --config "${BASE}/copied.yaml" --wslkube "${BASE}/not-a-checkout"
-check    "a --wslkube that is not one fails" "${RC}" "1"
-
-# Derivation is for a migrated config; a group named on the command line is an
+# Derivation is for a config that names no profiles; a group named on the command line is an
 # explicit request, and inferring profiles from it would surprise the caller.
 print -r -- "a command-line group is not turned into a profile"
 o="$(out flaggroups)"
@@ -872,8 +827,7 @@ check    "origin is untouched"              "$(git -C "${o}" remote get-url orig
 # ---------------------------------------------------------------------------
 # 28. Nothing in the config is dropped unsaid
 # ---------------------------------------------------------------------------
-# A wslkube config carries keys the overlay has no field for - its own Ansible
-# variables, extra_task_files, files/config/custom/ - and a key in a shape the
+# A config can carry keys the overlay has no field for, and a key in a shape the
 # generator does not read is as lost as an unknown one. Each is named once, by
 # key or line number, never by value: the value may be a token.
 lines_with() { local -a l=(${(M)${(f)1}:#*$2*}); print -r -- "${#l}" }
@@ -912,9 +866,8 @@ excludes "the value is never printed"          "${OUT}" "unmapped-value-1"
 excludes "nor written"                         "${f}" "unmapped-value-1"
 contains "repoPath is no config key"           "${OUT}" "'repoPath' in the config maps to nothing"
 contains "so repoPath stays the overlay"       "${f}" "repoPath = \"${o}\";"
-excludes "extra_task_files is not an unmapped key" "${OUT}" "'extra_task_files' in the config maps to nothing"
-contains "it is named with every task it lists" "${OUT}" "extra_task_files names wslkube Ansible tasks nothing here runs: custom/printer.yaml, custom/vpn.yaml"
-excludes "dockerautostart is a documented no-op" "${OUT}" "'dockerautostart'"
+contains "extra_task_files is one like any other" "${OUT}" "'extra_task_files' in the config maps to nothing"
+contains "and so is dockerautostart"           "${OUT}" "'dockerautostart' in the config maps to nothing"
 excludes "a mapped key is not named"           "${OUT}" "'user' in the config"
 excludes "nor the document marker"             "${OUT}" "not read"
 
@@ -1025,25 +978,6 @@ contains "by name"                             "${OUT}" "  GITLAB_TOKEN"
 excludes "not as an unmapped key"              "${OUT}" "'GITLAB_TOKEN' in the config"
 excludes "the value is never printed"          "${OUT}" "not-a-real-token-4"
 excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-4"
-
-print -r -- "a non-empty wslkube files/config/custom/ is named"
-# Not ${BASE}/wk-custom: `out wk-custom` below would rm -rf this fixture.
-WKC="${BASE}/wkc-src"
-mkdir -p "${WKC}/files/config/custom"
-print -r -- '# stub' > "${WKC}/main_playbook.yaml"
-print -r -- 'gitlab_groups: [family-recipes]' > "${WKC}/variables.yaml"
-cp "${BASE}/state.yaml" "${WKC}/files/config/user_data.yaml"
-: > "${WKC}/files/config/custom/.gitkeep"
-run_gen --out "$(out wk-custom-empty)" --config "${WKC}/files/config/user_data.yaml"
-check    "it generates"                        "${RC}" "0"
-excludes "a .gitkeep alone is not content"     "${OUT}" "files/config/custom/"
-print -r -- '- name: printer' > "${WKC}/files/config/custom/printer.yaml"
-mkdir -p "${WKC}/files/config/custom/vpn"
-run_gen --out "$(out wk-custom)" --config "${WKC}/files/config/user_data.yaml"
-check    "it generates"                        "${RC}" "0"
-contains "each entry is named"                 "${OUT}" "${WKC}/files/config/custom/ holds printer.yaml, vpn - wslkube additions nothing here reads; port them to the overlay by hand"
-run_gen --out "$(out wk-custom-copied)" --config "${BASE}/state.yaml"
-excludes "without a wslkube checkout there is none" "${OUT}" "files/config/custom/"
 
 print -r -- "an empty unmapped key is not named: it carries nothing"
 bare_cfg empty-unmapped <<'YAML'

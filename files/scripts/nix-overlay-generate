@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Scaffold a private flakelab overlay from a flakelab checkout - on Linux or macOS.
-# Reads the same wslkube-shaped user_data.yaml setup-wsl-nix.ps1 does
+# Reads the same user_data.yaml setup-wsl-nix.ps1 does
 # (files/config/user_data.example.yaml is the schema) and writes the overlay
 # directory; it never provisions, imports or rebuilds anything.
 #
@@ -58,12 +58,8 @@ empty mode-600 secrets.env stub is created.
 
 Options:
   --out <dir>            the overlay directory to write (required)
-  --config <file>        a wslkube-shaped user_data.yaml
+  --config <file>        a user_data.yaml
                          (schema: files/config/user_data.example.yaml)
-  --wslkube <dir>        a wslkube checkout whose variables.yaml holds the
-                         shared half of that config. Auto-detected when --config
-                         is the <checkout>/files/config/user_data.yaml of one;
-                         pass it when the config has been copied out.
   --flakelab-ref <ref>     flake ref for the flakelab input. Default:
                          path:<this checkout>, which is what you want while you
                          edit flakelab and the overlay side by side. Use
@@ -119,7 +115,6 @@ source "${0:A:h}/lib/overlay-git.zsh" \
 
 _out=""
 _config=""
-_wslkube=""
 _flakelab_ref=""
 _force=false
 _dry_run=false
@@ -152,7 +147,6 @@ while (( $# )); do
   case "$1" in
     --out)               shift; _need --out "${1:-}"; _out="$1" ;;
     --config)            shift; _need --config "${1:-}"; _config="$1"; _have_values=true ;;
-    --wslkube)           shift; _need --wslkube "${1:-}"; _wslkube="$1" ;;
     --flakelab-ref)        shift; _need --flakelab-ref "${1:-}"; _flakelab_ref="$1" ;;
     --force)             _force=true ;;
     --dry-run)           _dry_run=true ;;
@@ -208,23 +202,6 @@ fi
 if [[ -n "${_config}" ]]; then
   [[ -f "${_config}" ]] || die "config not found: ${_config}"
   _config="${_config:A}"
-fi
-
-# A wslkube config is two files: variables.yaml holds the shared defaults and
-# user_data.yaml the per-host overrides, so reading only the latter yields an overlay
-# with no groups, which still builds and leaves the box with an empty ~/git.
-# Detection needs main_playbook.yaml too: a lone variables.yaml is not evidence of a
-# wslkube checkout, and layering an unrelated file under the config is worse than none.
-if [[ -n "${_wslkube}" ]]; then
-  _wslkube="${_wslkube:A}"
-  [[ -d "${_wslkube}" ]] || die "--wslkube ${_wslkube} is not a directory"
-  [[ -f "${_wslkube}/variables.yaml" ]] \
-    || die "no variables.yaml in ${_wslkube} - that is the file this reads; point --wslkube at the checkout root, not at files/config/"
-elif [[ -n "${_config}" ]]; then
-  _wk="${_config:h:h:h}"
-  if [[ "${_config:h}" == */files/config && -f "${_wk}/variables.yaml" && -f "${_wk}/main_playbook.yaml" ]]; then
-    _wslkube="${_wk}"
-  fi
 fi
 
 # State lives in four associative arrays keyed by the top-level key; YIC carries the
@@ -463,7 +440,6 @@ _nix_list() {
 
 typeset -a _profiles=() _groups=() _sshkeys=()
 typeset -a _skipped_secrets=()
-# Keys only a wslkube-written config carries.
 typeset -a _claude_plugins=() _clone_exclude_extra=()
 _mkt_name="" _mkt_url="" _whatsapp_dir=""
 
@@ -480,11 +456,6 @@ typeset -a _secret_names=(
 typeset -a _session_lines=()
 
 if [[ -n "${_config}" ]]; then
-  # Shared defaults first, per-host overrides second and winning.
-  if [[ -n "${_wslkube}" ]]; then
-    say "layering ${_wslkube}/variables.yaml under ${_config}"
-    _yaml_load "${_wslkube}/variables.yaml"
-  fi
   _yaml_load "${_config}"
   [[ -n "${_user}" ]] || _user="${YS[user]:-}"
   [[ -n "${_target}" ]] || _target="${YS[target]:-}"
@@ -547,8 +518,7 @@ if [[ -n "${_config}" ]]; then
   _as_list claude_mcp_plugins; _claude_plugins+=("${reply[@]}")
   _claude_plugins=("${(@u)_claude_plugins}")
 
-  # A config key, not a constant: it names a private checkout path. A wslkube
-  # config does not carry it, so a migrated one must add it.
+  # A config key, not a constant: it names a private checkout path.
   _whatsapp_dir="${YS[whatsapp_mcp_dir]:-}"
   [[ -z "${_overlay_url}" ]] && _overlay_url="${YS[overlay_url]:-}"
   if [[ -z "${_whatsapp_dir}" ]] && (( ${_claude_plugins[(Ie)mcp-whatsapp]} )); then
@@ -559,15 +529,14 @@ if [[ -n "${_config}" ]]; then
 
   # Every top-level key is read above, reported as a secret or named here. The
   # letter is the shape it is read in: s a scalar, l a list (a scalar is one
-  # entry), m a map, i a list of maps. dockerautostart is wslkube's and has no
-  # effect here, as user_data.example.yaml says. Keep in step with
-  # setup-wsl-nix.ps1's $ConfigShape and $ConfigFields.
+  # entry), m a map, i a list of maps. Keep in step with setup-wsl-nix.ps1's
+  # $ConfigShape and $ConfigFields.
   typeset -A _shape=(
     user s target s gitfullname s gitmail s userlocale s windows_username s
-    backupautostart s state_root s state_transcripts s giteditor s dockerautostart s
+    backupautostart s state_root s state_transcripts s giteditor s
     whatsapp_mcp_dir s overlay_url s
     profiles l teams l team l gitlab_groups l sshkeyautoadd l
-    claude_plugins l claude_mcp_plugins l clone_exclude l extra_task_files l
+    claude_plugins l claude_mcp_plugins l clone_exclude l
     custom_env_vars m claude_plugin_marketplace m repos i custom_aliases i
   )
   typeset -A _shape_name=(s scalar l list m map i 'list of maps')
@@ -576,8 +545,7 @@ if [[ -n "${_config}" ]]; then
   for _k in "${YK[@]}"; do
     _want="${_shape[$_k]:-}"
     if [[ -z "${_want}" ]]; then
-      # An empty key carries nothing to drop: a wslkube config lists its unused
-      # ones as `extra_repos_dirs: []`.
+      # An empty key carries nothing to drop.
       if (( ${_secret_names[(Ie)$_k]} )); then _skipped_secrets+=("${_k}")
       elif [[ -n "${YS[$_k]:-}${YL[$_k]:-}${YMK[$_k]:-}${${YIC[$_k]:-}:#0}" ]]; then _dropped "${_k}"
       fi
@@ -597,14 +565,6 @@ if [[ -n "${_config}" ]]; then
   done
   for _k in ${(f)"${YMK[claude_plugin_marketplace]:-}"}; do _seen+=("claude_plugin_marketplace.${_k}"); done
   for _k in "${(@ou)_seen}"; do (( ${_fields[(Ie)$_k]} )) || _dropped "${_k}"; done
-
-  _as_list extra_task_files
-  (( ${#reply} == 0 )) || warn "extra_task_files names wslkube Ansible tasks nothing here runs: ${(j:, :)reply}"
-  if [[ -n "${_wslkube}" ]]; then
-    typeset -a _custom=("${_wslkube}"/files/config/custom/*(N:t))
-    (( ${#_custom} == 0 )) \
-      || warn "${_wslkube}/files/config/custom/ holds ${(j:, :)_custom} - wslkube additions nothing here reads; port them to the overlay by hand"
-  fi
 fi
 
 # The repository overlay_url names, for cloneExclude: the last path segment
@@ -673,7 +633,7 @@ if ${_have_values}; then
     done
   done
 
-  # A wslkube config has only a flat gitlab_groups, so derive the profiles: a group a
+  # A config with only a flat gitlab_groups gets its profiles derived: a group a
   # profile declares selects that profile. Only when both came from the config, since
   # inferring profiles for an explicit --gitlab-groups would surprise the caller.
   if (( ${#_profiles} == 0 )) && (( ${#_groups} > 0 )) \
@@ -713,7 +673,7 @@ if ${_have_values}; then
   # No profile, group or repo produces a box with an empty ~/git while every step
   # reports success, so refuse rather than warn.
   if (( ${#_profiles} == 0 )) && (( ${#_groups} == 0 )) && (( _repos_n == 0 )); then
-    die "no profiles, no gitlab_groups and no repos resolved - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: ${(j:, :)_known}), 'gitlab_groups:' or 'repos:', or pass --profiles/--gitlab-groups; a wslkube checkout keeps gitlab_groups in its variables.yaml, which is read only when the config sits inside that checkout or --wslkube names it."
+    die "no profiles, no gitlab_groups and no repos resolved - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: ${(j:, :)_known}), 'gitlab_groups:' or 'repos:', or pass --profiles/--gitlab-groups."
   fi
   if (( ${#_profiles} == 0 )); then
     warn "no profiles selected - selecting a profile is the only thing that installs its gitlabGroups and profileCliTools, so the box gets neither; 'repos:' entries are still cloned. Known: ${(j:, :)_known}"

@@ -67,9 +67,9 @@ print -r -- "read-only commands run here, in the foreground"
 run "${CMD}"
 check    "no command is status"                 "${RC}" "0"
 check    "handed to the .ps1 by its Windows path" "$(calls)" '-NoProfile -ExecutionPolicy Bypass -File C:\git\flakelab\setup-wsl-nix.ps1 status'
-run "${CMD}" generate -- -Config '..\wslkube\user_data.yaml'
+run "${CMD}" generate -- -Config 'D:\configs\user_data.yaml'
 check    "generate runs"                         "${RC}" "0"
-contains "with the .ps1's arguments after it"    "$(calls)" 'setup-wsl-nix.ps1 generate -Config ..\wslkube\user_data.yaml'
+contains "with the .ps1's arguments after it"    "$(calls)" 'setup-wsl-nix.ps1 generate -Config D:\configs\user_data.yaml'
 run "${CMD}" generate -Config x.yaml
 contains "a single-dash switch passes through without --" "$(calls)" 'generate -Config x.yaml'
 
@@ -85,9 +85,9 @@ contains "a quote in an argument is doubled for PowerShell" "${ERR}" "bootstrap 
 run "${CMD}" provision -- -DryRun
 check    "-DryRun never restarts, so it runs here" "${RC}" "0"
 contains "with the switch"                       "$(calls)" "provision -DryRun"
-run "${CMD}" --foreground migrate
+run "${CMD}" --foreground bootstrap
 check    "--foreground runs it here regardless"  "${RC}" "0"
-contains "as asked"                              "$(calls)" "setup-wsl-nix.ps1 migrate"
+contains "as asked"                              "$(calls)" "setup-wsl-nix.ps1 bootstrap"
 
 print -r -- ""
 print -r -- "finding the checkout"

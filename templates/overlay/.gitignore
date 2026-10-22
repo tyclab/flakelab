@@ -18,7 +18,5 @@ files/config/snapshots/
 files/config/.backup.lock
 files/config/.last-restore-kept
 
-.migrated-from-wslkube
-
 result
 result-*

@@ -18,10 +18,10 @@ ${_self} - run the Windows provisioning script from inside WSL
 
   ${_self} [options] [command] [-- <extra args for the .ps1>]
 
-Commands (passed through): status (default), generate, init, bootstrap, migrate,
+Commands (passed through): status (default), generate, init, bootstrap,
 provision. Anything not recognised is passed through unchanged.
 
-provision, bootstrap and migrate restart this distro, so they are not run from
+provision and bootstrap restart this distro, so they are not run from
 here: the command to paste into a Windows PowerShell is printed instead.
 
 Only 'generate' and 'init' need Windows at all. To write the overlay WITHOUT
@@ -38,7 +38,7 @@ Options:
 
 Examples:
   ${_self} status
-  ${_self} generate -- -Config ..\\wslkube\\files\\config\\user_data.yaml
+  ${_self} generate -- -Config D:\\configs\\user_data.yaml
   ${_self} provision -- -DryRun
   ${_self} provision              # prints the Windows PowerShell command
 EOF
@@ -111,7 +111,7 @@ esac
 # there.
 _restarts=false
 case "${_cmd}" in
-  provision|bootstrap|migrate) _restarts=true ;;
+  provision|bootstrap) _restarts=true ;;
 esac
 # ${_a:l} rather than a (#i) glob: that flag needs extendedglob, which is not on
 # here, and without it the pattern silently never matches and -DryRun leaves.

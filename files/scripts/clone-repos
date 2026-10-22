@@ -164,9 +164,9 @@ process_repo() {
     # commit", which lands as a rebase-conflict demanding manual resolution and
     # leaves the checkout empty on every subsequent run. Fast-forward from
     # upstream instead: on an unborn branch with nothing staged that is the
-    # initial checkout. wslkube uses `reset --hard` and only asserts the empty
-    # index in a comment; checking it keeps the destructive verb out and
-    # preserves staged work rather than discarding it. The trade is that an
+    # initial checkout. `reset --hard` would do the same and discard staged
+    # work; checking the empty index keeps the destructive verb out and
+    # preserves staged work instead. The trade is that an
     # untracked file colliding with an upstream path reports FAILED instead of
     # being clobbered — loud, but it will not self-heal.
     if ! git -C "${dest}" rev-parse --verify -q HEAD >/dev/null 2>&1; then

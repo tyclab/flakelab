@@ -228,9 +228,8 @@ secrets the same way (the tokens are dropped, not written; only an empty
 mode-600 git-ignored `secrets.env` stub is created) and warns about the same
 things the overlay has no field for: an unmapped key that holds a value or an
 entry field, a key in a shape the generator does not read, a line outside the
-flat YAML it parses, wslkube's `extra_task_files` and, for a config read from a
-wslkube checkout, a non-empty `files/config/custom/` there are each named (a
-line by number, never by value) and dropped, and each needs a hand-written
+flat YAML it parses are each named (a line by number, never by value) and
+dropped, and each needs a hand-written
 overlay entry if the box still wants it. Run **from a checkout** and
 `--flakelab-ref` defaults to `path:` that checkout, which is why the lock above
 works offline — as `flakelab overlay-gen` from PATH it is required instead

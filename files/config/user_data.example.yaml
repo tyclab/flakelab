@@ -1,6 +1,6 @@
 ---
-# Example provisioning config for `setup-wsl-nix.ps1 provision -Config <this file>`.
-# Same schema as wslkube's files/config/user_data.yaml; no "-" in key names.
+# Example provisioning config for `setup-wsl-nix.ps1 provision -Config <this file>`
+# and `flakelab overlay-gen --config <this file>`. Flat YAML; no "-" in key names.
 # Copy it out of the repo before filling it in - real tokens must never be committed.
 
 # Linux user (no dashes).
@@ -28,7 +28,7 @@ gitlab_groups:
 
 # Repos to skip during group discovery.
 # clone_exclude:
-#   - wslkube
+#   - some-repo
 
 # Claude Code plugins: claude_plugins is always on, claude_mcp_plugins is opt-in.
 # The marketplace name must match its own marketplace.json, or installs fail silently.
@@ -51,9 +51,6 @@ gitlab_groups:
 
 # Keys in ~/.ssh to load on login, space-separated; the first is the git identity.
 sshkeyautoadd: id_ed25519
-
-# No effect under NixOS; kept so this stays a valid wslkube user_data.yaml.
-dockerautostart: true
 
 # Run `flakelab backup --force` daily from a systemd user timer.
 backupautostart: false
