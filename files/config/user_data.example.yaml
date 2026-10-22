@@ -4,7 +4,7 @@
 # Copy it out of the repo before filling it in - real tokens must never be committed.
 
 # Linux user (no dashes).
-user: tycuser
+user: devuser
 
 # Platform this box is built for: wsl (default) or proxmox-vm.
 # target: wsl
