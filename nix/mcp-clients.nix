@@ -76,6 +76,9 @@ let
     exec ${pkgs.zsh}/bin/zsh ${../files/scripts}/mcp "$@"
   '';
   ports = lib.mapAttrsToList (_: server: server.callbackPort) cfg.mcpShared.servers;
+  questions = pkgs.writeShellScriptBin "flakelab-questions" ''
+    exec ${pkgs.python3}/bin/python3 ${../files/scripts/lib/questions.py}
+  '';
 
   # Playwright's MCP server from the nixpkgs build, not @playwright/mcp from npm:
   # that package is a cli.js over playwright-core, pinned to an alpha no nixpkgs
@@ -142,6 +145,12 @@ assert lib.assertMsg (
         name
       ];
     }) cfg.mcpShared.servers
+    // lib.optionalAttrs (cfg.questions.enable or false) {
+      flakelab-questions = {
+        command = "${questions}/bin/flakelab-questions";
+        args = [ ];
+      };
+    }
     // lib.optionalAttrs cfg.mcpBrowsers.headless {
       playwright-headless = {
         command = "${headless}/bin/flakelab-playwright-headless";

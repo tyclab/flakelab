@@ -94,10 +94,34 @@ Mechanics worth knowing:
   keeps its registry entry under the profile; the table finds it there and
   `--recent` reads the transcripts a profile kept for itself.
 
-`flakelab notify` is the push: a Claude Code `Notification` hook
+`flakelab.questions.enable = true;` registers `flakelab-questions` in both
+Claude and Codex. Its `ask_question` tool posts the full question, optional
+context and choices to Home Assistant, then returns your phone or inbox answer
+to the original tool call. Tapping the push opens that question in HA's
+**Agent questions** sidebar; replies and closed questions remain there for up
+to seven days (500 records maximum). No daemon or event observer runs on the
+agent box: each client starts the same stdio server.
+
+This needs the `flakelab_questions` HA integration from hatyc. It reads
+`NOTIFY_WEBHOOK_URL` at runtime and adds `-questions` to the webhook ID. Keep
+`sopsKeyFiles.NOTIFY_WEBHOOK_URL = null;`. The endpoint accepts LAN POSTs only;
+HA authentication protects inbox replies. A separate random capability per
+question binds polling to its originating call; phone actions use a different
+one-use reply nonce. Cancelling the call closes its question. A dead process
+expires within 90 seconds; the overall answer window is 25 minutes. An expired
+or cancelled call returns no fabricated answer. Questions are not approval
+grants, and native dialogs are not intercepted: the agent must call this tool.
+
+The managed client instructions prefer it for clarification and decisions.
+Claude may move a long call to a background task; dependent work must still
+wait for its answer. Codex and Claude get a per-server timeout just above the
+answer window. Existing sessions need to reconnect MCP or restart to load a
+new server. If HA is unavailable, ask in the conversation.
+
+`flakelab notify` remains available for manual and legacy pushes: a Claude Code `Notification` hook
 (`flakelab.notify.enable`, the types in `flakelab.notify.events`) and Codex's
 `notify` hook call it, and it posts the event, the directory and the one line
-that answers it (`flakelab sessions --attach <id>`, `codex resume <id>`) to an
+that opens its session (`flakelab sessions --attach <id>`, `codex resume <id>`) to an
 ntfy topic (`NTFY_URL`, `NTFY_TOKEN`), to a JSON webhook (`NOTIFY_WEBHOOK_URL`,
 a body of `title`, `message`, `priority` 1-5 and `tags`; Home Assistant's
 `/api/webhook/<id>` takes it as `trigger.json`), or to both. A target the
@@ -108,7 +132,9 @@ shell's environment too.
 A hook run never fails its caller, so an unconfigured or offline box costs
 nothing. `--dry-run` shows the request,
 `--title`/`--message` send one by hand. For Codex, the
-line in `~/.codex/config.toml` is:
+legacy line in `~/.codex/config.toml` is below. It reports every completed turn,
+not a waiting question, and carries no reply route. Remove it when using the
+question tool:
 
 ```toml
 notify = ["flakelab", "notify", "--codex"]

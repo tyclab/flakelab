@@ -387,6 +387,7 @@
         flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
         claude-sessions = suiteCheck "claude-sessions";
         notify = suiteCheck "notify";
+        questions = suiteCheckWith [ pkgs.python3 ] "questions";
         # The suite; the launcher as installed, against a fixture account; the
         # account and the headless browser registered in both clients' rendered
         # configuration; and that browser server driven end to end.
@@ -415,6 +416,7 @@
                     servers.fixture = fixtureServer;
                   };
                   flakelab.mcpBrowsers.headless = true;
+                  flakelab.questions.enable = true;
                   flakelab.codexSettings.mcp_servers.native-fixture = {
                     url = "https://example.invalid/native-mcp";
                     bearer_token_env_var = "FIXTURE_KEY";
@@ -459,6 +461,8 @@
               bash -euo pipefail ${claudeMerge}
               jq -e '.mcpServers.fixture | .type == "stdio" and (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]' "$fixtureHome/.claude.json"
               toml2json ${codexSettings} | jq -e '.mcp_servers.fixture | (.command | endswith("/bin/flakelab-mcp")) and .args == ["connect", "fixture"]'
+              jq -e '.mcpServers."flakelab-questions" | .env.FLAKELAB_QUESTIONS_AGENT == "claude" and .timeout == 1560000' "$fixtureHome/.claude.json"
+              toml2json ${codexSettings} | jq -e '.mcp_servers."flakelab-questions" | .env.FLAKELAB_QUESTIONS_AGENT == "codex" and .tool_timeout_sec == 1560'
               config="$(grep -o '/nix/store/[^ ]*-flakelab-mcp.json' "$(jq -r .mcpServers.fixture.command "$fixtureHome/.claude.json")")"
               jq -e '.gateway == "operator@devbox" and .servers.fixture.callbackPort == 18871' "$config"
               jq -e '.nativeServers["native-fixture"] | .tokenEnv == "FIXTURE_KEY" and .clientsAgree and .claudeEnabled and .codexEnabled' "$config"

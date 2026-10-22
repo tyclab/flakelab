@@ -62,8 +62,13 @@ the private overlay `flakelab-config`, which imports this flake via
     and `tycswap switch`. The store is `~/.local/share/tycswap`; nothing reads
     the retired engine's `~/.local/state/flakelab/accounts` except the doctor's
     warning (README, "Migrating from flakelab accounts").
-  - `notify` (new, `notify`): a push to an ntfy topic, a JSON webhook, or
-    both, when a session waits on you; the Claude Code `Notification` hook
+  - `questions.enable` registers the shared `flakelab-questions` MCP server in
+    Claude and Codex (`files/scripts/lib/questions.py`, `test-questions`). Its
+    `ask_question` tool retains the question in HA and returns the phone/inbox
+    answer to the originating call. See `remote-sessions.md`. It does not
+    intercept native dialogs or approve tools.
+  - `notify` (legacy, `notify`): a push to an ntfy topic, a JSON webhook, or
+    both; Codex's hook reports turn completion, while the Claude Code `Notification` hook
     (`flakelab.notify.enable`) and Codex's `notify` hook call it, `--message`
     sends one by hand. `NTFY_URL`/`NTFY_TOKEN` (a pair) and
     `NOTIFY_WEBHOOK_URL` (a secret: never on a command line or in output,

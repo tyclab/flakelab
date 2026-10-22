@@ -12,7 +12,15 @@ let
   names = lib.concatMap builtins.attrNames sources;
   servers = lib.foldl' (acc: source: acc // source) { } sources;
   nativeServers = lib.mapAttrs (_: server: builtins.removeAttrs server [ "type" ]) servers;
-  allServers = lib.recursiveUpdate (nativeServers // shared.servers) (
+  sharedServers = lib.mapAttrs (
+    name: server:
+    server
+    // lib.optionalAttrs (name == "flakelab-questions") {
+      env.FLAKELAB_QUESTIONS_AGENT = "codex";
+      tool_timeout_sec = 1560;
+    }
+  ) shared.servers;
+  allServers = lib.recursiveUpdate (nativeServers // sharedServers) (
     cfg.codexSettings.mcp_servers or { }
   );
   commandRules = import ./codex-rules.nix;
@@ -121,6 +129,12 @@ in
           else
             settings
         )
+        // lib.optionalAttrs cfg.questions.enable {
+          developer_instructions =
+            (settings.developer_instructions or "")
+            + "\n"
+            + builtins.readFile ../files/config/question-instructions.md;
+        }
         // lib.optionalAttrs (allServers != { }) {
           mcp_servers = if cfg.codexAutoReview then reviewedServers else allServers;
         }
