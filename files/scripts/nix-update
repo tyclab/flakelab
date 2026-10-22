@@ -509,28 +509,38 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
     done
   fi
   _settings="$HOME/.claude/settings.json"
-  _recommended="$(find "${_claude_marketplaces}" -type f -name recommended-permissions.json 2> /dev/null | head -1)"
-  if [ -n "${_recommended}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
+  # Only a marketplace the flake declares sets the tiers, the first that ships the file:
+  # a marketplace added by hand to browse it would otherwise rewrite them.
+  _declared=(${=FLAKELAB_CLAUDE_MARKETPLACES:-})
+  # A list of rule strings; the allow tier also refuses a rule that approves every use
+  # of a tool that runs commands, writes or fetches, which no recommendation needs.
+  _rules_ok='type == "array" and all(.[]; type == "string" and length > 0)
+    and ($tier != "allow" or all(.[]; test("^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|WebFetch)(\\((\\*\\*?|:\\*|domain:\\*|(//?|~/)\\*\\*)?\\))?$") | not))'
+  # _assert_tier <file> <tier> <what>
+  _assert_tier() {
+    local _src="" _m _tmp
+    for _m in "${_declared[@]}"; do
+      _src="$(find "${_claude_marketplaces}/${_m}" -type f -name "$1" 2> /dev/null | sort | head -1)"
+      [ -n "${_src}" ] && break
+    done
+    [ -n "${_src}" ] || return 0
+    if ! jq -e --arg tier "$2" "${_rules_ok}" "${_src}" > /dev/null 2>&1; then
+      _say yellow "⚠ ${_src} is not a list of permission rules, or approves a whole tool — Claude's $3 left as they were"
+      return 0
+    fi
     _tmp="$(mktemp)"
     # Asserted, not unioned: a union only grows, and a withdrawn rule would stay.
-    if jq -s '.[0] * {permissions: {allow: .[1]}}' \
-         "${_settings}" "${_recommended}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
+    if jq -s --arg tier "$2" '.[0] * {permissions: {($tier): .[1]}}' \
+         "${_settings}" "${_src}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
       mv "${_tmp}" "${_settings}"
     else
-      _say yellow "⚠ Claude pre-approved permissions not asserted in settings.json"
+      _say yellow "⚠ Claude $3 not asserted in settings.json"
     fi
     rm -f "${_tmp}"
-  fi
-  _recommendedask="$(find "${_claude_marketplaces}" -type f -name recommended-ask.json 2> /dev/null | head -1)"
-  if [ -n "${_recommendedask}" ] && [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
-    _tmp="$(mktemp)"
-    if jq -s '.[0] * {permissions: {ask: .[1]}}' \
-         "${_settings}" "${_recommendedask}" > "${_tmp}" 2> /dev/null && [ -s "${_tmp}" ]; then
-      mv "${_tmp}" "${_settings}"
-    else
-      _say yellow "⚠ Claude recommended ask tier not asserted in settings.json"
-    fi
-    rm -f "${_tmp}"
+  }
+  if [ -f "${_settings}" ] && command -v jq > /dev/null 2>&1; then
+    _assert_tier recommended-permissions.json allow "pre-approved permissions"
+    _assert_tier recommended-ask.json ask "ask rules"
   fi
 fi
 

@@ -7,16 +7,6 @@ things we intend to change.
 Tracked here rather than in the GitHub issue tracker: the work is decided in
 the repository, alongside the code it describes.
 
-## Validate the marketplace permission files
-
-`security`
-
-`files/scripts/nix-update` searches the marketplace clone for
-`recommended-permissions.json` and `recommended-ask.json` and writes whatever it
-finds as Claude's `permissions.allow` and `permissions.ask`. A malformed or
-hostile file there widens the allowlist with no check. Validate the shape before
-writing, and decide whether the source should be pinned rather than discovered.
-
 ## Retire the wslkube migration path
 
 `tech-debt`
