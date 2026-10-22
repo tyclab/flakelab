@@ -431,9 +431,8 @@ other:
 for you from the `custom_env_vars` of the config it provisions from (it asks
 first): the names in the table below go there, everything else becomes
 `sessionVariables` in the generated flake, so no token reaches the
-world-readable store. A box set up while the file lived in `~/.config/tyc` has
-it moved on its next `flakelab update`, and `~/.config/tyc` becomes a link to
-`~/.config/flakelab`.
+world-readable store. On a box set up while these files lived in `~/.config/tyc`,
+`flakelab doctor` warns and prints the one `mv` that moves them.
 
 There are **two** files, and only one of them exists before a distro does. The
 Windows side — `provision`, and anything you edit by hand on a fresh PC — reads

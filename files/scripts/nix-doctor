@@ -550,11 +550,10 @@ else
     log_hint "populate it from your secret store; see files/config/secrets.env.example"
   fi
 fi
-# Activation moves ~/.config/tyc into ~/.config/flakelab and links the old name; a
-# directory still there holds names the new one already had, which nothing reads.
-if [[ -d "${HOME}/.config/tyc" && ! -L "${HOME}/.config/tyc" ]]; then
-  log_warn "~/.config/tyc still holds $(ls -A "${HOME}/.config/tyc" | wc -l) file(s) that ~/.config/flakelab already has; nothing reads them"
-  log_hint "compare them with ~/.config/flakelab, keep what you need there, then: rm -r ~/.config/tyc && flakelab update"
+# The secrets directory before ~/.config/flakelab; nothing reads it any more.
+if [[ -e "${HOME}/.config/tyc" ]]; then
+  log_warn "~/.config/tyc is the old secrets directory; nothing reads it any more"
+  log_hint "mv -n ~/.config/tyc/*(DN) ~/.config/flakelab/ && rmdir ~/.config/tyc  (a name left behind clashes with a newer file in ~/.config/flakelab)"
 fi
 
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then

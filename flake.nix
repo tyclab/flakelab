@@ -1704,50 +1704,27 @@
           assert !hasInfix "/run/secrets/flakelab-env" zshOff;
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
 
-        # The move into ~/.config/flakelab: once, through a link after it, never over a
-        # file the new directory already has, and nothing on a fresh home or a dry run.
-        secrets-dir-move =
+        # The secrets directory is owner-only after activation, also where
+        # home-manager's own files created it 755 first.
+        secrets-dir-mode =
           let
             sys = self.nixosConfigurations.default.config;
-            move = pkgs.writeText "flakelab-secrets-dir-activation" (
+            activation = pkgs.writeText "flakelab-secrets-dir-activation" (
               nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ]
                 sys.home-manager.users.${sys.flakelab.username}.home.activation.flakelabSecretsDir.data
             );
           in
-          pkgs.runCommandLocal "flakelab-check-secrets-dir-move" { nativeBuildInputs = [ pkgs.bash ]; } ''
+          pkgs.runCommandLocal "flakelab-check-secrets-dir-mode" { nativeBuildInputs = [ pkgs.bash ]; } ''
             set -eu
-            export fixtureHome="$TMPDIR/moved" DRY_RUN_CMD=""
-            mkdir -p "$fixtureHome/.config/tyc" "$fixtureHome/.config/flakelab"
-            echo A=1 > "$fixtureHome/.config/tyc/secrets.env"
-            echo token > "$fixtureHome/.config/tyc/bw-session"
-            echo kept > "$fixtureHome/.config/flakelab/codex-mcp.env"
-            DRY_RUN_CMD=echo bash ${move}
-            test ! -L "$fixtureHome/.config/tyc"
-            test -f "$fixtureHome/.config/tyc/secrets.env"
-            bash ${move}
-            test "$(readlink "$fixtureHome/.config/tyc")" = flakelab
-            grep -qx A=1 "$fixtureHome/.config/flakelab/secrets.env"
-            grep -qx token "$fixtureHome/.config/tyc/bw-session"
-            grep -qx kept "$fixtureHome/.config/flakelab/codex-mcp.env"
+            export fixtureHome="$TMPDIR/home" DRY_RUN_CMD=""
+            mkdir -p -m755 "$fixtureHome/.config/flakelab"
+            DRY_RUN_CMD=echo bash ${activation}
+            test "$(stat -c %a "$fixtureHome/.config/flakelab")" = 755
+            bash ${activation}
             test "$(stat -c %a "$fixtureHome/.config/flakelab")" = 700
-            bash ${move}
-            test "$(readlink "$fixtureHome/.config/tyc")" = flakelab
-
-            export fixtureHome="$TMPDIR/clash"
-            mkdir -p "$fixtureHome/.config/tyc" "$fixtureHome/.config/flakelab"
-            echo old > "$fixtureHome/.config/tyc/secrets.env"
-            echo new > "$fixtureHome/.config/flakelab/secrets.env"
-            echo token > "$fixtureHome/.config/tyc/bw-session"
-            bash ${move}
-            grep -qx new "$fixtureHome/.config/flakelab/secrets.env"
-            grep -qx old "$fixtureHome/.config/tyc/secrets.env"
-            test ! -L "$fixtureHome/.config/tyc"
-            grep -qx token "$fixtureHome/.config/flakelab/bw-session"
-
-            export fixtureHome="$TMPDIR/fresh"
-            mkdir -p "$fixtureHome"
-            bash ${move}
-            test ! -e "$fixtureHome/.config/tyc" && test ! -L "$fixtureHome/.config/tyc"
+            rm -r "$fixtureHome"
+            bash ${activation}
+            test "$(stat -c %a "$fixtureHome/.config/flakelab")" = 700
             touch $out
           '';
 

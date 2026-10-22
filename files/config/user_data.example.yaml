@@ -12,7 +12,7 @@ user: devuser
 # Windows username - the C:\Users\<name> folder. wsl only.
 windows_username: WindowsUser
 
-userlocale: de_DE.UTF-8
+userlocale: en_US.UTF-8
 
 # Git identity, both required.
 gitmail: you@example.com

@@ -48,7 +48,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
-- The fallback secrets file is `~/.config/flakelab/secrets.env` and the sops render `/run/secrets/flakelab-env`; `bwu` keeps the Bitwarden token in `~/.config/flakelab/bw-session`. Activation moves an existing `~/.config/tyc` into `~/.config/flakelab` once and leaves `~/.config/tyc` as a link to it; `flakelab doctor` warns about any file it could not move because the new directory already had that name.
+- The fallback secrets file is `~/.config/flakelab/secrets.env` and the sops render `/run/secrets/flakelab-env`; `bwu` keeps the Bitwarden token in `~/.config/flakelab/bw-session`. Nothing moves an existing `~/.config/tyc` for you: `flakelab doctor` warns about it and prints the `mv`. An overlay that names `/run/secrets/tyc-env` or a `~/.config/tyc` path (`sopsKeyFiles`, scripts) changes with it.
 - The stale-clone report prints a `rm -rf` line per clone it found safe to remove, and tells a kept one that its work exists only locally, instead of suggesting a `~/.stale-repos` parking directory that nothing ever swept.
 - pre-commit comes from nixpkgs-unstable, which ships the 4.6.2 the overlay pinned by hand, so Renovate's lock maintenance moves it from now on; the overlay keeps only the installer patch. Python hooks reinstall once per box under its Python 3.14.
 - Tycswap is pinned to v0.7.19: the Windows tray separates each table from its details with a divider line and frames the detail text.

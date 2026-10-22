@@ -158,6 +158,7 @@ print -r -- "the shipped user_data.example.yaml generates a filled-in overlay"
 o="$(out fromexample)"
 run_gen --out "${o}" --config "${EXAMPLE}"
 check "exits clean" "${RC}" "0"
+excludes "its locale is read, not defaulted" "${OUT}" "no locale in the config"
 f="$(flake_of "${o}")"
 excludes "nothing is left to hand-edit" "${f}" "CHANGEME"
 check    "the anchor survives"          "$(markers_in "${o}/flake.nix")" "1"
@@ -168,7 +169,7 @@ print -r -- "every option with no default is emitted"
 contains "username"        "${f}" 'username = "devuser";'
 contains "gitName"         "${f}" 'gitName = "Your Name";'
 contains "gitEmail"        "${f}" 'gitEmail = "you@example.com";'
-contains "locale"          "${f}" 'locale = "de_DE.UTF-8";'
+contains "locale"          "${f}" 'locale = "en_US.UTF-8";'
 contains "windowsUsername" "${f}" 'windowsUsername = "WindowsUser";'
 contains "repoPath"        "${f}" "repoPath = \"${o}\";"
 contains "backupAutostart" "${f}" 'backupAutostart = false;'

@@ -203,23 +203,9 @@ in
     '';
   };
 
-  # A box set up before the secrets moved beside the rest of flakelab's config holds
-  # them in ~/.config/tyc: move each file over once and leave that name as a link, so
-  # an overlay path or a script still naming it keeps working. A name the new
-  # directory already has stays put, and `flakelab doctor` reports it.
-  home.activation.flakelabSecretsDir = lib.hm.dag.entryBefore [ "writeBoundary" ] ''
-    _old="$HOME/.config/tyc" _new="$HOME/.config/flakelab"
-    if [ -z "''${DRY_RUN_CMD:-}" ] && [ -d "$_old" ] && [ ! -L "$_old" ]; then
-      ${pkgs.coreutils}/bin/mkdir -p "$_new"
-      ${pkgs.coreutils}/bin/chmod 700 "$_new"
-      for _f in "$_old"/* "$_old"/.[!.]*; do
-        if [ -e "$_f" ] && [ ! -e "$_new/''${_f##*/}" ]; then
-          ${pkgs.coreutils}/bin/mv "$_f" "$_new/"
-        fi
-      done
-      if ${pkgs.coreutils}/bin/rmdir "$_old" 2>/dev/null; then
-        ${pkgs.coreutils}/bin/ln -s flakelab "$_old"
-      fi
-    fi
+  # The secrets share ~/.config/flakelab with home-manager's own files, which would
+  # leave it 755; owner-only, like bwu makes it.
+  home.activation.flakelabSecretsDir = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+    $DRY_RUN_CMD ${pkgs.coreutils}/bin/install -d -m700 "$HOME/.config/flakelab"
   '';
 }

@@ -143,7 +143,7 @@ contains "over ssh too"  "$(input_line '"type":"git","url":"ssh://git@gitlab.com
 
 print -r -- "a forge input is published"
 contains "github"        "$(input_line '"type":"github","owner":"tyclab","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (github tyclab/flakelab)"
-contains "sourcehut"     "$(input_line '"type":"sourcehut","owner":"~tyc","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (sourcehut ~tyc/flakelab)"
+contains "sourcehut"     "$(input_line '"type":"sourcehut","owner":"~you","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (sourcehut ~you/flakelab)"
 
 print -r -- "no lock is not read as any input"
 contains "it warns"      "$(input_line '')" "[WARN] could not read the flakelab input from the lock"
@@ -404,15 +404,15 @@ lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agen
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
-print -r -- "secrets: a ~/.config/tyc the move had to leave behind is reported, its link is not"
+print -r -- "secrets: the old ~/.config/tyc is named with the move, its absence is not"
 secrets() { section Secrets PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other }
 mkdir -p "${BASE}/home/.config/tyc"
 : > "${BASE}/home/.config/tyc/secrets.env"
-contains "a left-over directory warns" "$(secrets)" "[WARN] ~/.config/tyc still holds 1 file(s)"
+out="$(secrets)"
+contains "the old directory warns"    "${out}" "[WARN] ~/.config/tyc is the old secrets directory"
+contains "and prints the move"        "${out}" "mv -n ~/.config/tyc/*(DN) ~/.config/flakelab/"
 rm -rf "${BASE}/home/.config/tyc"
-mkdir -p "${BASE}/home/.config/flakelab"
-ln -s flakelab "${BASE}/home/.config/tyc"
-lacks "the link is the finished state" "$(secrets)" "~/.config/tyc still holds"
+lacks    "no old directory, no warning" "$(secrets)" "~/.config/tyc"
 rm -rf "${BASE}/home/.config"
 
 print -r -- ""
