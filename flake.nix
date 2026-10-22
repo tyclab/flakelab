@@ -1618,16 +1618,24 @@
             export HOME="$TMPDIR/home"
             p="$HOME/.codex/packages"
             mkdir -p "$p"/a/releases/1 "$p"/a/releases/2 "$p"/b/releases/1 "$p"/b/releases/2 "$p"/c/releases/1
+            mkdir -p "$p"/d/releases/1 "$p"/d/releases/2 "$p"/d/releases/3
             ln -s "$p/a/releases/2" "$p/a/current"
             ln -s releases/1 "$p/b/current"
             ln -s "$p/c/releases/gone" "$p/c/current"
+            ln -s releases/3 "$p/d/current"
+            # A session still running an older release: a copy of bash as its codex.
+            cp ${pkgs.bash}/bin/bash "$p/d/releases/1/codex"
+            "$p/d/releases/1/codex" -c 'sleep 60; :' &
+            running=$!
             ${prune}
+            kill "$running"
             expect() {
               if [ "$1" != "$2" ]; then echo "$3: got '$1', want '$2'" >&2; exit 1; fi
             }
             expect "$(ls "$p/a/releases")" "2" "an absolute current link"
             expect "$(ls "$p/b/releases")" "1" "a relative current link"
             expect "$(ls "$p/c/releases")" "1" "a dangling current link"
+            expect "$(ls "$p/d/releases" | tr '\n' ' ')" "1 3 " "a release a process still runs"
             touch "$out"
           '';
 

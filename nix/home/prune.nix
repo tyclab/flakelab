@@ -16,24 +16,26 @@ let
     export PATH="${
       lib.makeBinPath [
         pkgs.coreutils
-        pkgs.procps
+        pkgs.gnugrep
         pkgs.uv
         pkgs.pre-commit
       ]
     }"
     ${lib.optionalString installCodex ''
-      # ~430 MB a release, one a day at times. A live codex may still run an older
-      # one, so any running codex skips the pass.
-      if ! pgrep -u "$(id -u)" -x codex > /dev/null; then
-        for pkg in "$HOME"/.codex/packages/*/; do
-          [ -L "''${pkg}current" ] || continue
-          cur="$(readlink -f "''${pkg}current")" && [ -d "$cur" ] || continue
-          for rel in "''${pkg}"releases/*/; do
-            [ -d "$rel" ] || continue
-            [ "$(readlink -f "$rel")" = "$cur" ] || rm -rf -- "$rel"
-          done
+      # ~430 MB a release, one a day at times. Sessions outlive an update, so the
+      # releases a running process executes from stay with the current one.
+      running="$(for pid in /proc/[0-9]*; do readlink "$pid/exe" 2> /dev/null; done)"
+      for pkg in "$HOME"/.codex/packages/*/; do
+        [ -L "''${pkg}current" ] || continue
+        cur="$(readlink -f "''${pkg}current")" && [ -d "$cur" ] || continue
+        for rel in "''${pkg}"releases/*/; do
+          [ -d "$rel" ] || continue
+          real="$(readlink -f "$rel")"
+          [ "$real" = "$cur" ] && continue
+          printf '%s\n' "$running" | grep -q -F -- "$real/" && continue
+          rm -rf -- "$rel"
         done
-      fi
+      done
     ''}
     uv cache prune || true
     pre-commit gc || true

@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
-- `flakelab.pruneSchedule` (default `weekly`): `virtualisation.docker.autoPrune` (unused images, stopped containers and build cache older than a week) and the `flakelab-prune` user timer (Codex releases other than the current one, `uv cache prune`, `pre-commit gc`); null schedules none.
+- `flakelab.pruneSchedule` (default `weekly`): `virtualisation.docker.autoPrune` (unused images, stopped containers and build cache older than a week) and the `flakelab-prune` user timer (Codex releases other than the current one and those a running process still executes from, `uv cache prune`, `pre-commit gc`); null schedules none.
 - `flakelab.sopsKeyFiles`: render variables written to their own owner-only files after every render (`flakelab-sops-key-files.service`) and left out of the shell environment, for MCP headers helpers; a null entry is only left out.
 - `flakelab.claudeDeniedMcpServers`: Claude Code's `deniedMcpServers`, by name, claude.ai connectors included.
 - A server named in both `claudeMcpServers` and `claudeMcpDisabledServers` is written to `~/.config/flakelab/claude-mcp/<name>.json` for `claude --mcp-config`; a `codexSettings.mcp_servers` entry merges over a `codexMcpSources` one, so `enabled = false` turns it off; `flakelab mcp doctor` checks helper-configured endpoints by running the helper.
