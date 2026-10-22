@@ -138,8 +138,8 @@ in
           # shape check as the legacy file below (zsh strips CRs from both at
           # source time — this only surfaces that the committed ciphertext
           # deserves a re-encode from a clean LF file).
-          if [ -r /run/secrets/tyc-env ]; then
-            if [ "$(wc -c < /run/secrets/tyc-env)" = "$(tr -d '\r' < /run/secrets/tyc-env | wc -c)" ]; then
+          if [ -r /run/secrets/flakelab-env ]; then
+            if [ "$(wc -c < /run/secrets/flakelab-env)" = "$(tr -d '\r' < /run/secrets/flakelab-env | wc -c)" ]; then
               _hcOk "sops secrets env present and free of carriage returns"
             else
               _hcBad "sops secrets env has CRLF line endings; re-encrypt secrets/secrets.env from an LF-only file"
@@ -149,13 +149,13 @@ in
           # Only the shape is inspected, never a value: a CR trapped inside a
           # single-quoted value makes GITLAB_TOKEN one byte too long and breaks
           # every GitLab API call with `invalid header field value`.
-          _hcSecrets="$HOME/.config/tyc/secrets.env"
+          _hcSecrets="$HOME/.config/flakelab/secrets.env"
           if [ ! -f "$_hcSecrets" ]; then
             _hcOk "secrets.env absent (nothing to validate)"
           elif [ "$(wc -c < "$_hcSecrets")" = "$(tr -d '\r' < "$_hcSecrets" | wc -c)" ]; then
             _hcOk "secrets.env present and free of carriage returns"
           else
-            _hcBad "secrets.env has CRLF line endings; fix: tr -d '\r' < ~/.config/tyc/secrets.env > /tmp/s && mv /tmp/s ~/.config/tyc/secrets.env"
+            _hcBad "secrets.env has CRLF line endings; fix: tr -d '\r' < ~/.config/flakelab/secrets.env > /tmp/s && mv /tmp/s ~/.config/flakelab/secrets.env"
           fi
 
           # glab refuses to start on any config file it reads at a mode other than 600.

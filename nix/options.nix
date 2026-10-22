@@ -131,7 +131,7 @@ in
     sessionVariables = mkOption {
       type = types.attrsOf types.str;
       default = { };
-      description = "NON-SECRET session environment, exported to every shell. Token halves belong in ~/.config/tyc/secrets.env, never here: this lands in the world-readable Nix store. Two names also gate a Claude MCP server (nix/home/claude.nix): GRAFANA_URL the grafana server, and WHATSAPP_BRIDGE_HOST, together with whatsappMcpDir, the whatsapp server — each unless a marketplace plugin already provides it. The other endpoints (HASS_URL, PROXMOX_*, SYNOLOGY_*) are plain environment the marketplace MCP plugins read.";
+      description = "NON-SECRET session environment, exported to every shell. Token halves belong in ~/.config/flakelab/secrets.env, never here: this lands in the world-readable Nix store. Two names also gate a Claude MCP server (nix/home/claude.nix): GRAFANA_URL the grafana server, and WHATSAPP_BRIDGE_HOST, together with whatsappMcpDir, the whatsapp server — each unless a marketplace plugin already provides it. The other endpoints (HASS_URL, PROXMOX_*, SYNOLOGY_*) are plain environment the marketplace MCP plugins read.";
     };
 
     # strMatching, not str: an invalid hostname is rejected AS
@@ -238,7 +238,7 @@ in
         soft_deny = [
           "$defaults"
           "Force-push form [named+specifics — must name: the branch]: a rewrite of a remote branch is `git push --force-with-lease --force-if-includes origin <branch>`, on the agent's own branch, after the operator named the correction. Bare `--force`/`-f`/`+<ref>`, a lease without `--force-if-includes`, or any force to the default branch stays blocked even when named; prefer a new commit."
-          "Rendered secret file reads [named+specifics — must name: the file and the one key to show]: any tool call that returns the contents of the rendered secret files — `/run/secrets/tyc-env` (the sops render), `~/.config/tyc/secrets.env` (the fallback), `~/.config/tyc/bw-session` — to the transcript: the `Read` tool on them, `Grep` with a pattern over them, and a Bash statement that prints them to stdout (`cat`, `head`, `tail`, `less`, `grep <pattern>`, `sed -n`, `awk`, `cut -d= -f2`, `base64`, `xxd`, `python -c 'open(…)'`, `$(<file)`, a `while read` loop that echoes lines) or prints a value they define (`echo $VAR`, `printenv VAR`, `env | grep VAR`). A transcript records every tool result verbatim and is retained, so the read IS the publication; the shell already carries the values in its environment. Routine, never a hit: sourcing — `set -a; . <file>; set +a`, `source <file>`, `source <(grep … <file>)`, `source =(tr -d '\\r' < <file>)` — nothing reaches stdout; loading the session token into the env, `export BW_SESSION=$(tr -d '\\r\\n' < ~/.config/tyc/bw-session)` or the `$(cat …)` spelling; metadata (`ls -l`, `stat`, `test -r`/`[ -f ]`, `wc -l`); key names and is-it-set checks that print no value (`cut -d= -f1`, `grep -c`, `grep -q`, `grep -l`, `grep -oE '^[A-Z_]+='`, `env | grep -c VAR`, `[[ -n $VAR ]]`, `\${VAR:+set}`). Clears only when the operator's own message names the file and the one key they want shown, and the command prints that key alone (`grep '^KEY=' <file>`). Never cleared: dumping the whole file or several keys, copying it anywhere (Key and certificate movement keeps its own bar), and a literal secret value on a command line (`BW_SESSION='…'`, `GITLAB_TOKEN=…`, `--token <value>`) — a missing value means asking the operator, never asking for the value or writing it anywhere."
+          "Rendered secret file reads [named+specifics — must name: the file and the one key to show]: any tool call that returns the contents of the rendered secret files — `/run/secrets/flakelab-env` (the sops render), `~/.config/flakelab/secrets.env` (the fallback), `~/.config/flakelab/bw-session`, and the same files through the `~/.config/tyc` link a box set up before the move keeps — to the transcript: the `Read` tool on them, `Grep` with a pattern over them, and a Bash statement that prints them to stdout (`cat`, `head`, `tail`, `less`, `grep <pattern>`, `sed -n`, `awk`, `cut -d= -f2`, `base64`, `xxd`, `python -c 'open(…)'`, `$(<file)`, a `while read` loop that echoes lines) or prints a value they define (`echo $VAR`, `printenv VAR`, `env | grep VAR`). A transcript records every tool result verbatim and is retained, so the read IS the publication; the shell already carries the values in its environment. Routine, never a hit: sourcing — `set -a; . <file>; set +a`, `source <file>`, `source <(grep … <file>)`, `source =(tr -d '\\r' < <file>)` — nothing reaches stdout; loading the session token into the env, `export BW_SESSION=$(tr -d '\\r\\n' < ~/.config/flakelab/bw-session)` or the `$(cat …)` spelling; metadata (`ls -l`, `stat`, `test -r`/`[ -f ]`, `wc -l`); key names and is-it-set checks that print no value (`cut -d= -f1`, `grep -c`, `grep -q`, `grep -l`, `grep -oE '^[A-Z_]+='`, `env | grep -c VAR`, `[[ -n $VAR ]]`, `\${VAR:+set}`). Clears only when the operator's own message names the file and the one key they want shown, and the command prints that key alone (`grep '^KEY=' <file>`). Never cleared: dumping the whole file or several keys, copying it anywhere (Key and certificate movement keeps its own bar), and a literal secret value on a command line (`BW_SESSION='…'`, `GITLAB_TOKEN=…`, `--token <value>`) — a missing value means asking the operator, never asking for the value or writing it anywhere."
           "Bash(git push * --delete*)"
           "Bash(git branch -D:*)"
           "Bash(git reset --hard:*)"
@@ -410,7 +410,7 @@ in
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Write a Claude Code Notification hook that runs `flakelab notify`, which posts the event, the directory and the `flakelab sessions --attach <id>` line to an ntfy topic (NTFY_URL, NTFY_TOKEN), a JSON webhook such as Home Assistant's /api/webhook/<id> (NOTIFY_WEBHOOK_URL), or both. A target the environment lacks is read at use time from the sops render /run/secrets/tyc-env or ~/.config/tyc/secrets.env, never from the store; with sopsSecretsFile, set sopsKeyFiles.NOTIFY_WEBHOOK_URL = null so the webhook URL, its credential, stays out of every process's environment. Redundant with the Claude app's own push where Remote Control is on; it is for Codex (whose `notify` hook in ~/.codex/config.toml calls `flakelab notify --codex`) and for anyone without the app. Off, a hook this option wrote is removed again; a hand-added one is left alone.";
+        description = "Write a Claude Code Notification hook that runs `flakelab notify`, which posts the event, the directory and the `flakelab sessions --attach <id>` line to an ntfy topic (NTFY_URL, NTFY_TOKEN), a JSON webhook such as Home Assistant's /api/webhook/<id> (NOTIFY_WEBHOOK_URL), or both. A target the environment lacks is read at use time from the sops render /run/secrets/flakelab-env or ~/.config/flakelab/secrets.env, never from the store; with sopsSecretsFile, set sopsKeyFiles.NOTIFY_WEBHOOK_URL = null so the webhook URL, its credential, stays out of every process's environment. Redundant with the Claude app's own push where Remote Control is on; it is for Codex (whose `notify` hook in ~/.codex/config.toml calls `flakelab notify --codex`) and for anyone without the app. Off, a hook this option wrote is removed again; a hand-added one is left alone.";
       };
       events = mkOption {
         type = types.listOf types.str;
@@ -526,14 +526,14 @@ in
     sopsSecretsFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "The overlay's age-encrypted sops DOTENV file (the encrypted twin of ~/.config/tyc/secrets.env). Non-null wires sops-nix (nix/secrets.nix): the file is decrypted at activation into the /run/secrets ramfs and the zsh init sources it from there, falling back to the legacy home file only when the render is absent. A `path`, so the ciphertext is copied into the world-readable Nix store — which is exactly what ciphertext is for; the plaintext never leaves /run. Decryption needs the host identity at `sopsAgeKeyFile` to be enrolled in the file's .sops.yaml recipients BEFORE this is set, or the next activation fails loudly.";
+      description = "The overlay's age-encrypted sops DOTENV file (the encrypted twin of ~/.config/flakelab/secrets.env). Non-null wires sops-nix (nix/secrets.nix): the file is decrypted at activation into the /run/secrets ramfs and the zsh init sources it from there, falling back to the legacy home file only when the render is absent. A `path`, so the ciphertext is copied into the world-readable Nix store — which is exactly what ciphertext is for; the plaintext never leaves /run. Decryption needs the host identity at `sopsAgeKeyFile` to be enrolled in the file's .sops.yaml recipients BEFORE this is set, or the next activation fails loudly.";
     };
 
     sopsKeyFiles = mkOption {
       type = types.attrsOf (types.nullOr types.str);
       default = { };
       example = {
-        HUB_KEY = ".config/tyc/hub.key";
+        HUB_KEY = ".config/flakelab/hub.key";
       };
       description = "Variables of the sops render that never reach the shell: each is written to its own owner-only file (attribute: the variable, value: the path under the home directory) after every render, for a client that reads its credential from a file, such as an MCP headers helper, and the zsh init leaves it out of the environment it exports. A variable missing from the render removes its file; null keeps a variable out of the shell without writing one. Needs sopsSecretsFile.";
     };
@@ -577,7 +577,7 @@ in
               # An environment variable name and nothing else: nix/state-syncthing.nix
               # puts it into a sed pattern unescaped, which this shape keeps literal.
               type = types.strMatching "^[A-Za-z_][A-Za-z0-9_]*$";
-              description = "Key in the sops render /run/secrets/tyc-env that holds the folder's encryption password: an environment variable name (letters, digits, underscores). The same password on every box; losing it leaves the hub copy unreadable.";
+              description = "Key in the sops render /run/secrets/flakelab-env that holds the folder's encryption password: an environment variable name (letters, digits, underscores). The same password on every box; losing it leaves the hub copy unreadable.";
             };
             configDir = mkOption {
               type = types.nullOr types.str;

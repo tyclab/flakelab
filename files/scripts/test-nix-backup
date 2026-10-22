@@ -855,10 +855,10 @@ chmod 700 "${BASE}/state-dryrun-unwritable/read-only"
 
 print -r -- "with a state root, only shareable state goes there and nothing else"
 state_fixture state-split
-mkdir -p "${FIX_HOME}/.ssh" "${FIX_HOME}/.config/tyc" "${FIX_HOME}/.config/glab-cli" \
+mkdir -p "${FIX_HOME}/.ssh" "${FIX_HOME}/.config/flakelab" "${FIX_HOME}/.config/glab-cli" \
          "${FIX_HOME}/.kube" "${FIX_HOME}/.claude/projects/some-slug/memory"
 print -r -- "PRIVATE KEY"              > "${FIX_HOME}/.ssh/id_ed25519"
-print -r -- "GITLAB_TOKEN='x'"         > "${FIX_HOME}/.config/tyc/secrets.env"
+print -r -- "GITLAB_TOKEN='x'"         > "${FIX_HOME}/.config/flakelab/secrets.env"
 print -r -- "token: y"                 > "${FIX_HOME}/.config/glab-cli/config.yml"
 print -r -- "apiVersion: v1"           > "${FIX_HOME}/.kube/config"
 print -r -- '{"env":{"A":"b"}}'        > "${FIX_HOME}/.claude/settings.json"
@@ -891,8 +891,8 @@ absent  "and none is written under the distro name"   "${FIX_STATE}/.flakelab-st
 print -r -- "with the sops render the legacy secrets.env is neither archived nor restored"
 fixture sops-skips-legacy-secrets
 SOPS=1
-mkdir -p "${FIX_HOME}/.config/tyc" "${FIX_ROOT}/shared/secrets"
-print -r -- "GITLAB_TOKEN='x'" > "${FIX_HOME}/.config/tyc/secrets.env"
+mkdir -p "${FIX_HOME}/.config/flakelab" "${FIX_ROOT}/shared/secrets"
+print -r -- "GITLAB_TOKEN='x'" > "${FIX_HOME}/.config/flakelab/secrets.env"
 print -r -- "GITLAB_TOKEN='old'" > "${FIX_ROOT}/shared/secrets/secrets.env"
 rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
 
@@ -902,11 +902,11 @@ contains "the archive step is skipped"                "${OUT}" "the legacy file 
 check    "and the seed copy is left as it was"        "$(< "${FIX_ROOT}/shared/secrets/secrets.env")" "GITLAB_TOKEN='old'"
 contains "with a warning that it is still there"      "${OUT}" "plaintext secrets.env is still in the backup root"
 
-rm -f "${FIX_HOME}/.config/tyc/secrets.env"
+rm -f "${FIX_HOME}/.config/flakelab/secrets.env"
 run_restore --force
 check    "the restore exits clean"                    "${RC}" "0"
 contains "the restore step is skipped"                "${OUT}" "the legacy file is not restored"
-absent   "and no plaintext lands in the home"         "${FIX_HOME}/.config/tyc/secrets.env"
+absent   "and no plaintext lands in the home"         "${FIX_HOME}/.config/flakelab/secrets.env"
 
 rm -f "${FIX_ROOT}/shared/secrets/secrets.env"
 run_backup --force

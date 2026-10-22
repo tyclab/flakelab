@@ -4,7 +4,7 @@ set -uo pipefail
 
 # notify: a push when an agent session waits on you (remote-sessions.md), to an ntfy topic (NTFY_URL, NTFY_TOKEN)
 # and a JSON webhook (NOTIFY_WEBHOOK_URL), whichever are set. One the env lacks comes, at use time, from the first
-# readable of $FLAKELAB_SECRETS_ENV, the sops render, ~/.config/tyc/secrets.env. A hook run never fails its caller
+# readable of $FLAKELAB_SECRETS_ENV, the sops render, ~/.config/flakelab/secrets.env. A hook run never fails its caller
 # (exit 0, a line on stderr); by hand: 2 unconfigured, 1 a post failed. Titles are ASCII, ntfy's header rule.
 MODE=auto
 TITLE=""
@@ -24,7 +24,7 @@ Usage: flakelab notify                       (a Claude Code Notification hook: J
 Posts to the ntfy topic NTFY_URL (NTFY_TOKEN for a protected one) and the
 JSON webhook NOTIFY_WEBHOOK_URL (Home Assistant's /api/webhook/<id>), whichever
 are set. One the environment lacks is read at use time from the sops render
-/run/secrets/tyc-env or ~/.config/tyc/secrets.env. A hook run exits 0 whatever
+/run/secrets/flakelab-env or ~/.config/flakelab/secrets.env. A hook run exits 0 whatever
 happens; by hand, 2 unconfigured, 1 when a post fails.
 USAGE
 }
@@ -51,7 +51,7 @@ done
 # Per target: sopsKeyFiles keeps the webhook URL out of the env while the ntfy pair may be in it. The pair moves
 # together, so a topic from the env never gets the file's token.
 if [[ -z "${NTFY_URL:-}" || -z "${NOTIFY_WEBHOOK_URL:-}" ]]; then
-  for f in "${FLAKELAB_SECRETS_ENV:-}" "${FLAKELAB_SECRETS_RENDER:-/run/secrets/tyc-env}" "${HOME}/.config/tyc/secrets.env"; do
+  for f in "${FLAKELAB_SECRETS_ENV:-}" "${FLAKELAB_SECRETS_RENDER:-/run/secrets/flakelab-env}" "${HOME}/.config/flakelab/secrets.env"; do
     [[ -r "$f" ]] || continue
     # Sourced in a subshell, CRs stripped (a CRLF render puts one in every value): only the three values come out.
     eval "from=($( ( unset NTFY_URL NTFY_TOKEN NOTIFY_WEBHOOK_URL; set -a; source =(tr -d '\r' < "$f") >/dev/null 2>&1
@@ -128,7 +128,7 @@ fi
 
 
 if [[ -z "$NTFY_URL" && -z "$NOTIFY_WEBHOOK_URL" ]]; then
-  note "NTFY_URL and NOTIFY_WEBHOOK_URL are not set (the sops render or ~/.config/tyc/secrets.env); nothing sent"
+  note "NTFY_URL and NOTIFY_WEBHOOK_URL are not set (the sops render or ~/.config/flakelab/secrets.env); nothing sent"
   $HOOK && exit 0 || exit 2
 fi
 

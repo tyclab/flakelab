@@ -224,7 +224,7 @@ def helper_token(command, env):
     return value.removeprefix("Bearer ") if isinstance(value, str) and value.startswith("Bearer ") else ""
 
 
-def check(servers, live=False, env=None, secret_file="/run/secrets/tyc-env", client_files=None):
+def check(servers, live=False, env=None, secret_file="/run/secrets/flakelab-env", client_files=None):
     if not servers:
         return []
     env = os.environ if env is None else env
@@ -278,7 +278,7 @@ def check(servers, live=False, env=None, secret_file="/run/secrets/tyc-env", cli
 
 
 def doctor(config, live=False):
-    results = check(config.get("nativeServers", {}), live, secret_file=config.get("nativeSecretFile", "/run/secrets/tyc-env"),
+    results = check(config.get("nativeServers", {}), live, secret_file=config.get("nativeSecretFile", "/run/secrets/flakelab-env"),
                     client_files=config.get("nativeClientFiles"))
     print(json.dumps(results))
     return int(any(r["status"] not in {"configured", "authenticated"} for r in results))

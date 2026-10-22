@@ -97,14 +97,14 @@ in
       ${
         if cfg.sopsSecretsFile != null then
           ''
-            if [[ -r /run/secrets/tyc-env ]]; then
-              set -a; source =(tr -d '\r' < /run/secrets/tyc-env${keyFilesFilter}); set +a
+            if [[ -r /run/secrets/flakelab-env ]]; then
+              set -a; source =(tr -d '\r' < /run/secrets/flakelab-env${keyFilesFilter}); set +a
             fi
           ''
         else
           ''
-            if [[ -r "$HOME/.config/tyc/secrets.env" ]]; then
-              set -a; source =(tr -d '\r' < "$HOME/.config/tyc/secrets.env"); set +a
+            if [[ -r "$HOME/.config/flakelab/secrets.env" ]]; then
+              set -a; source =(tr -d '\r' < "$HOME/.config/flakelab/secrets.env"); set +a
             fi
           ''
       }
@@ -133,20 +133,20 @@ in
 
       # `bwu` unlocks on the TTY and parks the per-unlock token in a mode-600 file
       # every shell exports from, so it never rides a command line or a transcript.
-      if [[ -r "$HOME/.config/tyc/bw-session" ]]; then
-        export BW_SESSION="$(tr -d '\r\n' < "$HOME/.config/tyc/bw-session")"
+      if [[ -r "$HOME/.config/flakelab/bw-session" ]]; then
+        export BW_SESSION="$(tr -d '\r\n' < "$HOME/.config/flakelab/bw-session")"
       fi
       bwu() {
-        local _f="$HOME/.config/tyc/bw-session" _t
+        local _f="$HOME/.config/flakelab/bw-session" _t
         _t="$(bw unlock --raw)" || return 1
-        mkdir -p "$HOME/.config/tyc" && chmod 700 "$HOME/.config/tyc"
+        mkdir -p "$HOME/.config/flakelab" && chmod 700 "$HOME/.config/flakelab"
         (umask 077; printf '%s\n' "$_t" > "$_f") || return 1
         export BW_SESSION="$_t"
         echo "bw: unlocked — token in $_f, exported to new shells (bwl to lock)"
       }
       bwl() {
         bw lock
-        rm -f "$HOME/.config/tyc/bw-session"
+        rm -f "$HOME/.config/flakelab/bw-session"
         unset BW_SESSION
       }
 
@@ -202,4 +202,24 @@ in
       zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
     '';
   };
+
+  # A box set up before the secrets moved beside the rest of flakelab's config holds
+  # them in ~/.config/tyc: move each file over once and leave that name as a link, so
+  # an overlay path or a script still naming it keeps working. A name the new
+  # directory already has stays put, and `flakelab doctor` reports it.
+  home.activation.flakelabSecretsDir = lib.hm.dag.entryBefore [ "writeBoundary" ] ''
+    _old="$HOME/.config/tyc" _new="$HOME/.config/flakelab"
+    if [ -z "''${DRY_RUN_CMD:-}" ] && [ -d "$_old" ] && [ ! -L "$_old" ]; then
+      ${pkgs.coreutils}/bin/mkdir -p "$_new"
+      ${pkgs.coreutils}/bin/chmod 700 "$_new"
+      for _f in "$_old"/* "$_old"/.[!.]*; do
+        if [ -e "$_f" ] && [ ! -e "$_new/''${_f##*/}" ]; then
+          ${pkgs.coreutils}/bin/mv "$_f" "$_new/"
+        fi
+      done
+      if ${pkgs.coreutils}/bin/rmdir "$_old" 2>/dev/null; then
+        ${pkgs.coreutils}/bin/ln -s flakelab "$_old"
+      fi
+    fi
+  '';
 }

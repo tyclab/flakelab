@@ -404,6 +404,17 @@ lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agen
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
+print -r -- "secrets: a ~/.config/tyc the move had to leave behind is reported, its link is not"
+secrets() { section Secrets PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other }
+mkdir -p "${BASE}/home/.config/tyc"
+: > "${BASE}/home/.config/tyc/secrets.env"
+contains "a left-over directory warns" "$(secrets)" "[WARN] ~/.config/tyc still holds 1 file(s)"
+rm -rf "${BASE}/home/.config/tyc"
+mkdir -p "${BASE}/home/.config/flakelab"
+ln -s flakelab "${BASE}/home/.config/tyc"
+lacks "the link is the finished state" "$(secrets)" "~/.config/tyc still holds"
+rm -rf "${BASE}/home/.config"
+
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

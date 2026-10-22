@@ -30,7 +30,7 @@ gitscan_preflight() {
       || gitscan_die "required binary not found on PATH: ${bin}"
   done
   glab auth status >/dev/null 2>&1 \
-    || gitscan_die "glab is not authenticated — set GITLAB_TOKEN in ~/.config/tyc/secrets.env and start a new shell"
+    || gitscan_die "glab is not authenticated — set GITLAB_TOKEN in ~/.config/flakelab/secrets.env and start a new shell"
 }
 
 # gitscan_abs_roots <root>... — resolved roots into GITSCAN_ABS_ROOTS; a typo'd root
@@ -97,7 +97,7 @@ gitscan_require_gh() {
         command -v gh >/dev/null 2>&1 \
           || gitscan_die "a github.com remote is in scope but gh is not on PATH"
         gh auth status >/dev/null 2>&1 \
-          || gitscan_die "gh is not authenticated — set GH_TOKEN in ~/.config/tyc/secrets.env and start a new shell"
+          || gitscan_die "gh is not authenticated — set GH_TOKEN in ~/.config/flakelab/secrets.env and start a new shell"
         return 0 ;;
     esac
   done

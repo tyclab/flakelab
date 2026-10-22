@@ -57,7 +57,7 @@ only make sense to the original author:
 - "overlay is missing SSH key ... built but unconfigured"
 - a wslkube "`migrate` seeds both" hint, naming an unpublished repository
 - it runs `flakelab clone`, which fails with "GITLAB_TOKEN not set — source
-  ~/.config/tyc/secrets.env"
+  ~/.config/flakelab/secrets.env"
 
 Skip the clone when there is no token, and drop the wslkube wording from
 anything a first-time user sees.

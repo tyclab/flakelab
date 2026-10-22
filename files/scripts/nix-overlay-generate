@@ -780,7 +780,7 @@ _generated_flake() {
   print -r -- '      # merge per key (replacing one wholesale needs lib.mkForce).'
   print -r -- '      #'
   print -r -- '      # No plaintext secrets: the nix store is world-readable. The tokens'
-  print -r -- '      # from the same config belong in ~/.config/tyc/secrets.env instead -'
+  print -r -- '      # from the same config belong in ~/.config/flakelab/secrets.env instead -'
   print -r -- '      # or, encrypted, in a sops dotenv file named by sopsSecretsFile (see'
   print -r -- '      # the flakelab README "Secrets" for enrolment).'
   print -r -- '      nixosConfigurations.default = flakelab.lib.mkSystem {'
@@ -1056,7 +1056,7 @@ if (( ${#_skipped_secrets} > 0 )); then
   say ""
   say "${#_skipped_secrets} secret(s) in the config were NOT written to the flake:"
   say "  ${(j:, :)_skipped_secrets}"
-  say "  They belong in ~/.config/tyc/secrets.env (mode 600), never in the nix store."
+  say "  They belong in ~/.config/flakelab/secrets.env (mode 600), never in the nix store."
 fi
 
 say ""

@@ -210,7 +210,7 @@ excludes "neither ntfy value reaches the flake" "${f}" 'ntfy.example.com'
 excludes "nor the webhook's" "${f}" 'api/webhook'
 excludes "nor is a token VALUE from the config" "${f}" 'your-gitlab-personal-access-token'
 contains "and the run says which ones it dropped" "${OUT}" "GITLAB_TOKEN"
-contains "saying where they belong instead"       "${OUT}" ".config/tyc/secrets.env"
+contains "saying where they belong instead"       "${OUT}" ".config/flakelab/secrets.env"
 check "the stub it wrote is still empty" \
   "$(wc -c < "${o}-payload/shared/secrets/secrets.env")" "0"
 

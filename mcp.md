@@ -8,8 +8,8 @@ already-running Claude or Codex processes remain unverified. `flakelab doctor`
 includes this local check.
 
 The secret source is chosen at build time, exactly as for the shell:
-`/run/secrets/tyc-env` when `sopsSecretsFile` is configured, otherwise the configured
-user's `~/.config/tyc/secrets.env`. An enrolled box never falls back to the home
+`/run/secrets/flakelab-env` when `sopsSecretsFile` is configured, otherwise the configured
+user's `~/.config/flakelab/secrets.env`. An enrolled box never falls back to the home
 file. Missing, unreadable or malformed sources fail the check. A
 `fresh-environment-source-mismatch` means this invocation's environment differs
 from that source; no credential value or exception content is printed. A

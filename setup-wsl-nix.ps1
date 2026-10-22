@@ -498,7 +498,7 @@ else {
     $User = $um.Matches[0].Groups[1].Value
 }
 
-# NAMES of the runtime secrets ~/.config/tyc/secrets.env must define - the same
+# NAMES of the runtime secrets ~/.config/flakelab/secrets.env must define - the same
 # set as files/config/secrets.env.example. Shared by the wslkube harvester and
 # the manual-seed instructions; values never live here.
 $SecretKeyNames = @('GITLAB_TOKEN', 'GH_TOKEN', 'HASS_TOKEN',
@@ -988,7 +988,7 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         '      # merge per key (replacing one wholesale needs lib.mkForce).',
         '      #',
         '      # No secrets: the nix store is world-readable. The tokens from the same',
-        '      # config live in ~/.config/tyc/secrets.env instead.',
+        '      # config live in ~/.config/flakelab/secrets.env instead.',
         '      nixosConfigurations.default = flakelab.lib.mkSystem {'
     )
     return $head + $body + @('      };', '    };', '}')
@@ -1314,9 +1314,9 @@ function Copy-OverlayFilesIntoDistro {
     }
 
     if (Test-Path $SecretsWin) {
-        # zsh.nix sources ~/.config/tyc/secrets.env; source single-quoted (spaces), destination bare so `~` expands.
+        # zsh.nix sources ~/.config/flakelab/secrets.env; source single-quoted (spaces), destination bare so `~` expands.
         Say 'Seeding secrets.env'
-        Invoke-Wsl $DistroName $User @('sh', '-c', "set -e; mkdir -p ~/.config/tyc; chmod 700 ~/.config/tyc; cp '$PayloadWsl/shared/secrets/secrets.env' ~/.config/tyc/secrets.env; chmod 600 ~/.config/tyc/secrets.env")
+        Invoke-Wsl $DistroName $User @('sh', '-c', "set -e; mkdir -p ~/.config/flakelab; chmod 700 ~/.config/flakelab; cp '$PayloadWsl/shared/secrets/secrets.env' ~/.config/flakelab/secrets.env; chmod 600 ~/.config/flakelab/secrets.env")
     }
 
     $missing = @()
@@ -1764,12 +1764,12 @@ function Restore-Backup {
 function Invoke-CloneRepos {
     if ($SkipCloneRepos) { Warn 'flakelab clone skipped (-SkipCloneRepos)'; return }
     Say 'flakelab clone (GitLab group discovery)'
-    $cmd = '[ -r ~/.config/tyc/secrets.env ] && { set -a; . ~/.config/tyc/secrets.env; set +a; }; ' `
+    $cmd = '[ -r ~/.config/flakelab/secrets.env ] && { set -a; . ~/.config/flakelab/secrets.env; set +a; }; ' `
         + (DistroCmd 'clone' 'nix-clone-repos')
     if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
     & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd
     if ($LASTEXITCODE -ne 0) {
-        Warn "flakelab clone failed - is GITLAB_TOKEN in ~/.config/tyc/secrets.env?"
+        Warn "flakelab clone failed - is GITLAB_TOKEN in ~/.config/flakelab/secrets.env?"
     }
 }
 

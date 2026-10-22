@@ -462,7 +462,7 @@
               config="$(grep -o '/nix/store/[^ ]*-flakelab-mcp.json' "$(jq -r .mcpServers.fixture.command "$fixtureHome/.claude.json")")"
               jq -e '.gateway == "operator@devbox" and .servers.fixture.callbackPort == 18871' "$config"
               jq -e '.nativeServers["native-fixture"] | .tokenEnv == "FIXTURE_KEY" and .clientsAgree and .claudeEnabled and .codexEnabled' "$config"
-              jq -e '.nativeSecretFile == "/home/${fixture.config.flakelab.username}/.config/tyc/secrets.env"' "$config"
+              jq -e '.nativeSecretFile == "/home/${fixture.config.flakelab.username}/.config/flakelab/secrets.env"' "$config"
 
               jq -e '.mcpServers."playwright-headless" | .type == "stdio" and (.command | endswith("/bin/flakelab-playwright-headless")) and .args == []' "$fixtureHome/.claude.json"
               toml2json ${codexSettings} | jq -e '.mcp_servers."playwright-headless".command | endswith("/bin/flakelab-playwright-headless")'
@@ -1328,7 +1328,7 @@
             == "/run/flakelab-syncthing/flakelab-state.password";
           assert builtins.elem "syncthing-init.service" pw.requiredBy;
           assert builtins.elem "syncthing-init.service" pw.before;
-          assert nixpkgs.lib.hasInfix "flakelab-syncthing-password-read /run/secrets/tyc-env" pw.script;
+          assert nixpkgs.lib.hasInfix "flakelab-syncthing-password-read /run/secrets/flakelab-env" pw.script;
           assert !plain.services.syncthing.enable;
           assert
             syncthing.configDir
@@ -1674,7 +1674,7 @@
                 }
               ];
             };
-            secret = forced.config.sops.secrets.tyc-env;
+            secret = forced.config.sops.secrets.flakelab-env;
             # .zshenv, not .zshrc: a non-interactive `zsh -c` reads only the former,
             # so secrets placed in the interactive file strand every agent on the box.
             zshOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username}.programs.zsh.envExtra;
@@ -1683,7 +1683,7 @@
             hasInfix = nixpkgs.lib.hasInfix;
           in
           assert secret.format == "dotenv";
-          assert secret.path == "/run/secrets/tyc-env";
+          assert secret.path == "/run/secrets/flakelab-env";
           assert secret.mode == "0400";
           assert secret.owner == forced.config.flakelab.username;
           assert !forced.config.sops.age.generateKey;
@@ -1698,11 +1698,58 @@
           assert !hasInfix "FIXTURE_ENV_ONLY" forced.config.systemd.services.flakelab-sops-key-files.script;
           assert hasInfix "grep -vE '^(FIXTURE_ENV_ONLY|FIXTURE_KEY)='" zshOn;
           # Exactly one secrets source per box, no runtime fallback.
-          assert hasInfix "/run/secrets/tyc-env" zshOn;
-          assert !hasInfix ".config/tyc/secrets.env" zshOn;
-          assert hasInfix ".config/tyc/secrets.env" zshOff;
-          assert !hasInfix "/run/secrets/tyc-env" zshOff;
+          assert hasInfix "/run/secrets/flakelab-env" zshOn;
+          assert !hasInfix ".config/flakelab/secrets.env" zshOn;
+          assert hasInfix ".config/flakelab/secrets.env" zshOff;
+          assert !hasInfix "/run/secrets/flakelab-env" zshOff;
           pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
+
+        # The move into ~/.config/flakelab: once, through a link after it, never over a
+        # file the new directory already has, and nothing on a fresh home or a dry run.
+        secrets-dir-move =
+          let
+            sys = self.nixosConfigurations.default.config;
+            move = pkgs.writeText "flakelab-secrets-dir-activation" (
+              nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ]
+                sys.home-manager.users.${sys.flakelab.username}.home.activation.flakelabSecretsDir.data
+            );
+          in
+          pkgs.runCommandLocal "flakelab-check-secrets-dir-move" { nativeBuildInputs = [ pkgs.bash ]; } ''
+            set -eu
+            export fixtureHome="$TMPDIR/moved" DRY_RUN_CMD=""
+            mkdir -p "$fixtureHome/.config/tyc" "$fixtureHome/.config/flakelab"
+            echo A=1 > "$fixtureHome/.config/tyc/secrets.env"
+            echo token > "$fixtureHome/.config/tyc/bw-session"
+            echo kept > "$fixtureHome/.config/flakelab/codex-mcp.env"
+            DRY_RUN_CMD=echo bash ${move}
+            test ! -L "$fixtureHome/.config/tyc"
+            test -f "$fixtureHome/.config/tyc/secrets.env"
+            bash ${move}
+            test "$(readlink "$fixtureHome/.config/tyc")" = flakelab
+            grep -qx A=1 "$fixtureHome/.config/flakelab/secrets.env"
+            grep -qx token "$fixtureHome/.config/tyc/bw-session"
+            grep -qx kept "$fixtureHome/.config/flakelab/codex-mcp.env"
+            test "$(stat -c %a "$fixtureHome/.config/flakelab")" = 700
+            bash ${move}
+            test "$(readlink "$fixtureHome/.config/tyc")" = flakelab
+
+            export fixtureHome="$TMPDIR/clash"
+            mkdir -p "$fixtureHome/.config/tyc" "$fixtureHome/.config/flakelab"
+            echo old > "$fixtureHome/.config/tyc/secrets.env"
+            echo new > "$fixtureHome/.config/flakelab/secrets.env"
+            echo token > "$fixtureHome/.config/tyc/bw-session"
+            bash ${move}
+            grep -qx new "$fixtureHome/.config/flakelab/secrets.env"
+            grep -qx old "$fixtureHome/.config/tyc/secrets.env"
+            test ! -L "$fixtureHome/.config/tyc"
+            grep -qx token "$fixtureHome/.config/flakelab/bw-session"
+
+            export fixtureHome="$TMPDIR/fresh"
+            mkdir -p "$fixtureHome"
+            bash ${move}
+            test ! -e "$fixtureHome/.config/tyc" && test ! -L "$fixtureHome/.config/tyc"
+            touch $out
+          '';
 
       };
 

@@ -15,9 +15,9 @@ let
       inherit (cfg.mcpShared) gateway servers;
       nativeSecretFile =
         if cfg.sopsSecretsFile != null then
-          "/run/secrets/tyc-env"
+          "/run/secrets/flakelab-env"
         else
-          "/home/${cfg.username}/.config/tyc/secrets.env";
+          "/home/${cfg.username}/.config/flakelab/secrets.env";
       nativeClientFiles = {
         claude = "/home/${cfg.username}/.claude.json";
         codexSystem = "/etc/codex/config.toml";
