@@ -2,8 +2,7 @@
 
 How to reach, keep and continue the agent sessions on this box (Claude Code,
 Codex) from somewhere else: another window, another machine, a
-phone. Every phase is built; what remains is the list of things to
-verify on a real box before relying on each.
+phone.
 
 ## The question underneath
 
@@ -119,7 +118,10 @@ Reaching the box is the tunnel plus one thing per target: `flakelab.mosh.enable`
 puts a mosh-server beside the VM's sshd (UDP 60000 to 61000, opened by the
 module), and for a WSL distro `files/config/windows/enable-openssh-host.ps1`
 turns on OpenSSH Server on the Windows host, port 22 from the WireGuard subnet
-only, keys only, with the login landing in `wsl.exe -d <distro>`. With a state
+only, keys only, with the login landing in `wsl.exe -d <distro>`. Nothing is
+opened inside the distro: NixOS-WSL forces its firewall off, the LAN reaches
+a NAT-ed distro only through `netsh portproxy` (TCP, so no mosh), and a second
+tunnel client inside WSL2 beside the host's is tunnel-in-tunnel. With a state
 root, `flakelab sessions --recent` also lists the sessions another box synced
 there and not yet pulled here, marked as such, so continuing the desktop's
 session on the laptop is one line after a `flakelab backup --state-only`;
@@ -190,103 +192,3 @@ flakelab.web = {
   logo     = ./web-logo.svg; # the heading mark and tab icon, served at /logo
 };
 ```
-
-## What the vendors give
-
-**Claude Code, Remote Control.** `claude remote-control` in a project
-directory runs a server that shows up in the session list at claude.ai/code
-and in the app's Code tab (a computer icon with a green dot); from there new
-sessions start on the machine, in that directory (`--spawn same-dir`, the
-default) or in a worktree, up to `--capacity` (32). `claude --remote-control`
-makes one interactive session steerable, `/remote-control` does it
-mid-session, and `remoteControlAtStartup: true` in the user settings does it
-for every session. It reconnects by itself after sleep or a network drop,
-queueing prompts and permission dialogs meanwhile; server mode gives up after
-about ten minutes of outage, and a stopped server's sessions can be re-served
-for about four hours (`--continue`, `--session-id`). Outbound HTTPS only, no
-inbound port. It needs a full claude.ai login (not a setup token), a plan that
-allows it, and the four telemetry variables unset. Push notifications
-("push when actions required") come with it in the app. Channels (Telegram,
-Discord into a running session) are the other vendor route for steering.
-
-**Codex** has `codex resume <id>`, cloud tasks, and a `notify` hook in
-`config.toml` that runs a command when a turn completes. No remote control of
-a local session.
-
-## The plan
-
-Phases, each shippable on its own. All five are built.
-
-1. **tmux as the session host** — done: `--start`, `--attach`, the host
-   column, `--open` attaching, Codex in the registry, saves with a
-   tool column.
-2. **Remote Control on its own switch** — done: `flakelab.claudeRemoteControl`,
-   default off, writes `remoteControlAtStartup` and clears the four variables
-   Remote Control's feature flags need, so a box can have every session
-   steerable from the app without adopting the auto-mode trust bundle, and
-   an agent box can keep its sessions off the app: `claudeAgentDefaults`
-   does not imply it.
-3. **A push when a session waits on you** — done: `flakelab notify`
-   (`files/scripts/notify`, `test-notify`), the `Notification` hook behind
-   `flakelab.notify.enable` written into `settings.json` the way the
-   `SessionEnd` state-sync hook is, owned by its command; Codex's `notify`
-   line documented above. Redundant with the Claude app's push where Remote
-   Control is on; it is for Codex and for anyone without the app.
-4. **Reaching the box** — done, on the tunnel rather than a mesh product:
-   - `proxmox-vm` already runs sshd; `flakelab.mosh.enable` adds
-     `programs.mosh`, default off. Nothing else: the VM's WireGuard address
-     is the one to dial.
-   - `wsl` gets nothing inside the distro. NixOS-WSL forces the firewall
-     unit off, so no port can be opened here; under NAT the host reaches the
-     distro's ports through `localhost` while the LAN needs `netsh portproxy`
-     (TCP only, so no mosh) or mirrored networking; and a second tunnel
-     client inside WSL2 beside the host's is the encapsulation-in-
-     encapsulation case every mesh vendor warns about. The clean route needs
-     nothing in the distro: OpenSSH Server on the Windows host, port 22 from
-     the WireGuard subnet only, keys only, the login landing in
-     `wsl.exe -d <distro>`, one `flakelab sessions --attach` away.
-     `files/config/windows/enable-openssh-host.ps1` is the script, idempotent.
-5. **Handoff between machines** — done: `flakelab sessions --recent` reads the
-   state root's synced transcripts beside the local ones, marking the ones
-   not yet pulled to this box, so "continue what I was doing on the desktop"
-   is one printed line on the laptop (after `flakelab backup --state-only`),
-   forked with `--fork-session` when both boxes may carry on.
-
-### Options
-
-```nix
-flakelab = {
-  notify.enable       = false;   # the Notification hook into ntfy/a webhook; endpoints from the secrets
-  notify.events       = [ "permission_prompt" "idle_prompt" "agent_needs_input"
-                          "quota_auto_resume_pending" "quota_auto_resume_fired" ];
-  mosh.enable         = false;   # proxmox-vm only; mosh-server beside sshd
-  claudeRemoteControl = false;   # phase 2
-};
-```
-
-## Verify on a box
-
-1. **A session started inside tmux shows up for Remote Control** and in the
-   app's session list. The docs say tmux is the way to keep one alive over
-   SSH, so there is no reason it would not, and it is the premise of the
-   whole stack: the first thing to try on the box.
-2. **Windows OpenSSH Server on the host, over WireGuard,** as the WSL entry:
-   that `ssh host` from the phone lands in a shell from which
-   `wsl.exe -d <distro> -- zsh -lc "flakelab sessions --attach"` works, and
-   whether the `DefaultShell` block at the end of the script should be on.
-3. **mosh on the VM** from a phone client across a network change, and how it
-   behaves with a tmux view (it should be invisible).
-4. **`claude agents --json`** as a second source for the registry: the docs
-   list running sessions from it with `pid`, `sessionId`, `cwd` and `name`,
-   but say interactive sessions in other terminals may not appear until
-   backgrounded; if they do appear, the `/proc` walk becomes a fallback.
-5. **The ntfy payload on the phone**: that a `Title:` of `claude - <dir>` and
-   the three-line body read well, and whether `permission_prompt` at priority
-   4 should be 5 (urgent, overrides do-not-disturb).
-6. **Codex's `notify` payload fields** on the installed version: `cwd` and
-   `thread-id` are taken when present, `turn-id` otherwise; the body degrades
-   to the type alone if neither is there.
-7. **The dashboard from a phone** on the tunnel: that the page renders at
-   phone width, that a switch from it lands (the CLI's transaction, the
-   engine's refusals), that "terminal ↗" opens ttyd through the dashboard's
-   session cookie, and that tmux under it is usable on a touch keyboard.
