@@ -7,13 +7,14 @@ set -uo pipefail
 #
 # Per repo: fast-forward strictly-behind branches, prune worktree entries whose directory is gone, delete branches
 # merged into the default, and gone-upstream branches whose forge MR/PR merged (squash case, -d refuses).
-# Never touched: current or default branch, an open MR/PR's branch, unpushed commits, an existing worktree.
+# Never touched: the default branch, an open MR/PR's branch, unpushed commits. A checkout (HEAD or a worktree) on a
+# landed branch is reported as parked and moved off it only when asked, or under --unpark --yes.
 # Asks per branch at a terminal; without one it only reports unless --yes. Each delete prints its SHA (undo:
 # `git branch <name> <sha>`). Agents plan with --json, then act with `--only <branch> --yes`; a non-candidate name fails.
 #
 # Usage:
 #   gitcleaner [--repos-dir DIR]... [--repo PATH]... [--dry-run|--yes]
-#              [--only BRANCH]... [--json] [--max-depth N] [DIR...]
+#              [--only BRANCH]... [--unpark] [--json] [--max-depth N] [DIR...]
 #
 # Exit status:
 #   0  nothing to clean
@@ -34,6 +35,7 @@ DRY_RUN=0
 FF=1
 FF_DIRTY=0
 ASSUME_YES=0
+UNPARK=0
 QUIT_ALL=0
 JSON=0
 
@@ -50,10 +52,16 @@ branches whose remote branch was pruned AND whose MR/PR the forge reports as
 merged — the squash-merge case, where `git branch -d` refuses because the
 commits are not ancestors of anything.
 
-Never touched: the branch you are on, the default branch, a branch with an open
-MR/PR, a branch holding commits the remote has never seen, and any branch a
-live worktree has checked out. A repo without origin/HEAD is skipped rather
-than guessed at.
+Never touched: the default branch, a branch with an open MR/PR, and a branch
+holding commits the remote has never seen. A repo without origin/HEAD is
+skipped rather than guessed at.
+
+A branch that is checked out — HEAD here, or in a linked worktree — is reported
+as parked when its work landed AND its remote branch was deleted, so a fresh
+local branch never counts. At a terminal you are asked whether to switch the
+checkout to the default branch (or remove the worktree) and delete the branch;
+under --yes that needs --unpark. Uncommitted changes, untracked files in a
+worktree, and a worktree lock that names no pid or a running one leave it alone.
 
 Every deletion prints the SHA it removed, so the undo is the
 `git branch <name> <sha>` already on your screen.
@@ -73,6 +81,8 @@ Options:
   --yes               Delete without asking (for scripts; needs no terminal)
   --only <branch>     Restrict deletion to this branch (repeatable). A name
                       that is not a candidate is an error, not a no-op.
+  --unpark            With --yes, also move parked checkouts off their branch
+                      (switch HEAD to the default, remove the worktree) first
   --json              One JSON document on stdout; never prompts
   -h, --help          Show this help
 
@@ -82,6 +92,8 @@ Examples:
   gitcleaner --repo . --json             what would go here, machine-readable
   gitcleaner --repo . --only old/feat --yes
                                          remove exactly that one, guards intact
+  gitcleaner --repo . --only old/feat --unpark --yes
+                                         the same while it is checked out
 
 Exit: 0 nothing to clean, 1 items found (removed, reported or kept), 2 failure
 EOF
@@ -100,6 +112,7 @@ while (( $# > 0 )); do
     --ff-dirty)  FF_DIRTY=1 ;;
     --yes|-y)    ASSUME_YES=1 ;;
     --only)      ONLY+=("$2"); shift ;;
+    --unpark)    UNPARK=1 ;;
     --json)      JSON=1 ;;
     -h|--help)   usage; exit 0 ;;
     -*)          print -r -u2 -- "Unknown option: $1"; usage >&2; exit 2 ;;
@@ -175,9 +188,10 @@ gitscan_require_gh "${GITDIRS[@]}"
 # Found and removed are separate counts: a declined delete says nothing about the tree.
 typeset -i FOUND_BRANCHES=0 FOUND_WORKTREES=0
 typeset -i GONE_BRANCHES=0 GONE_WORKTREES=0 KEPT_BRANCHES=0 FAILED_BRANCHES=0
+typeset -i FOUND_PARKED=0 GONE_PARKED=0
 typeset -i REPOS_TOUCHED=0 SKIPPED=0
 typeset -i REC_IDX=0
-typeset -a ONLY_MATCHED=()
+typeset -a ONLY_MATCHED=() ONLY_NEEDS_UNPARK=()
 LAST_SKIP=""
 
 # The report is for the operator; --json owns stdout when it is on, so every
@@ -195,13 +209,21 @@ skip() {
   return 2
 }
 
+# /proc first: it sees every user's processes and needs no ps on the pinned PATH. With neither, the pid counts as alive.
+pid_alive() {
+  [[ -d /proc/self ]] && { [[ -d "/proc/$1" ]]; return }
+  command -v ps >/dev/null || return 0
+  ps -p "$1" >/dev/null 2>&1
+}
+
 clean_repo() {
   local repo="$1"
   local default_branch head_branch branch upstream_track remote_url forge_line forge project
   local open_srcs="" wt_out
   # No queryable forge: the ancestor test still stands, the squash case is skipped rather than guessed.
   local -i have_forge=0
-  typeset -a to_delete_safe=() to_delete_squashed=() pruned_worktrees=() held_branches=()
+  typeset -a to_delete_safe=() to_delete_squashed=() pruned_worktrees=() parked=()
+  typeset -A held_path=() held_lock=()
   # "all" is per repo: agreeing to sweep one repo is not agreeing to the rest.
   typeset -i REPO_ALL=0
 
@@ -270,14 +292,17 @@ clean_repo() {
     fi
   fi
 
-  # An existing worktree is someone's live checkout: its branch is off limits however merged it looks.
-  local wt_path=""
+  # A checked-out branch is never deleted from under its checkout; it can only be reported as parked.
+  local wt_path="" wt_branch=""
   while IFS= read -r line; do
     case "${line}" in
-      worktree\ *) wt_path="${line#worktree }" ;;
-      branch\ *)   [[ -d "${wt_path}" ]] && held_branches+=("${${line#branch }#refs/heads/}") ;;
+      worktree\ *) wt_path="${line#worktree }"; wt_branch="" ;;
+      branch\ *)   wt_branch="${${line#branch }#refs/heads/}"
+                   [[ -d "${wt_path}" ]] && held_path[${wt_branch}]="${wt_path}" ;;
+      locked*)     [[ -n "${wt_branch}" ]] && held_lock[${wt_branch}]="${line}" ;;
     esac
   done < <(git -C "${repo}" worktree list --porcelain 2>/dev/null)
+  [[ -n "${head_branch}" ]] && held_path[${head_branch}]="${repo}"
 
   remote_url="$(git -C "${repo}" config --get remote.origin.url 2>/dev/null)"
   if [[ -n "${remote_url}" ]] && forge_line="$(gitscan_forge_of "${remote_url}")"; then
@@ -305,10 +330,26 @@ clean_repo() {
   while IFS= read -r branch || [[ -n "${branch}" ]]; do
     [[ -z "${branch}" ]] && continue
     [[ "${branch}" == "${default_branch}" ]] && continue
-    [[ "${branch}" == "${head_branch}" ]] && continue
     # An open MR means the work is in flight, whatever the ref graph says.
     (( ${${(f)open_srcs}[(Ie)${branch}]} )) && continue
-    (( ${held_branches[(Ie)${branch}]} )) && continue
+    upstream_track="$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)"
+    # Checked out: parked only once pushed and its remote branch deleted, or a branch just started would qualify.
+    if (( ${+held_path[${branch}]} )); then
+      [[ "${upstream_track}" == *gone* ]] || continue
+      if git -C "${repo}" merge-base --is-ancestor \
+           "refs/heads/${branch}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
+        parked+=("${branch}"$'\t'"merged into ${default_branch}")
+        continue
+      fi
+      (( have_forge )) || continue
+      gitscan_branch_merged "${forge}" "${project}" "${branch}"
+      case $? in
+        0) parked+=("${branch}"$'\t'"MR merged, upstream pruned") ;;
+        1) ;;
+        *) skip "${GITSCAN_FORGE_WHY} — skipping ${repo}"; return 2 ;;
+      esac
+      continue
+    fi
 
     # Every commit is reachable from origin/<default>: nothing is lost.
     if git -C "${repo}" merge-base --is-ancestor \
@@ -319,7 +360,6 @@ clean_repo() {
 
     # Squash merges: only the forge can say it landed, only a pruned upstream proves the ref is the leftover.
     # The forge is asked per branch: a merged-MR list is one page of an unbounded history.
-    upstream_track="$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)"
     [[ "${upstream_track}" == *gone* ]] || continue
     (( have_forge )) || continue
     gitscan_branch_merged "${forge}" "${project}" "${branch}"
@@ -341,9 +381,22 @@ clean_repo() {
     done
     to_delete_safe=("${keep_safe[@]}")
     to_delete_squashed=("${keep_squashed[@]}")
+    typeset -a keep_parked=()
+    local entry
+    for entry in "${parked[@]}"; do
+      branch="${entry%%$'\t'*}"
+      (( ${ONLY[(Ie)${branch}]} )) || continue
+      keep_parked+=("${entry}")
+      if [[ "${MODE}" == delete ]] && (( ! UNPARK )); then
+        ONLY_NEEDS_UNPARK+=("${branch}")
+      else
+        ONLY_MATCHED+=("${branch}")
+      fi
+    done
+    parked=("${keep_parked[@]}")
   fi
 
-  (( ${#to_delete_safe[@]} + ${#to_delete_squashed[@]} + ${#pruned_worktrees[@]} == 0 )) && return 0
+  (( ${#to_delete_safe[@]} + ${#to_delete_squashed[@]} + ${#pruned_worktrees[@]} + ${#parked[@]} == 0 )) && return 0
 
   (( REC_IDX++ ))
   REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
@@ -366,12 +419,12 @@ clean_repo() {
     fi
   done
 
-  # confirm <prompt>: y delete, n keep, a rest of this repo, q stop the run.
+  # confirm <prompt> [each]: y delete, n keep, a rest of this repo, q stop the run; "each" ignores an earlier a.
   confirm() {
     local _p="$1"
     [[ "${MODE}" == delete ]] && return 0
     [[ "${MODE}" == report ]] && return 1
-    (( REPO_ALL )) && return 0
+    (( REPO_ALL )) && [[ "${2-}" != each ]] && return 0
     prompt_keys "${_p}" "y/N/a/q"
     case "${PROMPT_KEY}" in
       [yY]) return 0 ;;
@@ -443,6 +496,84 @@ clean_repo() {
     fi
   done
 
+  # Moves the checkout off the branch, then deletes it. A refusal stops before the delete; a lock lifted for the
+  # removal goes back on.
+  unpark() {
+    local _b="$1" _why="$2" _sha="$3" _wt="$4" _lock="$5" _out
+    if [[ "${_wt}" == "${repo}" ]]; then
+      if ! _out="$(git -C "${repo}" switch -q "${default_branch}" 2>&1)"; then
+        print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to switch ${repo} to ${default_branch}: ${_out}"
+        rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" failed "${_out}"
+        (( FAILED_BRANCHES++ )); return
+      fi
+      say "  ${C_GREEN}switched${C_RESET} to ${default_branch} ${C_DIM}(was ${_b})${C_RESET}"
+    else
+      [[ -n "${_lock}" ]] && git -C "${repo}" worktree unlock "${_wt}" >/dev/null 2>&1
+      if ! _out="$(git -C "${repo}" worktree remove "${_wt}" 2>&1)"; then
+        [[ -n "${_lock}" ]] && git -C "${repo}" worktree lock --reason "${${_lock#locked}# }" "${_wt}" >/dev/null 2>&1
+        print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to remove worktree ${_wt}: ${_out}"
+        rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" failed "${_out}"
+        (( FAILED_BRANCHES++ )); return
+      fi
+      say "  ${C_GREEN}removed worktree${C_RESET} ${_wt}"
+    fi
+    if git -C "${repo}" branch -D "${_b}" >/dev/null 2>&1; then
+      say "  ${C_GREEN}deleted${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} branch ${_b} ${_sha}${C_RESET}"
+      rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" unparked ""
+      (( GONE_PARKED++ ))
+    else
+      print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b}"
+      rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" failed "branch -D refused"
+      (( FAILED_BRANCHES++ ))
+    fi
+  }
+
+  local wt lock pid what blocker hint question
+  local -i may_act=0
+  for line in "${parked[@]}"; do
+    (( QUIT_ALL )) && break
+    (( FOUND_PARKED++ ))
+    b="${line%%$'\t'*}"; reason="${line#*$'\t'}"
+    wt="${held_path[${b}]}"; lock="${held_lock[${b}]-}"
+    sha="$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)"
+    blocker=""
+    if [[ "${wt}" == "${repo}" ]]; then
+      what="checked out here"
+      [[ -n "$(git -C "${repo}" status --porcelain --untracked-files=no 2>/dev/null)" ]] && blocker="uncommitted changes"
+    else
+      what="worktree ${wt}"
+      [[ -n "$(git -C "${wt}" status --porcelain 2>/dev/null)" ]] && blocker="uncommitted or untracked changes"
+      # A lock names its holder's pid when a tool set it (Claude Code does); one that names none, or a live one, stands.
+      if [[ -z "${blocker}" && -n "${lock}" ]]; then
+        pid=""; [[ "${lock}" =~ 'pid ([0-9]+)' ]] && pid="${match[1]}"
+        if [[ -z "${pid}" ]] || pid_alive "${pid}"; then
+          blocker="${lock}"
+        fi
+      fi
+    fi
+    may_act=0
+    [[ "${MODE}" == ask ]] && may_act=1
+    [[ "${MODE}" == delete ]] && (( UNPARK )) && may_act=1
+    if [[ -n "${blocker}" ]] || (( ! may_act )); then
+      if [[ -n "${blocker}" ]]; then hint="${blocker}; left alone"
+      elif [[ "${wt}" == "${repo}" ]]; then hint="switch to ${default_branch} first, or --unpark"
+      else hint="remove the worktree first, or --unpark"
+      fi
+      say "  ${C_YELLOW}parked${C_RESET} ${b} ${C_DIM}(${reason}; ${what}) — ${hint}${C_RESET}"
+      rec_line PARKED "${b}" "${reason}" "${sha}" "${wt}" "$([[ -n "${blocker}" ]] && print blocked || print reported)" "${blocker}"
+      continue
+    fi
+    question="remove worktree ${wt} and delete ${b} (${reason})?"
+    [[ "${wt}" == "${repo}" ]] && question="switch to ${default_branch} and delete ${b} (${reason})?"
+    # Moving a checkout is asked one at a time: "a" agreed to deleting branches, not to this.
+    if confirm "${question}" each; then
+      unpark "${b}" "${reason}" "${sha}" "${wt}" "${lock}"
+    else
+      rec_line PARKED "${b}" "${reason}" "${sha}" "${wt}" kept ""
+      (( QUIT_ALL )) || say "  ${C_DIM}kept${C_RESET} ${b} ${C_DIM}(${what})${C_RESET}"
+    fi
+  done
+
   return 0
 }
 
@@ -471,6 +602,8 @@ done
 if (( ${#ONLY_MISSED[@]} > 0 )); then
   print -r -u2 -- "gitcleaner: --only named branches that are not candidates: ${(j:, :)ONLY_MISSED}"
   print -r -u2 -- "  a branch is a candidate only when every guard clears it; run --json to see the list"
+  (( ${#ONLY_NEEDS_UNPARK[@]} > 0 )) && \
+    print -r -u2 -- "  checked out (parked): ${(j:, :)ONLY_NEEDS_UNPARK} — add --unpark to move the checkout off first"
   rc=2
 fi
 
@@ -487,10 +620,11 @@ render_json() {
       --arg skipped "$(grep -m1 $'^SKIP\t' "${rec}" 2>/dev/null | cut -f3)" \
       --argjson branches "$(grep $'^BRANCH\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({name: .[0], reason: .[1], sha: .[2], action: .[3]})')" \
       --argjson worktrees "$(grep $'^WT\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({entry: .[0], action: .[1]})')" \
+      --argjson parked "$(grep $'^PARKED\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({name: .[0], reason: .[1], sha: .[2], checkout: .[3], action: .[4], blocker: (if (.[5] // "") == "" then null else .[5] end)})')" \
       '{path: $path,
         default_branch: (if $default_branch == "" then null else $default_branch end),
         skipped: (if $skipped == "" then null else $skipped end),
-        branches: $branches, worktrees: $worktrees}' \
+        branches: $branches, worktrees: $worktrees, parked: $parked}' \
       > "${WORKDIR}/json.$(printf '%04d' ${idx})"
   done
 
@@ -501,14 +635,15 @@ render_json() {
     --argjson scanned "${#GITDIRS[@]}" \
     --argjson found_b "${FOUND_BRANCHES}" --argjson found_w "${FOUND_WORKTREES}" \
     --argjson gone_b "${GONE_BRANCHES}" --argjson gone_w "${GONE_WORKTREES}" \
+    --argjson found_p "${FOUND_PARKED}" --argjson gone_p "${GONE_PARKED}" \
     --argjson kept "${KEPT_BRANCHES}" --argjson failed "${FAILED_BRANCHES}" \
     --argjson skipped "${SKIPPED}" \
     --argjson only_missed "$(print -rn -- "${(F)ONLY_MISSED}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
     '{ok: ($failed == 0 and $skipped == 0 and ($only_missed | length) == 0),
       aborted: null,
       mode: $mode, scanned: $scanned, repos: .,
-      found: {branches: $found_b, worktrees: $found_w},
-      removed: {branches: $gone_b, worktrees: $gone_w},
+      found: {branches: $found_b, worktrees: $found_w, parked: $found_p},
+      removed: {branches: $gone_b, worktrees: $gone_w, parked: $gone_p},
       kept: $kept, failed: $failed, skipped: $skipped,
       only_not_found: $only_missed}' \
     "${WORKDIR}"/json.*(N) < /dev/null
@@ -517,14 +652,14 @@ render_json() {
 if (( JSON )); then
   render_json
   (( rc == 2 )) && exit 2
-  (( FOUND_BRANCHES + FOUND_WORKTREES == 0 )) && exit 0
+  (( FOUND_BRANCHES + FOUND_WORKTREES + FOUND_PARKED == 0 )) && exit 0
   exit 1
 fi
 
 print -r -- ""
 # Gated on what was found, not on what went: keeping every candidate is still a
 # run that found work.
-if (( FOUND_BRANCHES + FOUND_WORKTREES == 0 )); then
+if (( FOUND_BRANCHES + FOUND_WORKTREES + FOUND_PARKED == 0 )); then
   # A skip leaves that repo unread, so "nothing to clean" cannot cover it.
   if (( rc == 2 )); then
     print -r -- "Nothing to clean in the repos that were readable; ${SKIPPED} skipped (see errors above)."
@@ -536,13 +671,15 @@ fi
 
 if [[ "${MODE}" == report ]]; then
   print -r -- "${FOUND_BRANCHES} branches and ${FOUND_WORKTREES} worktree entries are stale in ${REPOS_TOUCHED} repos."
+  (( FOUND_PARKED > 0 )) && print -r -- "${FOUND_PARKED} checkouts are parked on a landed branch."
   if (( DRY_RUN )); then
     print -r -- "Drop --dry-run to work through them one at a time."
   else
-    print -r -- "No terminal to ask at — run this from a shell, or pass --yes."
+    print -r -- "No terminal to ask at — run this from a shell, or pass --yes (--unpark for parked checkouts)."
   fi
 else
   print -r -- "Removed ${GONE_BRANCHES} of ${FOUND_BRANCHES} branches and ${GONE_WORKTREES} of ${FOUND_WORKTREES} worktree entries in ${REPOS_TOUCHED} repos."
+  (( FOUND_PARKED > 0 )) && print -r -- "Unparked ${GONE_PARKED} of ${FOUND_PARKED} parked checkouts."
   (( KEPT_BRANCHES > 0 )) && print -r -- "${KEPT_BRANCHES} branches kept at your request."
   (( QUIT_ALL )) && print -r -- "Stopped at your request; the rest were left alone."
 fi

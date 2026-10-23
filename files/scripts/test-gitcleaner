@@ -300,6 +300,119 @@ check "exits 1 after removing" "${RC}" "1"
 contains "deletes the merged branch despite the parked HEAD" "${OUT}" "deleted merged-branch"
 excludes "no refused delete" "${OUT}" "FAILED to delete"
 
+print -r -- "── parked: a checkout on a branch whose work landed ───────────────"
+# land_branch <fixture> <branch>: pushed, merged into main on the remote, remote branch deleted, tracked locally —
+# what a merged MR with "delete source branch" leaves in a clone.
+land_branch() {
+  local seed="${BASE}/$1/seed" bare="${BASE}/$1/remote.git" repo="${BASE}/$1/roots/repo" b="$2"
+  {
+  git -C "${seed}" checkout -qb "${b}" main
+  print -r -- "${b}" > "${seed}/${b}"; git -C "${seed}" add -A; git -C "${seed}" commit -qm "${b}"
+  git -C "${seed}" push -q origin "${b}"
+  git -C "${seed}" checkout -q main
+  git -C "${seed}" merge -q --no-ff -m "merge ${b}" "${b}"
+  git -C "${seed}" push -q origin main
+  git -C "${repo}" fetch -q origin
+  git -C "${repo}" branch --track "${b}" "origin/${b}"
+  git -C "${bare}" branch -D "${b}"
+  } >/dev/null 2>&1
+}
+head_of() { git -C "$1" symbolic-ref --short -q HEAD }
+
+build_fixture parkhead; ROOTS="${FIXTURE_ROOTS}"; R="${ROOTS}/repo"
+land_branch parkhead landed
+git -C "${R}" switch -qc fresh main >/dev/null 2>&1
+OUT="$(zsh "${CLEANER}" --repo "${R}" < /dev/null 2>&1)"
+excludes "a fresh branch with no upstream is never parked" "${OUT}" "parked fresh"
+
+git -C "${R}" switch -q landed >/dev/null 2>&1
+OUT="$(zsh "${CLEANER}" --repo "${R}" < /dev/null 2>&1)"; RC=$?
+check "a parked HEAD is work found" "${RC}" "1"
+contains "reports the parked HEAD" "${OUT}" "parked landed"
+contains "names the way out" "${OUT}" "--unpark"
+check "and leaves the checkout where it is" "$(head_of "${R}")" "landed"
+
+OUT="$(zsh "${CLEANER}" --repo "${R}" --json < /dev/null 2>/dev/null)"
+check "--json counts it" "$(print -r -- "${OUT}" | jq -r '.found.parked')" "1"
+check "--json lists it under parked" "$(print -r -- "${OUT}" | jq -r '.repos[0].parked[0].name')" "landed"
+check "with the checkout it sits in" "$(print -r -- "${OUT}" | jq -r '.repos[0].parked[0].checkout')" "${R:A}"
+
+OUT="$(zsh "${CLEANER}" --repo "${R}" --only landed --yes < /dev/null 2>&1)"; RC=$?
+check "--only on a parked branch without --unpark exits 2" "${RC}" "2"
+contains "and says --unpark is missing" "${OUT}" "--unpark"
+check "the checkout did not move" "$(head_of "${R}")" "landed"
+
+print -r -- dirt >> "${R}/f"
+OUT="$(zsh "${CLEANER}" --repo "${R}" --only landed --unpark --yes < /dev/null 2>&1)"
+contains "uncommitted changes block the switch" "${OUT}" "uncommitted changes"
+check "so the checkout stays" "$(head_of "${R}")" "landed"
+git -C "${R}" checkout -q -- f
+
+OUT="$(zsh "${CLEANER}" --repo "${R}" --only landed --unpark --yes < /dev/null 2>&1)"; RC=$?
+check "--unpark --yes exits 1 after acting" "${RC}" "1"
+contains "switches to the default branch" "${OUT}" "switched to main"
+contains "then deletes the branch" "${OUT}" "deleted landed"
+contains "with its restore command" "${OUT}" "restore: git -C"
+check "the checkout is on main" "$(head_of "${R}")" "main"
+check "and the parked branch is gone" "$(git -C "${R}" for-each-ref refs/heads/landed | wc -l)" "0"
+
+build_fixture parkask; ROOTS="${FIXTURE_ROOTS}"; R="${ROOTS}/repo"
+land_branch parkask landed
+git -C "${R}" switch -q landed >/dev/null 2>&1
+if command -v script >/dev/null 2>&1; then
+  OUT="$(printf 'y' | TERM=xterm script -qec "zsh ${CLEANER} --repo ${R} --only landed" /dev/null 2>&1)"
+  contains "a terminal is asked before the switch" "${OUT}" "switch to main and delete landed"
+  check "and yes moves it" "$(head_of "${R}")" "main"
+else
+  print -r -- "  skip (no script(1) for a pty)"
+fi
+
+build_fixture parkall; ROOTS="${FIXTURE_ROOTS}"; R="${ROOTS}/repo"
+land_branch parkall landed
+git -C "${R}" switch -q landed >/dev/null 2>&1
+if command -v script >/dev/null 2>&1; then
+  OUT="$(printf 'an' | TERM=xterm script -qec "zsh ${CLEANER} --repo ${R}" /dev/null 2>&1)"
+  check "a covers the branches" "$(git -C "${R}" for-each-ref refs/heads/merged-branch | wc -l)" "0"
+  contains "but the parked checkout is still asked about" "${OUT}" "switch to main and delete landed"
+  check "and n keeps it where it is" "$(head_of "${R}")" "landed"
+else
+  print -r -- "  skip (no script(1) for a pty)"
+fi
+
+build_fixture parkwt; ROOTS="${FIXTURE_ROOTS}"; R="${ROOTS}/repo"
+for b in wt-dead wt-live wt-dirty wt-manual; do
+  land_branch parkwt "${b}"
+  git -C "${R}" worktree add -q "${BASE}/parkwt/${b}" "${b}" >/dev/null 2>&1
+done
+sleep 0 & DEAD_PID=$!; wait "${DEAD_PID}"
+git -C "${R}" worktree lock --reason "claude session a (pid ${DEAD_PID} start 1)" "${BASE}/parkwt/wt-dead"
+git -C "${R}" worktree lock --reason "claude session b (pid $$ start 1)" "${BASE}/parkwt/wt-live"
+git -C "${R}" worktree lock --reason "on a usb stick" "${BASE}/parkwt/wt-manual"
+print -r -- scratch > "${BASE}/parkwt/wt-dirty/notes"
+OUT="$(zsh "${CLEANER}" --repo "${R}" < /dev/null 2>&1)"
+contains "a parked worktree is reported" "${OUT}" "parked wt-dead"
+OUT="$(zsh "${CLEANER}" --repo "${R}" --json < /dev/null 2>/dev/null)"
+check "--json marks a blocked one as blocked" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].parked[] | select(.name == "wt-dirty") | .action')" "blocked"
+check "and names the blocker" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].parked[] | select(.name == "wt-dirty") | .blocker')" \
+  "uncommitted or untracked changes"
+check "an unblocked one is reported, with no blocker" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].parked[] | select(.name == "wt-dead") | "\(.action) \(.blocker)"')" \
+  "reported null"
+OUT="$(zsh "${CLEANER}" --repo "${R}" --unpark --yes < /dev/null 2>&1)"
+contains "a worktree whose lock holder is gone is removed" "${OUT}" "removed worktree ${BASE:A}/parkwt/wt-dead"
+check "its directory went" "$([[ -d "${BASE}/parkwt/wt-dead" ]] && print kept || print gone)" "gone"
+contains "and its branch" "${OUT}" "deleted wt-dead"
+contains "a lock held by a running process is respected" "${OUT}" "parked wt-live"
+check "that worktree stays" "$([[ -d "${BASE}/parkwt/wt-live" ]] && print kept || print gone)" "kept"
+check "a lock without a pid is respected" "$([[ -d "${BASE}/parkwt/wt-manual" ]] && print kept || print gone)" "kept"
+contains "untracked files block the removal" "${OUT}" "untracked"
+check "that worktree stays too" "$(cat "${BASE}/parkwt/wt-dirty/notes" 2>/dev/null)" "scratch"
+check "the respected worktrees keep their branches" \
+  "$(git -C "${R}" for-each-ref --format='%(refname:short)' 'refs/heads/wt-*' | sort | tr '\n' ' ')" \
+  "wt-dirty wt-live wt-manual "
+
 print -r -- "── guards ─────────────────────────────────────────────────────────"
 build_fixture guards; ROOTS="${FIXTURE_ROOTS}"
 # The local ref is NOT how to simulate this. gitcleaner fetches before it reads

@@ -145,7 +145,9 @@ the private overlay `flakelab-config`, which imports this flake via
   `--json`, so use those rather than parsing the human report: one document on
   stdout, abort included. To remove a branch, take the plan from
   `gitcleaner --repo . --json` and act with `--only <branch> --yes` — never
-  `--yes` alone, which sweeps every repo it can reach.
+  `--yes` alone, which sweeps every repo it can reach. A branch still checked
+  out (HEAD or a worktree) is listed under `parked`; acting on it also takes
+  `--unpark`.
 - `gitpublisher` supports GitLab remotes only. For this GitHub repository,
   use `git push` and `gh pr create` after the same local checks. On GitLab,
   `gitpublisher` publishes the working tree as an MR (branch, commit through

@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `gitcleaner` reports a checkout parked on a landed branch — HEAD, or a linked worktree, on a branch that was pushed, merged and deleted on the remote — instead of skipping it without a word, and `--json` lists it under `parked`. At a terminal it offers to switch the checkout to the default branch (or remove the worktree) and delete the branch; `--unpark` does the same under `--yes`. Uncommitted changes, untracked files in a worktree, and a worktree lock that names no pid or a running one leave the checkout alone.
+
 ### Fixed
 
 - `flakelab clone` with GitLab groups and no `GITLAB_TOKEN` exits 3 before listing anything and names where the token goes: the sops secrets file on an enrolled box, `~/.config/flakelab/secrets.env` otherwise. `setup-wsl-nix.ps1 provision` no longer sources `secrets.env` itself before the clone (`.zshenv` does, and an enrolled box must not read the fallback file), stays quiet on that refusal, and calls a missing key or `secrets.env` steps that wait rather than a distro "built but unconfigured".
