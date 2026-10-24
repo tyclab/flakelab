@@ -135,7 +135,9 @@ the headless-shell revision its browsers were built for. A nixpkgs update moves
 both together. The launcher links only the headless shell, the same store path
 the full browser set in `.zshenv` (`PLAYWRIGHT_BROWSERS_PATH`) already
 references, so the server adds only `playwright-core` and the Node.js build it
-was packaged with.
+was packaged with. `.zshenv` also exports `PLAYWRIGHT_VERSION`, the playwright
+release those browsers were built for, so a harness that npm-installs
+playwright takes that release instead of carrying a pin of its own.
 
 The Windows Chrome bridge is separate and unchanged: the `mcp-playwright`
 Claude plugin and whatever Playwright server a `codexMcpSources` manifest

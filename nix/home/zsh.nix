@@ -82,8 +82,10 @@ in
       export PATH="$HOME/.npm-global/bin:$PATH"
 
       # nixpkgs' pre-patched browsers, so nix-ld is not needed. Playwright matches
-      # browsers by revision, so a harness pinning PW_VERSION must track playwright-driver.
+      # browsers by revision, so a harness that npm-installs playwright must take the
+      # release these were built for: PLAYWRIGHT_VERSION, never a pin of its own.
       export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+      export PLAYWRIGHT_VERSION="${pkgs.playwright-driver.version}"
       export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
       # Runtime secrets from exactly one source, chosen at build time by whether
