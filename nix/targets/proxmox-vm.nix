@@ -67,8 +67,7 @@ in
     };
   };
 
-  # The uid is pinned because cloud-init reuses the account it finds at 1000 rather
-  # than creating a second beside it.
+  # Pinned: cloud-init reuses the account it finds at 1000 rather than creating a second.
   users.users.${cfg.username} = {
     isNormalUser = true;
     uid = lib.mkDefault 1000;
@@ -120,8 +119,7 @@ in
     users.users.${cfg.username}.uid = lib.mkForce 65000;
   };
 
-  # First boot after something drops /etc/flakelab/bootstrap.env: clone the private
-  # overlay and switch into it. The marker below, not the image, makes it run once.
+  # The marker below, not the image, makes this run once.
   systemd.services.flakelab-bootstrap = {
     description = "Clone the flakelab overlay and switch this system into it";
     wantedBy = [ "multi-user.target" ];
@@ -242,12 +240,10 @@ in
       # A root-written lock makes the user's next `nix` command there fail.
       as_user nix flake lock "path:$REPO_PATH"
 
-      # The switch's status is not its result - a 4 can stand over a failed activation -
-      # so flakelab-switch-result reads what the system recorded. Only an activated
-      # system gets the marker: applied exits 0, degraded exits 4 so this unit shows
-      # failed with the units named here, and a further run would switch into the same
-      # generation for nothing. Every other verdict leaves no marker, and the next boot
-      # retries the bootstrap.
+      # The switch's status is not its result (a 4 can stand over a failed activation):
+      # flakelab-switch-result decides. Degraded still gets the marker, as a rerun would
+      # switch into the same generation; every other verdict leaves none, and the next
+      # boot retries.
       rc=0
       nixos-rebuild switch --flake "path:$REPO_PATH#$OVERLAY_ATTR" || rc=$?
       verdict_rc=0
