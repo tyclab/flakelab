@@ -5,6 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -63,6 +64,14 @@ class QuestionTests(unittest.TestCase):
 
     def reply(self, dialog_id, result):
         self.server.handle({"jsonrpc": "2.0", "id": dialog_id, "result": result})
+
+    def accept(self, content):
+        [request] = dialog_requests(self.output)[-1:]
+        self.reply(request["id"], {"action": "accept", "content": content})
+
+    def result(self):
+        [line] = [m for m in lines(self.output) if "result" in m and "method" not in m]
+        return json.loads(line["result"]["content"][0]["text"])
 
     def start(self, ident=1):
         self.server.handle({"id": ident, "method": "tools/call", "params": {
@@ -189,6 +198,55 @@ class QuestionTests(unittest.TestCase):
     def test_unknown_response_ids_are_ignored(self):
         self.server.handle({"jsonrpc": "2.0", "id": "q-99", "result": {"action": "accept"}})
         self.assertEqual(self.output.getvalue(), "")
+
+    def test_terminal_answer_is_recorded_and_returned(self):
+        self.init(); thread = self.start()
+        self.accept({"choice": "Blue"}); thread.join(1)
+        self.assertEqual(self.result() | {"question_id": None}, {"status": "answered", "answer": "Blue",
+                                                                 "source": "terminal", "question_id": None})
+        ops = [c["op"] for c in self.transport.calls]
+        self.assertEqual(ops[0], "create"); self.assertEqual(ops[-1], "answer")
+        self.assertNotIn("delivered", ops)
+        self.assertEqual(self.transport.calls[-1]["answer"], "Blue")
+
+    def test_terminal_answer_prefers_text_then_choice(self):
+        for content, expected in (({"choice": "Red", "answer": " Purple "}, "Purple"),
+                                  ({"choice": "Red", "answer": "  "}, "Red")):
+            with self.subTest(content=content):
+                self.setUp(); self.init(); thread = self.start()
+                self.accept(content); thread.join(1)
+                self.assertEqual(self.result()["answer"], expected)
+
+    def test_empty_accept_reopens_the_dialog(self):
+        self.init(); thread = self.start()
+        self.accept({})
+        for _ in range(100):
+            if len(dialog_requests(self.output)) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(dialog_requests(self.output)), 2)
+        self.accept({"choice": "Red"}); thread.join(1)
+        self.assertEqual(self.result()["answer"], "Red")
+
+    def test_inbox_wins_a_tie(self):
+        self.init(); thread = self.start()
+        self.transport.answer_reply = {"status": "answered", "answer": "Red"}
+        self.accept({"answer": "Blue"}); thread.join(1)
+        result = self.result()
+        self.assertEqual((result["answer"], result["source"], result["discarded_terminal_answer"]),
+                         ("Red", "inbox", "Blue"))
+        self.assertEqual(self.transport.calls[-1]["op"], "delivered")
+
+    def test_cancelled_inbox_turns_a_terminal_answer_into_an_error(self):
+        self.init(); thread = self.start()
+        self.transport.answer_reply = {"status": "cancelled"}
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+
+    def test_inbox_answer_carries_its_source(self):
+        self.init(elicitation=False); thread = self.start()
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(self.result()["source"], "inbox")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

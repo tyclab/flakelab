@@ -172,6 +172,45 @@ class Server:
                        "params": {"requestId": dialog.id, "reason": "answered from the inbox"}})
         self.dialog_lock.release()
 
+    @staticmethod
+    def terminal_answer(dialog):
+        """Text the operator gave in the dialog: free text first, then the choice; "" for an empty accept."""
+        response = dialog.response or {}
+        if response.get("action") != "accept":
+            return None
+        content = response.get("content") or {}
+        answer, choice = content.get("answer"), content.get("choice")
+        if isinstance(answer, str) and answer.strip():
+            return answer.strip()
+        if isinstance(choice, str) and choice.strip():
+            return choice
+        return ""
+
+    def wait(self, dialog, cancel):
+        (dialog.event if dialog and not dialog.done else cancel).wait(self.interval)
+
+    def record_terminal_answer(self, transport, auth, create, text, created, cancel):
+        """Store a dialog answer in the inbox; the inbox's status decides whose answer stands."""
+        payload = {"status": "answered", "answer": text, "question_id": auth["id"], "source": "terminal"}
+        failures = 0
+        while not created and not cancel.is_set():
+            try:
+                transport.post(create)
+                created = True
+            except ConnectionError:
+                failures += 1
+                if failures >= 3:
+                    raise
+                cancel.wait(self.interval)
+        reply = transport.post({**auth, "op": "answer", "answer": text})
+        status = reply["status"]
+        if status == "delivered":
+            return payload
+        if status == "answered":
+            transport.post({**auth, "op": "delivered"})
+            return {**payload, "answer": reply["answer"], "source": "inbox", "discarded_terminal_answer": text}
+        raise ValueError(f"Question is {status}; no answer was returned. Ask in the conversation.")
+
     def ask(self, ident, arguments, cancel):
         transport = dialog = None
         auth = {"id": str(uuid.uuid4()), "token": secrets.token_hex(32)}
@@ -186,6 +225,20 @@ class Server:
             deadline = time.monotonic() + self.timeout
             created, failures, unavailable_since = False, 0, None
             while not cancel.is_set() and time.monotonic() < deadline:
+                if dialog and not dialog.done and dialog.event.is_set():
+                    text = self.terminal_answer(dialog)
+                    self.close_dialog(dialog, cancel=False)
+                    dialog = None
+                    if text == "":
+                        # Accept without a choice or text: show the dialog again.
+                        if self.dialog_lock.acquire(blocking=False):
+                            dialog = self.open_dialog(question)
+                        continue
+                    if text is not None:
+                        payload = self.record_terminal_answer(transport, auth, create, text, created, cancel)
+                        self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
+                        finished = True
+                        return
                 try:
                     result = transport.post({**auth, "op": "poll"} if created else create)
                     created, failures, unavailable_since = True, 0, None
@@ -194,20 +247,23 @@ class Server:
                     unavailable_since = unavailable_since or time.monotonic()
                     if (not created and failures >= 3) or time.monotonic() - unavailable_since > 60:
                         raise
-                    cancel.wait(self.interval)
+                    self.wait(dialog, cancel)
                     continue
                 status = result["status"]
                 if status == "answered":
                     if cancel.is_set():
                         break
+                    if dialog and not dialog.done:
+                        self.close_dialog(dialog, cancel=True)
                     self.send(ident, {"content": [{"type": "text", "text": json.dumps({
-                        "status": "answered", "answer": result["answer"], "question_id": auth["id"]})}]})
+                        "status": "answered", "answer": result["answer"], "question_id": auth["id"],
+                        "source": "inbox"})}]})
                     finished = True
                     transport.post({**auth, "op": "delivered"})
                     return
                 if status != "pending":
                     raise ValueError(f"Question is {status}; no answer was returned. Ask in the conversation.")
-                cancel.wait(self.interval)
+                self.wait(dialog, cancel)
             if not cancel.is_set():
                 raise ValueError("Question expired without an answer. Ask in the conversation.")
         except (ValueError, ConnectionError, KeyError, OSError) as exc:
