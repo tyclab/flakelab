@@ -117,9 +117,10 @@ class QuestionTests(unittest.TestCase):
         [line] = [m for m in lines(self.output) if "result" in m and "method" not in m]
         return json.loads(line["result"]["content"][0]["text"])
 
-    def start(self, ident=1):
+    def start(self, ident=1, arguments=None):
         self.server.handle({"id": ident, "method": "tools/call", "params": {
-            "name": "ask_question", "arguments": {"question": "Which colour?", "options": ["Red", "Blue"]}}})
+            "name": "ask_question",
+            "arguments": arguments or {"question": "Which colour?", "options": ["Red", "Blue"]}}})
         self.assertTrue(self.transport.created.wait(1))
         with self.server.lock:
             return self.server.active[ident][1]
@@ -213,15 +214,37 @@ class QuestionTests(unittest.TestCase):
         self.start()
         [request] = dialog_requests(self.output)
         self.assertTrue(request["id"].startswith("q-"))
-        self.assertEqual(request["params"]["message"], "Which colour?")
+        # Short options ride in the message, numbered, and one typed field takes a number or words:
+        # Claude Code shows three message lines and needs no picker navigation that way.
+        self.assertEqual(request["params"]["message"], "Which colour?\n1) Red  2) Blue")
         schema = request["params"]["requestedSchema"]
-        self.assertEqual(schema["properties"]["choice"]["enum"], ["Red", "Blue"])
-        self.assertEqual(schema["properties"]["choice"]["enumNames"], ["Red", "Blue"])
+        self.assertEqual(list(schema["properties"]), ["answer"])
+        self.assertEqual(schema["required"], ["answer"])
+        self.assertEqual(schema["properties"]["answer"]["maxLength"], 12000)
+        self.assertIn("number", schema["properties"]["answer"]["description"])
+        self.assertTrue(self.transport.dialog_before_create)
+
+    def test_context_follows_the_numbered_options(self):
+        self.init()
+        self.start(arguments={"question": "Which colour?", "context": "Because.", "options": ["Red", "Blue"]})
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["message"], "Which colour?\n1) Red  2) Blue\n\nBecause.")
+
+    def test_options_pack_into_two_lines_or_keep_the_picker(self):
+        wide = [f"Option {i} " + "x" * 35 for i in range(1, 6)]     # 44 characters each
+        self.init(); self.start(arguments={"question": "Pick", "options": wide[:4]})
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["message"].split("\n"), [
+            "Pick", f"1) {wide[0]}  2) {wide[1]}", f"3) {wide[2]}  4) {wide[3]}"])
+        self.setUp(); self.init(); self.start(arguments={"question": "Pick", "options": wide})
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["message"], "Pick")
+        schema = request["params"]["requestedSchema"]
+        self.assertEqual(schema["properties"]["choice"]["enum"], wide)
         # Codex lays the fields out by property name: "choice" must sort before the free text.
         self.assertEqual(list(schema["properties"]), ["choice", "text"])
         self.assertEqual(schema["properties"]["text"]["maxLength"], 12000)
         self.assertNotIn("required", schema)
-        self.assertTrue(self.transport.dialog_before_create)
 
     def test_free_text_question_requires_the_answer_field(self):
         self.init()
@@ -247,7 +270,7 @@ class QuestionTests(unittest.TestCase):
 
     def test_terminal_answer_is_recorded_and_returned(self):
         self.init(); thread = self.start()
-        self.accept({"choice": "Blue"}); thread.join(1)
+        self.accept({"answer": "2"}); thread.join(1)
         self.assertEqual(self.result() | {"question_id": None}, {"status": "answered", "answer": "Blue",
                                                                  "source": "terminal", "question_id": None})
         ops = [c["op"] for c in self.transport.calls]
@@ -255,11 +278,27 @@ class QuestionTests(unittest.TestCase):
         self.assertNotIn("delivered", ops)
         self.assertEqual(self.transport.calls[-1]["answer"], "Blue")
 
-    def test_terminal_answer_prefers_text_then_choice(self):
-        for content, expected in (({"choice": "Red", "text": " Purple "}, "Purple"),
-                                  ({"choice": "Red", "text": "  "}, "Red")):
-            with self.subTest(content=content):
+    def test_a_number_or_an_option_prefix_answers_with_the_option_text(self):
+        for typed, expected in (("2", "Blue"), (" 1) ", "Red"), ("1.", "Red"), ("blue", "Blue"), ("bl", "Blue"),
+                                ("Purple", "Purple"), ("2 of them", "2 of them"), ("3", "3"), ("0", "0")):
+            with self.subTest(typed=typed):
                 self.setUp(); self.init(); thread = self.start()
+                self.accept({"answer": typed}); thread.join(1)
+                self.assertEqual(self.result()["answer"], expected)
+                self.assertEqual(self.transport.calls[-1]["answer"], expected)
+
+    def test_an_ambiguous_prefix_stays_free_text(self):
+        self.init(); thread = self.start(arguments={"question": "Which?", "options": ["Red", "Rose"]})
+        self.accept({"answer": "r"}); thread.join(1)
+        self.assertEqual(self.result()["answer"], "r")
+
+    def test_picker_answer_prefers_text_then_choice(self):
+        wide = [f"Option {i} " + "x" * 35 for i in range(1, 6)]
+        for content, expected in (({"choice": wide[0], "text": " Purple "}, "Purple"),
+                                  ({"choice": wide[0], "text": "  "}, wide[0])):
+            with self.subTest(content=content):
+                self.setUp(); self.init()
+                thread = self.start(arguments={"question": "Pick", "options": wide})
                 self.accept(content); thread.join(1)
                 self.assertEqual(self.result()["answer"], expected)
 
@@ -271,7 +310,7 @@ class QuestionTests(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertEqual(len(dialog_requests(self.output)), 2)
-        self.accept({"choice": "Red"}); thread.join(1)
+        self.accept({"answer": "1"}); thread.join(1)
         self.assertEqual(self.result()["answer"], "Red")
 
     def test_inbox_wins_a_tie(self):
@@ -299,7 +338,7 @@ class QuestionTests(unittest.TestCase):
         self.transport.answer.set(); thread.join(1)
         [cancelled] = cancellations(self.output)
         self.assertEqual(cancelled["params"]["requestId"], dialog_requests(self.output)[0]["id"])
-        self.accept({"choice": "Red"})
+        self.accept({"answer": "1"})
         self.assertEqual(len([m for m in lines(self.output) if "result" in m and "method" not in m]), 1)
         self.assertEqual(self.result()["source"], "inbox")
 
@@ -389,13 +428,13 @@ class QuestionTests(unittest.TestCase):
 
     def test_queued_dialog_opens_when_the_first_resolves(self):
         self.init(); first, second = self.start(1), self.start(2)
-        self.accept({"choice": "Red"}); first.join(1)
+        self.accept({"answer": "1"}); first.join(1)
         for _ in range(100):
             if len(dialog_requests(self.output)) == 2:
                 break
             time.sleep(0.01)
         self.assertEqual(len(dialog_requests(self.output)), 2)
-        self.accept({"choice": "Blue"}); second.join(1)
+        self.accept({"answer": "2"}); second.join(1)
         answers = sorted(json.loads(m["result"]["content"][0]["text"])["answer"]
                          for m in lines(self.output) if "result" in m and "method" not in m)
         self.assertEqual(answers, ["Blue", "Red"])
@@ -433,7 +472,7 @@ class QuestionTests(unittest.TestCase):
     def test_cancelled_call_gets_no_terminal_result(self):
         self.init(); thread = self.start()
         self.transport.fail_answer = "network"          # answer op keeps retrying
-        self.accept({"choice": "Blue"})
+        self.accept({"answer": "Blue"})
         for _ in range(100):
             if any(c["op"] == "answer" for c in self.transport.calls):
                 break
@@ -459,7 +498,7 @@ class QuestionTests(unittest.TestCase):
         self.init(); self.transport.down = True; self.server.interval = 0.05
         thread = self.start_without_create()
         self.wait_for_creates(1)
-        self.accept({"choice": "Blue"}); thread.join(3)
+        self.accept({"answer": "Blue"}); thread.join(3)
         self.assertEqual(self.result()["inbox"], "unavailable")
         self.assertEqual(self.creates(), 3)
 
@@ -475,7 +514,7 @@ class QuestionTests(unittest.TestCase):
                 break
             time.sleep(0.005)
         self.assertEqual(len(dialog_requests(self.output)), 2)
-        self.accept({"choice": "Red"}); thread.join(2)
+        self.accept({"answer": "1"}); thread.join(2)
         self.assertEqual((self.result()["answer"], self.result()["inbox"]), ("Red", "unavailable"))
 
     def test_expiry_in_dialog_only_reports_expiry(self):
