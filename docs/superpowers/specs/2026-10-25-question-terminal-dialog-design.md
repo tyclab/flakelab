@@ -84,7 +84,7 @@ reply is unchanged. Without the capability every call behaves exactly as today.
    `"q-<n>"`); `message` = question, then a blank line and the context when
    present; `requestedSchema`:
    - with options: `choice` (string, `enum` = options, `enumNames` = options,
-     title "Choice") and `answer` (string, title "Or answer in your own words",
+     title "Choice") and `text` (string, title "Or answer in your own words",
      `maxLength` 12000); neither required;
    - without options: `answer` (string, required, `maxLength` 12000).
      Dialogs are serialised: one open dialog per server process. Further calls queue

@@ -201,7 +201,9 @@ class QuestionTests(unittest.TestCase):
         schema = request["params"]["requestedSchema"]
         self.assertEqual(schema["properties"]["choice"]["enum"], ["Red", "Blue"])
         self.assertEqual(schema["properties"]["choice"]["enumNames"], ["Red", "Blue"])
-        self.assertEqual(schema["properties"]["answer"]["maxLength"], 12000)
+        # Codex lays the fields out by property name: "choice" must sort before the free text.
+        self.assertEqual(list(schema["properties"]), ["choice", "text"])
+        self.assertEqual(schema["properties"]["text"]["maxLength"], 12000)
         self.assertNotIn("required", schema)
         self.assertTrue(self.transport.dialog_before_create)
 
@@ -238,8 +240,8 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(self.transport.calls[-1]["answer"], "Blue")
 
     def test_terminal_answer_prefers_text_then_choice(self):
-        for content, expected in (({"choice": "Red", "answer": " Purple "}, "Purple"),
-                                  ({"choice": "Red", "answer": "  "}, "Red")):
+        for content, expected in (({"choice": "Red", "text": " Purple "}, "Purple"),
+                                  ({"choice": "Red", "text": "  "}, "Red")):
             with self.subTest(content=content):
                 self.setUp(); self.init(); thread = self.start()
                 self.accept(content); thread.join(1)

@@ -15,7 +15,7 @@
 - Protocol reply stays `"protocolVersion": "2025-06-18"`; server capabilities stay `{"tools": {}}`.
 - Dialog only when the client's `initialize` carried `capabilities.elicitation`; otherwise no server-sent message at all.
 - Dialog opens before the first HA post; one open dialog per server process; later calls queue.
-- Schema with options: `choice` (enum + enumNames = options, title "Choice") and `answer` (string, title "Or answer in your own words", maxLength 12000), none required. Without options: `answer` required.
+- Schema with options: `choice` (enum + enumNames = options, title "Choice") and `text` (string, title "Or answer in your own words", maxLength 12000), none required. Without options: `answer` required.
 - `message` = question, then `"\n\n" + context` when context is non-empty.
 - Result text is JSON with `status`, `answer`, `question_id`, `source` (`"terminal"` | `"inbox"`), plus `inbox` (`"unavailable"` | `"unsupported"`) and `discarded_terminal_answer` only when they apply.
 - Ties go to the inbox: an `answer` op replied with `answered` returns HA's answer.

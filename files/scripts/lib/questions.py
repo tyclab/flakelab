@@ -119,14 +119,17 @@ def validate(arguments):
 
 
 def dialog_schema(question):
-    """Elicitation form: a choice list beside free text when there are options, free text alone otherwise."""
-    answer = {"type": "string", "title": "Or answer in your own words", "maxLength": 12000}
+    """Elicitation form: a choice list beside free text when there are options, free text alone otherwise.
+
+    Codex lays the fields out by property name, so the free text is "text": it sorts after "choice".
+    """
+    free_text = {"type": "string", "title": "Or answer in your own words", "maxLength": 12000}
     options = question.get("options") or []
     if options:
         return {"type": "object", "properties": {
             "choice": {"type": "string", "title": "Choice", "enum": options, "enumNames": options},
-            "answer": answer}}
-    return {"type": "object", "properties": {"answer": {**answer, "title": "Answer"}}, "required": ["answer"]}
+            "text": free_text}}
+    return {"type": "object", "properties": {"answer": {**free_text, "title": "Answer"}}, "required": ["answer"]}
 
 
 class Dialog:
@@ -193,7 +196,8 @@ class Server:
         content = response.get("content")
         if not isinstance(content, dict):
             return ""
-        answer, choice = content.get("answer"), content.get("choice")
+        choice = content.get("choice")
+        answer = content.get("text") if "text" in content else content.get("answer")
         if isinstance(answer, str) and answer.strip():
             return answer.strip()
         if isinstance(choice, str) and choice.strip():
