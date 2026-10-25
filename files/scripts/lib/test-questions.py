@@ -12,15 +12,37 @@ import urllib.error
 import questions
 
 
+def lines(output):
+    return [json.loads(line) for line in output.getvalue().splitlines()]
+
+
+def dialog_requests(output):
+    return [m for m in lines(output) if m.get("method") == "elicitation/create"]
+
+
 class FakeTransport:
-    def __init__(self):
+    def __init__(self, output=None):
         self.calls = []
         self.created = threading.Event()
         self.answer = threading.Event()
+        self.output, self.dialog_before_create = output, None
+        self.answer_reply = {"status": "delivered"}
+        self.fail_answer = None  # None | "protocol" | "network"
+        self.down = False
 
     def post(self, body):
         self.calls.append(body)
+        if self.down:
+            raise ConnectionError("down")
+        if body["op"] == "create" and self.dialog_before_create is None:
+            self.dialog_before_create = bool(self.output and dialog_requests(self.output))
         self.created.set()
+        if body["op"] == "answer":
+            if self.fail_answer == "protocol":
+                raise questions.ProtocolError("rejected")
+            if self.fail_answer == "network":
+                raise ConnectionError("down")
+            return self.answer_reply
         if body["op"] in {"create", "poll"}:
             return {"status": "answered", "answer": "Use the blue one"} if self.answer.is_set() else {"status": "pending"}
         return {"status": "cancelled" if body["op"] == "cancel" else "delivered"}
@@ -29,8 +51,18 @@ class FakeTransport:
 class QuestionTests(unittest.TestCase):
     def setUp(self):
         self.output = io.StringIO()
-        self.transport = FakeTransport()
+        self.transport = FakeTransport(self.output)
         self.server = questions.Server("claude", self.output, lambda: self.transport, interval=0.001)
+
+    def init(self, elicitation=True):
+        capabilities = {"elicitation": {"form": {}, "url": {}}} if elicitation else {}
+        self.server.handle({"id": 0, "method": "initialize",
+                            "params": {"protocolVersion": "2025-06-18", "capabilities": capabilities}})
+        self.output.seek(0)
+        self.output.truncate()
+
+    def reply(self, dialog_id, result):
+        self.server.handle({"jsonrpc": "2.0", "id": dialog_id, "result": result})
 
     def start(self, ident=1):
         self.server.handle({"id": ident, "method": "tools/call", "params": {
@@ -122,6 +154,41 @@ class QuestionTests(unittest.TestCase):
                 with self.assertRaises(expected) as raised:
                     transport.post({})
             self.assertNotIn("test-secret", str(raised.exception))
+
+    def test_dialog_is_requested_before_the_inbox_when_the_client_can_show_it(self):
+        self.init()
+        self.start()
+        [request] = dialog_requests(self.output)
+        self.assertTrue(request["id"].startswith("q-"))
+        self.assertEqual(request["params"]["message"], "Which colour?")
+        schema = request["params"]["requestedSchema"]
+        self.assertEqual(schema["properties"]["choice"]["enum"], ["Red", "Blue"])
+        self.assertEqual(schema["properties"]["choice"]["enumNames"], ["Red", "Blue"])
+        self.assertEqual(schema["properties"]["answer"]["maxLength"], 12000)
+        self.assertNotIn("required", schema)
+        self.assertTrue(self.transport.dialog_before_create)
+
+    def test_free_text_question_requires_the_answer_field(self):
+        self.init()
+        self.server.handle({"id": 1, "method": "tools/call", "params": {"name": "ask_question",
+                            "arguments": {"question": "Why?", "context": "Because."}}})
+        self.assertTrue(self.transport.created.wait(1))
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["message"], "Why?\n\nBecause.")
+        self.assertEqual(request["params"]["requestedSchema"]["required"], ["answer"])
+        self.assertNotIn("choice", request["params"]["requestedSchema"]["properties"])
+
+    def test_no_dialog_without_the_capability(self):
+        self.init(elicitation=False)
+        self.start()
+        self.transport.answer.set()
+        self.server.active[1][1].join(1)
+        self.assertEqual(dialog_requests(self.output), [])
+        self.assertEqual([m for m in lines(self.output) if "method" in m], [])
+
+    def test_unknown_response_ids_are_ignored(self):
+        self.server.handle({"jsonrpc": "2.0", "id": "q-99", "result": {"action": "accept"}})
+        self.assertEqual(self.output.getvalue(), "")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

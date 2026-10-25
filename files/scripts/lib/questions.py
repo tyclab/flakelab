@@ -1,5 +1,6 @@
 """Shared stdio MCP question tool for Claude and Codex; no background observer."""
 
+import itertools
 import json
 import os
 from pathlib import Path
@@ -115,25 +116,70 @@ def validate(arguments):
     return arguments
 
 
+def dialog_schema(question):
+    """Elicitation form: a choice list beside free text when there are options, free text alone otherwise."""
+    answer = {"type": "string", "title": "Or answer in your own words", "maxLength": 12000}
+    options = question.get("options") or []
+    if options:
+        return {"type": "object", "properties": {
+            "choice": {"type": "string", "title": "Choice", "enum": options, "enumNames": options},
+            "answer": answer}}
+    return {"type": "object", "properties": {"answer": {**answer, "title": "Answer"}}, "required": ["answer"]}
+
+
+class Dialog:
+    """One terminal dialog: a server-sent elicitation and the slot its reply lands in."""
+
+    def __init__(self, ident):
+        self.id, self.event, self.response, self.done = ident, threading.Event(), None, False
+
+
 class Server:
-    def __init__(self, agent, output=sys.stdout, transport=Transport, interval=3, timeout=1500):
+    def __init__(self, agent, output=sys.stdout, transport=Transport, interval=3, timeout=1500, answer_retry=30):
         self.agent, self.output, self.transport = agent, output, transport
-        self.interval, self.timeout = interval, timeout
+        self.interval, self.timeout, self.answer_retry = interval, timeout, answer_retry
         self.lock = threading.Lock()
         self.active = {}
+        self.elicitation = False
+        self.dialogs = {}
+        self.dialog_lock = threading.Lock()
+        self.ids = itertools.count(1)
 
-    def send(self, ident, result=None, error=None):
+    def emit(self, message):
         with self.lock:
-            self.output.write(json.dumps({"jsonrpc": "2.0", "id": ident,
-                                         **({"error": error} if error else {"result": result})}) + "\n")
+            self.output.write(json.dumps({"jsonrpc": "2.0", **message}) + "\n")
             self.output.flush()
 
+    def send(self, ident, result=None, error=None):
+        self.emit({"id": ident, **({"error": error} if error else {"result": result})})
+
+    def open_dialog(self, question):
+        dialog = Dialog(f"q-{next(self.ids)}")
+        with self.lock:
+            self.dialogs[dialog.id] = dialog
+        context = question.get("context", "")
+        message = question["question"] + ("\n\n" + context if context else "")
+        self.emit({"id": dialog.id, "method": "elicitation/create",
+                   "params": {"message": message, "requestedSchema": dialog_schema(question)}})
+        return dialog
+
+    def close_dialog(self, dialog, cancel):
+        with self.lock:
+            dialog.done = True
+            self.dialogs.pop(dialog.id, None)
+        if cancel and dialog.response is None:
+            self.emit({"method": "notifications/cancelled",
+                       "params": {"requestId": dialog.id, "reason": "answered from the inbox"}})
+        self.dialog_lock.release()
+
     def ask(self, ident, arguments, cancel):
-        transport = None
+        transport = dialog = None
         auth = {"id": str(uuid.uuid4()), "token": secrets.token_hex(32)}
         finished = False
         try:
             question = validate(arguments)
+            if self.elicitation and self.dialog_lock.acquire(blocking=False):
+                dialog = self.open_dialog(question)
             transport = self.transport()
             create = {**auth, "op": "create", **question, "agent": self.agent,
                       "project": os.getcwd(), "host": socket.gethostname()}
@@ -168,6 +214,8 @@ class Server:
             if not finished and not cancel.is_set():
                 self.send(ident, {"isError": True, "content": [{"type": "text", "text": str(exc)}]})
         finally:
+            if dialog and not dialog.done:
+                self.close_dialog(dialog, cancel=True)
             if transport and not finished:
                 try:
                     transport.post({**auth, "op": "cancel"})
@@ -184,9 +232,17 @@ class Server:
                 active = self.active.get(params.get("requestId"))
             if active:
                 active[0].set()
+        elif method is None:
+            # A reply to one of our dialog requests; anything else is silently dropped.
+            with self.lock:
+                dialog = self.dialogs.get(ident)
+            if dialog:
+                dialog.response = message.get("result") or {"error": message.get("error")}
+                dialog.event.set()
         elif ident is None:
             return
         elif method == "initialize":
+            self.elicitation = "elicitation" in (params.get("capabilities") or {})
             self.send(ident, {"protocolVersion": "2025-06-18",
                               "capabilities": {"tools": {}},
                               "serverInfo": {"name": "flakelab-questions", "version": "1.0.0"},
