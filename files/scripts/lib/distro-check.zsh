@@ -14,7 +14,14 @@ _win() { local p="$1"; [[ "$p" == /mnt/[a-z]/* ]] && p="${(U)p[6]}:${p#/mnt/?}";
 
 typeset -gi _pass=0 _fail=0
 typeset -ga _CHECK_USER=()
-_probe() { ${_WSL_BIN} -d "${DISTRO_NAME}" "${_CHECK_USER[@]}" -- "$@" 2>&1 }
+# --exec keeps argv; `--` hands the joined words to the login shell, which drops the quotes and
+# the $? inside a check, so every multi-word check ran only its first word. --exec has no login
+# PATH, so the shell goes by its system path.
+_probe() {
+  local -a cmd=("$@")
+  [[ "${cmd[1]}" == zsh ]] && cmd[1]=/run/current-system/sw/bin/zsh
+  ${_WSL_BIN} -d "${DISTRO_NAME}" "${_CHECK_USER[@]}" --exec "${cmd[@]}" 2>&1
+}
 _passed() { print -rP -- "  %F{green}[PASS]%f ${1//\%/%%}"; (( ++_pass )) }
 _failed() { print -rP -- "  %F{red}[FAIL]%f ${1//\%/%%}"; (( ++_fail )) }
 check() {

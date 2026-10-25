@@ -25,8 +25,22 @@ done
 # Set by the nix wrapper: from a flat store directory a relative walk resolves to
 # /nix. The fallback keeps this runnable straight from a checkout.
 _repo_root="${FLAKELAB_REPO_ROOT:-${0:A:h:h:h}}"
-_username="$(grep -oP 'username\s*=\s*"\K[^"]+' "${_repo_root}/nix/users/default.nix" 2>/dev/null || echo youruser)"
-_locale="$(grep -oP 'locale\s*=\s*"\K[^"]+' "${_repo_root}/nix/users/default.nix" 2>/dev/null || echo en_US.UTF-8)"
+_flake_attr="${FLAKELAB_FLAKE_ATTR:-default}"
+_url_path() {
+  local s="$1"
+  s="${s//\%/%25}"
+  s="${s// /%20}"
+  s="${s//\#/%23}"
+  s="${s//\?/%3F}"
+  print -r -- "$s"
+}
+# path: so the overlay's untracked flake.lock counts; a bare path means git+file, tracked files only.
+_flake="path:$(_url_path "${_repo_root}")#nixosConfigurations.${_flake_attr}"
+# The overlay has no nix/users/default.nix; the evaluated config is what the image bakes in.
+_username="$(nix eval --raw "${_flake}.config.flakelab.username" 2>/dev/null \
+  || grep -oP 'username\s*=\s*"\K[^"]+' "${_repo_root}/nix/users/default.nix" 2>/dev/null || echo youruser)"
+_locale="$(nix eval --raw "${_flake}.config.flakelab.locale" 2>/dev/null \
+  || grep -oP 'locale\s*=\s*"\K[^"]+' "${_repo_root}/nix/users/default.nix" 2>/dev/null || echo en_US.UTF-8)"
 _WSL_BIN="/mnt/c/Windows/system32/wsl.exe"
 [[ -x ${_WSL_BIN} ]] || { _say red "wsl.exe not found" >&2; exit 1; }
 
@@ -37,8 +51,12 @@ _install_win="$(_win "${_repo_root}/files/.wsl-nix-test-instance")"
 
 if [[ -z "${TARBALL}" ]]; then
   command -v nix >/dev/null || { _say red "nix not found; pass --tarball" >&2; exit 1; }
-  _say cyan "Building wslImage (sudo: tarballBuilder sets ownership)..."
-  ( cd "${_repo_root}" && sudo nix run ".#wslImage" >/dev/null )
+  # Evaluate and build as the user, whose ssh agent reaches the overlay's private inputs;
+  # only the builder runs as root, for the tarball's ownership.
+  _say cyan "Building the tarball builder (${_flake_attr})..."
+  _builder="$(nix build --no-link --print-out-paths "${_flake}.config.system.build.tarballBuilder")"
+  _say cyan "Writing nixos.wsl (sudo: the builder sets ownership)..."
+  ( cd "${_repo_root}" && sudo "${_builder}/bin/nixos-wsl-tarball-builder" >/dev/null )
   TARBALL="${_repo_root}/nixos.wsl"
 fi
 _tarball_win="$(_win "${TARBALL}")"
