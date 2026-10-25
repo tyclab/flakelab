@@ -9,6 +9,7 @@ import secrets
 import shlex
 import socket
 import sys
+import textwrap
 import threading
 import time
 import urllib.error
@@ -119,43 +120,56 @@ def validate(arguments):
     return arguments
 
 
-OPTION_LINE = 100   # Claude Code cuts each message line at the terminal width and shows three lines
-OPTION_LINES = 2    # one for the question, two for the options
+LINE = 100          # Claude Code cuts each message line at the terminal width instead of wrapping it
+MESSAGE_LINES = 3   # and shows this many message lines before "(+N more lines)"
+
+
+def wrapped(text):
+    """The text in lines the dialog shows whole; explicit breaks stay."""
+    lines = []
+    for raw in text.split("\n"):
+        lines.extend(textwrap.wrap(raw, LINE, break_long_words=False, break_on_hyphens=False) or [""])
+    return lines
 
 
 def numbered_options(options):
-    """Pack "1) A  2) B" lines for the dialog message; None when they need more than two lines."""
+    """Pack "1) A  2) B" lines for the dialog; None when they need more than the lines left beside a question."""
     lines, line = [], ""
     for number, option in enumerate(options, 1):
         item = f"{number}) {option}"
-        if line and len(line) + 2 + len(item) > OPTION_LINE:
+        if line and len(line) + 2 + len(item) > LINE:
             lines.append(line)
             line = item
         else:
             line = f"{line}  {item}" if line else item
     lines.append(line)
-    return None if len(lines) > OPTION_LINES or any(len(x) > OPTION_LINE for x in lines) else lines
+    return None if len(lines) >= MESSAGE_LINES or any(len(x) > LINE for x in lines) else lines
 
 
 def dialog_form(question):
     """Message and elicitation schema of one dialog, and the options a typed answer may name.
 
     Short options ride numbered in the message beside one typed field, because Claude Code shows three
-    message lines and its collapsed picker costs five key presses where a number costs three. Options
-    that need more room keep the picker: enum "choice" beside free "text" (Codex lays fields out by
-    property name, so "text" sorts after "choice").
+    message lines and its collapsed picker costs five key presses where a number costs three. When the
+    wrapped question leaves no message line, one line of options moves to the field's description,
+    which the dialog shows whole. Options that need more room keep the picker: enum "choice" beside
+    free "text" (Codex lays fields out by property name, so "text" sorts after "choice").
     """
     options = question.get("options") or []
     context = question.get("context", "")
-    lines = numbered_options(options) if options else None
-    message = question["question"] + ("\n" + "\n".join(lines) if lines else "") + ("\n\n" + context if context else "")
-    if options and lines is None:
+    lines = wrapped(question["question"])
+    numbered = numbered_options(options) if options else None
+    answer = {"type": "string", "title": "Answer", "maxLength": 12000}
+    if numbered is not None and len(numbered) <= MESSAGE_LINES - len(lines):
+        lines += numbered
+        answer["description"] = "Type a number or your own words."
+    elif numbered is not None and len(numbered) == 1:
+        answer["description"] = numbered[0] + ", or your own words"
+    message = "\n".join(lines) + ("\n\n" + context if context else "")
+    if options and "description" not in answer:
         return message, {"type": "object", "properties": {
             "choice": {"type": "string", "title": "Choice", "enum": options, "enumNames": options},
             "text": {"type": "string", "title": "Or answer in your own words", "maxLength": 12000}}}, []
-    answer = {"type": "string", "title": "Answer", "maxLength": 12000}
-    if lines:
-        answer["description"] = "Type a number or your own words."
     return message, {"type": "object", "properties": {"answer": answer}, "required": ["answer"]}, options
 
 

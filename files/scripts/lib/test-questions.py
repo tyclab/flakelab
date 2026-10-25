@@ -230,6 +230,41 @@ class QuestionTests(unittest.TestCase):
         [request] = dialog_requests(self.output)
         self.assertEqual(request["params"]["message"], "Which colour?\n1) Red  2) Blue\n\nBecause.")
 
+    LONG = ("Should the mailrelay container get a tmpfs on /run so a stale rsyslogd pid file can no longer "
+            "stop its logger after a restart, or do you prefer the entrypoint hook that deletes the file?")
+
+    def test_a_long_question_is_wrapped_into_lines_the_dialog_can_show(self):
+        # Claude Code cuts each message line at the terminal width instead of wrapping it.
+        self.init(); self.start(arguments={"question": self.LONG + "\n\nSecond paragraph."})
+        [request] = dialog_requests(self.output)
+        lines = request["params"]["message"].split("\n")
+        self.assertEqual(len(lines), 4)
+        self.assertTrue(all(len(line) <= 100 for line in lines))
+        self.assertEqual(" ".join(lines[:2]), self.LONG)
+        self.assertEqual(lines[2:], ["", "Second paragraph."])
+
+    def test_options_move_to_the_field_when_the_question_needs_the_message_lines(self):
+        self.init()
+        thread = self.start(arguments={"question": self.LONG + "\nThird line.", "options": ["Red", "Blue"]})
+        [request] = dialog_requests(self.output)
+        lines = request["params"]["message"].split("\n")
+        self.assertEqual((" ".join(lines[:2]), lines[2:]), (self.LONG, ["Third line."]))
+        schema = request["params"]["requestedSchema"]
+        self.assertEqual(schema["properties"]["answer"]["description"], "1) Red  2) Blue, or your own words")
+        self.accept({"answer": "2"}); thread.join(1)
+        self.assertEqual(self.result()["answer"], "Blue")
+
+    def test_two_question_lines_leave_one_message_line_for_the_options(self):
+        self.init(); self.start(arguments={"question": "Which colour?\nSecond line.", "options": ["Red", "Blue"]})
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["message"], "Which colour?\nSecond line.\n1) Red  2) Blue")
+
+    def test_wrapped_question_with_wide_options_keeps_the_picker(self):
+        wide = [f"Option {i} " + "x" * 35 for i in range(1, 5)]      # two message lines, too long for one
+        self.init(); self.start(arguments={"question": self.LONG, "options": wide})
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["requestedSchema"]["properties"]["choice"]["enum"], wide)
+
     def test_options_pack_into_two_lines_or_keep_the_picker(self):
         wide = [f"Option {i} " + "x" * 35 for i in range(1, 6)]     # 44 characters each
         self.init(); self.start(arguments={"question": "Pick", "options": wide[:4]})
