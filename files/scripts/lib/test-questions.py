@@ -334,5 +334,28 @@ class QuestionTests(unittest.TestCase):
         self.assertGreater(len([c for c in self.transport.calls if c["op"] == "answer"]), 1)
         self.assertNotIn("cancel", [c["op"] for c in self.transport.calls])
 
+    def test_dialogs_are_serialised(self):
+        self.init(); first, second = self.start(1), self.start(2)
+        time.sleep(0.02)
+        self.assertEqual(len(dialog_requests(self.output)), 1)
+        self.transport.answer.set()            # inbox answers both
+        first.join(1); second.join(1)
+        self.assertLessEqual(len(dialog_requests(self.output)), 2)
+        results = [m for m in lines(self.output) if "result" in m and "method" not in m]
+        self.assertEqual(sorted(m["id"] for m in results), [1, 2])
+
+    def test_queued_dialog_opens_when_the_first_resolves(self):
+        self.init(); first, second = self.start(1), self.start(2)
+        self.accept({"choice": "Red"}); first.join(1)
+        for _ in range(100):
+            if len(dialog_requests(self.output)) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(dialog_requests(self.output)), 2)
+        self.accept({"choice": "Blue"}); second.join(1)
+        answers = sorted(json.loads(m["result"]["content"][0]["text"])["answer"]
+                         for m in lines(self.output) if "result" in m and "method" not in m)
+        self.assertEqual(answers, ["Blue", "Red"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

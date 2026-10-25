@@ -244,24 +244,25 @@ class Server:
         finished = False
         try:
             question = validate(arguments)
-            if self.elicitation and self.dialog_lock.acquire(blocking=False):
-                dialog = self.open_dialog(question)
+            declined = False
             transport = self.transport()
             create = {**auth, "op": "create", **question, "agent": self.agent,
                       "project": os.getcwd(), "host": socket.gethostname()}
             deadline = time.monotonic() + self.timeout
             created, failures, unavailable_since = False, 0, None
             while not cancel.is_set() and time.monotonic() < deadline:
+                # One dialog per server at a time: open ours as soon as the lock is free.
+                if dialog is None and not declined and self.elicitation and self.dialog_lock.acquire(blocking=False):
+                    dialog = self.open_dialog(question)
                 if dialog and not dialog.done and dialog.event.is_set():
                     text = self.terminal_answer(dialog)
                     self.close_dialog(dialog, cancel=False)
                     dialog = None
                     if text == "":
-                        # Accept without a choice or text: show the dialog again.
-                        if self.dialog_lock.acquire(blocking=False):
-                            dialog = self.open_dialog(question)
-                        continue
-                    if text is not None:
+                        continue  # Accept without a choice or text: show the dialog again.
+                    if text is None:
+                        declined = True
+                    else:
                         payload = self.record_terminal_answer(transport, auth, create, text, created, cancel)
                         self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
                         finished = True
