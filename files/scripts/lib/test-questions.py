@@ -403,5 +403,30 @@ class QuestionTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(self.result()["source"], "inbox")
 
+    def test_cancelled_call_gets_no_terminal_result(self):
+        self.init(); thread = self.start()
+        self.transport.fail_answer = "network"          # answer op keeps retrying
+        self.accept({"choice": "Blue"})
+        for _ in range(100):
+            if any(c["op"] == "answer" for c in self.transport.calls):
+                break
+            time.sleep(0.01)
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual([m for m in lines(self.output) if "result" in m and "method" not in m], [])
+
+    def test_cancellation_reason_names_the_cause(self):
+        self.init(); thread = self.start()
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "call cancelled")
+        self.setUp(); self.init(); self.server.timeout = 0.01
+        self.server.ask(9, {"question": "Choose"}, threading.Event())
+        self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "question expired or closed")
+        self.setUp(); self.init(); thread = self.start()
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "answered from the inbox")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

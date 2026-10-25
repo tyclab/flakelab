@@ -174,14 +174,14 @@ class Server:
             raise
         return dialog
 
-    def close_dialog(self, dialog, cancel):
+    def close_dialog(self, dialog, cancel, reason="answered from the inbox"):
         with self.lock:
             dialog.done = True
             self.dialogs.pop(dialog.id, None)
         try:
             if cancel and dialog.response is None:
                 self.emit({"method": "notifications/cancelled",
-                           "params": {"requestId": dialog.id, "reason": "answered from the inbox"}})
+                           "params": {"requestId": dialog.id, "reason": reason}})
         except (OSError, ValueError):
             pass  # stdout is gone with the client; the inbox clean-up below still matters
         finally:
@@ -281,6 +281,8 @@ class Server:
                         declined = True
                     else:
                         payload = self.record_terminal_answer(transport, auth, create, text, created, cancel)
+                        if cancel.is_set():
+                            break  # the client gave up meanwhile; the finally posts the inbox cancel
                         self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
                         finished = True
                         if payload["source"] == "inbox":
@@ -326,12 +328,13 @@ class Server:
                 raise ValueError("Question expired without an answer. Ask in the conversation.")
         except (ValueError, ConnectionError, KeyError, TypeError, AttributeError, OSError) as exc:
             if dialog and not dialog.done:
-                self.close_dialog(dialog, cancel=True)
+                self.close_dialog(dialog, cancel=True, reason="question expired or closed"
+                                  if isinstance(exc, ValueError) else "inbox unavailable")
             if not finished and not cancel.is_set():
                 self.send(ident, {"isError": True, "content": [{"type": "text", "text": str(exc)}]})
         finally:
             if dialog and not dialog.done:
-                self.close_dialog(dialog, cancel=True)
+                self.close_dialog(dialog, cancel=True, reason="call cancelled")
             if transport and not finished:
                 try:
                     transport.post({**auth, "op": "cancel"})
