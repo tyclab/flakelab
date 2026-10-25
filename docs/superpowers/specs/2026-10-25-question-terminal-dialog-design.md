@@ -127,8 +127,12 @@ reply is unchanged. Without the capability every call behaves exactly as today.
      is dropped (slot already closed).
    - **Client cancels the tool call**: as today (`cancel` to HA, no result) plus the
      same `notifications/cancelled` for the open elicitation.
-   - **Expiry (25 min) or HA failure mid-call**: as today (error result, `cancel`),
-     plus cancelling the open elicitation.
+   - **Expiry (25 min)**: as today (error result, `cancel`), plus cancelling the
+     open elicitation.
+   - **HA failure mid-call** (unreachable for 60 s after create): with a dialog
+     open, keep waiting on the dialog alone and return its answer with
+     `"inbox": "unavailable"`, exactly like an outage at create; without a
+     dialog, error as today.
    - **HA unreachable at create** (3 failures): if a dialog is open, keep waiting
      on it alone and return its answer with `"inbox": "unavailable"`; if a terminal
      decline/cancel follows, return the existing error. Without a dialog, error as
