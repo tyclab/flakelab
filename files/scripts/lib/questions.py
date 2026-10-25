@@ -68,6 +68,10 @@ def endpoint():
     return value + "-questions"
 
 
+class ProtocolError(ValueError):
+    """The inbox answered HTTP 400: it does not accept this request (old hatyc or bad input)."""
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -87,8 +91,12 @@ class Transport:
             if not isinstance(body, dict) or "status" not in body:
                 raise ValueError("Question inbox returned an invalid response.")
             return body
-        except (urllib.error.URLError, OSError, ValueError):
+        except urllib.error.HTTPError as exc:
             # urllib exceptions can contain the secret webhook URL.
+            if exc.code == 400:
+                raise ProtocolError("Question inbox rejected the request.") from None
+            raise ConnectionError("Question inbox is unreachable or incompatible.") from None
+        except (urllib.error.URLError, OSError, ValueError):
             raise ConnectionError("Question inbox is unreachable or incompatible.") from None
 
 

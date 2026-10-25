@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 import questions
 
@@ -111,6 +112,16 @@ class QuestionTests(unittest.TestCase):
                 transport.post({})
         self.assertNotIn("test-secret", str(raised.exception))
 
+
+    def test_http_400_is_a_protocol_error_without_the_secret(self):
+        with patch.dict("os.environ", {"NOTIFY_WEBHOOK_URL": "https://ha.invalid/api/webhook/test-secret"}):
+            transport = questions.Transport()
+        for code, expected in ((400, questions.ProtocolError), (503, ConnectionError)):
+            error = urllib.error.HTTPError(transport.url, code, "boom", {}, None)
+            with patch.object(transport.opener, "open", side_effect=error):
+                with self.assertRaises(expected) as raised:
+                    transport.post({})
+            self.assertNotIn("test-secret", str(raised.exception))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
