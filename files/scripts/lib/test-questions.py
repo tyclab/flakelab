@@ -56,6 +56,22 @@ class FakeTransport:
         return {"status": "cancelled" if body["op"] == "cancel" else "delivered"}
 
 
+class StolenOnceLock:
+    """A lock whose next non-blocking acquire fails once armed, like a queued call grabbing it first."""
+
+    def __init__(self):
+        self.lock, self.armed = threading.Lock(), False
+
+    def acquire(self, blocking=True, timeout=-1):
+        if self.armed and not blocking:
+            self.armed = False
+            return False
+        return self.lock.acquire(blocking, timeout)
+
+    def release(self):
+        self.lock.release()
+
+
 class BreakableOutput(io.StringIO):
     """stdout after the client died: every write raises."""
 
@@ -321,9 +337,20 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(len(cancellations(self.output)), 1)
         self.assertTrue(lines(self.output)[-1]["result"]["isError"])
 
+    def creates(self):
+        return len([c for c in self.transport.calls if c["op"] == "create"])
+
+    def wait_for_creates(self, count):
+        for _ in range(400):
+            if self.creates() >= count:
+                return
+            time.sleep(0.005)
+        self.fail(f"only {self.creates()} create attempts")
+
     def test_dialog_outlives_an_unreachable_inbox(self):
         self.init(); self.transport.down = True
         thread = self.start_without_create()
+        self.wait_for_creates(3)                        # the inbox has been given up on
         self.accept({"answer": "Blue"}); thread.join(2)
         result = self.result()
         self.assertEqual((result["answer"], result["source"], result["inbox"]), ("Blue", "terminal", "unavailable"))
@@ -427,6 +454,37 @@ class QuestionTests(unittest.TestCase):
         self.setUp(); self.init(); thread = self.start()
         self.transport.answer.set(); thread.join(1)
         self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "answered from the inbox")
+
+    def test_terminal_answer_continues_the_create_count(self):
+        self.init(); self.transport.down = True; self.server.interval = 0.05
+        thread = self.start_without_create()
+        self.wait_for_creates(1)
+        self.accept({"choice": "Blue"}); thread.join(3)
+        self.assertEqual(self.result()["inbox"], "unavailable")
+        self.assertEqual(self.creates(), 3)
+
+    def test_dialog_only_empty_accept_waits_for_a_stolen_lock(self):
+        self.init(); self.transport.down = True
+        self.server.dialog_lock = StolenOnceLock()
+        thread = self.start_without_create()
+        self.wait_for_creates(3)
+        self.server.dialog_lock.armed = True
+        self.accept({})
+        for _ in range(200):
+            if len(dialog_requests(self.output)) == 2:
+                break
+            time.sleep(0.005)
+        self.assertEqual(len(dialog_requests(self.output)), 2)
+        self.accept({"choice": "Red"}); thread.join(2)
+        self.assertEqual((self.result()["answer"], self.result()["inbox"]), ("Red", "unavailable"))
+
+    def test_expiry_in_dialog_only_reports_expiry(self):
+        self.init(); self.transport.down = True; self.server.timeout = 0.2
+        thread = self.start_without_create(); thread.join(3)
+        self.assertFalse(thread.is_alive())
+        [line] = [m for m in lines(self.output) if "result" in m and "method" not in m]
+        self.assertTrue(line["result"]["isError"])
+        self.assertIn("expired", line["result"]["content"][0]["text"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

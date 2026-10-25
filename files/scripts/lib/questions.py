@@ -208,21 +208,40 @@ class Server:
         (dialog.event if dialog and not dialog.done else cancel).wait(self.interval)
 
     def dialog_only(self, dialog, question, cancel, deadline):
-        """Wait on the dialog alone; re-show it after an empty accept. Text, or None when it was dismissed."""
+        """Wait on the dialog alone; re-show it after an empty accept.
+
+        Returns the text, or None when the operator dismissed it; raises the expiry error at the deadline.
+        """
         while not cancel.is_set() and time.monotonic() < deadline:
             if dialog.event.wait(self.interval):
                 text = self.terminal_answer(dialog)
                 self.close_dialog(dialog, cancel=False)
-                if text != "" or not self.dialog_lock.acquire(blocking=False):
+                dialog = None
+                if text != "":
                     return text
-                dialog = self.open_dialog(question)
-        self.close_dialog(dialog, cancel=True)
-        return None
+                # A queued call may take the lock first; wait our turn rather than fail the answer.
+                while not self.dialog_lock.acquire(timeout=self.interval):
+                    if cancel.is_set():
+                        return None
+                    if time.monotonic() >= deadline:
+                        break
+                else:
+                    dialog = self.open_dialog(question)
+                    continue
+                break
+        if dialog:
+            self.close_dialog(dialog, cancel=True, reason="call cancelled" if cancel.is_set()
+                              else "question expired or closed")
+        if cancel.is_set():
+            return None
+        raise ValueError("Question expired without an answer. Ask in the conversation.")
 
-    def record_terminal_answer(self, transport, auth, create, text, created, cancel):
-        """Store a dialog answer in the inbox; the inbox's status decides whose answer stands."""
+    def record_terminal_answer(self, transport, auth, create, text, created, cancel, failures=0):
+        """Store a dialog answer in the inbox; the inbox's status decides whose answer stands.
+
+        `failures` continues the create attempts already made by the caller.
+        """
         payload = {"status": "answered", "answer": text, "question_id": auth["id"], "source": "terminal"}
-        failures = 0
         while not created and not cancel.is_set():
             try:
                 transport.post(create)
@@ -280,7 +299,8 @@ class Server:
                     if text is None:
                         declined = True
                     else:
-                        payload = self.record_terminal_answer(transport, auth, create, text, created, cancel)
+                        payload = self.record_terminal_answer(transport, auth, create, text, created, cancel,
+                                                              failures)
                         if cancel.is_set():
                             break  # the client gave up meanwhile; the finally posts the inbox cancel
                         self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
