@@ -161,26 +161,38 @@ class Server:
             self.dialogs[dialog.id] = dialog
         context = question.get("context", "")
         message = question["question"] + ("\n\n" + context if context else "")
-        self.emit({"id": dialog.id, "method": "elicitation/create",
-                   "params": {"message": message, "requestedSchema": dialog_schema(question)}})
+        try:
+            self.emit({"id": dialog.id, "method": "elicitation/create",
+                       "params": {"message": message, "requestedSchema": dialog_schema(question)}})
+        except (OSError, ValueError):
+            with self.lock:
+                self.dialogs.pop(dialog.id, None)
+            self.dialog_lock.release()
+            raise
         return dialog
 
     def close_dialog(self, dialog, cancel):
         with self.lock:
             dialog.done = True
             self.dialogs.pop(dialog.id, None)
-        if cancel and dialog.response is None:
-            self.emit({"method": "notifications/cancelled",
-                       "params": {"requestId": dialog.id, "reason": "answered from the inbox"}})
-        self.dialog_lock.release()
+        try:
+            if cancel and dialog.response is None:
+                self.emit({"method": "notifications/cancelled",
+                           "params": {"requestId": dialog.id, "reason": "answered from the inbox"}})
+        except (OSError, ValueError):
+            pass  # stdout is gone with the client; the inbox clean-up below still matters
+        finally:
+            self.dialog_lock.release()
 
     @staticmethod
     def terminal_answer(dialog):
         """Text the operator gave in the dialog: free text first, then the choice; "" for an empty accept."""
-        response = dialog.response or {}
-        if response.get("action") != "accept":
+        response = dialog.response
+        if not isinstance(response, dict) or response.get("action") != "accept":
             return None
-        content = response.get("content") or {}
+        content = response.get("content")
+        if not isinstance(content, dict):
+            return ""
         answer, choice = content.get("answer"), content.get("choice")
         if isinstance(answer, str) and answer.strip():
             return answer.strip()
@@ -236,7 +248,6 @@ class Server:
         if status == "delivered":
             return payload
         if status == "answered":
-            transport.post({**auth, "op": "delivered"})
             return {**payload, "answer": reply["answer"], "source": "inbox", "discarded_terminal_answer": text}
         raise ValueError(f"Question is {status}; no answer was returned. Ask in the conversation.")
 
@@ -268,6 +279,8 @@ class Server:
                         payload = self.record_terminal_answer(transport, auth, create, text, created, cancel)
                         self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
                         finished = True
+                        if payload["source"] == "inbox":
+                            transport.post({**auth, "op": "delivered"})
                         return
                 try:
                     result = transport.post({**auth, "op": "poll"} if created else create)
@@ -307,7 +320,7 @@ class Server:
                 self.wait(dialog, cancel)
             if not cancel.is_set():
                 raise ValueError("Question expired without an answer. Ask in the conversation.")
-        except (ValueError, ConnectionError, KeyError, OSError) as exc:
+        except (ValueError, ConnectionError, KeyError, TypeError, AttributeError, OSError) as exc:
             if dialog and not dialog.done:
                 self.close_dialog(dialog, cancel=True)
             if not finished and not cancel.is_set():

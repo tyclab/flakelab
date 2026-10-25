@@ -33,6 +33,7 @@ class FakeTransport:
         self.output, self.dialog_before_create = output, None
         self.answer_reply = {"status": "delivered"}
         self.fail_answer = None  # None | "protocol" | "network"
+        self.fail_delivered = False
         self.down = False
 
     def post(self, body):
@@ -50,7 +51,20 @@ class FakeTransport:
             return self.answer_reply
         if body["op"] in {"create", "poll"}:
             return {"status": "answered", "answer": "Use the blue one"} if self.answer.is_set() else {"status": "pending"}
+        if body["op"] == "delivered" and self.fail_delivered:
+            raise ConnectionError("down")
         return {"status": "cancelled" if body["op"] == "cancel" else "delivered"}
+
+
+class BreakableOutput(io.StringIO):
+    """stdout after the client died: every write raises."""
+
+    broken = False
+
+    def write(self, text):
+        if self.broken:
+            raise BrokenPipeError("client gone")
+        return super().write(text)
 
 
 class QuestionTests(unittest.TestCase):
@@ -356,6 +370,36 @@ class QuestionTests(unittest.TestCase):
         answers = sorted(json.loads(m["result"]["content"][0]["text"])["answer"]
                          for m in lines(self.output) if "result" in m and "method" not in m)
         self.assertEqual(answers, ["Blue", "Red"])
+
+    def test_tie_win_survives_a_failed_delivered_post(self):
+        self.init(); thread = self.start()
+        self.transport.answer_reply = {"status": "answered", "answer": "Red"}
+        self.transport.fail_delivered = True
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertEqual((self.result()["answer"], self.result()["source"]), ("Red", "inbox"))
+        ops = [c["op"] for c in self.transport.calls]
+        self.assertEqual(ops[-1], "delivered")
+        self.assertNotIn("cancel", ops)
+
+    def test_broken_output_still_cancels_the_inbox_and_frees_the_dialog_lock(self):
+        self.output = BreakableOutput()
+        self.transport = FakeTransport(self.output)
+        self.server = questions.Server("claude", self.output, lambda: self.transport, interval=0.001)
+        self.init(); thread = self.start()
+        self.output.broken = True
+        self.server.run(io.StringIO()); thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.transport.calls[-1]["op"], "cancel")
+        self.assertTrue(self.server.dialog_lock.acquire(blocking=False))
+        self.assertEqual(self.server.active, {})
+
+    def test_malformed_dialog_reply_is_a_decline(self):
+        self.init(); thread = self.start()
+        [request] = dialog_requests(self.output)
+        self.reply(request["id"], "accept")
+        self.transport.answer.set(); thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.result()["source"], "inbox")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
