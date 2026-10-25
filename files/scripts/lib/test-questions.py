@@ -5,31 +5,117 @@ import json
 import tempfile
 from pathlib import Path
 import threading
+import time
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 import questions
 
 
+def lines(output):
+    return [json.loads(line) for line in output.getvalue().splitlines()]
+
+
+def dialog_requests(output):
+    return [m for m in lines(output) if m.get("method") == "elicitation/create"]
+
+
+def cancellations(output):
+    return [m for m in lines(output) if m.get("method") == "notifications/cancelled"]
+
+
 class FakeTransport:
-    def __init__(self):
+    def __init__(self, output=None):
         self.calls = []
         self.created = threading.Event()
         self.answer = threading.Event()
+        self.output, self.dialog_before_create = output, None
+        self.answer_reply = {"status": "delivered"}
+        self.fail_answer = None  # None | "protocol" | "network"
+        self.fail_delivered = False
+        self.down = False
 
     def post(self, body):
         self.calls.append(body)
+        if self.down:
+            raise ConnectionError("down")
+        if body["op"] == "create" and self.dialog_before_create is None:
+            self.dialog_before_create = bool(self.output and dialog_requests(self.output))
         self.created.set()
+        if body["op"] == "answer":
+            if self.fail_answer == "protocol":
+                raise questions.ProtocolError("rejected")
+            if self.fail_answer == "network":
+                raise ConnectionError("down")
+            return self.answer_reply
         if body["op"] in {"create", "poll"}:
             return {"status": "answered", "answer": "Use the blue one"} if self.answer.is_set() else {"status": "pending"}
+        if body["op"] == "delivered" and self.fail_delivered:
+            raise ConnectionError("down")
         return {"status": "cancelled" if body["op"] == "cancel" else "delivered"}
+
+
+class StolenOnceLock:
+    """A lock whose next non-blocking acquire fails once armed, like a queued call grabbing it first."""
+
+    def __init__(self):
+        self.lock, self.armed = threading.Lock(), False
+
+    def acquire(self, blocking=True, timeout=-1):
+        if self.armed and not blocking:
+            self.armed = False
+            return False
+        return self.lock.acquire(blocking, timeout)
+
+    def release(self):
+        self.lock.release()
+
+
+class BreakableOutput(io.StringIO):
+    """stdout after the client died: every write raises."""
+
+    broken = False
+
+    def write(self, text):
+        if self.broken:
+            raise BrokenPipeError("client gone")
+        return super().write(text)
 
 
 class QuestionTests(unittest.TestCase):
     def setUp(self):
         self.output = io.StringIO()
-        self.transport = FakeTransport()
+        self.transport = FakeTransport(self.output)
         self.server = questions.Server("claude", self.output, lambda: self.transport, interval=0.001)
+
+    def init(self, elicitation=True):
+        capabilities = {"elicitation": {"form": {}, "url": {}}} if elicitation else {}
+        self.server.handle({"id": 0, "method": "initialize",
+                            "params": {"protocolVersion": "2025-06-18", "capabilities": capabilities}})
+        self.output.seek(0)
+        self.output.truncate()
+
+    def reply(self, dialog_id, result):
+        self.server.handle({"jsonrpc": "2.0", "id": dialog_id, "result": result})
+
+    def start_without_create(self, ident=1):
+        self.server.handle({"id": ident, "method": "tools/call", "params": {
+            "name": "ask_question", "arguments": {"question": "Which colour?", "options": ["Red", "Blue"]}}})
+        for _ in range(100):
+            if dialog_requests(self.output):
+                break
+            time.sleep(0.01)
+        with self.server.lock:
+            return self.server.active[ident][1]
+
+    def accept(self, content):
+        [request] = dialog_requests(self.output)[-1:]
+        self.reply(request["id"], {"action": "accept", "content": content})
+
+    def result(self):
+        [line] = [m for m in lines(self.output) if "result" in m and "method" not in m]
+        return json.loads(line["result"]["content"][0]["text"])
 
     def start(self, ident=1):
         self.server.handle({"id": ident, "method": "tools/call", "params": {
@@ -111,6 +197,294 @@ class QuestionTests(unittest.TestCase):
                 transport.post({})
         self.assertNotIn("test-secret", str(raised.exception))
 
+
+    def test_http_400_is_a_protocol_error_without_the_secret(self):
+        with patch.dict("os.environ", {"NOTIFY_WEBHOOK_URL": "https://ha.invalid/api/webhook/test-secret"}):
+            transport = questions.Transport()
+        for code, expected in ((400, questions.ProtocolError), (503, ConnectionError)):
+            error = urllib.error.HTTPError(transport.url, code, "boom", {}, None)
+            with patch.object(transport.opener, "open", side_effect=error):
+                with self.assertRaises(expected) as raised:
+                    transport.post({})
+            self.assertNotIn("test-secret", str(raised.exception))
+
+    def test_dialog_is_requested_before_the_inbox_when_the_client_can_show_it(self):
+        self.init()
+        self.start()
+        [request] = dialog_requests(self.output)
+        self.assertTrue(request["id"].startswith("q-"))
+        self.assertEqual(request["params"]["message"], "Which colour?")
+        schema = request["params"]["requestedSchema"]
+        self.assertEqual(schema["properties"]["choice"]["enum"], ["Red", "Blue"])
+        self.assertEqual(schema["properties"]["choice"]["enumNames"], ["Red", "Blue"])
+        # Codex lays the fields out by property name: "choice" must sort before the free text.
+        self.assertEqual(list(schema["properties"]), ["choice", "text"])
+        self.assertEqual(schema["properties"]["text"]["maxLength"], 12000)
+        self.assertNotIn("required", schema)
+        self.assertTrue(self.transport.dialog_before_create)
+
+    def test_free_text_question_requires_the_answer_field(self):
+        self.init()
+        self.server.handle({"id": 1, "method": "tools/call", "params": {"name": "ask_question",
+                            "arguments": {"question": "Why?", "context": "Because."}}})
+        self.assertTrue(self.transport.created.wait(1))
+        [request] = dialog_requests(self.output)
+        self.assertEqual(request["params"]["message"], "Why?\n\nBecause.")
+        self.assertEqual(request["params"]["requestedSchema"]["required"], ["answer"])
+        self.assertNotIn("choice", request["params"]["requestedSchema"]["properties"])
+
+    def test_no_dialog_without_the_capability(self):
+        self.init(elicitation=False)
+        self.start()
+        self.transport.answer.set()
+        self.server.active[1][1].join(1)
+        self.assertEqual(dialog_requests(self.output), [])
+        self.assertEqual([m for m in lines(self.output) if "method" in m], [])
+
+    def test_unknown_response_ids_are_ignored(self):
+        self.server.handle({"jsonrpc": "2.0", "id": "q-99", "result": {"action": "accept"}})
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_terminal_answer_is_recorded_and_returned(self):
+        self.init(); thread = self.start()
+        self.accept({"choice": "Blue"}); thread.join(1)
+        self.assertEqual(self.result() | {"question_id": None}, {"status": "answered", "answer": "Blue",
+                                                                 "source": "terminal", "question_id": None})
+        ops = [c["op"] for c in self.transport.calls]
+        self.assertEqual(ops[0], "create"); self.assertEqual(ops[-1], "answer")
+        self.assertNotIn("delivered", ops)
+        self.assertEqual(self.transport.calls[-1]["answer"], "Blue")
+
+    def test_terminal_answer_prefers_text_then_choice(self):
+        for content, expected in (({"choice": "Red", "text": " Purple "}, "Purple"),
+                                  ({"choice": "Red", "text": "  "}, "Red")):
+            with self.subTest(content=content):
+                self.setUp(); self.init(); thread = self.start()
+                self.accept(content); thread.join(1)
+                self.assertEqual(self.result()["answer"], expected)
+
+    def test_empty_accept_reopens_the_dialog(self):
+        self.init(); thread = self.start()
+        self.accept({})
+        for _ in range(100):
+            if len(dialog_requests(self.output)) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(dialog_requests(self.output)), 2)
+        self.accept({"choice": "Red"}); thread.join(1)
+        self.assertEqual(self.result()["answer"], "Red")
+
+    def test_inbox_wins_a_tie(self):
+        self.init(); thread = self.start()
+        self.transport.answer_reply = {"status": "answered", "answer": "Red"}
+        self.accept({"answer": "Blue"}); thread.join(1)
+        result = self.result()
+        self.assertEqual((result["answer"], result["source"], result["discarded_terminal_answer"]),
+                         ("Red", "inbox", "Blue"))
+        self.assertEqual(self.transport.calls[-1]["op"], "delivered")
+
+    def test_cancelled_inbox_turns_a_terminal_answer_into_an_error(self):
+        self.init(); thread = self.start()
+        self.transport.answer_reply = {"status": "cancelled"}
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+
+    def test_inbox_answer_carries_its_source(self):
+        self.init(elicitation=False); thread = self.start()
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_inbox_answer_cancels_the_dialog_once(self):
+        self.init(); thread = self.start()
+        self.transport.answer.set(); thread.join(1)
+        [cancelled] = cancellations(self.output)
+        self.assertEqual(cancelled["params"]["requestId"], dialog_requests(self.output)[0]["id"])
+        self.accept({"choice": "Red"})
+        self.assertEqual(len([m for m in lines(self.output) if "result" in m and "method" not in m]), 1)
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_decline_keeps_waiting_for_the_inbox(self):
+        self.init(); thread = self.start()
+        [request] = dialog_requests(self.output)
+        self.reply(request["id"], {"action": "decline"})
+        time.sleep(0.02)
+        self.assertEqual([c["op"] for c in self.transport.calls if c["op"] not in {"create", "poll"}], [])
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(cancellations(self.output), [])
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_elicitation_error_is_a_decline(self):
+        self.init(); thread = self.start()
+        [request] = dialog_requests(self.output)
+        self.server.handle({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "no"}})
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_call_cancellation_closes_dialog(self):
+        self.init(); thread = self.start()
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.assertEqual(self.transport.calls[-1]["op"], "cancel")
+        self.assertEqual([m for m in lines(self.output) if "result" in m and "method" not in m], [])
+
+    def test_eof_and_expiry_close_dialogs(self):
+        self.init(); thread = self.start()
+        self.server.run(io.StringIO()); thread.join(1)
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.setUp(); self.init(); self.server.timeout = 0.01
+        self.server.ask(9, {"question": "Choose"}, threading.Event())
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+
+    def creates(self):
+        return len([c for c in self.transport.calls if c["op"] == "create"])
+
+    def wait_for_creates(self, count):
+        for _ in range(400):
+            if self.creates() >= count:
+                return
+            time.sleep(0.005)
+        self.fail(f"only {self.creates()} create attempts")
+
+    def test_dialog_outlives_an_unreachable_inbox(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        self.wait_for_creates(3)                        # the inbox has been given up on
+        self.accept({"answer": "Blue"}); thread.join(2)
+        result = self.result()
+        self.assertEqual((result["answer"], result["source"], result["inbox"]), ("Blue", "terminal", "unavailable"))
+
+    def test_declined_dialog_with_unreachable_inbox_is_the_usual_error(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        [request] = dialog_requests(self.output)
+        self.reply(request["id"], {"action": "decline"}); thread.join(2)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+
+    def test_rejected_answer_op_falls_back_to_cancel(self):
+        self.init(); thread = self.start()
+        self.transport.fail_answer = "protocol"
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertEqual(self.result()["inbox"], "unsupported")
+        self.assertEqual(self.transport.calls[-1]["op"], "cancel")
+
+    def test_answer_op_network_failure_retries_then_reports_unavailable(self):
+        self.init(); self.server.answer_retry = 0.02; thread = self.start()
+        self.transport.fail_answer = "network"
+        self.accept({"answer": "Blue"}); thread.join(2)
+        self.assertEqual(self.result()["inbox"], "unavailable")
+        self.assertGreater(len([c for c in self.transport.calls if c["op"] == "answer"]), 1)
+        self.assertNotIn("cancel", [c["op"] for c in self.transport.calls])
+
+    def test_dialogs_are_serialised(self):
+        self.init(); first, second = self.start(1), self.start(2)
+        time.sleep(0.02)
+        self.assertEqual(len(dialog_requests(self.output)), 1)
+        self.transport.answer.set()            # inbox answers both
+        first.join(1); second.join(1)
+        self.assertLessEqual(len(dialog_requests(self.output)), 2)
+        results = [m for m in lines(self.output) if "result" in m and "method" not in m]
+        self.assertEqual(sorted(m["id"] for m in results), [1, 2])
+
+    def test_queued_dialog_opens_when_the_first_resolves(self):
+        self.init(); first, second = self.start(1), self.start(2)
+        self.accept({"choice": "Red"}); first.join(1)
+        for _ in range(100):
+            if len(dialog_requests(self.output)) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(dialog_requests(self.output)), 2)
+        self.accept({"choice": "Blue"}); second.join(1)
+        answers = sorted(json.loads(m["result"]["content"][0]["text"])["answer"]
+                         for m in lines(self.output) if "result" in m and "method" not in m)
+        self.assertEqual(answers, ["Blue", "Red"])
+
+    def test_tie_win_survives_a_failed_delivered_post(self):
+        self.init(); thread = self.start()
+        self.transport.answer_reply = {"status": "answered", "answer": "Red"}
+        self.transport.fail_delivered = True
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertEqual((self.result()["answer"], self.result()["source"]), ("Red", "inbox"))
+        ops = [c["op"] for c in self.transport.calls]
+        self.assertEqual(ops[-1], "delivered")
+        self.assertNotIn("cancel", ops)
+
+    def test_broken_output_still_cancels_the_inbox_and_frees_the_dialog_lock(self):
+        self.output = BreakableOutput()
+        self.transport = FakeTransport(self.output)
+        self.server = questions.Server("claude", self.output, lambda: self.transport, interval=0.001)
+        self.init(); thread = self.start()
+        self.output.broken = True
+        self.server.run(io.StringIO()); thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.transport.calls[-1]["op"], "cancel")
+        self.assertTrue(self.server.dialog_lock.acquire(blocking=False))
+        self.assertEqual(self.server.active, {})
+
+    def test_malformed_dialog_reply_is_a_decline(self):
+        self.init(); thread = self.start()
+        [request] = dialog_requests(self.output)
+        self.reply(request["id"], "accept")
+        self.transport.answer.set(); thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_cancelled_call_gets_no_terminal_result(self):
+        self.init(); thread = self.start()
+        self.transport.fail_answer = "network"          # answer op keeps retrying
+        self.accept({"choice": "Blue"})
+        for _ in range(100):
+            if any(c["op"] == "answer" for c in self.transport.calls):
+                break
+            time.sleep(0.01)
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual([m for m in lines(self.output) if "result" in m and "method" not in m], [])
+
+    def test_cancellation_reason_names_the_cause(self):
+        self.init(); thread = self.start()
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "call cancelled")
+        self.setUp(); self.init(); self.server.timeout = 0.01
+        self.server.ask(9, {"question": "Choose"}, threading.Event())
+        self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "question expired or closed")
+        self.setUp(); self.init(); thread = self.start()
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(cancellations(self.output)[0]["params"]["reason"], "answered from the inbox")
+
+    def test_terminal_answer_continues_the_create_count(self):
+        self.init(); self.transport.down = True; self.server.interval = 0.05
+        thread = self.start_without_create()
+        self.wait_for_creates(1)
+        self.accept({"choice": "Blue"}); thread.join(3)
+        self.assertEqual(self.result()["inbox"], "unavailable")
+        self.assertEqual(self.creates(), 3)
+
+    def test_dialog_only_empty_accept_waits_for_a_stolen_lock(self):
+        self.init(); self.transport.down = True
+        self.server.dialog_lock = StolenOnceLock()
+        thread = self.start_without_create()
+        self.wait_for_creates(3)
+        self.server.dialog_lock.armed = True
+        self.accept({})
+        for _ in range(200):
+            if len(dialog_requests(self.output)) == 2:
+                break
+            time.sleep(0.005)
+        self.assertEqual(len(dialog_requests(self.output)), 2)
+        self.accept({"choice": "Red"}); thread.join(2)
+        self.assertEqual((self.result()["answer"], self.result()["inbox"]), ("Red", "unavailable"))
+
+    def test_expiry_in_dialog_only_reports_expiry(self):
+        self.init(); self.transport.down = True; self.server.timeout = 0.2
+        thread = self.start_without_create(); thread.join(3)
+        self.assertFalse(thread.is_alive())
+        [line] = [m for m in lines(self.output) if "result" in m and "method" not in m]
+        self.assertTrue(line["result"]["isError"])
+        self.assertIn("expired", line["result"]["content"][0]["text"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
