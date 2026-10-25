@@ -21,6 +21,10 @@ def dialog_requests(output):
     return [m for m in lines(output) if m.get("method") == "elicitation/create"]
 
 
+def cancellations(output):
+    return [m for m in lines(output) if m.get("method") == "notifications/cancelled"]
+
+
 class FakeTransport:
     def __init__(self, output=None):
         self.calls = []
@@ -247,6 +251,49 @@ class QuestionTests(unittest.TestCase):
         self.init(elicitation=False); thread = self.start()
         self.transport.answer.set(); thread.join(1)
         self.assertEqual(self.result()["source"], "inbox")
+
+    def test_inbox_answer_cancels_the_dialog_once(self):
+        self.init(); thread = self.start()
+        self.transport.answer.set(); thread.join(1)
+        [cancelled] = cancellations(self.output)
+        self.assertEqual(cancelled["params"]["requestId"], dialog_requests(self.output)[0]["id"])
+        self.accept({"choice": "Red"})
+        self.assertEqual(len([m for m in lines(self.output) if "result" in m and "method" not in m]), 1)
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_decline_keeps_waiting_for_the_inbox(self):
+        self.init(); thread = self.start()
+        [request] = dialog_requests(self.output)
+        self.reply(request["id"], {"action": "decline"})
+        time.sleep(0.02)
+        self.assertEqual([c["op"] for c in self.transport.calls if c["op"] not in {"create", "poll"}], [])
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(cancellations(self.output), [])
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_elicitation_error_is_a_decline(self):
+        self.init(); thread = self.start()
+        [request] = dialog_requests(self.output)
+        self.server.handle({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "no"}})
+        self.transport.answer.set(); thread.join(1)
+        self.assertEqual(self.result()["source"], "inbox")
+
+    def test_call_cancellation_closes_dialog(self):
+        self.init(); thread = self.start()
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.assertEqual(self.transport.calls[-1]["op"], "cancel")
+        self.assertEqual([m for m in lines(self.output) if "result" in m and "method" not in m], [])
+
+    def test_eof_and_expiry_close_dialogs(self):
+        self.init(); thread = self.start()
+        self.server.run(io.StringIO()); thread.join(1)
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.setUp(); self.init(); self.server.timeout = 0.01
+        self.server.ask(9, {"question": "Choose"}, threading.Event())
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

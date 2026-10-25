@@ -267,6 +267,8 @@ class Server:
             if not cancel.is_set():
                 raise ValueError("Question expired without an answer. Ask in the conversation.")
         except (ValueError, ConnectionError, KeyError, OSError) as exc:
+            if dialog and not dialog.done:
+                self.close_dialog(dialog, cancel=True)
             if not finished and not cancel.is_set():
                 self.send(ident, {"isError": True, "content": [{"type": "text", "text": str(exc)}]})
         finally:
