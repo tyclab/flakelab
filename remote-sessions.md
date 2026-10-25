@@ -105,8 +105,10 @@ agent box: each client starts the same stdio server.
 In Claude Code and Codex the question also opens as a native terminal dialog
 (MCP elicitation): the choices numbered under the question and one field that
 takes a number, a choice's text or prefix, or your own words, so a choice is
-"2", Enter, Enter. Choices that need more than two message lines (Claude Code
-shows three) keep a picker list beside the free-text field instead.
+"2", Enter, Enter. Claude Code cuts each message line at the terminal width and
+shows three lines, so the question is wrapped at 100 characters first; when it
+fills the message, one line of choices moves under the field instead, and
+choices that need more room keep a picker list beside the free-text field.
 The dialog goes out before the inbox post, one dialog at a time per session. The
 first answer wins: a phone or inbox answer closes the dialog, a terminal answer
 is recorded in the inbox as delivered with `source: terminal` through hatyc's
