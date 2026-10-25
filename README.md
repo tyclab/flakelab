@@ -20,9 +20,9 @@ Driving a Windows browser from inside WSL (Chrome DevTools across the WSL2 NAT):
 [`browser-debugging-from-wsl.md`](browser-debugging-from-wsl.md).
 
 > Run `flakelab build-distro` and `flakelab test-provision` in a disposable
-> session: they create and stop distros. WSL 3.0.3 includes upstream interop
-> protection, but the full provisioning repro has not been rerun here.
-> See [known-issues.md](known-issues.md) for the verified behavior and older releases.
+> session: they create and stop distros. WSL 3.0.3 keeps sibling interop through
+> that (verified 2026-10-25); older releases wiped it, see
+> [known-issues.md](known-issues.md).
 
 ## Process
 

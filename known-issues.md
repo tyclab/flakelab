@@ -33,12 +33,12 @@ fixes the earlier `systemd-binfmt` read-only startup failure: writes succeed
 without flushing the shared registry, and WSL restores its interpreter entry.
 There is no need to disable `protectBinfmt` for that old failure.
 
-On 2026-10-14, this flake's running WSL 3.0.3 installation had the protected
-`WSLInterop` entry with `PF` flags and working Windows executable calls. The
-full sibling-distro provisioning and termination repro has not been rerun on
-that version. Keep provisioning tests in a disposable session until it has;
-`flakelab build-distro` and `flakelab test-provision` still perform distro
-lifecycle operations, and `wsl --shutdown` still ends every active WSL session.
+On 2026-10-25 `flakelab test-provision` imported, verified and unregistered a
+sibling distro on WSL 3.0.3 from a running flakelab session; the `WSLInterop`
+entry kept its `PF` flags and Windows executables answered throughout. Keep
+provisioning tests in a disposable session anyway: `flakelab build-distro` and
+`flakelab test-provision` perform distro lifecycle operations, and
+`wsl --shutdown` still ends every active WSL session.
 
 A missing handler and a stale `WSL_INTEROP` socket are different failures.
 Check the handler and whether the inherited socket exists before assuming that
