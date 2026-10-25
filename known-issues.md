@@ -209,6 +209,34 @@ This bug class has been fixed and re-introduced **14 times**. The pattern is alw
 
 **The agent does NOT handle it in test distros.** Never assume an SSH agent is available in provisioning steps or test re-runs. Keep SSH-touching steps idempotent (skip when the artifact already exists). `services.ssh-agent` starts an agent but loads no key, and `addKeysToAgent` does not change that — `ssh_config(5)` adds a key only when ssh loads it from a file mid-connection, which for a passphrase-protected key needs a TTY prompt first. What actually fills the agent is the TTY-gated `ssh-add` hook in `programs.zsh.initContent`, so a populated agent exists only after an interactive login.
 
+## The WSL disk image grows until the operator compacts it
+
+The distro lives in a dynamic `ext4.vhdx` with a 1 TB virtual size. The file
+grows whenever the VM touches a part of that range it never wrote before and
+never shrinks by itself, so builds, Docker layers and scratch files inflate it
+far past the data inside: on 2026-10-25 TycbookElite's image was 165 GB for
+122 GB of files, and its 277 GB `D:` fell from 27 GiB free to 0.4 GiB in a
+week while `df` inside the VM showed 13 % used. A full host drive fails writes
+inside every session on the box.
+
+The image is not sparse, and `wsl --manage <distro> --set-sparse true` is not
+the fix: WSL 2.5.6 put it behind `--allow-unsafe` because sparse images
+corrupted data ([microsoft/WSL#10609](https://github.com/microsoft/WSL/issues/10609),
+still open), WSL 3.0.2 only re-enabled it as experimental without a fix, and a
+sparse image on a drive that ran out of space came back unreadable
+([microsoft/WSL#41837](https://github.com/microsoft/WSL/issues/41837)).
+
+What runs inside the VM, by an agent or the weekly timers:
+`sudo systemctl start nix-gc.service docker-prune.service` and the
+`flakelab-prune` user timer free the Nix store, Docker and the tool caches;
+`sudo fstrim -v /` then marks the freed blocks so the compaction can drop them.
+The compaction itself is the operator's, with the distro stopped: `wsl --shutdown`
+ends every session, so `flakelab sessions --save` first. `Optimize-VHD` needs
+the Hyper-V PowerShell module; without it `diskpart` does the same
+(`select vdisk file=<path>`, `attach vdisk readonly`, `compact vdisk`,
+`detach vdisk`). The Grafana rule "PC Drive Low" (tycpve) pages when a PC
+drive drops under 20 GiB free.
+
 ## Known limitations
 
 Not bugs — things the flake does not do yet:

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab-prune` removes `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them; the next firmware build or embedding run downloads what it needs again.
 - `gitcleaner` reports a checkout parked on a landed branch — HEAD, or a linked worktree, on a branch that was pushed, merged and deleted on the remote — instead of skipping it without a word, and `--json` lists it under `parked`. At a terminal it offers to switch the checkout to the default branch (or remove the worktree) and delete the branch; `--unpark` does the same under `--yes`. Uncommitted changes, untracked files in a worktree, and a worktree lock that names no pid or a running one leave the checkout alone.
 
 ### Fixed

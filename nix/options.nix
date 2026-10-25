@@ -605,7 +605,7 @@ in
     pruneSchedule = mkOption {
       type = types.nullOr types.str;
       default = "weekly";
-      description = "systemd calendar expression (OnCalendar syntax) for pruning what grows without bound: Docker's unused images, stopped containers and build cache older than a week (`virtualisation.docker.autoPrune`; volumes stay), and the `flakelab-prune` user timer's Codex releases other than the current one (skipped while any codex process runs) and unused uv and pre-commit cache entries. Persistent: a box that was off at the slot catches up at its next start. null schedules none.";
+      description = "systemd calendar expression (OnCalendar syntax) for pruning what grows without bound: Docker's unused images, stopped containers and build cache older than a week (`virtualisation.docker.autoPrune`; volumes stay), and the `flakelab-prune` user timer's Codex releases other than the current one (skipped while any codex process runs), unused uv and pre-commit cache entries, and `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them. Persistent: a box that was off at the slot catches up at its next start. null schedules none.";
     };
 
     sessionsAutosaveInterval = mkOption {
