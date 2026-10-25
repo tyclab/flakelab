@@ -189,6 +189,18 @@ class Server:
     def wait(self, dialog, cancel):
         (dialog.event if dialog and not dialog.done else cancel).wait(self.interval)
 
+    def dialog_only(self, dialog, question, cancel, deadline):
+        """Wait on the dialog alone; re-show it after an empty accept. Text, or None when it was dismissed."""
+        while not cancel.is_set() and time.monotonic() < deadline:
+            if dialog.event.wait(self.interval):
+                text = self.terminal_answer(dialog)
+                self.close_dialog(dialog, cancel=False)
+                if text != "" or not self.dialog_lock.acquire(blocking=False):
+                    return text
+                dialog = self.open_dialog(question)
+        self.close_dialog(dialog, cancel=True)
+        return None
+
     def record_terminal_answer(self, transport, auth, create, text, created, cancel):
         """Store a dialog answer in the inbox; the inbox's status decides whose answer stands."""
         payload = {"status": "answered", "answer": text, "question_id": auth["id"], "source": "terminal"}
@@ -200,9 +212,24 @@ class Server:
             except ConnectionError:
                 failures += 1
                 if failures >= 3:
-                    raise
+                    return {**payload, "inbox": "unavailable"}
                 cancel.wait(self.interval)
-        reply = transport.post({**auth, "op": "answer", "answer": text})
+        deadline = time.monotonic() + self.answer_retry
+        while True:
+            try:
+                reply = transport.post({**auth, "op": "answer", "answer": text})
+                break
+            except ProtocolError:
+                # An inbox without the answer op (older hatyc): at least take the push down.
+                try:
+                    transport.post({**auth, "op": "cancel"})
+                except (ConnectionError, ValueError):
+                    pass
+                return {**payload, "inbox": "unsupported"}
+            except ConnectionError:
+                if cancel.is_set() or time.monotonic() >= deadline:
+                    return {**payload, "inbox": "unavailable"}
+                cancel.wait(self.interval)
         status = reply["status"]
         if status == "delivered":
             return payload
@@ -246,7 +273,18 @@ class Server:
                     failures += 1
                     unavailable_since = unavailable_since or time.monotonic()
                     if (not created and failures >= 3) or time.monotonic() - unavailable_since > 60:
-                        raise
+                        if not (dialog and not dialog.done):
+                            raise
+                        # The inbox is gone but the dialog is up: let the terminal answer alone.
+                        text = self.dialog_only(dialog, question, cancel, deadline)
+                        dialog = None
+                        if not text:
+                            raise
+                        self.send(ident, {"content": [{"type": "text", "text": json.dumps({
+                            "status": "answered", "answer": text, "question_id": auth["id"],
+                            "source": "terminal", "inbox": "unavailable"})}]})
+                        finished = True
+                        return
                     self.wait(dialog, cancel)
                     continue
                 status = result["status"]

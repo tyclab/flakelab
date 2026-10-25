@@ -69,6 +69,16 @@ class QuestionTests(unittest.TestCase):
     def reply(self, dialog_id, result):
         self.server.handle({"jsonrpc": "2.0", "id": dialog_id, "result": result})
 
+    def start_without_create(self, ident=1):
+        self.server.handle({"id": ident, "method": "tools/call", "params": {
+            "name": "ask_question", "arguments": {"question": "Which colour?", "options": ["Red", "Blue"]}}})
+        for _ in range(100):
+            if dialog_requests(self.output):
+                break
+            time.sleep(0.01)
+        with self.server.lock:
+            return self.server.active[ident][1]
+
     def accept(self, content):
         [request] = dialog_requests(self.output)[-1:]
         self.reply(request["id"], {"action": "accept", "content": content})
@@ -294,6 +304,35 @@ class QuestionTests(unittest.TestCase):
         self.server.ask(9, {"question": "Choose"}, threading.Event())
         self.assertEqual(len(cancellations(self.output)), 1)
         self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+
+    def test_dialog_outlives_an_unreachable_inbox(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        self.accept({"answer": "Blue"}); thread.join(2)
+        result = self.result()
+        self.assertEqual((result["answer"], result["source"], result["inbox"]), ("Blue", "terminal", "unavailable"))
+
+    def test_declined_dialog_with_unreachable_inbox_is_the_usual_error(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        [request] = dialog_requests(self.output)
+        self.reply(request["id"], {"action": "decline"}); thread.join(2)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+
+    def test_rejected_answer_op_falls_back_to_cancel(self):
+        self.init(); thread = self.start()
+        self.transport.fail_answer = "protocol"
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertEqual(self.result()["inbox"], "unsupported")
+        self.assertEqual(self.transport.calls[-1]["op"], "cancel")
+
+    def test_answer_op_network_failure_retries_then_reports_unavailable(self):
+        self.init(); self.server.answer_retry = 0.02; thread = self.start()
+        self.transport.fail_answer = "network"
+        self.accept({"answer": "Blue"}); thread.join(2)
+        self.assertEqual(self.result()["inbox"], "unavailable")
+        self.assertGreater(len([c for c in self.transport.calls if c["op"] == "answer"]), 1)
+        self.assertNotIn("cancel", [c["op"] for c in self.transport.calls])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
