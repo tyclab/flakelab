@@ -4,6 +4,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shlex
 import socket
@@ -118,25 +119,63 @@ def validate(arguments):
     return arguments
 
 
-def dialog_schema(question):
-    """Elicitation form: a choice list beside free text when there are options, free text alone otherwise.
+OPTION_LINE = 100   # Claude Code cuts each message line at the terminal width and shows three lines
+OPTION_LINES = 2    # one for the question, two for the options
 
-    Codex lays the fields out by property name, so the free text is "text": it sorts after "choice".
+
+def numbered_options(options):
+    """Pack "1) A  2) B" lines for the dialog message; None when they need more than two lines."""
+    lines, line = [], ""
+    for number, option in enumerate(options, 1):
+        item = f"{number}) {option}"
+        if line and len(line) + 2 + len(item) > OPTION_LINE:
+            lines.append(line)
+            line = item
+        else:
+            line = f"{line}  {item}" if line else item
+    lines.append(line)
+    return None if len(lines) > OPTION_LINES or any(len(x) > OPTION_LINE for x in lines) else lines
+
+
+def dialog_form(question):
+    """Message and elicitation schema of one dialog, and the options a typed answer may name.
+
+    Short options ride numbered in the message beside one typed field, because Claude Code shows three
+    message lines and its collapsed picker costs five key presses where a number costs three. Options
+    that need more room keep the picker: enum "choice" beside free "text" (Codex lays fields out by
+    property name, so "text" sorts after "choice").
     """
-    free_text = {"type": "string", "title": "Or answer in your own words", "maxLength": 12000}
     options = question.get("options") or []
-    if options:
-        return {"type": "object", "properties": {
+    context = question.get("context", "")
+    lines = numbered_options(options) if options else None
+    message = question["question"] + ("\n" + "\n".join(lines) if lines else "") + ("\n\n" + context if context else "")
+    if options and lines is None:
+        return message, {"type": "object", "properties": {
             "choice": {"type": "string", "title": "Choice", "enum": options, "enumNames": options},
-            "text": free_text}}
-    return {"type": "object", "properties": {"answer": {**free_text, "title": "Answer"}}, "required": ["answer"]}
+            "text": {"type": "string", "title": "Or answer in your own words", "maxLength": 12000}}}, []
+    answer = {"type": "string", "title": "Answer", "maxLength": 12000}
+    if lines:
+        answer["description"] = "Type a number or your own words."
+    return message, {"type": "object", "properties": {"answer": answer}, "required": ["answer"]}, options
+
+
+def resolve_option(text, options):
+    """The option a typed answer names by number, text or unique prefix; the text itself otherwise."""
+    match = re.fullmatch(r"(\d{1,2})\s*[).:]?", text)
+    if match:
+        number = int(match.group(1))
+        return options[number - 1] if 1 <= number <= len(options) else text
+    lowered = text.lower()
+    named = [x for x in options if x.lower() == lowered] or [x for x in options if x.lower().startswith(lowered)]
+    return named[0] if len(named) == 1 else text
 
 
 class Dialog:
     """One terminal dialog: a server-sent elicitation and the slot its reply lands in."""
 
-    def __init__(self, ident):
+    def __init__(self, ident, options=()):
         self.id, self.event, self.response, self.done = ident, threading.Event(), None, False
+        self.options = list(options)
 
 
 class Server:
@@ -159,14 +198,13 @@ class Server:
         self.emit({"id": ident, **({"error": error} if error else {"result": result})})
 
     def open_dialog(self, question):
-        dialog = Dialog(f"q-{next(self.ids)}")
+        message, schema, options = dialog_form(question)
+        dialog = Dialog(f"q-{next(self.ids)}", options)
         with self.lock:
             self.dialogs[dialog.id] = dialog
-        context = question.get("context", "")
-        message = question["question"] + ("\n\n" + context if context else "")
         try:
             self.emit({"id": dialog.id, "method": "elicitation/create",
-                       "params": {"message": message, "requestedSchema": dialog_schema(question)}})
+                       "params": {"message": message, "requestedSchema": schema}})
         except (OSError, ValueError):
             with self.lock:
                 self.dialogs.pop(dialog.id, None)
@@ -189,7 +227,8 @@ class Server:
 
     @staticmethod
     def terminal_answer(dialog):
-        """Text the operator gave in the dialog: free text first, then the choice; "" for an empty accept."""
+        """Text the operator gave in the dialog: typed text first (a number names an option), then the choice;
+        "" for an empty accept."""
         response = dialog.response
         if not isinstance(response, dict) or response.get("action") != "accept":
             return None
@@ -199,7 +238,7 @@ class Server:
         choice = content.get("choice")
         answer = content.get("text") if "text" in content else content.get("answer")
         if isinstance(answer, str) and answer.strip():
-            return answer.strip()
+            return resolve_option(answer.strip(), dialog.options) if dialog.options else answer.strip()
         if isinstance(choice, str) and choice.strip():
             return choice
         return ""
