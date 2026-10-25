@@ -102,6 +102,17 @@ to the original tool call. Tapping the push opens that question in HA's
 to seven days (500 records maximum). No daemon or event observer runs on the
 agent box: each client starts the same stdio server.
 
+In Claude Code and Codex the question also opens as a native terminal dialog
+(MCP elicitation): a choice list beside a free-text field, or free text alone.
+The dialog goes out before the inbox post, one dialog at a time per session. The
+first answer wins: a phone or inbox answer closes the dialog, a terminal answer
+is recorded in the inbox as delivered with `source: terminal` through hatyc's
+`answer` op and clears the push. Declining or dismissing the dialog leaves the
+question open for the phone. Without elicitation (headless runs, other MCP
+hosts) the inbox path alone is used; against a hatyc without the `answer` op the
+push is cancelled instead and the result says `inbox: unsupported`; with HA down
+the dialog still answers and the result says `inbox: unavailable`.
+
 This needs the `flakelab_questions` HA integration from hatyc. It reads
 `NOTIFY_WEBHOOK_URL` at runtime and adds `-questions` to the webhook ID. Keep
 `sopsKeyFiles.NOTIFY_WEBHOOK_URL = null;`. The endpoint accepts LAN POSTs only;
@@ -116,7 +127,8 @@ The managed client instructions prefer it for clarification and decisions.
 Claude may move a long call to a background task; dependent work must still
 wait for its answer. Codex and Claude get a per-server timeout just above the
 answer window. Existing sessions need to reconnect MCP or restart to load a
-new server. If HA is unavailable, ask in the conversation.
+new server or to get the dialog. If HA is unavailable and no dialog is open, ask
+in the conversation.
 
 `flakelab notify` remains available for manual and legacy pushes: a Claude Code `Notification` hook
 (`flakelab.notify.enable`, the types in `flakelab.notify.events`) and Codex's

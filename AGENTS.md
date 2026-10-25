@@ -65,8 +65,9 @@ the private overlay `flakelab-config`, which imports this flake via
   - `questions.enable` registers the shared `flakelab-questions` MCP server in
     Claude and Codex (`files/scripts/lib/questions.py`, `test-questions`). Its
     `ask_question` tool retains the question in HA and returns the phone/inbox
-    answer to the originating call. See `remote-sessions.md`. It does not
-    intercept native dialogs or approve tools.
+    answer to the originating call; in clients with MCP elicitation it also
+    opens a terminal dialog, and the first answer wins. See
+    `remote-sessions.md`. It does not intercept native dialogs or approve tools.
   - `notify` (legacy, `notify`): a push to an ntfy topic, a JSON webhook, or
     both; Codex's hook reports turn completion, while the Claude Code `Notification` hook
     (`flakelab.notify.enable`) and Codex's `notify` hook call it, `--message`

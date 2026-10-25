@@ -18,7 +18,9 @@ import uuid
 INSTRUCTIONS = (
     "Use flakelab-questions ask_question when you need the user's clarification or "
     "decision. It retains the full question in Home Assistant and waits for their "
-    "answer from the phone or inbox. Ask once and use the returned answer. "
+    "answer from the phone or inbox. In an interactive terminal the same question "
+    "also opens as a dialog; the first answer, terminal or phone, wins. "
+    "Ask once and use the returned answer. "
     "If unavailable, cancelled or expired, ask in the conversation; never invent an "
     "answer. This tool cannot grant tool permissions or bypass approval policies."
 )
