@@ -32,13 +32,14 @@ TOOL = {
         "type": "object",
         "properties": {
             "question": {"type": "string", "minLength": 1, "maxLength": 12000,
-                         "description": "Name the decision and essential facts in a short sentence. "
+                         "description": "Ask one decision at a time. Name the action and essential facts in a short sentence. "
                                         "It must make sense without context or earlier messages."},
             "context": {"type": "string", "maxLength": 24000,
                         "description": "Optional background retained in the inbox; terminal previews may hide it. "
                                        "Keep it brief. No secrets, raw logs or shell commands to decipher."},
             "options": {"type": "array", "maxItems": 8, "uniqueItems": True,
                         "description": "Prefer two distinct, short action labels (up to 40 characters each). "
+                                       "Use meaningful words, never numbered combinations that refer to hidden context. "
                                        "Put the recommended choice first; use more only when necessary.",
                         "items": {"type": "string", "minLength": 1, "maxLength": 300}},
         },
