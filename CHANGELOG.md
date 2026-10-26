@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab sessions --open` no longer resumes a session that is still running, which started a second process appending to the same transcript; run twice, it doubled every session. A running session in the `agents` server gets a tab on its window unless a client already shows that window, and one running anywhere else is named and left alone.
 - `flakelab clone` with GitLab groups and no `GITLAB_TOKEN` exits 3 before listing anything and names where the token goes: the sops secrets file on an enrolled box, `~/.config/flakelab/secrets.env` otherwise. `setup-wsl-nix.ps1 provision` no longer sources `secrets.env` itself before the clone (`.zshenv` does, and an enrolled box must not read the fallback file), stays quiet on that refusal, and calls a missing key or `secrets.env` steps that wait rather than a distro "built but unconfigured".
 - The `sopsSecretsFile` option text no longer claims a fallback to `secrets.env` that the zsh init deliberately does not make.
 - `flakelab doctor`, `gitchecker` and `gitcleaner` name the sops secrets as the token source too, not `secrets.env` alone, and doctor no longer says the secrets are read only at login.

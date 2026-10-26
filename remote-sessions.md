@@ -46,7 +46,7 @@ option, with the dashboard beside it.
 flakelab sessions --start <tool> [dir] [--detach] [-- args...]   claude|codex in dir, in its own window of the `agents` session, attached
 flakelab sessions --attach [id|window]                           join the window holding a session id, or a window by name; none: the server (at a terminal, a list of the windows first)
 flakelab sessions                                                the table, with TOOL and HOST columns
-flakelab sessions --open [file]                                  WSL: each tab attaches a window that outlives it (tmux on PATH), else as before
+flakelab sessions --open [file]                                  WSL: each tab attaches a window that outlives it (tmux on PATH), else as before; a running session gets a tab on its window, never a second process
 ```
 
 Mechanics worth knowing:

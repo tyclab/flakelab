@@ -235,14 +235,13 @@ container running, `docker image prune -af` takes them too. `sudo fstrim -v /`
 then marks the freed blocks so the compaction can drop them.
 
 The compaction itself is the operator's, with the distro stopped: `wsl --shutdown`
-ends every session, so `flakelab sessions --save` first and `--open` once
-afterwards. `--open` does not skip a session that is already running, so a
-second run starts each one twice, both writing the same transcript.
-`Optimize-VHD` needs the Hyper-V PowerShell module; without it `diskpart` does
-the same (`select vdisk file=<path>`, `attach vdisk readonly`, `compact vdisk`,
-`detach vdisk`). After the trim, that took TycbookElite's image from 164 GB to
-101 GB for 72 GB of files on 2026-10-26 and gave `D:` 64 GB back. The Grafana
-rule "PC Drive Low" (tycpve) pages when a PC drive drops under 20 GiB free.
+ends every session, so `flakelab sessions --save` first and `--open`
+afterwards. `Optimize-VHD` needs the Hyper-V PowerShell module; without it
+`diskpart` does the same (`select vdisk file=<path>`, `attach vdisk readonly`,
+`compact vdisk`, `detach vdisk`). After the trim, that took TycbookElite's
+image from 164 GB to 101 GB for 72 GB of files on 2026-10-26 and gave `D:`
+64 GB back. The Grafana rule "PC Drive Low" (tycpve) pages when a PC drive
+drops under 20 GiB free.
 
 ## Known limitations
 
