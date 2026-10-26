@@ -154,6 +154,8 @@ the private overlay `flakelab-config`, which imports this flake via
   `gitpublisher` publishes the working tree as an MR (branch, commit through
   the hooks, push, open or update) and holds those gates itself — `--json` for
   the result, exit 1 for a gate stop, 2 for a refusal. It opens; it never merges.
+  A branch without an open MR is pushed with `ci.skip`: the MR's pipeline is
+  that commit's only one, and a branch pipeline starts when none appears.
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
 - Changing any of these means running its offline suite. `make test` runs every
