@@ -1,19 +1,17 @@
 ## Environment
 
-This is a **NixOS** box provisioned from the `flakelab` flake — not managed by `apt`.
-Tools come from the flake, so `/usr/bin` holds almost nothing and shebangs other than `/usr/bin/env` are unreliable: resolve binaries with `command -v`.
-Change the environment by editing the flake and running `flakelab update`, never by installing into the system.
-Secrets are not in the flake in plaintext: the shell env carries them, sourced from the sops-nix render at `/run/secrets/flakelab-env` when this box is enrolled, else from `~/.config/flakelab/secrets.env`, which the operator fills from their secret store.
+NixOS: change tools/config through the flake and `flakelab update`, never system
+installs. Resolve binaries with `command -v`; use `/usr/bin/env` shebangs.
+Shell secrets come from `/run/secrets/flakelab-env` on enrolled boxes; otherwise
+from `~/.config/flakelab/secrets.env`. Never put plaintext secrets in the flake.
 
-## The CLI
+Use `flakelab --help` / `flakelab doctor`; runbooks: README and `known-issues.md`.
+Never `/logout`: use `tycswap switch`; new account: `tycswap add --login`;
+after a manual login: `tycswap add`.
 
-`flakelab --help` lists every distro command available on this target.
-`flakelab doctor` diagnoses a provisioned distro and says what to run, so prefer it over guessing at broken state.
-`flakelab backup` archives the host-specific seed (secrets, keys, tool config) beside the overlay, and `--restore` puts it back.
-
-## Agent sessions and logins
-
-`flakelab sessions` lists the running Claude Code and Codex sessions; `--start <tool> <dir>` hosts one in a window of the `agents` tmux session so it outlives the terminal, `--attach` joins it, `--recent` lists stopped ones with their resume lines.
-`tycswap` keeps more than one login per agent CLI: `tycswap add` stores the live one, `tycswap add --login` logs another account in beside it without a logout, `tycswap switch <n|email|alias>` makes a stored one live (a running Claude Code session follows on its next message; Codex keeps its token, so `tycswap codex switch` refuses while one runs unless `--force`), `tycswap list` shows every login's windows, `tycswap run <n>` runs a second account in its own profile beside the live one.
-Never `/logout` a tool to change accounts on this box: that discards a refresh token tycswap's store may hold the only current copy of; switch instead, `tycswap add --login` for a new account, and `tycswap add` after a login made by hand.
-`flakelab notify` sends manual or legacy hook pushes; Codex's legacy hook reports completed turns, not questions. When configured, `flakelab-questions` provides a shared question-and-reply tool. `flakelab web` is the dashboard behind a token.
+Bitwarden: if locked, ask the operator to run `bwu` in their own terminal.
+For every `bw` call, load `~/.config/flakelab/bw-session` into `BW_SESSION`
+silently; never request, print or inline its value. Name the item; pipe
+`bw get password <item>` directly to its consumer. Search fields:
+id/name/username/uris only, never secret fields.
+Use `glab` for GitLab and `gh` for GitHub.

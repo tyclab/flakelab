@@ -109,14 +109,28 @@ takes a number, a choice's text or prefix, or your own words, so a choice is
 shows three lines, so the question is wrapped at 100 characters first; when it
 fills the message, one line of choices moves under the field instead, and
 choices that need more room keep a picker list beside the free-text field.
+The context follows, wrapped the same way and without a blank line, so after a
+one-line question and one line of choices its first line is the third line
+shown; the rest waits behind "(+N more lines)".
 The dialog goes out before the inbox post, one dialog at a time per session. The
 first answer wins: a phone or inbox answer closes the dialog, a terminal answer
 is recorded in the inbox as delivered with `source: terminal` through hatyc's
 `answer` op and clears the push. Declining or dismissing the dialog leaves the
 question open for the phone. Without elicitation (headless runs, other MCP
 hosts) the inbox path alone is used; against a hatyc without the `answer` op the
-push is cancelled instead and the result says `inbox: unsupported`; with HA down
-the dialog still answers and the result says `inbox: unavailable`.
+push is cancelled instead and the result says `inbox: unsupported`. During an HA
+outage the terminal still answers with `inbox: unavailable`; while an interactive
+question remains unanswered, the broker keeps retrying that same inbox record
+until HA recovers or the call ends. Those recovery attempts use a one-second
+socket timeout instead of the usual ten seconds, so a terminal reply does not
+wait on the normal network timeout. Headless calls still fail promptly when the
+inbox is unavailable.
+
+Codex 0.164.0 can leave an answered dialog visible after the broker cancels it
+([upstream issue #40390](https://github.com/openai/codex/issues/40390)). If the
+tool has already returned the inbox answer, Esc dismisses that stale dialog;
+the saved answer remains unchanged. This client cleanup defect is separate from
+inbox delivery and recovery.
 
 This needs the `flakelab_questions` HA integration from hatyc. It reads
 `NOTIFY_WEBHOOK_URL` at runtime and adds `-questions` to the webhook ID. Keep
@@ -128,7 +142,12 @@ expires within 90 seconds; the overall answer window is 25 minutes. An expired
 or cancelled call returns no fabricated answer. Questions are not approval
 grants, and native dialogs are not intercepted: the agent must call this tool.
 
-The managed client instructions prefer it for clarification and decisions.
+The managed client instructions prefer it for clarification and decisions,
+and the tool text says what each surface shows: the phone and watch push shows
+the question and carries a button for each of one or two choices (more
+choices get none), never the context, which only the inbox record shows in
+full. So the question's first line names the decision and the recommendation,
+and two short choices are best.
 Claude may move a long call to a background task; dependent work must still
 wait for its answer. Codex and Claude get a per-server timeout just above the
 answer window. Existing sessions need to reconnect MCP or restart to load a
