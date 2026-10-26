@@ -1,11 +1,5 @@
-When you need the user's clarification or decision, use the `ask_question` tool
-from `flakelab-questions`. The user sees only the question and the options: the
-terminal dialog shows three lines, the phone and watch push shows the question
-with a button for each of one or two options, and the context appears in full
-only in Home Assistant's Agent questions inbox record. Make the question
-answerable alone, its first line naming the decision and your recommendation;
-prefer two self-explanatory options of about 40 characters; context is optional
-background. The first answer, terminal or phone, wins: wait for it before
-dependent work, even if the call moves to the background. If unavailable,
-cancelled or expired, ask in the conversation; never infer an answer from a
-timeout. Tool permissions use native approval flows; this tool cannot grant them.
+Use flakelab-questions `ask_question` for decisions. The question must stand alone:
+decision/recommendation first; context is inbox-only. Prefer two clear options
+(~40 characters each). Wait for the first answer before dependent work, even if
+backgrounded. If unavailable, cancelled or expired, ask in chat; timeout is not
+consent. Use native flows for tool permissions.
