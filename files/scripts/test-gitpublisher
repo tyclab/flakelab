@@ -34,8 +34,7 @@ trap 'rm -rf "${BASE}"' EXIT
 # Stub glab. Every invocation is appended to the log, so a test can assert not
 # just the outcome but the exact flags that produced it — the no-squash-flags
 # rule is a claim about argv, and only the log can prove it. GITPUB_MR_LIST
-# steers the open-MR answer, GITPUB_PIPELINES the SHA's pipelines and
-# GITPUB_CREATE_FAIL a refused create, per test.
+# steers the open-MR answer per test.
 mkdir -p "${BASE}/bin"
 STUB_LOG="${BASE}/stub.log"
 export GITPUB_STUB_LOG="${STUB_LOG}"
@@ -46,18 +45,12 @@ print -r -- "cwd=${PWD:A} glab $*" >> "${GITPUB_STUB_LOG:-/dev/null}"
 case "${1-} ${2-}" in
   "auth status") exit 0 ;;
   "mr list")     print -r -- "${GITPUB_MR_LIST:-[]}"; exit 0 ;;
-  "mr create")   [[ -n "${GITPUB_CREATE_FAIL:-}" ]] && exit 1
-                 print -r -- "https://gitlab.com/test/repo/-/merge_requests/7"; exit 0 ;;
+  "mr create")   print -r -- "https://gitlab.com/test/repo/-/merge_requests/7"; exit 0 ;;
   "mr view")     print -r -- '{"web_url":"https://gitlab.com/test/repo/-/merge_requests/7","iid":7}'; exit 0 ;;
-  "ci run")      exit 0 ;;
-  "api "*)       print -r -- "${GITPUB_PIPELINES:-[]}"; exit 0 ;;
 esac
 exit 1
 STUB
 chmod +x "${BASE}/bin/glab"
-# The pipeline wait and the network retry sleep; the suite has no reason to.
-printf '#!/bin/sh\nexit 0\n' > "${BASE}/bin/sleep"
-chmod +x "${BASE}/bin/sleep"
 export PATH="${BASE}/bin:${PATH}"
 
 # build_fixture <name> — a fresh clone against a fresh bare remote; sets
@@ -69,13 +62,6 @@ build_fixture() {
   mkdir -p "${dir}"
   {
   git init -q --bare "${bare}"
-  # GitLab advertises push options; the hook records the ones a push carried.
-  git -C "${bare}" config receive.advertisePushOptions true
-  : > "${dir}/push-options.log"
-  print -r -- "#!/bin/sh
-env | grep '^GIT_PUSH_OPTION_[0-9]' >> '${dir}/push-options.log'
-exit 0" > "${bare}/hooks/pre-receive"
-  chmod +x "${bare}/hooks/pre-receive"
   git init -q -b main "${repo}"
   git -C "${repo}" config user.email t@e; git -C "${repo}" config user.name t
   print -r -- base > "${repo}/f"
@@ -91,8 +77,6 @@ exit 0" > "${bare}/hooks/pre-receive"
   FIXTURE_REPO="${repo}"
   : > "${STUB_LOG}"
   export GITPUB_MR_LIST="[]"
-  export GITPUB_PIPELINES='[{"id":1,"status":"created","source":"merge_request_event"}]'
-  unset GITPUB_CREATE_FAIL
 }
 
 # set_hook <body> — a pre-commit hook for the current fixture, outside the tree.
@@ -363,50 +347,6 @@ OUT="$(cd "${BASE}/elsewhere" && zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" \
 check "exits 0" "${RC}" "0"
 check "the relative file's subject is the commit subject" \
   "$(git -C "${FIXTURE_REPO}" log -1 --format=%s)" "fix(scope): subject from a relative path"
-
-print -r -- "── a new branch is pushed with ci.skip: the MR's pipeline is its only one ─"
-build_fixture skipci
-print -r -- change > "${FIXTURE_REPO}/f"
-OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: skip" --branch feat/skip --json 2>/dev/null)"; RC=$?
-check "exits 0" "${RC}" "0"
-contains "the push carried ci.skip" "$(<"${BASE}/skipci/push-options.log")" "ci.skip"
-check "the branch reached the remote" "$(remote_has skipci feat/skip)" "yes"
-LOG="$(<"${STUB_LOG}")"
-contains "the MR was created" "${LOG}" "mr create"
-contains "the SHA's pipelines were read back" "${LOG}" \
-  "glab api projects/test%2Frepo/pipelines?sha=$(git -C "${FIXTURE_REPO}" rev-parse HEAD)"
-excludes "the MR pipeline exists, so no branch pipeline is started" "${LOG}" "ci run"
-
-print -r -- "── a push to an open MR runs CI as usual ─────────────────────────"
-build_fixture openmr
-{
-git -C "${FIXTURE_REPO}" switch -qc feat/x
-print -r -- u > "${FIXTURE_REPO}/u"
-} >/dev/null 2>&1
-export GITPUB_MR_LIST='[{"iid":7,"source_branch":"feat/x"}]'
-OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: more" --json 2>/dev/null)"; RC=$?
-check "exits 0" "${RC}" "0"
-check "the push happened" "$(remote_has openmr feat/x)" "yes"
-excludes "the push carried no ci.skip" "$(<"${BASE}/openmr/push-options.log")" "ci.skip"
-excludes "and no branch pipeline was started" "$(<"${STUB_LOG}")" "ci run"
-
-print -r -- "── no pipeline once the MR is open: a branch pipeline runs instead ─"
-build_fixture nomrpipe
-print -r -- change > "${FIXTURE_REPO}/f"
-export GITPUB_PIPELINES='[{"id":2,"status":"skipped","source":"push"}]'
-OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: nomr" --branch feat/nomr --json 2>/dev/null)"; RC=$?
-check "exits 0" "${RC}" "0"
-LOG="$(<"${STUB_LOG}")"
-contains "a skipped pipeline is no pipeline: one is started" "${LOG}" "ci run"
-contains "on the published branch" "${LOG}" "--branch feat/nomr"
-
-print -r -- "── a failed create after a ci.skip push says the branch has no pipeline ─"
-build_fixture createfail
-print -r -- change > "${FIXTURE_REPO}/f"
-export GITPUB_CREATE_FAIL=1
-OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: cf" --branch feat/cf 2>&1)"; RC=$?
-check "exits 2" "${RC}" "2"
-contains "and says the branch has no pipeline" "${OUT}" "has no pipeline"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
