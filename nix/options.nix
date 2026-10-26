@@ -313,7 +313,7 @@ in
         "latest"
       ];
       default = "stable";
-      description = "Release channel Claude Code's self-updater follows. Claude Code is the one tool this flake deliberately does not pin, so this is the only control over what lands unreviewed on every box.";
+      description = "Release channel Claude Code's first install starts on and its self-updater follows. Claude Code is the one tool this flake deliberately does not pin, so this is the only control over what lands unreviewed on every box.";
     };
 
     claudeOutputStyle = mkOption {
