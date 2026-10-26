@@ -339,7 +339,8 @@ _nix_relock_flakelab() {
     _say yellow "⚠ LOCAL flakelab (git+file: ${_b[4]#file://}) — only committed content is in this build"
   fi
   # Unprivileged: a root-written lock on the 9p mount breaks the operator's next `nix` command.
-  if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
+  # --refresh: Nix caches the branch HEAD for tarball-ttl (an hour), so a run just after a merge kept the old rev.
+  if _out="$(nix flake update flakelab --refresh --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
     _a=("${(@s:|:)$(_fl_locked)}")
     local _rev1="${_a[3]:-}" _id1="${_a[3]:-${_a[5]:-}}"
     if [[ "${_ty}" == path ]]; then

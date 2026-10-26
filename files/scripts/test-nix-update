@@ -982,10 +982,11 @@ rm -f "${SHIM}/systemctl"
 # the expression that reads the lock is under test too — which needs TOOLS in the
 # shim's own environment. The check sandbox has a nix for this suite, evaluating
 # against a dummy store, so there is no second reading of the lock to fall back on.
-export TOOLS
+export TOOLS RELOCK_ARGS="${BASE}/relock.args"
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
 if [[ "$1" == flake && "$2" == update ]]; then
+  print -r -- "$*" > "${RELOCK_ARGS}"
   [[ -n "${LOCK_AFTER:-}" ]] && cp "${LOCK_AFTER}" "${FLAKELAB_REPO_ROOT}/flake.lock"
   print -r -- "• Updated input 'flakelab'"
   exit 0
@@ -1027,6 +1028,7 @@ check    "it switches"                      "${RC}" "0"
 contains "it names the old rev"             "${OUT}" "${REV_OLD[1,7]} →"
 contains "and the new one"                  "${OUT}" "→ ${REV_NEW[1,7]}"
 contains "and how many commits came in"     "${OUT}" "3 commit(s)"
+contains "past Nix's cached branch HEAD"    "$(< "${RELOCK_ARGS}")" "--refresh"
 
 print -r -- "an input that moved to a rev no clone has is named without a count"
 mk_lock "${REV_OLD}" "${d}/flake.lock"
