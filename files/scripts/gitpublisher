@@ -231,20 +231,18 @@ if [[ "${ACTION}" == opened ]]; then
   gitnet_retry glab mr create --repo "${project}" "${create_args[@]}" \
     || die "glab mr create failed (after retry, ${GITNET_WHY}): ${GITNET_OUT} — ${BRANCH} was pushed with ci.skip and has no pipeline until an MR exists"
   # A project without MR pipelines would leave the commit unchecked: start a branch pipeline then.
-  # A project without a CI file has nothing to run, and a refused start must not fail an opened MR.
-  if git -C "${REPO}" cat-file -e HEAD:.gitlab-ci.yml 2>/dev/null; then
-    head_sha="$(git -C "${REPO}" rev-parse HEAD)"
-    typeset -i runs=0 tries=0
-    while (( tries++ < 10 )); do
-      if gitnet_retry glab api "projects/${project//\//%2F}/pipelines?sha=${head_sha}"; then
-        runs="$(print -r -- "${GITNET_OUT}" | jq '[.[] | select(.status != "skipped")] | length' 2>/dev/null || print -n 0)"
-        (( runs > 0 )) && break
-      fi
-      (( tries < 10 )) && sleep 3
-    done
-    if (( runs == 0 )) && ! gitnet_retry glab ci run --repo "${project}" --branch "${BRANCH}"; then
-      print -r -u2 -- "gitpublisher: warning: ${BRANCH} has no pipeline and starting one failed (${GITNET_WHY}): ${GITNET_OUT}"
+  head_sha="$(git -C "${REPO}" rev-parse HEAD)"
+  typeset -i runs=0 tries=0
+  while (( tries++ < 10 )); do
+    if gitnet_retry glab api "projects/${project//\//%2F}/pipelines?sha=${head_sha}"; then
+      runs="$(print -r -- "${GITNET_OUT}" | jq '[.[] | select(.status != "skipped")] | length' 2>/dev/null || print -n 0)"
+      (( runs > 0 )) && break
     fi
+    sleep 3
+  done
+  if (( runs == 0 )); then
+    gitnet_retry glab ci run --repo "${project}" --branch "${BRANCH}" \
+      || die "MR opened, but ${BRANCH} has no pipeline and starting one failed (${GITNET_WHY}): ${GITNET_OUT}"
   fi
 fi
 

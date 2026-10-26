@@ -49,8 +49,7 @@ case "${1-} ${2-}" in
   "mr create")   [[ -n "${GITPUB_CREATE_FAIL:-}" ]] && exit 1
                  print -r -- "https://gitlab.com/test/repo/-/merge_requests/7"; exit 0 ;;
   "mr view")     print -r -- '{"web_url":"https://gitlab.com/test/repo/-/merge_requests/7","iid":7}'; exit 0 ;;
-  "ci run")      [[ -n "${GITPUB_CIRUN_FAIL:-}" ]] && { print -r -- "400 Bad request - Missing CI config file"; exit 1 }
-                 exit 0 ;;
+  "ci run")      exit 0 ;;
   "api "*)       print -r -- "${GITPUB_PIPELINES:-[]}"; exit 0 ;;
 esac
 exit 1
@@ -93,7 +92,7 @@ exit 0" > "${bare}/hooks/pre-receive"
   : > "${STUB_LOG}"
   export GITPUB_MR_LIST="[]"
   export GITPUB_PIPELINES='[{"id":1,"status":"created","source":"merge_request_event"}]'
-  unset GITPUB_CREATE_FAIL GITPUB_CIRUN_FAIL
+  unset GITPUB_CREATE_FAIL
 }
 
 # set_hook <body> — a pre-commit hook for the current fixture, outside the tree.
@@ -368,7 +367,6 @@ check "the relative file's subject is the commit subject" \
 print -r -- "── a new branch is pushed with ci.skip: the MR's pipeline is its only one ─"
 build_fixture skipci
 print -r -- change > "${FIXTURE_REPO}/f"
-print -r -- 'job: {script: ["true"]}' > "${FIXTURE_REPO}/.gitlab-ci.yml"
 OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: skip" --branch feat/skip --json 2>/dev/null)"; RC=$?
 check "exits 0" "${RC}" "0"
 contains "the push carried ci.skip" "$(<"${BASE}/skipci/push-options.log")" "ci.skip"
@@ -395,7 +393,6 @@ excludes "and no branch pipeline was started" "$(<"${STUB_LOG}")" "ci run"
 print -r -- "── no pipeline once the MR is open: a branch pipeline runs instead ─"
 build_fixture nomrpipe
 print -r -- change > "${FIXTURE_REPO}/f"
-print -r -- 'job: {script: ["true"]}' > "${FIXTURE_REPO}/.gitlab-ci.yml"
 export GITPUB_PIPELINES='[{"id":2,"status":"skipped","source":"push"}]'
 OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: nomr" --branch feat/nomr --json 2>/dev/null)"; RC=$?
 check "exits 0" "${RC}" "0"
@@ -410,28 +407,6 @@ export GITPUB_CREATE_FAIL=1
 OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: cf" --branch feat/cf 2>&1)"; RC=$?
 check "exits 2" "${RC}" "2"
 contains "and says the branch has no pipeline" "${OUT}" "has no pipeline"
-
-print -r -- "── a project without a CI file has no pipeline to wait for ───────"
-build_fixture noci
-print -r -- change > "${FIXTURE_REPO}/f"
-export GITPUB_PIPELINES='[]'
-OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: noci" --branch feat/noci --json 2>/dev/null)"; RC=$?
-check "exits 0" "${RC}" "0"
-check "and reports the MR" "$(print -r -- "${OUT}" | jq -r '.url')" "https://gitlab.com/test/repo/-/merge_requests/7"
-LOG="$(<"${STUB_LOG}")"
-excludes "no pipeline lookup" "${LOG}" "/pipelines?sha="
-excludes "no branch pipeline" "${LOG}" "ci run"
-
-print -r -- "── a refused branch pipeline is a warning; the MR stands ─────────"
-build_fixture cirunrefused
-print -r -- change > "${FIXTURE_REPO}/f"
-print -r -- 'job: {script: ["true"]}' > "${FIXTURE_REPO}/.gitlab-ci.yml"
-export GITPUB_PIPELINES='[]' GITPUB_CIRUN_FAIL=1
-OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: refused" --branch feat/refused --json 2>"${BASE}/refused.err")"; RC=$?
-check "exits 0" "${RC}" "0"
-check "ok is true" "$(print -r -- "${OUT}" | jq -r '.ok')" "true"
-check "and reports the MR" "$(print -r -- "${OUT}" | jq -r '.url')" "https://gitlab.com/test/repo/-/merge_requests/7"
-contains "the refusal is named on stderr" "$(<"${BASE}/refused.err")" "has no pipeline"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
