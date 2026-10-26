@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The `sopsSecretsFile` option text no longer claims a fallback to `secrets.env` that the zsh init deliberately does not make.
 - `flakelab doctor`, `gitchecker` and `gitcleaner` name the sops secrets as the token source too, not `secrets.env` alone, and doctor no longer says the secrets are read only at login.
 - A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
+- A first Claude Code install runs the official installer with `claudeAutoUpdatesChannel` (`bash -s latest`, say), so it starts on the channel the settings assert; without it the installer put `stable` on the box and a `latest` box only got there at its next self-update.
 
 ### Removed
 

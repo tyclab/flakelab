@@ -23,9 +23,11 @@ INSTRUCTIONS = (
     "terminal dialog shows three lines (the question, then the numbered options); the "
     "phone and watch push shows the question and, for one or two options, one button "
     "each; context is shown in full only in the Home Assistant inbox record. So the "
-    "question's first line names the decision and your recommendation, and two short "
-    "options are best. The first terminal or phone answer wins. Wait for it before "
-    "dependent work, even if the call moves to the background. If unavailable, "
+    "question's first line names the target and decision; any recommendation is brief "
+    "and optional. Keep nonessential validation details in context. Prefer "
+    "two action labels of 1-3 words, aiming for 20 characters or fewer; keep the target "
+    "in the question, not repeated in each label. The first terminal or phone answer wins. "
+    "Wait for it before dependent work, even if the call moves to the background. If unavailable, "
     "cancelled or expired, ask in the conversation; never infer an answer. Tool "
     "permissions use native approval flows."
 )
@@ -39,17 +41,21 @@ TOOL = {
         "properties": {
             "question": {"type": "string", "minLength": 1, "maxLength": 12000,
                          "description": "One decision, answerable alone, without context or earlier messages. "
-                                        "Its first line names the decision and your recommendation, e.g. "
-                                        "'Merge !752 now? I recommend yes.'; a collapsed phone push shows only that line."},
+                                        "Its first line names the target and decision, e.g. 'Deploy the tested "
+                                        "release now?'; a collapsed phone push shows only that line. A "
+                                        "recommendation is optional and brief; nonessential validation details "
+                                        "belong in context."},
             "context": {"type": "string", "maxLength": 24000,
                         "description": "Optional background. The phone and watch never show it, the terminal at "
                                        "most its first line; only the inbox record shows it in full, so nothing "
                                        "the answer needs may live only here. No secrets or raw logs."},
             "options": {"type": "array", "maxItems": 8, "uniqueItems": True,
-                        "description": "Self-explanatory answers in meaningful words, about 40 characters or less, "
-                                       "never numbers or combinations that point into hidden context; recommended "
-                                       "first. Prefer two: only one or two options become phone and watch "
-                                       "buttons; with more the phone offers none.",
+                        "description": "Short action labels: 1-3 words, aim for 20 characters or fewer, e.g. "
+                                       "'Merge and deploy' / 'Keep open'. Put the target in the question instead "
+                                       "of repeating it in each label. Keep each answer unambiguous; never use "
+                                       "numbers or references to hidden context. Recommended first. Prefer two: "
+                                       "only one or two options become phone and watch buttons; with more the "
+                                       "phone offers none.",
                         "items": {"type": "string", "minLength": 1, "maxLength": 300}},
         },
         "required": ["question"],
@@ -101,11 +107,11 @@ class Transport:
         self.url = endpoint()
         self.opener = urllib.request.build_opener(NoRedirect)
 
-    def post(self, payload):
+    def post(self, payload, timeout=10):
         request = urllib.request.Request(self.url, json.dumps(payload, ensure_ascii=False).encode(),
                                          {"Content-Type": "application/json"})
         try:
-            with self.opener.open(request, timeout=10) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 body = json.load(response)
             if not isinstance(body, dict) or "status" not in body:
                 raise ValueError("Question inbox returned an invalid response.")
@@ -276,35 +282,6 @@ class Server:
     def wait(self, dialog, cancel):
         (dialog.event if dialog and not dialog.done else cancel).wait(self.interval)
 
-    def dialog_only(self, dialog, question, cancel, deadline):
-        """Wait on the dialog alone; re-show it after an empty accept.
-
-        Returns the text, or None when the operator dismissed it; raises the expiry error at the deadline.
-        """
-        while not cancel.is_set() and time.monotonic() < deadline:
-            if dialog.event.wait(self.interval):
-                text = self.terminal_answer(dialog)
-                self.close_dialog(dialog, cancel=False)
-                dialog = None
-                if text != "":
-                    return text
-                # A queued call may take the lock first; wait our turn rather than fail the answer.
-                while not self.dialog_lock.acquire(timeout=self.interval):
-                    if cancel.is_set():
-                        return None
-                    if time.monotonic() >= deadline:
-                        break
-                else:
-                    dialog = self.open_dialog(question)
-                    continue
-                break
-        if dialog:
-            self.close_dialog(dialog, cancel=True, reason="call cancelled" if cancel.is_set()
-                              else "question expired or closed")
-        if cancel.is_set():
-            return None
-        raise ValueError("Question expired without an answer. Ask in the conversation.")
-
     def record_terminal_answer(self, transport, auth, create, text, created, cancel, failures=0):
         """Store a dialog answer in the inbox; the inbox's status decides whose answer stands.
 
@@ -355,6 +332,7 @@ class Server:
                       "project": os.getcwd(), "host": socket.gethostname()}
             deadline = time.monotonic() + self.timeout
             created, failures, unavailable_since = False, 0, None
+            inbox_unavailable = False
             while not cancel.is_set() and time.monotonic() < deadline:
                 # One dialog per server at a time: open ours as soon as the lock is free.
                 if dialog is None and not declined and self.elicitation and self.dialog_lock.acquire(blocking=False):
@@ -368,8 +346,12 @@ class Server:
                     if text is None:
                         declined = True
                     else:
-                        payload = self.record_terminal_answer(transport, auth, create, text, created, cancel,
-                                                              failures)
+                        if inbox_unavailable:
+                            payload = {"status": "answered", "answer": text, "question_id": auth["id"],
+                                       "source": "terminal", "inbox": "unavailable"}
+                        else:
+                            payload = self.record_terminal_answer(transport, auth, create, text, created, cancel,
+                                                                  failures)
                         if cancel.is_set():
                             break  # the client gave up meanwhile; the finally posts the inbox cancel
                         self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
@@ -378,24 +360,19 @@ class Server:
                             transport.post({**auth, "op": "delivered"})
                         return
                 try:
-                    result = transport.post({**auth, "op": "poll"} if created else create)
+                    result = transport.post({**auth, "op": "poll"} if created else create,
+                                            timeout=1 if inbox_unavailable else 10)
                     created, failures, unavailable_since = True, 0, None
+                    inbox_unavailable = False
                 except ConnectionError:
                     failures += 1
                     unavailable_since = unavailable_since or time.monotonic()
                     if (not created and failures >= 3) or time.monotonic() - unavailable_since > 60:
-                        if not (dialog and not dialog.done):
+                        inbox_unavailable = True
+                        if not self.elicitation or declined:
                             raise
-                        # The inbox is gone but the dialog is up: let the terminal answer alone.
-                        text = self.dialog_only(dialog, question, cancel, deadline)
-                        dialog = None
-                        if not text:
-                            raise
-                        self.send(ident, {"content": [{"type": "text", "text": json.dumps({
-                            "status": "answered", "answer": text, "question_id": auth["id"],
-                            "source": "terminal", "inbox": "unavailable"})}]})
-                        finished = True
-                        return
+                    # Keep the same inbox question recoverable while it is pending.
+                    # Subsequent retries use a short socket timeout for terminal replies.
                     self.wait(dialog, cancel)
                     continue
                 status = result["status"]

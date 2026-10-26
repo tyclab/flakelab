@@ -1234,6 +1234,13 @@
             sys = self.nixosConfigurations.default.config;
             hm = sys.home-manager.users.${sys.flakelab.username};
             entry = name: pkgs.writeText "${name}-activation" hm.home.activation.${name}.data;
+            latest =
+              (self.nixosConfigurations.default.extendModules {
+                modules = [ { flakelab.claudeAutoUpdatesChannel = "latest"; } ];
+              }).config;
+            latestClaude =
+              pkgs.writeText "installClaudeCode-latest-activation"
+                latest.home-manager.users.${sys.flakelab.username}.home.activation.installClaudeCode.data;
           in
           # Codex's sandbox takes bwrap from PATH, not the store path of a dependency.
           assert builtins.elem pkgs.bubblewrap hm.home.packages;
@@ -1271,6 +1278,23 @@
             test ! -e "$HOME/.local/bin/claude"
             deferred "Claude Code not installed"
             noWarn
+
+            # installs <channel> <entry>: a stand-in installer, fed to `bash -s <channel>`,
+            # records the argument it was given.
+            installs() {
+              fresh "claude-$1"
+              curl() { printf '%s\n' 'printf "%s\n" "$1" > "$HOME/installer-channel"' 'touch "$HOME/.local/bin/claude" && chmod +x "$HOME/.local/bin/claude"'; }
+              export -f curl
+              activate "$2"
+              offline
+              test -x "$HOME/.local/bin/claude"
+              test "$(cat "$HOME/installer-channel")" = "$1"
+              nothingDeferred
+              noWarn
+            }
+            echo "claude: a first install starts on the channel the settings assert"
+            installs ${sys.flakelab.claudeAutoUpdatesChannel} ${entry "installClaudeCode"}
+            installs latest ${latestClaude}
 
             echo "codex: an offline first install is deferred"
             fresh codex-absent
