@@ -27,10 +27,8 @@ Usage: gitpublisher --title "type(scope): subject" [options]
 
 Stages everything, commits through the repo's hooks (they are the lint gate —
 one retry when a formatter rewrote files, none for a secret finding), pushes,
-and opens the MR — or just pushes when the branch already has one open. A
-branch without an open MR is pushed with ci.skip, so the MR's pipeline is the
-only one for that commit; when none appears, a branch pipeline is started.
-Runs against the current directory's clone unless --repo says otherwise.
+and opens the MR — or just pushes when the branch already has one open. Runs
+against the current directory's clone unless --repo says otherwise.
 
 Refused rather than guessed: committing on the default branch (name the
 branch with --branch), a tree with nothing to publish, a remote that is not
@@ -199,7 +197,10 @@ typeset -i ahead=0
 ahead="$(git -C "${REPO}" rev-list --count "refs/remotes/origin/${default_branch}..HEAD" 2>/dev/null || print -n 0)"
 (( ahead == 0 )) && die "nothing to publish: no commits on ${BRANCH} beyond origin/${default_branch}"
 
-# Before the push: an open MR means this push updates it, and opening a second is a duplicate.
+gitnet_retry git -C "${REPO}" push -u origin HEAD \
+  || die "push failed for ${BRANCH} (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
+
+# The push already updated an existing MR; opening a second is a duplicate.
 ACTION=opened
 gitnet_retry glab mr list --repo "${project}" --source-branch "${BRANCH}" \
     --output json --per-page 100 \
@@ -209,12 +210,6 @@ typeset -i open_n=0
 open_n="$(print -r -- "${GITNET_OUT}" | jq 'length' 2>/dev/null || print -n -- -1)"
 (( open_n < 0 )) && die "could not parse the open MR list for ${BRANCH}: ${GITNET_OUT}"
 (( open_n > 0 )) && ACTION=updated
-
-# The MR opened next runs this SHA itself; a branch pipeline as well is the same checks twice.
-typeset -a push_opts=()
-[[ "${ACTION}" == opened ]] && push_opts=(-o ci.skip)
-gitnet_retry git -C "${REPO}" push "${push_opts[@]}" -u origin HEAD \
-  || die "push failed for ${BRANCH} (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
 
 if [[ "${ACTION}" == opened ]]; then
   if [[ -n "${DESC_FILE}" ]]; then
@@ -229,23 +224,7 @@ if [[ "${ACTION}" == opened ]]; then
   (( DRAFT )) && create_args+=(--draft)
   [[ -n "${TARGET}" ]] && create_args+=(--target-branch "${TARGET}")
   gitnet_retry glab mr create --repo "${project}" "${create_args[@]}" \
-    || die "glab mr create failed (after retry, ${GITNET_WHY}): ${GITNET_OUT} — ${BRANCH} was pushed with ci.skip and has no pipeline until an MR exists"
-  # A project without MR pipelines would leave the commit unchecked: start a branch pipeline then.
-  # A project without a CI file has nothing to run, and a refused start must not fail an opened MR.
-  if git -C "${REPO}" cat-file -e HEAD:.gitlab-ci.yml 2>/dev/null; then
-    head_sha="$(git -C "${REPO}" rev-parse HEAD)"
-    typeset -i runs=0 tries=0
-    while (( tries++ < 10 )); do
-      if gitnet_retry glab api "projects/${project//\//%2F}/pipelines?sha=${head_sha}"; then
-        runs="$(print -r -- "${GITNET_OUT}" | jq '[.[] | select(.status != "skipped")] | length' 2>/dev/null || print -n 0)"
-        (( runs > 0 )) && break
-      fi
-      (( tries < 10 )) && sleep 3
-    done
-    if (( runs == 0 )) && ! gitnet_retry glab ci run --repo "${project}" --branch "${BRANCH}"; then
-      print -r -u2 -- "gitpublisher: warning: ${BRANCH} has no pipeline and starting one failed (${GITNET_WHY}): ${GITNET_OUT}"
-    fi
-  fi
+    || die "glab mr create failed (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
 fi
 
 # Read the MR back rather than scraping create's chatter, so the reported URL is one
