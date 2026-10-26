@@ -112,7 +112,8 @@ chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
 
 # tmux stand-in, on PATH only for the cases that want it: `list-panes -a`
-# answers from a canned file in the script's own field order, `has-session`
+# and `list-sessions` answer from canned files in the script's own field
+# order, `has-session`
 # from FAKE_TMUX_HAS, `new-session`/`new-window` with -P print a window id,
 # and every call is logged.
 TMUXBIN="${BASE}/tmuxbin"
@@ -123,6 +124,7 @@ print -r -- "$*" >> "${TMUX_LOG}"
 case "$1" in
   -V)          print -r -- "tmux 3.4"; exit 0 ;;
   list-panes)  [[ -r "${TMUX_PANES:-}" ]] && cat "${TMUX_PANES}"; exit 0 ;;
+  list-sessions) [[ -r "${TMUX_SESSIONS:-}" ]] && cat "${TMUX_SESSIONS}"; exit 0 ;;
   has-session) [[ -n "${FAKE_TMUX_HAS:-}" ]] ;;
   new-session|new-window)
     # Window ids count up from @10 per -P call, this one included.
@@ -155,6 +157,17 @@ BOX="${HOST}-9d2cb36e27df"
 # stdout and stderr apart: --json's stdout must parse on its own.
 run() { OUT="$("${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
 run_tmux() { OUT="$(with_tmux "${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+# Runs a command with the named fake processes gone for its duration: pgrep
+# stubs cannot hide a process found through its registry entry and exe link.
+with_stopped() {
+  local -a pids=()
+  local p
+  while [[ "$1" != -- ]]; do pids+=("$1"); shift; done
+  shift
+  for p in "${pids[@]}"; do mv "${PROC}/${p}" "${PROC}/stopped-${p}"; done
+  "$@"
+  for p in "${pids[@]}"; do mv "${PROC}/stopped-${p}" "${PROC}/${p}"; done
+}
 typeset -i RC=0
 OUT=""
 ERR=""
@@ -225,11 +238,12 @@ contains "a codex line resumes with codex resume" "${OUT}" "cd ${(q)WORK} && cod
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "--open: one Windows Terminal tab per session"
+# Recovery: nothing in the save is running, as after a restart.
 export WT_LOG="${BASE}/wt.log"
 run --open
 check "--open without a distro exits 2" "${RC}" "2"
 export WSL_DISTRO_NAME=flakelab
-run --open
+FAKE_PGREP_NONE=1 run --open
 check "--open exits 0" "${RC}" "0"
 check "--open calls wt.exe once per session" "$(wc -l < "${WT_LOG}")" "3"
 contains "--open targets the current window, the distro, the directory and the id" \
@@ -241,7 +255,7 @@ excludes "--open does not report a failure for the first tab" "${ERR}" "wt.exe f
 # With tmux: a window per session in the agents server, a view per tab.
 : > "${WT_LOG}"; : > "${TMUX_LOG}"
 export FAKE_TMUX_HAS=1
-run_tmux --open
+FAKE_PGREP_NONE=1 run_tmux --open
 check "--open with tmux exits 0" "${RC}" "0"
 check "--open with tmux opens a window per session" "$(grep -c '^new-window' "${TMUX_LOG}")" "3"
 contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --resume ${SID_A}"
@@ -256,9 +270,53 @@ contains "--open with tmux reports the count" "${ERR}" "opened 3 tab(s)"
 unset FAKE_TMUX_HAS
 # No server yet: the first window creates the session, the rest join it.
 : > "${TMUX_LOG}"
-run_tmux --open
+FAKE_PGREP_NONE=1 run_tmux --open
 check "--open creates the agents session for the first window" "$(grep -c '^new-session -d -P -F #{window_id} -s agents -n' "${TMUX_LOG}")" "3"
-unset WSL_DISTRO_NAME
+
+# A session that is still running is never resumed a second time: both
+# processes would append to one transcript. Under tmux its window gets a tab
+# unless a client already shows it; outside tmux it is left alone and named.
+print -r -- ""
+print -r -- "--open leaves running sessions running"
+: > "${WT_LOG}"; : > "${TMUX_LOG}"
+run --open
+check "--open with every session running exits 0" "${RC}" "0"
+check "--open resumes no running session" "$(wc -l < "${WT_LOG}")" "0"
+contains "--open names a running session it leaves alone" "${ERR}" "claude ${SID_A} is already running (pid 100), not resumed again"
+contains "--open names the running codex session too" "${ERR}" "codex ${SID_X} is already running (pid 500), not resumed again"
+contains "--open reports that it opened nothing" "${ERR}" "opened 0 tab(s)"
+
+export FAKE_TMUX_HAS=1
+: > "${WT_LOG}"; : > "${TMUX_LOG}"
+run_tmux --open
+check "--open with tmux and every session running exits 0" "${RC}" "0"
+check "--open starts no window for a running session" "$(grep -c '^new-window' "${TMUX_LOG}")" "0"
+excludes "--open never resumes a running session" "$(<"${TMUX_LOG}")$(<"${WT_LOG}")" "resume"
+check "--open opens a view on each running window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "2"
+contains "the view selects the claude session's own window" "$(<"${TMUX_LOG}")" "select-window -t agents-2-"
+contains "and the codex session's" "$(<"${TMUX_LOG}")" "select-window -t agents-5-"
+check "a tab attaches each of those views" "$(grep -c 'tmux attach-session -t agents-' "${WT_LOG}")" "2"
+contains "a running session outside the agents server is named, not resumed" "${ERR}" "claude ${SID_A} is already running (pid 100), not resumed again"
+contains "--open counts the tabs it opened" "${ERR}" "opened 2 tab(s)"
+
+# A window a client already shows gets no second tab.
+export TMUX_SESSIONS="${BASE}/tmux-sessions"
+print -r -- "agents-2-77${US}1${US}@2" > "${TMUX_SESSIONS}"
+: > "${WT_LOG}"; : > "${TMUX_LOG}"
+run_tmux --open
+check "--open opens no tab onto a window a client shows" "$(grep -c 'agents-2-' "${WT_LOG}")" "0"
+contains "and says where the session is shown" "${ERR}" "claude ${SID_B} is already open in a tab (claude-work_dir)"
+check "a window no client shows still gets its tab" "$(grep -c 'tmux attach-session -t agents-5-' "${WT_LOG}")" "1"
+unset TMUX_SESSIONS
+
+# Some running, some not: only the stopped ones are resumed.
+: > "${WT_LOG}"; : > "${TMUX_LOG}"
+FAKE_PGREP_ONLY=500 run_tmux --open
+check "--open resumes the stopped sessions" "$(grep -c '^new-window' "${TMUX_LOG}")" "2"
+excludes "but not the running codex session" "$(<"${TMUX_LOG}")" "codex resume"
+check "which gets a view on its window instead" "$(grep -c 'tmux attach-session -t agents-5-' "${WT_LOG}")" "1"
+contains "--open counts new and reattached tabs alike" "${ERR}" "opened 3 tab(s)"
+unset FAKE_TMUX_HAS WSL_DISTRO_NAME
 
 # state root wins over ~/.claude
 export FLAKELAB_STATE_ROOT="${BASE}/state"
@@ -393,10 +451,10 @@ contains "--resume resumes by id and names the missing path" "${OUT}" "claude --
 excludes "--resume never cds into it" "${OUT}" "cd ${(q)GONE}"
 export WSL_DISTRO_NAME=flakelab
 : > "${WT_LOG}"
-run --open "${BASE}/elsewhere.txt"
+FAKE_PGREP_NONE=1 run --open "${BASE}/elsewhere.txt"
 contains "--open starts that tab in the home directory" "$(head -1 "${WT_LOG}")" "--cd ~ -- claude --resume ${SID_A}"
 : > "${WT_LOG}"; : > "${TMUX_LOG}"
-run_tmux --open "${BASE}/elsewhere.txt"
+FAKE_PGREP_NONE=1 run_tmux --open "${BASE}/elsewhere.txt"
 contains "--open with tmux starts that window in the home directory" "$(<"${TMUX_LOG}")" "-c ${HOME} claude --resume ${SID_A}"
 unset WSL_DISTRO_NAME
 
@@ -659,10 +717,10 @@ contains "group resumes retain the independent Opus id" "$OUT" "tycswap run --gr
 excludes "unmanaged sessions remain unmanaged without an explicit group" "$(print -r -- "$OUT" | grep "$SID_A")" 'tycswap run'
 export WSL_DISTRO_NAME=flakelab
 : > "$WT_LOG"
-run --open "${BASE}/groups.txt"
+FAKE_PGREP_NONE=1 with_stopped 310 320 -- run --open "${BASE}/groups.txt"
 contains "direct tabs resume in the saved group" "$(<"$WT_LOG")" "-- tycswap run --group fable --resume ${SID_M}"
 : > "$TMUX_LOG"
-run_tmux --open "${BASE}/groups.txt"
+FAKE_PGREP_NONE=1 with_stopped 310 320 -- run_tmux --open "${BASE}/groups.txt"
 contains "tmux tabs resume in the saved group" "$(<"$TMUX_LOG")" "tycswap run --group opus --resume ${SID_N}"
 unset WSL_DISTRO_NAME
 
@@ -672,7 +730,7 @@ contains "explicit migration sends the source transcript path" "$OUT" "tycswap r
 contains "the Codex line in a mixed old snapshot keeps its tool" "$OUT" "codex resume ${SID_B}"
 export WSL_DISTRO_NAME=flakelab
 : > "$WT_LOG"
-run --open "${BASE}/old-shape.txt" --group opus
+FAKE_PGREP_NONE=1 run --open "${BASE}/old-shape.txt" --group opus
 contains "explicit group choice also migrates old Windows Terminal tabs" "$(<"$WT_LOG")" "-- tycswap run --group opus --resume ${HOME}/.claude/projects/-work/${SID_A}.jsonl"
 unset WSL_DISTRO_NAME
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${FABLE_PROFILE}/projects/-work/${SID_N}.jsonl"

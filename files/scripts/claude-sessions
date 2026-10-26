@@ -41,7 +41,9 @@ set -uo pipefail
 #   claude-sessions --open [file]      the same sessions, each in its own new
 #                                      Windows Terminal tab (WSL only); with tmux
 #                                      on PATH each tab is a view on a window that
-#                                      outlives it
+#                                      outlives it. One still running is not
+#                                      resumed again: its window gets a tab
+#                                      unless a client already shows it
 #   claude-sessions --autosave         the crash-recovery snapshot (below)
 #   claude-sessions --recent [hours]   sessions NOT running whose transcript
 #                                      changed in the last <hours> (default 24),
@@ -128,7 +130,8 @@ Usage: flakelab sessions [--start <tool> [--group fable|opus] [dir] [--detach] [
                     (default: this box's newest save, else the live sessions)
   --open [file]     open each of those sessions in its own Windows Terminal
                     tab (WSL only); with tmux on PATH, as a view on a window
-                    that outlives the tab
+                    that outlives the tab. A session still running is not
+                    resumed again: its window gets a tab unless one shows it
   --autosave        snapshot the running sessions for crash recovery: one
                     file per boot, only when the set changed, never empty
   --recent [hours]  sessions not running whose transcript changed in the
@@ -709,19 +712,54 @@ print_resume() {
 }
 
 # `-w 0` targets this shell's terminal window; with interop off there is no wt.exe and --resume is the answer.
+# A session still running is never resumed again: both processes would append
+# to one transcript. Its agents window gets a view instead, unless a client
+# already shows it.
 open_tabs() {
-  local pair tool cwd sid group profile tab_cwd wid view n=0 use_tmux=false
+  local pair tool cwd sid group profile tab_cwd wid wname view key row p age att n=0 use_tmux=false
+  local -A live_pid=() live_wid=() live_wname=() shown=()
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
   have_tmux && use_tmux=true
   collect_pairs || return 1
+  ROWS=()
+  gather 2>/dev/null
+  for row in "${ROWS[@]}"; do
+    IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
+    [[ -n "$sid" ]] || continue
+    key="${tool}${US}${sid}${US}${profile}"
+    if (( ! ${+live_pid[$key]} )) || [[ -z "${live_wid[$key]}" && -n "$wid" ]]; then
+      live_pid[$key]="$p"; live_wid[$key]="$wid"; live_wname[$key]="$wname"
+    fi
+  done
+  if $use_tmux; then
+    while IFS="$US" read -r view att wid; do
+      [[ "$att" == <-> ]] && (( att > 0 )) && shown[$wid]=1
+    done < <(tmux list-sessions -F "#{session_name}${US}#{session_attached}${US}#{window_id}" 2>/dev/null)
+  fi
   for pair in "${PAIRS[@]}"; do
     IFS="$US" read -r tool cwd sid group profile <<<"$pair"
+    key="${tool}${US}${sid}${US}${profile}"
+    wid=""
+    if (( ${+live_pid[$key]} )); then
+      wid="${live_wid[$key]}"
+      if ! $use_tmux || [[ -z "$wid" ]]; then
+        print -ru2 -- "${tool} ${sid} is already running (pid ${live_pid[$key]}), not resumed again"
+        continue
+      fi
+      if (( ${+shown[$wid]} )); then
+        print -ru2 -- "${tool} ${sid} is already open in a tab (${live_wname[$key]})"
+        continue
+      fi
+    fi
     tab_cwd="$cwd"
     [[ -d "$tab_cwd" ]] || tab_cwd="$HOME"
     if $use_tmux; then
-      wid="$(new_window "$(window_name "$tool" "$cwd")" "$tab_cwd" "$(resume_cmd "$tool" "$sid" "$group" "$profile")")" || { print -ru2 -- "tmux could not start a window for ${cwd} ${sid}"; continue }
+      if [[ -z "$wid" ]]; then
+        wid="$(new_window "$(window_name "$tool" "$cwd")" "$tab_cwd" "$(resume_cmd "$tool" "$sid" "$group" "$profile")")" || { print -ru2 -- "tmux could not start a window for ${cwd} ${sid}"; continue }
+      fi
       view="$(new_view "$wid")" || { print -ru2 -- "tmux could not open a view on ${wid}"; continue }
+      shown[$wid]=1
       wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" -- tmux attach-session -t "$view" </dev/null >/dev/null 2>&1 &&
         (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
     else
