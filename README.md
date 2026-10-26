@@ -546,6 +546,11 @@ tycswap.exe app --remote http://127.0.0.1:7337 --token-file $token --autostart o
 Start-Process tycswap.exe -ArgumentList 'app', '--remote', 'http://127.0.0.1:7337', '--token-file', $token
 ```
 
+The tray is not managed by the flake. When `tycswap.exe upgrade` answers
+HTTP 403 (the unauthenticated GitHub API quota is spent), fetch the exe and
+`SHA256SUMS` with `gh release download`, verify, rename the running exe to
+`.exe.old`, move the new one in and start the tray again.
+
 The app writes that token on every start and the tray reads it again by
 itself; the tray switches, toggles auto-switch and opens the distro's
 dashboard, while adding a login stays on the dashboard. Its auto-switch

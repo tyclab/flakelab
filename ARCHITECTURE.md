@@ -306,7 +306,8 @@ symlinks, because Claude rewrites these files itself:
 
 - **`settings.json`** — attribution, the classifier rules (`claudeAutoMode`),
   `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
-  the output style when `claudeOutputStyle` names one,
+  the output style when `claudeOutputStyle` names one, the auto-memory
+  directory when `claudeAutoMemoryDirectory` names one,
   the bridge environment, the statusline, and a `permissions.deny` **floor**
   against rewriting the protected default branch, asserted whole like
   `autoMode`. `AUTO-MODE.md` covers how the floor, the ask tier, the allowlist

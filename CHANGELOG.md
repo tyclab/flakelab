@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab.claudeAutoMemoryDirectory` (default `null`): asserted into `settings.autoMemoryDirectory`, so Claude Code keeps one auto-memory store for every working directory instead of one per `~/.claude/projects/<slug>`.
 - With `installCodex`, `~/.codex/AGENTS.md` gets a `<!-- BEGIN managed by flakelab -->` block like `~/.claude/CLAUDE.md`: the shipped distro facts, the target facts and `claudeMdExtra`, so Codex works from the same rules as Claude Code. Text outside the markers stays; a symlink there becomes a regular file. The block leaves out Claude's permission tiers and the question-tool text, which Codex already receives through `developer_instructions`. `$CODEX_HOME` counts only when the activation environment sets it, and an `AGENTS.override.md` beside the file makes Codex read that instead. A `home.file` for the same path, such as Home Manager's `programs.codex.context`, fails the build with a pointer to `claudeMdExtra`.
 - A managed block that cannot be written, or whose path links into the Nix store, is a warning instead of an aborted activation.
 - `flakelab-prune` removes `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them; the next firmware build or embedding run downloads what it needs again.
@@ -17,7 +18,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 ### Changed
 
 - Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.
-- `gitpublisher` pushes a branch that has no open MR with `-o ci.skip`, since the MR it opens next runs the same commit; when no pipeline appears for the commit within 30 seconds of opening the MR, it starts a branch pipeline; a project without `.gitlab-ci.yml` is not waited on, and a refused start is a warning, never a failed publish. A failed MR create after such a push says the branch has no pipeline yet.
+- The question tool guidance now requests self-contained questions and short action choices, so the decision does not depend on background text hidden by terminal previews. Optional detail remains in the Home Assistant inbox.
+- The `ask_question` text, its field descriptions and the managed CLAUDE.md and Codex instructions say what each surface shows: the terminal dialog three lines, the phone and watch push the question with a button for each of one or two options, the context in full only in the inbox record. The question's first line names the decision and the recommendation, options stay near 40 characters, and two are preferred. "Include enough context to answer from the phone" and "Relevant details the user needs to decide" are gone: they put the choice in the context, which neither the dialog nor the push showed.
+- The terminal dialog puts the context, wrapped like the question, directly under the options: the blank line before it took the third of the three lines Claude Code shows.
 - Claude's permission-tier section moved from `files/config/agent-instructions.md` to `files/config/claude/auto-mode.md` and now follows the target facts in `~/.claude/CLAUDE.md`; its text is unchanged.
 - The `claudeAutoMode` force-push rule also accepts a lease with an explicit sha, `git push --force-with-lease=<branch>:<expected-sha> origin <branch>`, which it refused even when the operator named it: git ignores `--force-if-includes` beside an explicit sha, so the required flag added nothing to the strictest spelling. The rule now covers any branch that is neither protected nor the default branch, not only the agent's own.
 
