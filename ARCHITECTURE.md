@@ -74,8 +74,9 @@ is only the reasoning a description has no room for:
   dashboard, never on a port of its own.
 - `mcpShared.*` and `mcpBrowsers.headless` register their servers in Claude and
   Codex from one definition (`mcp.md`), so the two clients cannot drift.
-- `claudeMdExtra` keeps the shipped half of `~/.claude/CLAUDE.md` limited to
-  facts about the distro; personal workflow rules go there, from the overlay.
+- `claudeMdExtra` keeps the shipped half of `~/.claude/CLAUDE.md` and, with
+  `installCodex`, `~/.codex/AGENTS.md` limited to facts about the distro;
+  personal workflow rules go there, from the overlay, and reach both agents.
 - `bitwardenServer = null` skips the `bw config server` activation entirely
   rather than rewriting someone's region on every rebuild.
 
@@ -325,7 +326,13 @@ symlinks, because Claude rewrites these files itself:
   was. Not an activation: the clone is runtime data, and activation reruns only
   when the built config changed.
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
-  shipped facts plus `claudeMdExtra`; anything outside the markers is left alone.
+  shipped facts, the permission tiers (`files/config/claude/auto-mode.md`) and
+  `claudeMdExtra`; anything outside the markers is left alone. Codex's
+  `~/.codex/AGENTS.md` (`$CODEX_HOME` when the activation environment sets it)
+  gets the same block without the permission tiers and the question-tool text,
+  which reaches Codex through `developer_instructions` in
+  `/etc/codex/config.toml`. An `AGENTS.override.md` beside it makes Codex skip
+  the block, and a `home.file` for the path is refused at evaluation.
 
 A merge takes back what it stops rendering, and nothing else. The `env` of
 `settings.json` and the `mcpServers` of `~/.claude.json` are maps the user and

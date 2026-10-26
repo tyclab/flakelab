@@ -481,7 +481,7 @@ in
     claudeMdExtra = mkOption {
       type = types.lines;
       default = "";
-      description = "Extra markdown appended INSIDE the managed block of ~/.claude/CLAUDE.md, after the neutral text this repo ships (files/config/agent-instructions.md). Where personal workflow rules go — which forge CLI to use for which remote, agent and skill preferences, post-merge housekeeping. The shipped half stays limited to facts about the distro itself, so an adopter is not handed someone else's workflow.";
+      description = "Extra markdown appended INSIDE the managed blocks of ~/.claude/CLAUDE.md and, with installCodex, ~/.codex/AGENTS.md ($CODEX_HOME/AGENTS.md when the activation environment sets CODEX_HOME), after the neutral text this repo ships (files/config/agent-instructions.md), so Claude Code and Codex work from the same rules. Where personal workflow rules go — which forge CLI to use for which remote, agent and skill preferences, post-merge housekeeping. The shipped half stays limited to facts about the distro itself, so an adopter is not handed someone else's workflow.";
     };
 
     whatsappMcpDir = mkOption {

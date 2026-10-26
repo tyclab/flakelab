@@ -209,14 +209,6 @@ let
     builtins.attrNames claudeEnv
   );
 
-  # Newline-terminated, or the END marker lands on the last line of the extra text.
-  claudeMdExtraFile = pkgs.writeText "claude-md-extra.md" (
-    lib.removeSuffix "\n" cfg.claudeMdExtra + "\n"
-  );
-  claudeMdExtraCat = lib.optionalString (
-    cfg.claudeMdExtra != ""
-  ) "printf '\\n'; cat ${claudeMdExtraFile}";
-
   claudeMarketplaces = cfg.claudePluginMarketplaces;
   # The marketplaces installClaudePlugins fetched; nix-update reads the same path.
   marketplacesFetched = "${stateDir}/marketplaces-fetched";
@@ -537,39 +529,12 @@ in
         ''
       );
 
-  # A marker block, not a home.file: Claude appends to this file itself, and
-  # anything outside the markers survives. Rewritten every activation.
+  # The managed block; flakelab.writeManagedBlock keeps what Claude appends outside it.
   home.activation.claudeMd =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "claudeSettings" ]
       (
-        lib.optionalString installClaude ''
-          export PATH="${
-            lib.makeBinPath [
-              pkgs.gawk
-              pkgs.coreutils
-            ]
-          }:$PATH"
-          _md="$HOME/.claude/CLAUDE.md"
-          mkdir -p "$HOME/.claude"
-          touch "$_md"
-          _tmp="$(mktemp)"
-          awk '
-            index($0, "<!-- BEGIN managed by flakelab -->") == 1 { skip = 1 }
-            skip != 1 { print }
-            index($0, "<!-- END managed by flakelab -->") == 1 { skip = 0 }
-          ' "$_md" > "$_tmp"
-          {
-            cat "$_tmp"
-            echo '<!-- BEGIN managed by flakelab -->'
-            cat ${../../files/config/agent-instructions.md}
-            ${lib.optionalString cfg.questions.enable "cat ${../../files/config/question-instructions.md}"}
-            printf '\n'
-            cat ${../../files/config/claude/target-${cfg.target}.md}
-            ${claudeMdExtraCat}
-            echo '<!-- END managed by flakelab -->'
-          } > "$_tmp.new" && $DRY_RUN_CMD install -m644 "$_tmp.new" "$_md" || \
-            ${flakelabWarn} "could not refresh the managed block in $_md."
-          rm -f "$_tmp" "$_tmp.new"
-        ''
+        lib.optionalString installClaude (
+          flakelab.writeManagedBlock ''"$HOME/.claude/CLAUDE.md"'' flakelab.agentInstructions.claude
+        )
       );
 }
