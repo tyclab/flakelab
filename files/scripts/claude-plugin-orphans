@@ -1,0 +1,48 @@
+#!/usr/bin/env zsh
+# Uninstalls from user scope a plugin of a declared marketplace that its catalogue
+# no longer lists and claudePlugins does not name: withdrawn upstream, it would keep
+# loading. Activation runs it after installClaudePlugins. Notes only, exits 0.
+# Env: FLAKELAB_CLAUDE_MARKETPLACES (names), FLAKELAB_CLAUDE_PLUGINS (plugin@marketplace).
+set -uo pipefail
+
+_note() { print -r -- "claude-plugin-orphans: $*" }
+
+# zsh does not word-split a parameter: unsplit, each list is one word.
+_markets=( ${(s: :)${FLAKELAB_CLAUDE_MARKETPLACES:-}} )
+_declared=( ${(s: :)${FLAKELAB_CLAUDE_PLUGINS:-}} )
+_claude="${HOME}/.local/bin/claude"
+_ip="${HOME}/.claude/plugins/installed_plugins.json"
+(( ${#_markets} )) && [[ -x "${_claude}" && -f "${_ip}" ]] || exit 0
+if ! command -v jq > /dev/null 2>&1; then
+  _note "jq not on PATH; no withdrawn plugin pruned."
+  exit 0
+fi
+
+for _m in "${_markets[@]}"; do
+  _mjson="${HOME}/.claude/plugins/marketplaces/${_m}/.claude-plugin/marketplace.json"
+  # A missing catalogue is a clone not fetched yet, an empty one a truncated clone.
+  if [[ ! -f "${_mjson}" ]]; then
+    _note "no catalogue for the ${_m} marketplace yet; no withdrawn plugin pruned from it."
+    continue
+  fi
+  if ! _offered=( ${(f)"$(jq -er '.plugins[].name' "${_mjson}" 2> /dev/null)"} ) || (( ! ${#_offered} )); then
+    _note "${_mjson} lists no plugins; no withdrawn plugin pruned from ${_m}."
+    continue
+  fi
+  # User scope only, the one flakelab installs to; a registry without scopes is user scope.
+  if ! _installed="$(jq -r --arg m "@${_m}" '.plugins // {} | to_entries[] | select(.key | endswith($m))
+      | select(.value | if type == "array" then any(.[]; (.scope // "user") == "user") else true end) | .key' "${_ip}" 2> /dev/null)"; then
+    _note "could not read ${_ip}; no withdrawn plugin pruned."
+    exit 0
+  fi
+  for _key in ${(f)_installed}; do
+    # Exact-match lookups, not patterns: a plugin name is data.
+    (( ${_offered[(Ie)${_key%"@${_m}"}]} || ${_declared[(Ie)${_key}]} )) && continue
+    if "${_claude}" plugin uninstall "${_key}" < /dev/null > /dev/null 2>&1; then
+      _note "uninstalled ${_key}: the ${_m} marketplace no longer offers it."
+    else
+      _note "could not uninstall ${_key}, which the ${_m} marketplace no longer offers; it stays installed."
+    fi
+  done
+done
+exit 0

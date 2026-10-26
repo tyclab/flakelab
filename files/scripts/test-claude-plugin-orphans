@@ -1,0 +1,210 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for claude-plugin-orphans: the real script against a throwaway
+# HOME under a mktemp root. Its `claude` is a stub in that HOME's ~/.local/bin
+# that records each call with its directory. The PATH is rebuilt from symlinks
+# without `claude`, plus a tripwire `claude` that fails the suite if anything
+# reaches past the stub to a real binary; CLAUDE_CONFIG_DIR is unset, so no
+# real Claude state is in reach either.
+#
+# Usage: files/scripts/test-claude-plugin-orphans
+#
+
+SCRIPT_DIR="${0:A:h}"
+ORPHANS="${SCRIPT_DIR}/claude-plugin-orphans"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+unset CLAUDE_CONFIG_DIR
+
+TOOLS="${BASE}/tools"
+mkdir -p "${TOOLS}"
+for f in ${^path}/*(N-*); do
+  [[ "${f:t}" == claude ]] && continue
+  [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
+done
+TRIPWIRE="${BASE}/tripwire.log"
+print -rl -- '#!/usr/bin/env zsh' "print -r -- \"\$*\" >> ${(q)TRIPWIRE}" 'print -ru2 -- "tripwire: a claude off PATH was run"' 'exit 1' > "${TOOLS}/claude"
+chmod +x "${TOOLS}/claude"
+
+# new_home - a fresh HOME with a recording `claude` stub. Sets H.
+typeset -i N=0
+H=""
+new_home() {
+  (( N++ ))
+  H="${BASE}/h${N}"
+  mkdir -p "${H}/.local/bin" "${H}/.claude/plugins/marketplaces" "${H}/proj"
+  cat > "${H}/.local/bin/claude" <<'STUB'
+#!/bin/sh
+# Records every call with its directory; an uninstall-fails file fails uninstalls.
+printf '%s | %s\n' "$*" "$PWD" >> "$HOME/calls"
+[ "$1 $2" = "plugin uninstall" ] && [ -e "$HOME/uninstall-fails" ] && exit 1
+exit 0
+STUB
+  chmod +x "${H}/.local/bin/claude"
+  : > "${H}/calls"
+}
+
+# installed <key>[:<scope>[,<scope>…]]... - the registry Claude keeps (version 2
+# shape), user scope by default.
+installed() {
+  local _k _s _scope _first=1 _sfirst
+  {
+    printf '{"version":2,"plugins":{'
+    for _k in "$@"; do
+      (( _first )) || printf ','
+      _first=0
+      _s=user
+      [[ "${_k}" == *:* ]] && _s="${_k#*:}"
+      printf '"%s":[' "${_k%%:*}"
+      _sfirst=1
+      for _scope in ${(s:,:)_s}; do
+        (( _sfirst )) || printf ','
+        _sfirst=0
+        if [[ "${_scope}" == user ]]; then
+          printf '{"scope":"user"}'
+        else
+          printf '{"scope":"%s","projectPath":"%s"}' "${_scope}" "${H}/proj"
+        fi
+      done
+      printf ']'
+    done
+    printf '}}\n'
+  } > "${H}/.claude/plugins/installed_plugins.json"
+}
+
+# catalogue <marketplace> <name>... - that marketplace's own marketplace.json.
+catalogue() {
+  local _m="$1"; shift
+  local _d="${H}/.claude/plugins/marketplaces/${_m}/.claude-plugin"
+  mkdir -p "${_d}"
+  jq -n '{plugins: [$ARGS.positional[] | {name: .}]}' --args "$@" > "${_d}/marketplace.json"
+}
+
+# run_orphans <marketplaces> <declared> - the real script, from HOME, with the
+# rebuilt PATH. Sets OUT, RC and CALLS.
+typeset -i RC=0
+OUT="" CALLS=""
+run_orphans() {
+  OUT="$(cd "${H}" && HOME="${H}" PATH="${TOOLS}" FLAKELAB_CLAUDE_MARKETPLACES="$1" \
+    FLAKELAB_CLAUDE_PLUGINS="$2" zsh "${ORPHANS}" 2>&1)"
+  RC=$?
+  CALLS="$(< "${H}/calls")"
+}
+
+print -r -- "a withdrawn plugin"
+new_home
+installed "gone@mkt" "kept@mkt"
+catalogue mkt kept
+run_orphans "mkt" "kept@mkt"
+check    "exits 0"                          "${RC}" "0"
+check    "is uninstalled from user scope, from HOME" "${CALLS}" "plugin uninstall gone@mkt | ${H}"
+contains "with a note naming it"            "${OUT}" "uninstalled gone@mkt: the mkt marketplace no longer offers it."
+
+print -r -- "a withdrawn plugin claudePlugins still declares is left to the installer"
+new_home
+installed "gone@mkt"
+catalogue mkt kept
+run_orphans "mkt" "gone@mkt"
+check    "nothing is run"                   "${CALLS}" ""
+check    "and nothing said"                 "${OUT}" ""
+
+print -r -- "a withdrawn plugin installed only in a project or local scope is not touched"
+new_home
+installed "gone@mkt:project" "also@mkt:local"
+catalogue mkt kept
+run_orphans "mkt" ""
+check    "nothing is run"                   "${CALLS}" ""
+
+print -r -- "one installed in user scope and a project goes from user scope only"
+new_home
+installed "gone@mkt:user,project"
+catalogue mkt kept
+run_orphans "mkt" ""
+check    "one uninstall, from HOME"         "${CALLS}" "plugin uninstall gone@mkt | ${H}"
+
+print -r -- "a registry without scopes counts as user scope"
+new_home
+print -r -- '{"plugins":{"gone@mkt":{}}}' > "${H}/.claude/plugins/installed_plugins.json"
+catalogue mkt kept
+run_orphans "mkt" ""
+check    "it is uninstalled"                "${CALLS}" "plugin uninstall gone@mkt | ${H}"
+
+print -r -- "only declared marketplaces, each on its own"
+new_home
+installed "gone@mkt" "gone@other" "x@two"
+catalogue mkt kept
+catalogue other kept
+catalogue two y
+run_orphans "mkt two" ""
+contains "the first is pruned"              "${CALLS}" "plugin uninstall gone@mkt "
+contains "the second too"                   "${CALLS}" "plugin uninstall x@two "
+excludes "an undeclared one is not"         "${CALLS}" "gone@other"
+
+print -r -- "a catalogue that is missing, empty or unreadable prunes nothing, with a note"
+new_home
+installed "gone@mkt"
+run_orphans "mkt" ""
+check    "missing: exits 0"                 "${RC}" "0"
+check    "missing: nothing is run"          "${CALLS}" ""
+contains "missing: says so"                 "${OUT}" "no catalogue for the mkt marketplace yet"
+catalogue mkt
+run_orphans "mkt" ""
+check    "empty: nothing is run"            "${CALLS}" ""
+contains "empty: says so"                   "${OUT}" "lists no plugins"
+print -r -- 'not json {' > "${H}/.claude/plugins/marketplaces/mkt/.claude-plugin/marketplace.json"
+run_orphans "mkt" ""
+check    "unreadable: exits 0"              "${RC}" "0"
+check    "unreadable: nothing is run"       "${CALLS}" ""
+contains "unreadable: says so"              "${OUT}" "lists no plugins"
+
+print -r -- "an unreadable registry prunes nothing, with a note"
+new_home
+print -r -- 'not json {' > "${H}/.claude/plugins/installed_plugins.json"
+catalogue mkt kept
+run_orphans "mkt" ""
+check    "exits 0"                          "${RC}" "0"
+check    "nothing is run"                   "${CALLS}" ""
+contains "says so"                          "${OUT}" "could not read"
+
+print -r -- "a failed uninstall is a note, not a failure"
+new_home
+installed "gone@mkt"
+catalogue mkt kept
+: > "${H}/uninstall-fails"
+run_orphans "mkt" ""
+check    "exits 0"                          "${RC}" "0"
+contains "says it stays"                    "${OUT}" "could not uninstall gone@mkt, which the mkt marketplace no longer offers; it stays installed."
+
+print -r -- "nothing to do"
+new_home
+installed "gone@mkt"
+catalogue mkt kept
+run_orphans "" ""
+check    "no marketplace declared: nothing is run" "${CALLS}" ""
+rm -f "${H}/.local/bin/claude"
+run_orphans "mkt" ""
+check    "no claude in ~/.local/bin: exits 0" "${RC}" "0"
+check    "and says nothing"                 "${OUT}" ""
+new_home
+catalogue mkt kept
+run_orphans "mkt" ""
+check    "no registry: exits 0"             "${RC}" "0"
+check    "and nothing is run"               "${CALLS}" ""
+
+print -r -- "the tripwire"
+check    "no claude but the stub was ever run" "$([[ -e "${TRIPWIRE}" ]] && < "${TRIPWIRE}" || print none)" "none"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

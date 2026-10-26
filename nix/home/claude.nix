@@ -192,7 +192,7 @@ let
     DISABLE_FEEDBACK_COMMAND = "1";
     DISABLE_ERROR_REPORTING = "1";
   }
-  // lib.optionalAttrs (isWsl && lib.elem "mcp-playwright" claudePlugins) {
+  // lib.optionalAttrs (isWsl && marketplaceOf "mcp-playwright" != null) {
     PLAYWRIGHT_MCP_EXECUTABLE_PATH = windowsChromePath;
     PLAYWRIGHT_MCP_EXTENSION = "true";
     PLAYWRIGHT_MCP_BROWSER = "chrome";
@@ -200,7 +200,7 @@ let
   //
     lib.optionalAttrs
       (
-        lib.elem "mcp-whatsapp" claudePlugins
+        marketplaceOf "mcp-whatsapp" != null
         && cfg.sessionVariables ? WHATSAPP_BRIDGE_HOST
         && whatsappMcpDir != null
       )
@@ -377,7 +377,8 @@ in
       );
 
   # Uninstalls an mcp-* plugin from our marketplaces that claudePlugins no longer
-  # names; </dev/null bounds any interactive prompt.
+  # names; </dev/null bounds any interactive prompt. Then claude-plugin-orphans:
+  # an undeclared plugin its marketplace withdrew, with a note, never a warning.
   home.activation.pruneClaudeMcpPlugins =
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "installClaudePlugins" ]
       (
@@ -401,6 +402,10 @@ in
               done
             done
           fi
+          FLAKELAB_CLAUDE_MARKETPLACES=${
+            lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) claudeMarketplaces)
+          } FLAKELAB_CLAUDE_PLUGINS=${lib.escapeShellArg (lib.concatStringsSep " " qualifiedClaudePlugins)} \
+            ${pkgs.zsh}/bin/zsh ${../../files/scripts/claude-plugin-orphans} || true
         ''
       );
 

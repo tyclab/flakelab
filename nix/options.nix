@@ -392,7 +392,7 @@ in
     claudePlugins = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Claude Code plugins to install. Bare names (\"agents\") resolve against the first marketplace; \"plugin@marketplace\" also works. An mcp-* plugin dropped from this list is uninstalled again.";
+      description = "Claude Code plugins to install. Bare names (\"agents\") resolve against the first marketplace; \"plugin@marketplace\" also works. An mcp-* plugin dropped from this list is uninstalled again, and so, with a note in the activation log, is a plugin this list does not name that its marketplace no longer offers (user scope).";
     };
 
     # Opt-in bundle, not a default: it hands every session auto mode without the

@@ -41,6 +41,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 - A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
 - A marketplace that `flakelab update` cannot refresh shows Claude's own error, and the warning says so instead of guessing "offline, or no agent key"; a marketplace the activation cannot add says its error precedes the deferral in the activation log instead of guessing "(offline?)".
 - A first Claude Code install runs the official installer with `claudeAutoUpdatesChannel` (`bash -s latest`, say), so it starts on the channel the settings assert; without it the installer put `stable` on the box and a `latest` box only got there at its next self-update.
+- A plugin that a declared marketplace's catalogue no longer offers, and that `claudePlugins` does not name, is uninstalled from user scope on activation, with a note in the activation log; it kept loading into every session. A catalogue that is missing or lists nothing prunes nothing, and a failed uninstall is a note too, never a failed activation.
+- The Playwright and WhatsApp settings.json env follows its plugin however `claudePlugins` spells it: `mcp-playwright@<marketplace>` installed the plugin without the env, and the server started a local Chrome instead of attaching to Windows Chrome.
 
 ### Removed
 
