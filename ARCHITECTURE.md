@@ -299,7 +299,8 @@ no unlocked ssh-agent, no network — is recorded as **deferred** and never fata
 That is what lets the first rebuild of a fresh distro succeed before anything
 has been seeded into `~`. `flakelab doctor` covers the rest, because it runs
 from an interactive shell: an agent holding a key, `glab` auth, a working
-`git@gitlab.com`.
+`git@gitlab.com`, and whether Claude Code is the native, self-updating
+`~/.local/bin/claude` with no npm copy shadowing it.
 
 Claude Code state is owned by idempotent jq/marker merges rather than store
 symlinks, because Claude rewrites these files itself:

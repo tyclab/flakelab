@@ -146,13 +146,20 @@ The managed client instructions prefer it for clarification and decisions,
 and the tool text says what each surface shows: the phone and watch push shows
 the question and carries a button for each of one or two choices (more
 choices get none), never the context, which only the inbox record shows in
-full. So the question's first line names the decision and the recommendation,
-and two short choices are best.
+full. So the question's first line names the target and decision; any
+recommendation is brief and optional. Nonessential validation details belong in
+context.
+Prefer two action labels of 1-3 words, aiming for 20 characters or fewer, such as
+"Merge and deploy" and "Keep open", recommended first. Keep the target in the
+question instead of repeating it in each label: longer labels may be clipped by
+the notification UI.
+This is writing guidance; the broker preserves the supplied labels.
 Claude may move a long call to a background task; dependent work must still
 wait for its answer. Codex and Claude get a per-server timeout just above the
-answer window. Existing sessions need to reconnect MCP or restart to load a
-new server or to get the dialog. If HA is unavailable and no dialog is open, ask
-in the conversation.
+answer window. A running session retains the server command resolved at startup;
+reconnecting MCP can spawn that same old command. Start a new client or resume
+the session in a new client process to load a newly deployed server and its tool
+guidance. If HA is unavailable and no dialog is open, ask in the conversation.
 
 `flakelab notify` remains available for manual and legacy pushes: a Claude Code `Notification` hook
 (`flakelab.notify.enable`, the types in `flakelab.notify.events`) and Codex's

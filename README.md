@@ -283,6 +283,9 @@ alone: that pin is deliberate. A lock the caller cannot write — root's, left b
 switch that had to lock — is taken back first and again after the switch, pins
 unchanged; if it cannot be, a `path:` re-lock that fails on it refuses the switch
 and names the `chown`.
+A re-lock never pulls the checkout: `flakelab doctor` warns when a local
+flakelab checkout is dirty, behind its tracking ref as last fetched, or gone,
+and says nothing about a clean one.
 
 Activation ends in a health check, and `flakelab doctor` covers what it cannot
 assert from a non-interactive context; which failures are fatal and which are
@@ -429,9 +432,12 @@ other:
 
 `provision` writes the fallback file
 for you from the `custom_env_vars` of the config it provisions from (it asks
-first): the names in the table below go there, everything else becomes
-`sessionVariables` in the generated flake, so no token reaches the
-world-readable store. On a box set up while these files lived in `~/.config/tyc`,
+first): the names in the table below go there, and so does any name shaped
+like a credential, in any case: `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`,
+`APIKEY` or `CREDENTIAL` as a whole `_`-separated word, or `API_KEY` or
+`PRIVATE_KEY` anywhere, unless the name ends in `_URL`, `_DIR`, `_FILE`,
+`_PATH`, `_HOST` or `_NAMESPACE` and is no `WEBHOOK`. Everything else becomes `sessionVariables`
+in the generated flake, so no token reaches the world-readable store. On a box set up while these files lived in `~/.config/tyc`,
 `flakelab doctor` warns and prints the one `mv` that moves them.
 
 There are **two** files, and only one of them exists before a distro does. The
