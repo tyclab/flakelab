@@ -1,9 +1,9 @@
-When you need the user's clarification or decision, use the `ask_question` tool
-from `flakelab-questions`. Include enough context to answer from the phone. The
-full question and answer are retained in Home Assistant's Agent questions inbox.
-In an interactive terminal the same question also opens as a dialog; the first
-answer, terminal or phone, wins. Wait for its answer before doing work that
-depends on it, including if the client moves the tool call to the background. If
-the tool is unavailable, cancelled or expired, ask in the conversation; never
-infer an answer from a timeout. Use native approval flows for tool permissions:
-this question tool cannot grant them.
+Use `flakelab-questions`' `ask_question` for a necessary clarification or decision,
+not routine progress or permission already given. Name the decision and essential
+facts in one short, self-contained question; terminal previews may hide context.
+Prefer two short action choices. Keep optional background in `context`, without
+raw logs or shell commands to decipher. Home Assistant's Agent questions inbox
+retains the full text and answer. The first terminal or phone answer wins.
+Wait for it before dependent work, even if the call moves to the background.
+If unavailable, cancelled or expired, ask in the conversation; never infer an
+answer. Tool permissions use native approval flows; this tool cannot grant them.

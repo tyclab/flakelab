@@ -18,24 +18,28 @@ import urllib.request
 import uuid
 
 INSTRUCTIONS = (
-    "Use flakelab-questions ask_question when you need the user's clarification or "
-    "decision. It retains the full question in Home Assistant and waits for their "
-    "answer from the phone or inbox. In an interactive terminal the same question "
-    "also opens as a dialog; the first answer, terminal or phone, wins. "
-    "Ask once and use the returned answer. "
-    "If unavailable, cancelled or expired, ask in the conversation; never invent an "
-    "answer. This tool cannot grant tool permissions or bypass approval policies."
+    "Use ask_question for a necessary clarification or decision, not routine progress "
+    "or permission already given. The first terminal or phone answer wins and is "
+    "retained in Home Assistant. Wait for it before dependent work, even if the call "
+    "moves to the background. If unavailable, cancelled or expired, ask in the "
+    "conversation; never infer an answer. Tool permissions use native approval flows."
 )
 TOOL = {
     "name": "ask_question",
-    "description": INSTRUCTIONS,
+    "description": "Ask one self-contained question, readable in a terminal or phone notification. "
+                   "Use short choices; keep optional background in context. Wait for the returned answer.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "question": {"type": "string", "minLength": 1, "maxLength": 12000},
+            "question": {"type": "string", "minLength": 1, "maxLength": 12000,
+                         "description": "Name the decision and essential facts in a short sentence. "
+                                        "It must make sense without context or earlier messages."},
             "context": {"type": "string", "maxLength": 24000,
-                        "description": "Relevant details the user needs to decide. Do not include secrets."},
+                        "description": "Optional background retained in the inbox; terminal previews may hide it. "
+                                       "Keep it brief. No secrets, raw logs or shell commands to decipher."},
             "options": {"type": "array", "maxItems": 8, "uniqueItems": True,
+                        "description": "Prefer two distinct, short action labels (up to 40 characters each). "
+                                       "Put the recommended choice first; use more only when necessary.",
                         "items": {"type": "string", "minLength": 1, "maxLength": 300}},
         },
         "required": ["question"],
