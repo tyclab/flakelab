@@ -41,6 +41,14 @@ Between 2026-08-26 and 2026-09-09 that floor denied 62 commands. 56 were
 `--force-with-lease` — the spelling that refuses to clobber a moved ref. Three
 were plain `--force`.
 
+The argument holds only while the protection does. Forge project
+administration — deleting, transferring or archiving a project or group,
+removing or weakening branch protection, protected tags, rulesets or push
+rules, changing members, deploy keys or project, group and personal access
+tokens, through the CLI or the raw API — removes it, so `claudeAutoMode` lists
+it in `soft_deny`: it clears only when the operator names the project or group
+and the operation.
+
 ## Globs match raw text
 
 `*` matches inside the command string, including across `&&` and `|` and into
