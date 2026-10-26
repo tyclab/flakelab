@@ -223,7 +223,7 @@ clean_repo() {
   # No queryable forge: the ancestor test still stands, the squash case is skipped rather than guessed.
   local -i have_forge=0
   typeset -a to_delete_safe=() to_delete_squashed=() pruned_worktrees=() parked=()
-  typeset -A held_path=() held_lock=()
+  typeset -A held_path=() held_lock=() checked_sha=()
   # "all" is per repo: agreeing to sweep one repo is not agreeing to the rest.
   typeset -i REPO_ALL=0
 
@@ -332,17 +332,19 @@ clean_repo() {
     [[ "${branch}" == "${default_branch}" ]] && continue
     # An open MR means the work is in flight, whatever the ref graph says.
     (( ${${(f)open_srcs}[(Ie)${branch}]} )) && continue
+    checked_sha[${branch}]="$(git -C "${repo}" rev-parse --verify "refs/heads/${branch}" 2>/dev/null)" || continue
     upstream_track="$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)"
     # Checked out: parked only once pushed and its remote branch deleted, or a branch just started would qualify.
     if (( ${+held_path[${branch}]} )); then
       [[ "${upstream_track}" == *gone* ]] || continue
       if git -C "${repo}" merge-base --is-ancestor \
-           "refs/heads/${branch}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
+           "${checked_sha[${branch}]}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
         parked+=("${branch}"$'\t'"merged into ${default_branch}")
         continue
       fi
       (( have_forge )) || continue
-      gitscan_branch_merged "${forge}" "${project}" "${branch}"
+      gitscan_branch_merged "${forge}" "${project}" "${branch}" \
+        "${checked_sha[${branch}]}"
       case $? in
         0) parked+=("${branch}"$'\t'"MR merged, upstream pruned") ;;
         1) ;;
@@ -353,7 +355,7 @@ clean_repo() {
 
     # Every commit is reachable from origin/<default>: nothing is lost.
     if git -C "${repo}" merge-base --is-ancestor \
-         "refs/heads/${branch}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
+         "${checked_sha[${branch}]}" "refs/remotes/origin/${default_branch}" 2>/dev/null; then
       to_delete_safe+=("${branch}")
       continue
     fi
@@ -362,7 +364,8 @@ clean_repo() {
     # The forge is asked per branch: a merged-MR list is one page of an unbounded history.
     [[ "${upstream_track}" == *gone* ]] || continue
     (( have_forge )) || continue
-    gitscan_branch_merged "${forge}" "${project}" "${branch}"
+    gitscan_branch_merged "${forge}" "${project}" "${branch}" \
+      "${checked_sha[${branch}]}"
     case $? in
       0) to_delete_squashed+=("${branch}") ;;
       1) ;;
@@ -434,21 +437,30 @@ clean_repo() {
     esac
   }
 
+  # Forge queries and operator confirmation can wait while another session commits.
+  branch_unchanged() {
+    local _current
+    _current="$(git -C "${repo}" rev-parse --verify "refs/heads/$1" 2>/dev/null)" || return 1
+    [[ "${_current}" == "${checked_sha[$1]}" ]]
+  }
+
   # Prints the SHA it removed: that line is the whole undo procedure.
   delete_branch() {
     local _b="$1" _flag="$2" _why="$3" _sha
-    _sha="$(git -C "${repo}" rev-parse --short "refs/heads/${_b}" 2>/dev/null)"
-    if git -C "${repo}" branch "${_flag}" "${_b}" >/dev/null 2>&1; then
+    _sha="$(git -C "${repo}" rev-parse --short "${checked_sha[${_b}]}" 2>/dev/null)"
+    if ! branch_unchanged "${_b}"; then
+      _why="${_why}; branch tip changed since eligibility check"
+    elif git -C "${repo}" branch "${_flag}" "${_b}" >/dev/null 2>&1; then
       say "  ${C_GREEN}deleted${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} branch ${_b} ${_sha}${C_RESET}"
       rec_line BRANCH "${_b}" "${_why}" "${_sha}" deleted
       (( GONE_BRANCHES++ ))
-    else
-      # A refused delete is a failure, not a quiet no-op: the summary must not
-      # count this branch as handled either way.
-      print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b}"
-      rec_line BRANCH "${_b}" "${_why}" "${_sha}" failed
-      (( FAILED_BRANCHES++ ))
+      return
     fi
+    # A refused delete is a failure, not a quiet no-op: the summary must not
+    # count this branch as handled either way.
+    print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b} (${_why})"
+    rec_line BRANCH "${_b}" "${_why}" "${_sha}" failed
+    (( FAILED_BRANCHES++ ))
   }
 
   for b in "${to_delete_safe[@]}"; do
@@ -500,6 +512,12 @@ clean_repo() {
   # removal goes back on.
   unpark() {
     local _b="$1" _why="$2" _sha="$3" _wt="$4" _lock="$5" _out
+    if ! branch_unchanged "${_b}"; then
+      _out="branch tip changed since eligibility check"
+      print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to unpark ${_b}: ${_out}"
+      rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" failed "${_out}"
+      (( FAILED_BRANCHES++ )); return
+    fi
     if [[ "${_wt}" == "${repo}" ]]; then
       if ! _out="$(git -C "${repo}" switch -q "${default_branch}" 2>&1)"; then
         print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to switch ${repo} to ${default_branch}: ${_out}"
@@ -517,15 +535,19 @@ clean_repo() {
       fi
       say "  ${C_GREEN}removed worktree${C_RESET} ${_wt}"
     fi
-    if git -C "${repo}" branch -D "${_b}" >/dev/null 2>&1; then
+    if ! branch_unchanged "${_b}"; then
+      _out="branch tip changed since eligibility check"
+    elif git -C "${repo}" branch -D "${_b}" >/dev/null 2>&1; then
       say "  ${C_GREEN}deleted${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} branch ${_b} ${_sha}${C_RESET}"
       rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" unparked ""
       (( GONE_PARKED++ ))
+      return
     else
-      print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b}"
-      rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" failed "branch -D refused"
-      (( FAILED_BRANCHES++ ))
+      _out="branch -D refused"
     fi
+    print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b}: ${_out}"
+    rec_line PARKED "${_b}" "${_why}" "${_sha}" "${_wt}" failed "${_out}"
+    (( FAILED_BRANCHES++ ))
   }
 
   local wt lock pid what blocker hint question
@@ -535,7 +557,7 @@ clean_repo() {
     (( FOUND_PARKED++ ))
     b="${line%%$'\t'*}"; reason="${line#*$'\t'}"
     wt="${held_path[${b}]}"; lock="${held_lock[${b}]-}"
-    sha="$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)"
+    sha="$(git -C "${repo}" rev-parse --short "${checked_sha[${b}]}" 2>/dev/null)"
     blocker=""
     if [[ "${wt}" == "${repo}" ]]; then
       what="checked out here"
@@ -651,7 +673,7 @@ render_json() {
 
 if (( JSON )); then
   render_json
-  (( rc == 2 )) && exit 2
+  (( rc == 2 || FAILED_BRANCHES > 0 )) && exit 2
   (( FOUND_BRANCHES + FOUND_WORKTREES + FOUND_PARKED == 0 )) && exit 0
   exit 1
 fi
