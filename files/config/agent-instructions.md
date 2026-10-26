@@ -1,16 +1,17 @@
 ## Environment
 
-NixOS, managed by the flakelab flake. Change tools/config through the flake and
-`flakelab update`, never system installs. Resolve binaries with `command -v`;
-use `/usr/bin/env` shebangs.
-Secrets come from the shell's sops render `/run/secrets/flakelab-env`, falling
-back to `~/.config/flakelab/secrets.env`; never plaintext in the flake.
+NixOS: change tools/config through the flake and `flakelab update`, never system
+installs. Resolve binaries with `command -v`; use `/usr/bin/env` shebangs.
+Shell secrets come from `/run/secrets/flakelab-env` on enrolled boxes; otherwise
+from `~/.config/flakelab/secrets.env`. Never put plaintext secrets in the flake.
 
-Use `flakelab --help` and `flakelab doctor`; runbooks are in README and
-`known-issues.md`. Never `/logout`: use `tycswap switch`,
-`tycswap add --login` for a new account, and `tycswap add` after a manual login.
+Use `flakelab --help` / `flakelab doctor`; runbooks: README and `known-issues.md`.
+Never `/logout`: use `tycswap switch`; new account: `tycswap add --login`;
+after a manual login: `tycswap add`.
 
-Bitwarden: if locked, ask the operator to run `bwu`; never request or inline a
-session token. Name the vault item; pipe `bw get password <item>` directly to its
-consumer. Filter item searches to id/name/username/uris, never secret fields.
+Bitwarden: if locked, ask the operator to run `bwu` in their own terminal.
+For every `bw` call, load `~/.config/flakelab/bw-session` into `BW_SESSION`
+silently; never request, print or inline its value. Name the item; pipe
+`bw get password <item>` directly to its consumer. Search fields:
+id/name/username/uris only, never secret fields.
 Use `glab` for GitLab and `gh` for GitHub.
