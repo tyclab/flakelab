@@ -58,9 +58,8 @@ while (( $# > 0 )); do
       echo ""
       echo "The update blockers, in the environment and in ~/.claude/settings.json:"
       echo "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, which stops Claude Code's"
-      echo "self-updater, and with claudeRemoteControl on DISABLE_GROWTHBOOK,"
-      echo "DISABLE_TELEMETRY and DO_NOT_TRACK too, which turn off the feature-flag fetch"
-      echo "Remote Control relies on. From Claude Code's own shell (CLAUDECODE) the"
+      echo "self-updater, and with claudeRemoteControl on DISABLE_GROWTHBOOK too; both"
+      echo "leave Remote Control unavailable. From Claude Code's own shell (CLAUDECODE) the"
       echo "environment's NONESSENTIAL_TRAFFIC is not read, since Claude Code can set it"
       echo "for the commands it runs; the secrets file the shell sources is searched instead."
       echo ""
@@ -117,9 +116,10 @@ CLAUDE_NATIVE="${HOME}/.local/bin/claude"
 # The one competing install a box makes itself: ~/.npmrc's prefix.
 CLAUDE_NPM_GLOBAL="${HOME}/.npm-global/bin/claude"
 CLAUDE_REMOTE_CONTROL="${FLAKELAB_CLAUDE_REMOTE_CONTROL:-false}"
+CLAUDE_CHANNEL="${FLAKELAB_CLAUDE_UPDATE_CHANNEL:-}"
 CLAUDE_BLOCKERS=(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
-# Each turns off the feature-flag fetch Remote Control relies on; claudeRemoteControl's activation removes all four.
-[[ "${CLAUDE_REMOTE_CONTROL}" == true ]] && CLAUDE_BLOCKERS+=(DISABLE_GROWTHBOOK DISABLE_TELEMETRY DO_NOT_TRACK)
+# Only these two make Remote Control unavailable; TELEMETRY and DO_NOT_TRACK only under Trusted Devices.
+[[ "${CLAUDE_REMOTE_CONTROL}" == true ]] && CLAUDE_BLOCKERS+=(DISABLE_GROWTHBOOK)
 # Claude Code can set NONESSENTIAL_TRAFFIC for the commands it runs, so from its
 # shell the environment's copy is the tool's, not the sessions'.
 CLAUDE_TOOL_SHELL_BLOCKER=""
@@ -262,7 +262,7 @@ _check_claude_install() {
     log_ok "claude present (native, ~/.local/bin/claude — $(${CLAUDE_NATIVE} --version 2>/dev/null || echo 'version unknown'))"
   else
     log_fail "Claude Code is not installed natively at ~/.local/bin/claude"
-    log_hint "flakelab update installs it; by hand: curl -fsSL https://claude.ai/install.sh | bash"
+    log_hint "flakelab update installs it; by hand: curl -fsSL https://claude.ai/install.sh | bash${CLAUDE_CHANNEL:+ -s ${CLAUDE_CHANNEL}}"
   fi
   if [[ -x "${CLAUDE_NPM_GLOBAL}" ]]; then
     log_warn "a competing claude executable exists: ${CLAUDE_NPM_GLOBAL}"
@@ -278,10 +278,8 @@ _blocker_effect() {
   case "$1" in
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
       print -r -- "it disables Claude Code's self-updater, freezing the box on its installed build, and Remote Control" ;;
-    DISABLE_GROWTHBOOK)
-      print -r -- "it turns off the feature-flag fetch, so Remote Control (claudeRemoteControl) is unavailable" ;;
     *)
-      print -r -- "it turns off the feature-flag fetch Remote Control (claudeRemoteControl) relies on" ;;
+      print -r -- "it turns off the feature-flag fetch, so Remote Control (claudeRemoteControl) is unavailable" ;;
   esac
 }
 

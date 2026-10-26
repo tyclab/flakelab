@@ -442,6 +442,7 @@ rec {
     # Which secrets file the shell sources, decided on the same option as zsh.nix.
     export FLAKELAB_SOPS_RENDER=${if cfg.sopsSecretsFile != null then "1" else "0"}
     export FLAKELAB_CLAUDE_REMOTE_CONTROL=${lib.boolToString cfg.claudeRemoteControl}
+    export FLAKELAB_CLAUDE_UPDATE_CHANNEL=${cfg.claudeAutoUpdatesChannel}
     export PATH=${
       bin [
         pkgs.zsh
