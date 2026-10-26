@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- `gitpublisher` pushes a branch that has no open MR with `-o ci.skip`, since the MR it opens next runs the same commit; when no pipeline appears for the commit within 30 seconds of opening the MR, it starts a branch pipeline. A failed MR create after such a push says the branch has no pipeline yet.
 - Claude's permission-tier section moved from `files/config/agent-instructions.md` to `files/config/claude/auto-mode.md` and now follows the target facts in `~/.claude/CLAUDE.md`; its text is unchanged.
 - The `claudeAutoMode` force-push rule also accepts a lease with an explicit sha, `git push --force-with-lease=<branch>:<expected-sha> origin <branch>`, which it refused even when the operator named it: git ignores `--force-if-includes` beside an explicit sha, so the required flag added nothing to the strictest spelling. The rule now covers any branch that is neither protected nor the default branch, not only the agent's own.
 
