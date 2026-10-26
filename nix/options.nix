@@ -506,7 +506,7 @@ in
     extraReposDirs = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Extra roots the gitcheck/gitclean aliases scan beyond ~/git — e.g. a Windows-mount tree still holding clones that exist nowhere else.";
+      description = "Extra roots the gitcheck alias scans beyond ~/git — e.g. a Windows-mount tree still holding clones that exist nowhere else. gitclean, which deletes, stays on ~/git; `gitcleaner --repos-dir <dir>` covers one of these on demand.";
     };
 
     backupRoot = mkOption {

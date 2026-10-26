@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - Claude's permission-tier section moved from `files/config/agent-instructions.md` to `files/config/claude/auto-mode.md` and now follows the target facts in `~/.claude/CLAUDE.md`; its text is unchanged.
 - The `claudeAutoMode` force-push rule also accepts a lease with an explicit sha, `git push --force-with-lease=<branch>:<expected-sha> origin <branch>`, which it refused even when the operator named it: git ignores `--force-if-includes` beside an explicit sha, so the required flag added nothing to the strictest spelling. The rule now covers any branch that is neither protected nor the default branch, not only the agent's own.
 - `flakelab update` reports a `path:` flakelab input's re-lock as information rather than a warning: an overlay generated from a checkout is `path:` by design, so the warning came on every run.
+- `gitclean` deletes under `~/git` only; `gitcheck` still reports across `extraReposDirs` as well. Both aliases had the same roots, so the deleter reached the trees `extraReposDirs` exists for, whose clones are kept nowhere else. `gitcleaner --repos-dir <dir>` still covers one of them on demand.
 
 ### Fixed
 
