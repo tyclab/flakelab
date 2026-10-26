@@ -131,7 +131,7 @@ in
     sessionVariables = mkOption {
       type = types.attrsOf types.str;
       default = { };
-      description = "NON-SECRET session environment, exported to every shell. Token halves belong in ~/.config/flakelab/secrets.env, never here: this lands in the world-readable Nix store. Two names also gate a Claude MCP server (nix/home/claude.nix): GRAFANA_URL the grafana server, and WHATSAPP_BRIDGE_HOST, together with whatsappMcpDir, the whatsapp server — each unless a marketplace plugin already provides it. The other endpoints (HASS_URL, PROXMOX_*, SYNOLOGY_*) are plain environment the marketplace MCP plugins read.";
+      description = "NON-SECRET session environment, exported to every shell. Token halves belong in ~/.config/flakelab/secrets.env, never here: this lands in the world-readable Nix store. Two names also gate a Claude MCP server (nix/home/claude.nix): GRAFANA_URL the grafana server, and WHATSAPP_BRIDGE_HOST, together with whatsappMcpDir, the whatsapp server — each unless a marketplace plugin already provides it. The other endpoints (HASS_URL, PROXMOX_*) are plain environment the marketplace MCP plugins read.";
     };
 
     # strMatching, not str: an invalid hostname is rejected AS

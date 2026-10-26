@@ -446,8 +446,6 @@ by `flakelab backup --restore`, which `provision` runs for you.
 | `HASS_TOKEN`                    | homeassistant MCP (mapped to `HA_TOKEN`)         |
 | `PROXMOX_TOKEN_ID`              | proxmox MCP                                      |
 | `PROXMOX_TOKEN_SECRET`          | proxmox MCP                                      |
-| `SYNOLOGY_PASSWORD`             | synology MCP                                     |
-| `SYNOLOGY_DEVICE_ID`            | synology MCP (the only way to log in with 2FA)   |
 | `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki) |
 | `NTFY_URL`                      | `flakelab notify` (the topic it posts to)        |
 | `NTFY_TOKEN`                    | `flakelab notify` (a protected topic)            |
