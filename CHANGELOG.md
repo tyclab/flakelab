@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- The managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` blocks tell an agent never to ask for a secret's value, and to name the key instead.
 - Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.
 - `flakelab doctor` no longer warns on every local flakelab override. A `path:` or `git+file:` input is a finding only when its checkout has uncommitted changes to tracked files, is behind its tracking ref as last fetched (the doctor fetches nothing and takes no index lock), or is missing. An overlay with no `flake.lock` and a `path:` input in `flake.nix`, the state `setup-wsl-nix.ps1` leaves on purpose, is read from `flake.nix` instead of being reported as unknown.
 - The question tool guidance now requests self-contained questions and short action choices, so the decision does not depend on background text hidden by terminal previews. Optional detail remains in the Home Assistant inbox.
@@ -35,6 +36,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The `sopsSecretsFile` option text no longer claims a fallback to `secrets.env` that the zsh init deliberately does not make.
 - `flakelab doctor`, `gitchecker` and `gitcleaner` name the sops secrets as the token source too, not `secrets.env` alone, and doctor no longer says the secrets are read only at login.
 - A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
+- A first Claude Code install runs the official installer with `claudeAutoUpdatesChannel` (`bash -s latest`, say), so it starts on the channel the settings assert; without it the installer put `stable` on the box and a `latest` box only got there at its next self-update.
 
 ### Removed
 
