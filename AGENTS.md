@@ -68,6 +68,9 @@ the private overlay `flakelab-config`, which imports this flake via
     answer to the originating call; in clients with MCP elicitation it also
     opens a terminal dialog, and the first answer wins. See
     `remote-sessions.md`. It does not intercept native dialogs or approve tools.
+    A running session keeps the server process it spawned at start, and `/mcp`
+    reconnect respawns the command resolved then: only a restarted session
+    (`claude --resume <id>`) runs a newly deployed server.
   - `notify` (legacy, `notify`): a push to an ntfy topic, a JSON webhook, or
     both; Codex's hook reports turn completion, while the Claude Code `Notification` hook
     (`flakelab.notify.enable`) and Codex's `notify` hook call it, `--message`
@@ -139,6 +142,14 @@ the private overlay `flakelab-config`, which imports this flake via
     `flakelab.target` other than `wsl` — a `proxmox-vm` box has no distro to
     provision, wipe interop for, or name — and drop out of `--help` and its
     did-you-mean suggestions there too.
+- A shell opened before `flakelab update` keeps the previous generation's
+  session variables; check what a new login gets with
+  `env -i HOME=$HOME zsh -lic '<command>'`.
+- Claude Code keys transcripts by working directory
+  (`~/.claude/projects/<slug>`, the path with `/` as `-`), and auto-memory too
+  unless `claudeAutoMemoryDirectory` names one store: renaming or moving a
+  checkout orphans them. Move the slug directory on this box, in the state root
+  (under the backup lock) and on every other box.
 - Docs live in the repo root — no `docs/` folder. The only other `.md` files are
   the client config templates under `files/config/`, `icons/README.md` and the
   PR template.
@@ -173,6 +184,11 @@ the private overlay `flakelab-config`, which imports this flake via
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`
   asserts against the tracked `templates/overlay/` and
   `files/config/user_data.example.yaml`.
+- Client dialog behaviour (Claude Code, Codex) is probed by driving the TUI in
+  an isolated tmux server (`tmux -L spike`) and reading `capture-pane -p`, with a
+  stdio MCP server that logs every line as the probe. Pause about a second
+  between `send-keys -l <text>` and `Enter`: both TUIs drop an Enter sent in the
+  same instant.
 - CI's other jobs are `lint` (`make lint && nix fmt && git diff --exit-code`)
   and `gitleaks`. Neither `make lint` nor `nix flake check` formats, so run
   `make lint-nix` (or `nix fmt`) before pushing a `.nix` change. Run
