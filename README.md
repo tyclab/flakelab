@@ -432,9 +432,12 @@ other:
 
 `provision` writes the fallback file
 for you from the `custom_env_vars` of the config it provisions from (it asks
-first): the names in the table below go there, everything else becomes
-`sessionVariables` in the generated flake, so no token reaches the
-world-readable store. On a box set up while these files lived in `~/.config/tyc`,
+first): the names in the table below go there, and so does any name shaped
+like a credential, in any case: `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`,
+`APIKEY` or `CREDENTIAL` as a whole `_`-separated word, or `API_KEY` or
+`PRIVATE_KEY` anywhere, unless the name ends in `_URL`, `_DIR`, `_FILE`,
+`_PATH`, `_HOST` or `_NAMESPACE` and is no `WEBHOOK`. Everything else becomes `sessionVariables`
+in the generated flake, so no token reaches the world-readable store. On a box set up while these files lived in `~/.config/tyc`,
 `flakelab doctor` warns and prints the one `mv` that moves them.
 
 There are **two** files, and only one of them exists before a distro does. The

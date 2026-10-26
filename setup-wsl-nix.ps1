@@ -469,6 +469,21 @@ $RetiredSecretKeyNames = @('WHATSAPP_API_KEY', 'SYNOLOGY_PASSWORD', 'SYNOLOGY_DE
 $NonSecretKeyNames = @('HASS_URL', 'PROXMOX_API_URL', 'PROXMOX_VERIFY_SSL',
     'GRAFANA_URL', 'WHATSAPP_BRIDGE_HOST')
 
+# A credential-shaped name is withheld too, whatever the config calls it: the word, not a substring, so
+# MAX_OUTPUT_TOKENS stays; a location (_URL, _DIR, ...) names no secret. Kept identical to nix-overlay-generate's
+# _secret_shape and _secret_exempt (test-nix-overlay-generate pins both); the named secrets first, as NTFY_URL is one.
+$SecretNamePattern = '(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
+$SecretNameExempt = '_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
+# A webhook's URL is its credential, so that word wins over the location suffix.
+$SecretNameAlways = '(^|_)WEBHOOK(_|$)'
+function Test-SecretName([string]$name) {
+    if (($SecretKeyNames + $RetiredSecretKeyNames) -contains $name) { return $true }
+    $n = $name.ToUpperInvariant()
+    if ($n -match $SecretNameAlways) { return $true }
+    if ($n -match $SecretNameExempt) { return $false }
+    return ($n -match $SecretNamePattern)
+}
+
 # -SshPassphrase given (even '') means never prompt; captured here, as $PSBoundParameters in a function is its own.
 $SshPassphraseGiven = $PSBoundParameters.ContainsKey('SshPassphrase')
 if (-not $SshPassphrase) { $SshPassphrase = '' }
@@ -683,7 +698,7 @@ function Get-KnownProfileName {
 }
 
 # mkSystem does not layer nix/users/default.nix, so every option without a default must be emitted (options.nix is the
-# schema). NO SECRET here: custom_env_vars is split on $SecretKeyNames, the nix store is world-readable.
+# schema). NO SECRET here: custom_env_vars is split by Test-SecretName, the nix store is world-readable.
 function New-OverlayFlakeText($ud, [string]$udPath) {
     $target = [string](Get-UserDataValue $ud 'target')
     if ($target -and $target -ne 'wsl') {
@@ -869,12 +884,20 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
     # The non-secret half of custom_env_vars. The other half is secrets.env.
     $envVars = Get-UserDataValue $ud 'custom_env_vars'
     $session = [ordered]@{}
+    $withheld = @()
     if ($envVars) {
         foreach ($k in $envVars.Keys) {
             if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written"; continue }
-            if ($SecretKeyNames -contains $k) { continue }
+            if (Test-SecretName $k) {
+                if ($envVars[$k] -and $SecretKeyNames -notcontains $k) { $withheld += $k }
+                continue
+            }
             if ($envVars[$k]) { $session[$k] = $envVars[$k] }
         }
+    }
+    # Names only, never values.
+    if ($withheld.Count -gt 0) {
+        Say ("  secret-shaped custom_env_vars withheld from the flake (provision copies them into secrets.env): {0}" -f ($withheld -join ', '))
     }
     if ($session.Keys.Count -gt 0) {
         $body += ''
@@ -1722,6 +1745,13 @@ function Set-OverlaySecrets([string]$udPath) {
         $present = @($SecretKeyNames | Where-Object {
                 [string](Get-UserDataValue $envVars $_) -or [string](Get-UserDataValue $ud $_)
             })
+        # Plus each custom_env_vars entry the flake withholds by shape, or its value would land in neither file.
+        if ($envVars -is [Collections.IDictionary]) {
+            $present += @($envVars.Keys | Where-Object {
+                    (Test-SecretName $_) -and ($RetiredSecretKeyNames -notcontains $_) -and
+                    ($present -notcontains $_) -and [string]$envVars[$_]
+                })
+        }
         if ($present.Count -eq 0) {
             Say "no token in $(Split-Path $udPath -Leaf) - secrets.env not written (optional; the steps that need one defer)"
             $lines = $null
