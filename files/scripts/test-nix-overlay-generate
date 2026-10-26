@@ -1038,7 +1038,7 @@ contains "a field after the map is still read" "${f}" 'tools/alpha'
 print -r -- "a credential-shaped custom_env_var is withheld whatever the config calls it"
 typeset -a _shaped=(SERVICE_API_TOKEN APP_CLIENT_SECRET DB_PASSWORD LDAP_PASSWD ANY_API_KEY
   OTHER_APIKEY SIGNING_PRIVATE_KEY SOME_CREDENTIAL app_token AWS_SECRET_ACCESS_KEY SECRET_KEY
-  GITHUB_TOKEN)
+  GITHUB_TOKEN SLACK_WEBHOOK_URL)
 # The word, not a substring, and a location is no secret: these stay session variables.
 typeset -a _kept=(CLAUDE_CODE_MAX_OUTPUT_TOKENS MAX_THINKING_TOKENS TOKENIZERS_PARALLELISM
   GOOGLE_APPLICATION_CREDENTIALS AWS_SHARED_CREDENTIALS_FILE PASSWORD_STORE_DIR OAUTH_TOKEN_URL
@@ -1076,6 +1076,10 @@ check "the zsh pattern is the word rule" "${zsh_shape}" '(^|_)(TOKEN|SECRET|PASS
 check "both writers withhold the same shapes"     "${ps1_shape}" "${zsh_shape}"
 check "the zsh exemption names the locations"     "${zsh_exempt}" '_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
 check "both writers exempt the same locations"    "${ps1_exempt}" "${zsh_exempt}"
+zsh_always="$(sed -n "s/^_secret_always='\(.*\)'\$/\1/p" "${GEN}")"
+ps1_always="$(sed -n "s/^\$SecretNameAlways = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
+check "the zsh writer withholds a webhook first"  "${zsh_always}" '(^|_)WEBHOOK(_|$)'
+check "and so does the twin"                      "${ps1_always}" "${zsh_always}"
 contains "the zsh split goes through the classifier" "$(< "${GEN}")" 'if _is_secret_name "${_k}"; then'
 contains "the twin has one classifier"               "${ps1_src}" 'function Test-SecretName'
 contains "which its flake emitter calls"             "${ps1_src}" 'if (Test-SecretName $k) {'

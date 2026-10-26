@@ -77,7 +77,8 @@ custom_aliases:
 
 # Known secret names go to ~/.config/flakelab/secrets.env, and so does a name with TOKEN,
 # SECRET, PASSWORD, PASSWD, APIKEY or CREDENTIAL as a whole _-separated word, or API_KEY or
-# PRIVATE_KEY anywhere, unless it ends in _URL, _DIR, _FILE, _PATH, _HOST or _NAMESPACE.
+# PRIVATE_KEY anywhere, unless it ends in _URL, _DIR, _FILE, _PATH, _HOST or _NAMESPACE
+# and is no WEBHOOK.
 # The rest become sessionVariables.
 custom_env_vars:
   HASS_URL: 'http://homeassistant.example.lan:8123'

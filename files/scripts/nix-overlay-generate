@@ -457,12 +457,15 @@ typeset -a _secret_names=(
 # Both kept identical to $SecretNamePattern and $SecretNameExempt in setup-wsl-nix.ps1.
 _secret_shape='(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
 _secret_exempt='_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
+# A webhook's URL is its credential, so that word wins over the location suffix.
+_secret_always='(^|_)WEBHOOK(_|$)'
 
 # Case-insensitive, like PowerShell's -contains and -match in the twin; the named
 # secrets first, since NTFY_URL is one.
 _is_secret_name() {
   local n="${1:u}"
   (( ${_secret_names[(Ie)$n]} )) && return 0
+  [[ "${n}" =~ "${_secret_always}" ]] && return 0
   [[ "${n}" =~ "${_secret_exempt}" ]] && return 1
   [[ "${n}" =~ "${_secret_shape}" ]]
 }
