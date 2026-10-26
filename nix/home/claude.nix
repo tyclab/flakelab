@@ -293,6 +293,7 @@ in
 
   # The nixpkgs build lags what this environment needs, so bootstrap the official
   # installer once; its auto-updater keeps it current, and nix-ld runs the binary.
+  # Given the channel, or a first install starts on stable whatever the settings assert.
   home.activation.installClaudeCode = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
     lib.optionalString installClaude ''
       if [ ! -x "$HOME/.local/bin/claude" ]; then
@@ -305,7 +306,7 @@ in
         }:$PATH"
         export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
         # pipefail: a failed fetch otherwise pipes an empty script into bash, which exits 0.
-        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash' || \
+        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash -s ${claudeAutoUpdatesChannel}' || \
           ${flakelabDefer} "Claude Code not installed (offline?). Retry: flakelab update"
       fi
     ''
@@ -343,9 +344,9 @@ in
                 && _marketplaceFetched ${lib.escapeShellArg m.name} || \
                 ${
                   if lib.hasPrefix "git@" m.url then
-                    sshDefer "claude marketplace ${m.name} not added (no unlocked agent key, or host unreachable). Retry: flakelab update"
+                    sshDefer "claude marketplace ${m.name} not added: claude plugin marketplace add failed; its error precedes this line in the activation log. Retry: flakelab update"
                   else
-                    ''${flakelabDefer} "claude marketplace ${m.name} not added (offline?). Retry: flakelab update"''
+                    ''${flakelabDefer} "claude marketplace ${m.name} not added: claude plugin marketplace add failed; its error precedes this line in the activation log. Retry: flakelab update"''
                 }
             else
               # A registered marketplace never re-fetches itself.
