@@ -228,14 +228,21 @@ sparse image on a drive that ran out of space came back unreadable
 
 What runs inside the VM, by an agent or the weekly timers:
 `sudo systemctl start nix-gc.service docker-prune.service` and the
-`flakelab-prune` user timer free the Nix store, Docker and the tool caches;
-`sudo fstrim -v /` then marks the freed blocks so the compaction can drop them.
+`flakelab-prune` user timer free the Nix store, Docker and the tool caches.
+`docker-prune` keeps whatever is younger than a week (`until=168h`), so images
+built or pulled in the last week survive it (10 GB on 2026-10-25); with no
+container running, `docker image prune -af` takes them too. `sudo fstrim -v /`
+then marks the freed blocks so the compaction can drop them.
+
 The compaction itself is the operator's, with the distro stopped: `wsl --shutdown`
-ends every session, so `flakelab sessions --save` first. `Optimize-VHD` needs
-the Hyper-V PowerShell module; without it `diskpart` does the same
-(`select vdisk file=<path>`, `attach vdisk readonly`, `compact vdisk`,
-`detach vdisk`). The Grafana rule "PC Drive Low" (tycpve) pages when a PC
-drive drops under 20 GiB free.
+ends every session, so `flakelab sessions --save` first and `--open` once
+afterwards. `--open` does not skip a session that is already running, so a
+second run starts each one twice, both writing the same transcript.
+`Optimize-VHD` needs the Hyper-V PowerShell module; without it `diskpart` does
+the same (`select vdisk file=<path>`, `attach vdisk readonly`, `compact vdisk`,
+`detach vdisk`). After the trim, that took TycbookElite's image from 164 GB to
+101 GB for 72 GB of files on 2026-10-26 and gave `D:` 64 GB back. The Grafana
+rule "PC Drive Low" (tycpve) pages when a PC drive drops under 20 GiB free.
 
 ## Known limitations
 
