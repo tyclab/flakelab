@@ -105,6 +105,9 @@
         #   - `glab` for the GitLab repos under `~/git`; `gh` only for GitHub remotes.
         # '';
 
+        # One Claude auto-memory directory for every project, not one per working directory.
+        # claudeAutoMemoryDirectory = "~/.claude/projects/-home-CHANGEME/memory";
+
         # Per-developer Claude user-scope MCP servers, merged into ~/.claude.json.
         # claudeMcpServers = {
         #   scratch = {

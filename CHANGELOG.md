@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab.claudeAutoMemoryDirectory` (default `null`): asserted into `settings.autoMemoryDirectory`, so Claude Code keeps one auto-memory store for every working directory instead of one per `~/.claude/projects/<slug>`.
+- `flakelab doctor` requires Claude Code as the native `~/.local/bin/claude` when the overlay installs it, so a `claude` elsewhere on PATH no longer counts as installed, and warns on a copy in `~/.npm-global/bin`, which comes first on PATH and shadows the native, self-updating one. That copy is never removed; the warning names the `npm -g uninstall`. The reinstall hint for a missing native install passes `claudeAutoUpdatesChannel` (`bash -s <channel>`).
+- `flakelab doctor` warns when `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set in the environment or in `~/.claude/settings.json`, since it stops Claude Code's self-updater, and, with `claudeRemoteControl` on, when `DISABLE_GROWTHBOOK` is, since that leaves Remote Control unavailable. `DISABLE_TELEMETRY` and `DO_NOT_TRACK` are not findings: they matter to Remote Control only where Trusted Devices is required, and the option's activation removes them anyway. It names the variable, never the value. From Claude Code's own shell the environment's `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is not read; the secrets file the shell sources is searched for it instead.
 - With `installCodex`, `~/.codex/AGENTS.md` gets a `<!-- BEGIN managed by flakelab -->` block like `~/.claude/CLAUDE.md`: the shipped distro facts, the target facts and `claudeMdExtra`, so Codex works from the same rules as Claude Code. Text outside the markers stays; a symlink there becomes a regular file. The block leaves out Claude's permission tiers and the question-tool text, which Codex already receives through `developer_instructions`. `$CODEX_HOME` counts only when the activation environment sets it, and an `AGENTS.override.md` beside the file makes Codex read that instead. A `home.file` for the same path, such as Home Manager's `programs.codex.context`, fails the build with a pointer to `claudeMdExtra`.
 - A managed block that cannot be written, or whose path links into the Nix store, is a warning instead of an aborted activation.
 - `flakelab-prune` removes `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them; the next firmware build or embedding run downloads what it needs again.
@@ -16,6 +19,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- The managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` blocks tell an agent never to ask for a secret's value, and to name the key instead.
+- Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.
+- `flakelab doctor` no longer warns on every local flakelab override. A `path:` or `git+file:` input is a finding only when its checkout has uncommitted changes to tracked files, is behind its tracking ref as last fetched (the doctor fetches nothing and takes no index lock), or is missing. An overlay with no `flake.lock` and a `path:` input in `flake.nix`, the state `setup-wsl-nix.ps1` leaves on purpose, is read from `flake.nix` instead of being reported as unknown.
 - The question tool guidance now requests self-contained questions and short action choices, so the decision does not depend on background text hidden by terminal previews. Optional detail remains in the Home Assistant inbox.
 - The `ask_question` text, its field descriptions and the managed CLAUDE.md and Codex instructions say what each surface shows: the terminal dialog three lines, the phone and watch push the question with a button for each of one or two options, the context in full only in the inbox record. The question's first line names the decision and the recommendation, options stay near 40 characters, and two are preferred. "Include enough context to answer from the phone" and "Relevant details the user needs to decide" are gone: they put the choice in the context, which neither the dialog nor the push showed.
 - The terminal dialog puts the context, wrapped like the question, directly under the options: the blank line before it took the third of the three lines Claude Code shows.
@@ -30,6 +36,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The `sopsSecretsFile` option text no longer claims a fallback to `secrets.env` that the zsh init deliberately does not make.
 - `flakelab doctor`, `gitchecker` and `gitcleaner` name the sops secrets as the token source too, not `secrets.env` alone, and doctor no longer says the secrets are read only at login.
 - A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
+- A first Claude Code install runs the official installer with `claudeAutoUpdatesChannel` (`bash -s latest`, say), so it starts on the channel the settings assert; without it the installer put `stable` on the box and a `latest` box only got there at its next self-update.
 
 ### Removed
 

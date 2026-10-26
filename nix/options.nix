@@ -313,7 +313,7 @@ in
         "latest"
       ];
       default = "stable";
-      description = "Release channel Claude Code's self-updater follows. Claude Code is the one tool this flake deliberately does not pin, so this is the only control over what lands unreviewed on every box.";
+      description = "Release channel Claude Code's first install starts on and its self-updater follows. Claude Code is the one tool this flake deliberately does not pin, so this is the only control over what lands unreviewed on every box.";
     };
 
     claudeOutputStyle = mkOption {
@@ -321,6 +321,13 @@ in
       default = null;
       example = "Concise";
       description = "Claude Code output style asserted into settings.outputStyle. Null leaves the key alone, so the style stays whatever /output-style last picked on the box. Name a built-in (\"Concise\", \"Explanatory\", \"Learning\") or a custom style from ~/.claude/output-styles.";
+    };
+
+    claudeAutoMemoryDirectory = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "~/.claude/projects/-home-alice/memory";
+      description = "One auto-memory directory for every project, asserted into settings.autoMemoryDirectory. Null leaves the key alone, so each working directory keeps its own ~/.claude/projects/<slug>/memory. Claude Code takes an absolute path or a `~/` one and ignores any other form. With stateRoot set, naming a directory under ~/.claude/projects keeps it in the state sync.";
     };
 
     mcpShared = {

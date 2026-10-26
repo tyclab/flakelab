@@ -283,6 +283,9 @@ alone: that pin is deliberate. A lock the caller cannot write — root's, left b
 switch that had to lock — is taken back first and again after the switch, pins
 unchanged; if it cannot be, a `path:` re-lock that fails on it refuses the switch
 and names the `chown`.
+A re-lock never pulls the checkout: `flakelab doctor` warns when a local
+flakelab checkout is dirty, behind its tracking ref as last fetched, or gone,
+and says nothing about a clean one.
 
 Activation ends in a health check, and `flakelab doctor` covers what it cannot
 assert from a non-interactive context; which failures are fatal and which are
@@ -548,6 +551,11 @@ $token = '\\wsl.localhost\<distro>\home\<user>\.local\share\tycswap\remote.token
 tycswap.exe app --remote http://127.0.0.1:7337 --token-file $token --autostart on
 Start-Process tycswap.exe -ArgumentList 'app', '--remote', 'http://127.0.0.1:7337', '--token-file', $token
 ```
+
+The tray is not managed by the flake. When `tycswap.exe upgrade` answers
+HTTP 403 (the unauthenticated GitHub API quota is spent), fetch the exe and
+`SHA256SUMS` with `gh release download`, verify, rename the running exe to
+`.exe.old`, move the new one in and start the tray again.
 
 The app writes that token on every start and the tray reads it again by
 itself; the tray switches, toggles auto-switch and opens the distro's

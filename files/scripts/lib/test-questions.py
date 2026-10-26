@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -28,6 +29,7 @@ def cancellations(output):
 class FakeTransport:
     def __init__(self, output=None):
         self.calls = []
+        self.timeouts = []
         self.created = threading.Event()
         self.answer = threading.Event()
         self.output, self.dialog_before_create = output, None
@@ -35,11 +37,15 @@ class FakeTransport:
         self.fail_answer = None  # None | "protocol" | "network"
         self.fail_delivered = False
         self.down = False
+        self.reject_create = False
 
-    def post(self, body):
+    def post(self, body, timeout=10):
         self.calls.append(body)
+        self.timeouts.append(timeout)
         if self.down:
             raise ConnectionError("down")
+        if body["op"] == "create" and self.reject_create:
+            raise questions.ProtocolError("rejected")
         if body["op"] == "create" and self.dialog_before_create is None:
             self.dialog_before_create = bool(self.output and dialog_requests(self.output))
         self.created.set()
@@ -88,6 +94,7 @@ class QuestionTests(unittest.TestCase):
         self.output = io.StringIO()
         self.transport = FakeTransport(self.output)
         self.server = questions.Server("claude", self.output, lambda: self.transport, interval=0.001)
+        self.addCleanup(self.server.run, io.StringIO())
 
     def init(self, elicitation=True):
         capabilities = {"elicitation": {"form": {}, "url": {}}} if elicitation else {}
@@ -192,9 +199,9 @@ class QuestionTests(unittest.TestCase):
         for text in (init["result"]["instructions"], tool["description"]):
             self.assertIn("three lines", text)
             self.assertIn("inbox record", text)
-        self.assertIn("first line names the decision and your recommendation", fields["question"]["description"])
+        self.assertIn("first line names the target and decision", fields["question"]["description"])
         self.assertIn("only the inbox record shows it in full", fields["context"]["description"])
-        self.assertIn("40 characters", fields["options"]["description"])
+        self.assertIn("20 characters", fields["options"]["description"])
         self.assertIn("only one or two options become phone and watch buttons", fields["options"]["description"])
 
     def test_secret_file_is_read_without_executing_shell(self):
@@ -224,6 +231,14 @@ class QuestionTests(unittest.TestCase):
                 with self.assertRaises(expected) as raised:
                     transport.post({})
             self.assertNotIn("test-secret", str(raised.exception))
+
+    def test_recovery_timeout_is_forwarded_to_the_http_transport(self):
+        with patch.dict("os.environ", {"NOTIFY_WEBHOOK_URL": "https://ha.invalid/api/webhook/test-secret"}):
+            transport = questions.Transport()
+        with patch.object(transport.opener, "open", side_effect=TimeoutError) as opened:
+            with self.assertRaises(ConnectionError):
+                transport.post({}, timeout=1)
+        self.assertEqual(opened.call_args.kwargs["timeout"], 1)
 
     def test_dialog_is_requested_before_the_inbox_when_the_client_can_show_it(self):
         self.init()
@@ -454,10 +469,117 @@ class QuestionTests(unittest.TestCase):
     def test_dialog_outlives_an_unreachable_inbox(self):
         self.init(); self.transport.down = True
         thread = self.start_without_create()
-        self.wait_for_creates(3)                        # the inbox has been given up on
+        self.wait_for_creates(3)
         self.accept({"answer": "Blue"}); thread.join(2)
         result = self.result()
         self.assertEqual((result["answer"], result["source"], result["inbox"]), ("Blue", "terminal", "unavailable"))
+
+    def test_inbox_recovers_after_the_initial_create_failures(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        self.wait_for_creates(4)
+        self.transport.down = False
+        self.transport.answer.set()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.result()["source"], "inbox")
+        creates = [c for c in self.transport.calls if c["op"] == "create"]
+        self.assertTrue(all(c == creates[0] for c in creates))
+        self.assertEqual(len(dialog_requests(self.output)), 1)
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.assertEqual(self.transport.calls[-1]["op"], "delivered")
+
+    def test_terminal_answer_is_recorded_after_the_inbox_recovers(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        self.wait_for_creates(4)
+        self.transport.down = False
+        self.assertTrue(self.transport.created.wait(1))
+        self.accept({"answer": "Blue"}); thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(self.result()["source"], "terminal")
+        self.assertNotIn("inbox", self.result())
+        self.assertEqual(self.transport.calls[-1]["op"], "answer")
+
+    def test_terminal_answer_during_outage_stops_recovery_without_late_questions(self):
+        self.init(); self.transport.down = True
+        entered = threading.Event()
+        post = self.transport.post
+
+        def hold_fourth_create(body, timeout=10):
+            if body["op"] == "create" and self.creates() == 3:
+                entered.set()
+                threading.Event().wait(timeout)
+            return post(body, timeout=timeout)
+
+        self.transport.post = hold_fourth_create
+        thread = self.start_without_create()
+        self.assertTrue(entered.wait(1))
+        started = time.monotonic()
+        self.accept({"answer": "Blue"})
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(self.result()["inbox"], "unavailable")
+        self.assertEqual(self.creates(), 4)
+        self.assertEqual(self.transport.timeouts, [10, 10, 10, 1])
+        finished_calls = list(self.transport.calls)
+        self.transport.down = False
+        time.sleep(0.02)
+        self.assertEqual(self.transport.calls, finished_calls)
+        self.assertEqual(self.server.active, {})
+
+    def test_existing_inbox_recovers_after_a_minute_of_poll_failures(self):
+        now = [100.0]
+        with patch.object(questions, "time", SimpleNamespace(monotonic=lambda: now[0])):
+            self.init(); thread = self.start()
+            self.transport.down = True
+            for _ in range(2):
+                target = len(self.transport.calls) + 2
+                for _ in range(200):
+                    if len(self.transport.calls) >= target:
+                        break
+                    time.sleep(0.005)
+                self.assertGreaterEqual(len(self.transport.calls), target)
+                now[0] = 162.0
+            self.transport.down = False
+            self.transport.answer.set()
+            thread.join(1)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(self.result()["source"], "inbox")
+            self.assertEqual(self.creates(), 1)
+
+    def test_cancel_during_outage_stops_recovery_without_late_questions(self):
+        self.init(); self.transport.down = True
+        thread = self.start_without_create()
+        self.wait_for_creates(4)
+        self.server.handle({"method": "notifications/cancelled", "params": {"requestId": 1}})
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        finished_calls = list(self.transport.calls)
+        self.transport.down = False
+        time.sleep(0.02)
+        self.assertEqual(self.transport.calls, finished_calls)
+        self.assertEqual(len(cancellations(self.output)), 1)
+        self.assertEqual([m for m in lines(self.output) if "result" in m and "method" not in m], [])
+
+    def test_headless_outage_still_fails_after_three_creates(self):
+        self.init(elicitation=False); self.transport.down = True
+        self.server.ask(1, {"question": "Choose"}, threading.Event())
+        self.assertEqual(self.creates(), 3)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+        self.assertEqual(dialog_requests(self.output), [])
+        finished_calls = list(self.transport.calls)
+        self.transport.down = False
+        time.sleep(0.02)
+        self.assertEqual(self.transport.calls, finished_calls)
+
+    def test_protocol_rejection_is_not_retried_with_a_dialog(self):
+        self.init(); self.transport.reject_create = True
+        self.server.ask(1, {"question": "Choose"}, threading.Event())
+        self.assertEqual(self.creates(), 1)
+        self.assertTrue(lines(self.output)[-1]["result"]["isError"])
+        self.assertEqual(len(cancellations(self.output)), 1)
 
     def test_declined_dialog_with_unreachable_inbox_is_the_usual_error(self):
         self.init(); self.transport.down = True
@@ -567,7 +689,7 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(self.result()["inbox"], "unavailable")
         self.assertEqual(self.creates(), 3)
 
-    def test_dialog_only_empty_accept_waits_for_a_stolen_lock(self):
+    def test_outage_empty_accept_waits_for_a_stolen_lock(self):
         self.init(); self.transport.down = True
         self.server.dialog_lock = StolenOnceLock()
         thread = self.start_without_create()
@@ -582,7 +704,7 @@ class QuestionTests(unittest.TestCase):
         self.accept({"answer": "1"}); thread.join(2)
         self.assertEqual((self.result()["answer"], self.result()["inbox"]), ("Red", "unavailable"))
 
-    def test_expiry_in_dialog_only_reports_expiry(self):
+    def test_expiry_during_inbox_recovery_reports_expiry(self):
         self.init(); self.transport.down = True; self.server.timeout = 0.2
         thread = self.start_without_create(); thread.join(3)
         self.assertFalse(thread.is_alive())

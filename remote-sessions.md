@@ -118,8 +118,19 @@ is recorded in the inbox as delivered with `source: terminal` through hatyc's
 `answer` op and clears the push. Declining or dismissing the dialog leaves the
 question open for the phone. Without elicitation (headless runs, other MCP
 hosts) the inbox path alone is used; against a hatyc without the `answer` op the
-push is cancelled instead and the result says `inbox: unsupported`; with HA down
-the dialog still answers and the result says `inbox: unavailable`.
+push is cancelled instead and the result says `inbox: unsupported`. During an HA
+outage the terminal still answers with `inbox: unavailable`; while an interactive
+question remains unanswered, the broker keeps retrying that same inbox record
+until HA recovers or the call ends. Those recovery attempts use a one-second
+socket timeout instead of the usual ten seconds, so a terminal reply does not
+wait on the normal network timeout. Headless calls still fail promptly when the
+inbox is unavailable.
+
+Codex 0.164.0 can leave an answered dialog visible after the broker cancels it
+([upstream issue #40390](https://github.com/openai/codex/issues/40390)). If the
+tool has already returned the inbox answer, Esc dismisses that stale dialog;
+the saved answer remains unchanged. This client cleanup defect is separate from
+inbox delivery and recovery.
 
 This needs the `flakelab_questions` HA integration from hatyc. It reads
 `NOTIFY_WEBHOOK_URL` at runtime and adds `-questions` to the webhook ID. Keep
@@ -135,13 +146,20 @@ The managed client instructions prefer it for clarification and decisions,
 and the tool text says what each surface shows: the phone and watch push shows
 the question and carries a button for each of one or two choices (more
 choices get none), never the context, which only the inbox record shows in
-full. So the question's first line names the decision and the recommendation,
-and two short choices are best.
+full. So the question's first line names the target and decision; any
+recommendation is brief and optional. Nonessential validation details belong in
+context.
+Prefer two action labels of 1-3 words, aiming for 20 characters or fewer, such as
+"Merge and deploy" and "Keep open", recommended first. Keep the target in the
+question instead of repeating it in each label: longer labels may be clipped by
+the notification UI.
+This is writing guidance; the broker preserves the supplied labels.
 Claude may move a long call to a background task; dependent work must still
 wait for its answer. Codex and Claude get a per-server timeout just above the
-answer window. Existing sessions need to reconnect MCP or restart to load a
-new server or to get the dialog. If HA is unavailable and no dialog is open, ask
-in the conversation.
+answer window. A running session retains the server command resolved at startup;
+reconnecting MCP can spawn that same old command. Start a new client or resume
+the session in a new client process to load a newly deployed server and its tool
+guidance. If HA is unavailable and no dialog is open, ask in the conversation.
 
 `flakelab notify` remains available for manual and legacy pushes: a Claude Code `Notification` hook
 (`flakelab.notify.enable`, the types in `flakelab.notify.events`) and Codex's
