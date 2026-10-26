@@ -31,6 +31,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `flakelab update` reports a `path:` flakelab input's re-lock as information rather than a warning: an overlay generated from a checkout is `path:` by design, so the warning came on every run.
 - `gitclean` deletes under `~/git` only; `gitcheck` still reports across `extraReposDirs` as well. Both aliases had the same roots, so the deleter reached the trees `extraReposDirs` exists for, whose clones are kept nowhere else. `gitcleaner --repos-dir <dir>` still covers one of them on demand.
 - Git starts a new repository on `main` (`init.defaultBranch`, a default an overlay's own `programs.git.settings.init.defaultBranch` overrides). Unset, `git init` named it `master` and printed its hint each time, and `git config --global` cannot add it, since `~/.gitconfig` is managed by the flake.
+- The plumbing commands' `--help` names the verb you type: `flakelab clone-repos`, `flakelab activate-hooks`, `flakelab stale-repos`, `flakelab glab-projects`, not a script name that is on no PATH. A bare `make` lists the targets (`make help`) instead of installing the git hooks.
 
 ### Fixed
 

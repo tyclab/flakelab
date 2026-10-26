@@ -32,6 +32,7 @@ nix flake check    # the same suites plus statix and deadnix; what CI runs
 ```
 
 `nix flake check` is the authoritative gate; run `make test` while iterating.
+A bare `make` lists the targets.
 
 Never run `flakelab test-provision` (or `flakelab build-distro`) casually: each
 run imports a distro and wipes WSL interop for every distro in the VM. It
