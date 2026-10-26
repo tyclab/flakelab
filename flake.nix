@@ -437,6 +437,7 @@
               grep -q '^## Environment$' "$f"
               grep -q '^## Provisioning$' "$f"
               grep -q '^- fixture-only rule$' "$f"
+              grep -qF "Never ask for a secret's value; name the key." "$f"
               test "$(tail -n 1 "$f")" = '<!-- END managed by flakelab -->'
               # A part boundary that doubles a blank line shows up as two in a row.
               if awk 'prev == "" && $0 == "" && NR > 1 { found = 1 } { prev = $0 } END { exit !found }' "$f"; then exit 1; fi

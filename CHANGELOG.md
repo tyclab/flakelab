@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- The managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` blocks tell an agent never to ask for a secret's value, and to name the key instead.
 - Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.
 - The question tool guidance now requests self-contained questions and short action choices, so the decision does not depend on background text hidden by terminal previews. Optional detail remains in the Home Assistant inbox.
 - The `ask_question` text, its field descriptions and the managed CLAUDE.md and Codex instructions say what each surface shows: the terminal dialog three lines, the phone and watch push the question with a button for each of one or two options, the context in full only in the inbox record. The question's first line names the decision and the recommendation, options stay near 40 characters, and two are preferred. "Include enough context to answer from the phone" and "Relevant details the user needs to decide" are gone: they put the choice in the context, which neither the dialog nor the push showed.
