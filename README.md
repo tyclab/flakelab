@@ -283,6 +283,9 @@ alone: that pin is deliberate. A lock the caller cannot write — root's, left b
 switch that had to lock — is taken back first and again after the switch, pins
 unchanged; if it cannot be, a `path:` re-lock that fails on it refuses the switch
 and names the `chown`.
+A re-lock never pulls the checkout: `flakelab doctor` warns when a local
+flakelab checkout is dirty, behind its tracking ref as last fetched, or gone,
+and says nothing about a clean one.
 
 Activation ends in a health check, and `flakelab doctor` covers what it cannot
 assert from a non-interactive context; which failures are fatal and which are
