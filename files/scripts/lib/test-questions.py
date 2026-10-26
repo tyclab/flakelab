@@ -181,6 +181,22 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(first["result"]["protocolVersion"], "2025-06-18")
         self.assertEqual(second["result"]["tools"][0]["name"], "ask_question")
 
+    def test_tool_text_says_what_each_surface_shows(self):
+        # 2026-10-26: "Relevant details the user needs to decide" put the choice in context, which
+        # the dialog collapsed and the phone never showed; each text must say where it appears.
+        self.server.handle({"id": 1, "method": "initialize", "params": {}})
+        self.server.handle({"id": 2, "method": "tools/list"})
+        init, listing = map(json.loads, self.output.getvalue().splitlines())
+        [tool] = listing["result"]["tools"]
+        fields = tool["inputSchema"]["properties"]
+        for text in (init["result"]["instructions"], tool["description"]):
+            self.assertIn("three lines", text)
+            self.assertIn("inbox record", text)
+        self.assertIn("first line names the decision and your recommendation", fields["question"]["description"])
+        self.assertIn("only the inbox record shows it in full", fields["context"]["description"])
+        self.assertIn("40 characters", fields["options"]["description"])
+        self.assertIn("only one or two options become phone and watch buttons", fields["options"]["description"])
+
     def test_secret_file_is_read_without_executing_shell(self):
         with tempfile.TemporaryDirectory() as temp:
             secret = Path(temp) / "secret.env"
@@ -228,7 +244,21 @@ class QuestionTests(unittest.TestCase):
         self.init()
         self.start(arguments={"question": "Which colour?", "context": "Because.", "options": ["Red", "Blue"]})
         [request] = dialog_requests(self.output)
-        self.assertEqual(request["params"]["message"], "Which colour?\n1) Red  2) Blue\n\nBecause.")
+        self.assertEqual(request["params"]["message"], "Which colour?\n1) Red  2) Blue\nBecause.")
+
+    def test_the_third_dialog_line_shows_the_context_not_a_blank(self):
+        # A one-line question with two short options is the shape the tool asks for: the dialog's
+        # third line is the context's first, wrapped like the question, never a blank separator.
+        context = "Background " * 30 + "\n\nSecond paragraph."
+        self.init()
+        self.start(arguments={"question": "Merge !752 now? I recommend yes.", "context": context,
+                              "options": ["Merge now", "Wait"]})
+        [request] = dialog_requests(self.output)
+        lines = request["params"]["message"].split("\n")
+        self.assertEqual(lines[:questions.MESSAGE_LINES], [
+            "Merge !752 now? I recommend yes.", "1) Merge now  2) Wait", questions.wrapped(context)[0]])
+        self.assertTrue(all(len(line) <= questions.LINE for line in lines))
+        self.assertEqual(lines[2:], questions.wrapped(context))
 
     LONG = ("Should the mailrelay container get a tmpfs on /run so a stale rsyslogd pid file can no longer "
             "stop its logger after a restart, or do you prefer the entrypoint hook that deletes the file?")
@@ -287,7 +317,7 @@ class QuestionTests(unittest.TestCase):
                             "arguments": {"question": "Why?", "context": "Because."}}})
         self.assertTrue(self.transport.created.wait(1))
         [request] = dialog_requests(self.output)
-        self.assertEqual(request["params"]["message"], "Why?\n\nBecause.")
+        self.assertEqual(request["params"]["message"], "Why?\nBecause.")
         self.assertEqual(request["params"]["requestedSchema"]["required"], ["answer"])
         self.assertNotIn("choice", request["params"]["requestedSchema"]["properties"])
 
