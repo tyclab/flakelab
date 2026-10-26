@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 ### Changed
 
 - The question tool guidance now requests self-contained questions and short action choices, so the decision does not depend on background text hidden by terminal previews. Optional detail remains in the Home Assistant inbox.
+- The `ask_question` text, its field descriptions and the managed CLAUDE.md and Codex instructions say what each surface shows: the terminal dialog three lines, the phone and watch push the question with a button for each of one or two options, the context in full only in the inbox record. The question's first line names the decision and the recommendation, options stay near 40 characters, and two are preferred. "Include enough context to answer from the phone" and "Relevant details the user needs to decide" are gone: they put the choice in the context, which neither the dialog nor the push showed.
+- The terminal dialog puts the context, wrapped like the question, directly under the options: the blank line before it took the third of the three lines Claude Code shows.
 - Claude's permission-tier section moved from `files/config/agent-instructions.md` to `files/config/claude/auto-mode.md` and now follows the target facts in `~/.claude/CLAUDE.md`; its text is unchanged.
 - The `claudeAutoMode` force-push rule also accepts a lease with an explicit sha, `git push --force-with-lease=<branch>:<expected-sha> origin <branch>`, which it refused even when the operator named it: git ignores `--force-if-includes` beside an explicit sha, so the required flag added nothing to the strictest spelling. The rule now covers any branch that is neither protected nor the default branch, not only the agent's own.
 
