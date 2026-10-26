@@ -982,7 +982,7 @@
             bash -euo pipefail ${prune} > out
             # The opt-out takes the undeclared mcp-old, the orphan pass the withdrawn gone;
             # agents, withdrawn but declared, stays for the installer.
-            test "$(cat "$HOME/calls")" = "$(printf '%s\n' 'plugin uninstall mcp-old@fixture-market' 'plugin uninstall gone@fixture-market')"
+            test "$(cat "$HOME/calls")" = "$(printf '%s\n' 'plugin uninstall mcp-old@fixture-market' 'plugin uninstall --keep-data gone@fixture-market')"
             grep -q 'uninstalled gone@fixture-market' out
             test ! -e "$HOME/.local/state/flakelab/activation-failures"
             touch $out

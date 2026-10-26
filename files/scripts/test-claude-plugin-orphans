@@ -106,9 +106,9 @@ print -r -- "a withdrawn plugin"
 new_home
 installed "gone@mkt" "kept@mkt"
 catalogue mkt kept
-run_orphans "mkt" "kept@mkt"
+run_orphans "mkt" ""
 check    "exits 0"                          "${RC}" "0"
-check    "is uninstalled from user scope, from HOME" "${CALLS}" "plugin uninstall gone@mkt | ${H}"
+check    "is uninstalled from user scope, from HOME, keeping its data; the offered kept@mkt stays" "${CALLS}" "plugin uninstall --keep-data gone@mkt | ${H}"
 contains "with a note naming it"            "${OUT}" "uninstalled gone@mkt: the mkt marketplace no longer offers it."
 
 print -r -- "a withdrawn plugin claudePlugins still declares is left to the installer"
@@ -131,14 +131,14 @@ new_home
 installed "gone@mkt:user,project"
 catalogue mkt kept
 run_orphans "mkt" ""
-check    "one uninstall, from HOME"         "${CALLS}" "plugin uninstall gone@mkt | ${H}"
+check    "one uninstall, from HOME"         "${CALLS}" "plugin uninstall --keep-data gone@mkt | ${H}"
 
 print -r -- "a registry without scopes counts as user scope"
 new_home
 print -r -- '{"plugins":{"gone@mkt":{}}}' > "${H}/.claude/plugins/installed_plugins.json"
 catalogue mkt kept
 run_orphans "mkt" ""
-check    "it is uninstalled"                "${CALLS}" "plugin uninstall gone@mkt | ${H}"
+check    "it is uninstalled"                "${CALLS}" "plugin uninstall --keep-data gone@mkt | ${H}"
 
 print -r -- "only declared marketplaces, each on its own"
 new_home
@@ -147,8 +147,8 @@ catalogue mkt kept
 catalogue other kept
 catalogue two y
 run_orphans "mkt two" ""
-contains "the first is pruned"              "${CALLS}" "plugin uninstall gone@mkt "
-contains "the second too"                   "${CALLS}" "plugin uninstall x@two "
+contains "the first is pruned"              "${CALLS}" "plugin uninstall --keep-data gone@mkt "
+contains "the second too"                   "${CALLS}" "plugin uninstall --keep-data x@two "
 excludes "an undeclared one is not"         "${CALLS}" "gone@other"
 
 print -r -- "a catalogue that is missing, empty or unreadable prunes nothing, with a note"
