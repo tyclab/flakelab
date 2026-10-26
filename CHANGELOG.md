@@ -41,6 +41,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
 - A marketplace that `flakelab update` cannot refresh shows Claude's own error, and the warning says so instead of guessing "offline, or no agent key"; a marketplace the activation cannot add says its error precedes the deferral in the activation log instead of guessing "(offline?)".
 - A first Claude Code install runs the official installer with `claudeAutoUpdatesChannel` (`bash -s latest`, say), so it starts on the channel the settings assert; without it the installer put `stable` on the box and a `latest` box only got there at its next self-update.
+- `setup-wsl-nix.ps1 provision` keeps the distro running across its closing `flakelab clone` and loads the SSH key into its agent again right before it. WSL can stop the distro between two `wsl.exe` calls, which took the agent and its unlocked key with it, so the clone refused on an empty agent and the provision closed with an empty `~/git`. A key that cannot be loaded is a warning and the clone still runs: an unencrypted key needs no agent, and a passphrase-protected one makes the clone refuse with its own message.
 
 ### Removed
 

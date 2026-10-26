@@ -232,6 +232,16 @@ distro with an agent holding a key. `-SkipSecondSwitch` opts out explicitly when
 those steps are already done; either way a one-switch run ends with no plugins
 and no statusline, and `flakelab doctor` is the only hint.
 
+The clone at the end of a `provision` needs the same agent, and WSL can stop
+the distro between two `wsl.exe` calls even with the user lingering, which
+takes the agent and its unlocked key with it: the clone then refused on an
+empty agent and the provision closed with an empty `~/git`. So the run keeps a
+hidden `wsl.exe` running `sleep` in the distro across the key load and the
+start of the clone, loads the key again into that distro's agent, and only then
+runs `flakelab clone`. A key that does not load is a warning and the clone still
+runs: an unencrypted key needs no agent, and an encrypted one makes the clone
+refuse with its own message.
+
 Both switches wipe VM-wide WSL interop, so each is followed by an interop probe
 and an offer to `wsl --shutdown` (`-Shutdown` answers yes up front; declining
 right after switch #1 stops the run before anything is seeded and prints how to
