@@ -458,17 +458,15 @@ else {
 # the manual-seed instructions; values never live here.
 $SecretKeyNames = @('GITLAB_TOKEN', 'GH_TOKEN', 'HASS_TOKEN',
     'PROXMOX_TOKEN_ID', 'PROXMOX_TOKEN_SECRET',
-    'SYNOLOGY_PASSWORD', 'SYNOLOGY_DEVICE_ID',
     'GRAFANA_SERVICE_ACCOUNT_TOKEN',
     'NTFY_URL', 'NTFY_TOKEN', 'NOTIFY_WEBHOOK_URL')
 # Secret NAMES no longer harvested or asked for (the feature behind them is not
 # shipped), but still never allowed into the flake: a config that carries one
 # must not see it land in the world-readable store just because it left the list.
-$RetiredSecretKeyNames = @('WHATSAPP_API_KEY')
+$RetiredSecretKeyNames = @('WHATSAPP_API_KEY', 'SYNOLOGY_PASSWORD', 'SYNOLOGY_DEVICE_ID')
 
 # Non-secret counterparts belong in sessionVariables, not secrets.env; GRAFANA_URL/WHATSAPP_BRIDGE_HOST gate MCP servers.
 $NonSecretKeyNames = @('HASS_URL', 'PROXMOX_API_URL', 'PROXMOX_VERIFY_SSL',
-    'SYNOLOGY_URL', 'SYNOLOGY_VERIFY_SSL', 'SYNOLOGY_USERNAME',
     'GRAFANA_URL', 'WHATSAPP_BRIDGE_HOST')
 
 # -SshPassphrase given (even '') means never prompt; captured here, as $PSBoundParameters in a function is its own.

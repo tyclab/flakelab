@@ -20,8 +20,8 @@ suspension does not reach layers 1 and 2.
 
 Layer 2 is not an operator checkpoint. An ask rule prompts even when the
 operator's own message names the action, which is the one thing `soft_deny`
-exists to honour. So `glab mr merge` and every mutating Home Assistant and
-Synology tool are layer-4 calls, cleared by naming the target and the change,
+exists to honour. So `glab mr merge` and every mutating Home Assistant
+tool are layer-4 calls, cleared by naming the target and the change,
 and the marketplace ships the ask file empty (2026-09-10).
 
 ## Why the floor is almost empty
