@@ -118,8 +118,19 @@ is recorded in the inbox as delivered with `source: terminal` through hatyc's
 `answer` op and clears the push. Declining or dismissing the dialog leaves the
 question open for the phone. Without elicitation (headless runs, other MCP
 hosts) the inbox path alone is used; against a hatyc without the `answer` op the
-push is cancelled instead and the result says `inbox: unsupported`; with HA down
-the dialog still answers and the result says `inbox: unavailable`.
+push is cancelled instead and the result says `inbox: unsupported`. During an HA
+outage the terminal still answers with `inbox: unavailable`; while an interactive
+question remains unanswered, the broker keeps retrying that same inbox record
+until HA recovers or the call ends. Those recovery attempts use a one-second
+socket timeout instead of the usual ten seconds, so a terminal reply does not
+wait on the normal network timeout. Headless calls still fail promptly when the
+inbox is unavailable.
+
+Codex 0.164.0 can leave an answered dialog visible after the broker cancels it
+([upstream issue #40390](https://github.com/openai/codex/issues/40390)). If the
+tool has already returned the inbox answer, Esc dismisses that stale dialog;
+the saved answer remains unchanged. This client cleanup defect is separate from
+inbox delivery and recovery.
 
 This needs the `flakelab_questions` HA integration from hatyc. It reads
 `NOTIFY_WEBHOOK_URL` at runtime and adds `-questions` to the webhook ID. Keep

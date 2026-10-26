@@ -101,11 +101,11 @@ class Transport:
         self.url = endpoint()
         self.opener = urllib.request.build_opener(NoRedirect)
 
-    def post(self, payload):
+    def post(self, payload, timeout=10):
         request = urllib.request.Request(self.url, json.dumps(payload, ensure_ascii=False).encode(),
                                          {"Content-Type": "application/json"})
         try:
-            with self.opener.open(request, timeout=10) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 body = json.load(response)
             if not isinstance(body, dict) or "status" not in body:
                 raise ValueError("Question inbox returned an invalid response.")
@@ -276,35 +276,6 @@ class Server:
     def wait(self, dialog, cancel):
         (dialog.event if dialog and not dialog.done else cancel).wait(self.interval)
 
-    def dialog_only(self, dialog, question, cancel, deadline):
-        """Wait on the dialog alone; re-show it after an empty accept.
-
-        Returns the text, or None when the operator dismissed it; raises the expiry error at the deadline.
-        """
-        while not cancel.is_set() and time.monotonic() < deadline:
-            if dialog.event.wait(self.interval):
-                text = self.terminal_answer(dialog)
-                self.close_dialog(dialog, cancel=False)
-                dialog = None
-                if text != "":
-                    return text
-                # A queued call may take the lock first; wait our turn rather than fail the answer.
-                while not self.dialog_lock.acquire(timeout=self.interval):
-                    if cancel.is_set():
-                        return None
-                    if time.monotonic() >= deadline:
-                        break
-                else:
-                    dialog = self.open_dialog(question)
-                    continue
-                break
-        if dialog:
-            self.close_dialog(dialog, cancel=True, reason="call cancelled" if cancel.is_set()
-                              else "question expired or closed")
-        if cancel.is_set():
-            return None
-        raise ValueError("Question expired without an answer. Ask in the conversation.")
-
     def record_terminal_answer(self, transport, auth, create, text, created, cancel, failures=0):
         """Store a dialog answer in the inbox; the inbox's status decides whose answer stands.
 
@@ -355,6 +326,7 @@ class Server:
                       "project": os.getcwd(), "host": socket.gethostname()}
             deadline = time.monotonic() + self.timeout
             created, failures, unavailable_since = False, 0, None
+            inbox_unavailable = False
             while not cancel.is_set() and time.monotonic() < deadline:
                 # One dialog per server at a time: open ours as soon as the lock is free.
                 if dialog is None and not declined and self.elicitation and self.dialog_lock.acquire(blocking=False):
@@ -368,8 +340,12 @@ class Server:
                     if text is None:
                         declined = True
                     else:
-                        payload = self.record_terminal_answer(transport, auth, create, text, created, cancel,
-                                                              failures)
+                        if inbox_unavailable:
+                            payload = {"status": "answered", "answer": text, "question_id": auth["id"],
+                                       "source": "terminal", "inbox": "unavailable"}
+                        else:
+                            payload = self.record_terminal_answer(transport, auth, create, text, created, cancel,
+                                                                  failures)
                         if cancel.is_set():
                             break  # the client gave up meanwhile; the finally posts the inbox cancel
                         self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
@@ -378,24 +354,19 @@ class Server:
                             transport.post({**auth, "op": "delivered"})
                         return
                 try:
-                    result = transport.post({**auth, "op": "poll"} if created else create)
+                    result = transport.post({**auth, "op": "poll"} if created else create,
+                                            timeout=1 if inbox_unavailable else 10)
                     created, failures, unavailable_since = True, 0, None
+                    inbox_unavailable = False
                 except ConnectionError:
                     failures += 1
                     unavailable_since = unavailable_since or time.monotonic()
                     if (not created and failures >= 3) or time.monotonic() - unavailable_since > 60:
-                        if not (dialog and not dialog.done):
+                        inbox_unavailable = True
+                        if not self.elicitation or declined:
                             raise
-                        # The inbox is gone but the dialog is up: let the terminal answer alone.
-                        text = self.dialog_only(dialog, question, cancel, deadline)
-                        dialog = None
-                        if not text:
-                            raise
-                        self.send(ident, {"content": [{"type": "text", "text": json.dumps({
-                            "status": "answered", "answer": text, "question_id": auth["id"],
-                            "source": "terminal", "inbox": "unavailable"})}]})
-                        finished = True
-                        return
+                    # Keep the same inbox question recoverable while it is pending.
+                    # Subsequent retries use a short socket timeout for terminal replies.
                     self.wait(dialog, cancel)
                     continue
                 status = result["status"]
