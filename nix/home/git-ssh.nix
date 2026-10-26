@@ -34,6 +34,8 @@ in
       // lib.optionalAttrs (cfg.gitEditor != null) {
         editor = cfg.gitEditor;
       };
+      # Unset, every `git init` names the branch master and prints the hint about it.
+      init.defaultBranch = lib.mkDefault "main";
       safe.directory = cfg.repoPath;
       # Declared here: `gh/glab auth login` cannot write this helper, as ~/.gitconfig is a read-only store symlink.
       # A self-hosted GitLab is the same one line in the overlay, under its own https://<host>.
