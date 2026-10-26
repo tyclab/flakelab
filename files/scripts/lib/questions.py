@@ -18,24 +18,38 @@ import urllib.request
 import uuid
 
 INSTRUCTIONS = (
-    "Use flakelab-questions ask_question when you need the user's clarification or "
-    "decision. It retains the full question in Home Assistant and waits for their "
-    "answer from the phone or inbox. In an interactive terminal the same question "
-    "also opens as a dialog; the first answer, terminal or phone, wins. "
-    "Ask once and use the returned answer. "
-    "If unavailable, cancelled or expired, ask in the conversation; never invent an "
-    "answer. This tool cannot grant tool permissions or bypass approval policies."
+    "Use ask_question for a necessary clarification or decision, not routine progress "
+    "or permission already given. The user answers from what each surface shows: the "
+    "terminal dialog shows three lines (the question, then the numbered options); the "
+    "phone and watch push shows the question and, for one or two options, one button "
+    "each; context is shown in full only in the Home Assistant inbox record. So the "
+    "question's first line names the decision and your recommendation, and two short "
+    "options are best. The first terminal or phone answer wins. Wait for it before "
+    "dependent work, even if the call moves to the background. If unavailable, "
+    "cancelled or expired, ask in the conversation; never infer an answer. Tool "
+    "permissions use native approval flows."
 )
 TOOL = {
     "name": "ask_question",
-    "description": INSTRUCTIONS,
+    "description": "Ask one question the user can answer from the question and options alone: the terminal "
+                   "shows three lines, the phone and watch show the question and up to two option buttons, "
+                   "and context appears in full only in the inbox record. Wait for the returned answer.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "question": {"type": "string", "minLength": 1, "maxLength": 12000},
+            "question": {"type": "string", "minLength": 1, "maxLength": 12000,
+                         "description": "One decision, answerable alone, without context or earlier messages. "
+                                        "Its first line names the decision and your recommendation, e.g. "
+                                        "'Merge !752 now? I recommend yes.'; a collapsed phone push shows only that line."},
             "context": {"type": "string", "maxLength": 24000,
-                        "description": "Relevant details the user needs to decide. Do not include secrets."},
+                        "description": "Optional background. The phone and watch never show it, the terminal at "
+                                       "most its first line; only the inbox record shows it in full, so nothing "
+                                       "the answer needs may live only here. No secrets or raw logs."},
             "options": {"type": "array", "maxItems": 8, "uniqueItems": True,
+                        "description": "Self-explanatory answers in meaningful words, about 40 characters or less, "
+                                       "never numbers or combinations that point into hidden context; recommended "
+                                       "first. Prefer two: only one or two options become phone and watch "
+                                       "buttons; with more the phone offers none.",
                         "items": {"type": "string", "minLength": 1, "maxLength": 300}},
         },
         "required": ["question"],
@@ -153,7 +167,9 @@ def dialog_form(question):
     message lines and its collapsed picker costs five key presses where a number costs three. When the
     wrapped question leaves no message line, one line of options moves to the field's description,
     which the dialog shows whole. Options that need more room keep the picker: enum "choice" beside
-    free "text" (Codex lays fields out by property name, so "text" sorts after "choice").
+    free "text" (Codex lays fields out by property name, so "text" sorts after "choice"). The context
+    follows wrapped and without a blank line, which would take the third line a one-line question
+    with one line of options leaves.
     """
     options = question.get("options") or []
     context = question.get("context", "")
@@ -165,7 +181,7 @@ def dialog_form(question):
         answer["description"] = "Type a number or your own words."
     elif numbered is not None and len(numbered) == 1:
         answer["description"] = numbered[0] + ", or your own words"
-    message = "\n".join(lines) + ("\n\n" + context if context else "")
+    message = "\n".join(lines + (wrapped(context) if context else []))
     if options and "description" not in answer:
         return message, {"type": "object", "properties": {
             "choice": {"type": "string", "title": "Choice", "enum": options, "enumNames": options},
