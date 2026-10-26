@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The question tool guidance now requests self-contained questions and short action choices, so the decision does not depend on background text hidden by terminal previews. Optional detail remains in the Home Assistant inbox.
 - Claude's permission-tier section moved from `files/config/agent-instructions.md` to `files/config/claude/auto-mode.md` and now follows the target facts in `~/.claude/CLAUDE.md`; its text is unchanged.
 - The `claudeAutoMode` force-push rule also accepts a lease with an explicit sha, `git push --force-with-lease=<branch>:<expected-sha> origin <branch>`, which it refused even when the operator named it: git ignores `--force-if-includes` beside an explicit sha, so the required flag added nothing to the strictest spelling. The rule now covers any branch that is neither protected nor the default branch, not only the agent's own.
+- `flakelab update` reports a `path:` flakelab input's re-lock as information rather than a warning: an overlay generated from a checkout is `path:` by design, so the warning came on every run.
 
 ### Fixed
 
@@ -28,6 +29,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The `sopsSecretsFile` option text no longer claims a fallback to `secrets.env` that the zsh init deliberately does not make.
 - `flakelab doctor`, `gitchecker` and `gitcleaner` name the sops secrets as the token source too, not `secrets.env` alone, and doctor no longer says the secrets are read only at login.
 - A Codex CLI install or update that cannot fetch its installer puts curl's own error (a 404, an unresolvable host) in the deferral instead of guessing "offline?", and one whose installer fails says that.
+- A marketplace that `flakelab update` cannot refresh shows Claude's own error, and the warning says so instead of guessing "offline, or no agent key"; a marketplace the activation cannot add says its error precedes the deferral in the activation log instead of guessing "(offline?)".
 
 ### Removed
 
