@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `flakelab.claudeAutoMemoryDirectory` (default `null`): asserted into `settings.autoMemoryDirectory`, so Claude Code keeps one auto-memory store for every working directory instead of one per `~/.claude/projects/<slug>`.
 - With `installCodex`, `~/.codex/AGENTS.md` gets a `<!-- BEGIN managed by flakelab -->` block like `~/.claude/CLAUDE.md`: the shipped distro facts, the target facts and `claudeMdExtra`, so Codex works from the same rules as Claude Code. Text outside the markers stays; a symlink there becomes a regular file. The block leaves out Claude's permission tiers and the question-tool text, which Codex already receives through `developer_instructions`. `$CODEX_HOME` counts only when the activation environment sets it, and an `AGENTS.override.md` beside the file makes Codex read that instead. A `home.file` for the same path, such as Home Manager's `programs.codex.context`, fails the build with a pointer to `claudeMdExtra`.
 - A managed block that cannot be written, or whose path links into the Nix store, is a warning instead of an aborted activation.
 - `flakelab-prune` removes `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them; the next firmware build or embedding run downloads what it needs again.
