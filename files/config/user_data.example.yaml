@@ -75,7 +75,10 @@ custom_aliases:
   - name: gs
     command: git status
 
-# Known secret names go to ~/.config/flakelab/secrets.env, the rest become sessionVariables.
+# Known secret names go to ~/.config/flakelab/secrets.env, and so does a name with TOKEN,
+# SECRET, PASSWORD, PASSWD, APIKEY or CREDENTIAL as a whole _-separated word, or API_KEY or
+# PRIVATE_KEY anywhere, unless it ends in _URL, _DIR, _FILE, _PATH, _HOST or _NAMESPACE.
+# The rest become sessionVariables.
 custom_env_vars:
   HASS_URL: 'http://homeassistant.example.lan:8123'
   PROXMOX_API_URL: 'https://pve.example.lan:8006' # base URL, no /api2/json

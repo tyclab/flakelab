@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Security
 
+- Both overlay generators (`flakelab overlay-gen` and `setup-wsl-nix.ps1 generate`/`provision`) withhold a `custom_env_vars` entry from the generated `flake.nix` when its name looks like a credential, not only when it is one of the secret names the example config ships: `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `APIKEY` or `CREDENTIAL` as a whole `_`-separated word, or `API_KEY` or `PRIVATE_KEY` anywhere, in any case. Before, a credential named any other way, `SERVICE_API_TOKEN` say, was written into the tracked `flake.nix` and from there into the world-readable nix store. A name ending in `_URL`, `_DIR`, `_FILE`, `_PATH`, `_HOST` or `_NAMESPACE` names a location and stays a session variable, as do `MAX_THINKING_TOKENS` and `GOOGLE_APPLICATION_CREDENTIALS`, where the word is only part of one. The run names each withheld entry, never its value, and `provision` copies the values into `secrets.env` with the named tokens, so none is lost.
 - `flakelab update` reads `recommended-permissions.json` and `recommended-ask.json` only from a marketplace `claudePluginMarketplaces` declares, not from any clone under `~/.claude/plugins/marketplaces`, and refuses a file that is not a list of rule strings or an allow rule that approves every use of `Bash`, `PowerShell`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit` or `WebFetch`.
 
 ## [0.4.0] - 2026-10-22

@@ -452,6 +452,20 @@ typeset -a _secret_names=(
   GRAFANA_SERVICE_ACCOUNT_TOKEN WHATSAPP_API_KEY
   NTFY_URL NTFY_TOKEN NOTIFY_WEBHOOK_URL
 )
+# A credential-shaped name is withheld too, whatever the config calls it: the word, not a
+# substring, so MAX_OUTPUT_TOKENS stays; a location (_URL, _DIR, ...) names no secret.
+# Both kept identical to $SecretNamePattern and $SecretNameExempt in setup-wsl-nix.ps1.
+_secret_shape='(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
+_secret_exempt='_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
+
+# Case-insensitive, like PowerShell's -contains and -match in the twin; the named
+# secrets first, since NTFY_URL is one.
+_is_secret_name() {
+  local n="${1:u}"
+  (( ${_secret_names[(Ie)$n]} )) && return 0
+  [[ "${n}" =~ "${_secret_exempt}" ]] && return 1
+  [[ "${n}" =~ "${_secret_shape}" ]]
+}
 
 typeset -a _session_lines=()
 
@@ -495,7 +509,7 @@ if [[ -n "${_config}" ]]; then
   # list built there would never reach the summary and the drops would go unreported.
   for _k in ${(f)"${YMK[custom_env_vars]:-}"}; do
     [[ -n "${_k}" ]] || continue
-    if (( ${_secret_names[(Ie)$_k]} )); then
+    if _is_secret_name "${_k}"; then
       _skipped_secrets+=("${_k}")
       continue
     fi

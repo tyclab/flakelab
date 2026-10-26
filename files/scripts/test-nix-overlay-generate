@@ -1034,6 +1034,53 @@ contains "the entry it sits in is kept"        "${f}" 'k = "htop";'
 contains "the next entry is still read"        "${f}" 'g = "git status";'
 contains "a field after the map is still read" "${f}" 'tools/alpha'
 
+# Built, not literal: gitleaks reads credential-looking key: value pairs as a leak.
+print -r -- "a credential-shaped custom_env_var is withheld whatever the config calls it"
+typeset -a _shaped=(SERVICE_API_TOKEN APP_CLIENT_SECRET DB_PASSWORD LDAP_PASSWD ANY_API_KEY
+  OTHER_APIKEY SIGNING_PRIVATE_KEY SOME_CREDENTIAL app_token AWS_SECRET_ACCESS_KEY SECRET_KEY
+  GITHUB_TOKEN)
+# The word, not a substring, and a location is no secret: these stay session variables.
+typeset -a _kept=(CLAUDE_CODE_MAX_OUTPUT_TOKENS MAX_THINKING_TOKENS TOKENIZERS_PARALLELISM
+  GOOGLE_APPLICATION_CREDENTIALS AWS_SHARED_CREDENTIALS_FILE PASSWORD_STORE_DIR OAUTH_TOKEN_URL
+  SSH_PRIVATE_KEY_PATH SECRETS_DIR KUBE_SECRET_NAMESPACE KEYSERVER_URL AUTH_CLIENT_ID AUTH_REALM)
+_marker="placeholder-not-a-credential"
+{
+  print -rl -- 'profiles:' '  - example' 'custom_env_vars:'
+  for k in "${_shaped[@]}"; do print -r -- "  ${k}: ${_marker}-${k:l}"; done
+  for k in "${_kept[@]}"; do print -r -- "  ${k}: kept-${k:l}"; done
+} | bare_cfg shaped
+o="$(out shaped)"
+run_gen --out "${o}" --config "${BASE}/shaped.yaml"
+f="$(flake_of "${o}")"
+check "it generates" "${RC}" "0"
+for k in "${_shaped[@]}"; do
+  excludes "${k} is not in the flake"   "${f}" "${k} ="
+  contains "and the run names it"       "${OUT}" "${k}"
+done
+excludes "no value of theirs reaches the flake" "${f}" "${_marker}"
+excludes "nor the run's output"                 "${OUT}" "${_marker}"
+for k in "${_kept[@]}"; do
+  contains "${k} stays a session variable" "${f}" "${k} = \"kept-${k:l}\";"
+done
+check "the stub is still empty" "$(wc -c < "${o}-payload/shared/secrets/secrets.env")" "0"
+
+# Nothing drives PowerShell here, so the twin writer is pinned by its source.
+print -r -- "setup-wsl-nix.ps1 classifies custom_env_vars the same way"
+PS1_SRC="${REPO_ROOT}/setup-wsl-nix.ps1"
+ps1_src="$(< "${PS1_SRC}")"
+zsh_shape="$(sed -n "s/^_secret_shape='\(.*\)'\$/\1/p" "${GEN}")"
+ps1_shape="$(sed -n "s/^\$SecretNamePattern = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
+zsh_exempt="$(sed -n "s/^_secret_exempt='\(.*\)'\$/\1/p" "${GEN}")"
+ps1_exempt="$(sed -n "s/^\$SecretNameExempt = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
+check "the zsh pattern is the word rule" "${zsh_shape}" '(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
+check "both writers withhold the same shapes"     "${ps1_shape}" "${zsh_shape}"
+check "the zsh exemption names the locations"     "${zsh_exempt}" '_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
+check "both writers exempt the same locations"    "${ps1_exempt}" "${zsh_exempt}"
+contains "the zsh split goes through the classifier" "$(< "${GEN}")" 'if _is_secret_name "${_k}"; then'
+contains "the twin has one classifier"               "${ps1_src}" 'function Test-SecretName'
+contains "which its flake emitter calls"             "${ps1_src}" 'if (Test-SecretName $k) {'
+contains "and its secrets.env harvester too"         "${ps1_src}" '(Test-SecretName $_) -and'
+
 # ---------------------------------------------------------------------------
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
