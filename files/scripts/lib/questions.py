@@ -23,9 +23,11 @@ INSTRUCTIONS = (
     "terminal dialog shows three lines (the question, then the numbered options); the "
     "phone and watch push shows the question and, for one or two options, one button "
     "each; context is shown in full only in the Home Assistant inbox record. So the "
-    "question's first line names the decision and your recommendation, and two short "
-    "options are best. The first terminal or phone answer wins. Wait for it before "
-    "dependent work, even if the call moves to the background. If unavailable, "
+    "question's first line names the target and decision; any recommendation is brief "
+    "and optional. Keep nonessential validation details in context. Prefer "
+    "two action labels of 1-3 words, aiming for 20 characters or fewer; keep the target "
+    "in the question, not repeated in each label. The first terminal or phone answer wins. "
+    "Wait for it before dependent work, even if the call moves to the background. If unavailable, "
     "cancelled or expired, ask in the conversation; never infer an answer. Tool "
     "permissions use native approval flows."
 )
@@ -39,17 +41,21 @@ TOOL = {
         "properties": {
             "question": {"type": "string", "minLength": 1, "maxLength": 12000,
                          "description": "One decision, answerable alone, without context or earlier messages. "
-                                        "Its first line names the decision and your recommendation, e.g. "
-                                        "'Merge !752 now? I recommend yes.'; a collapsed phone push shows only that line."},
+                                        "Its first line names the target and decision, e.g. 'Deploy the tested "
+                                        "release now?'; a collapsed phone push shows only that line. A "
+                                        "recommendation is optional and brief; nonessential validation details "
+                                        "belong in context."},
             "context": {"type": "string", "maxLength": 24000,
                         "description": "Optional background. The phone and watch never show it, the terminal at "
                                        "most its first line; only the inbox record shows it in full, so nothing "
                                        "the answer needs may live only here. No secrets or raw logs."},
             "options": {"type": "array", "maxItems": 8, "uniqueItems": True,
-                        "description": "Self-explanatory answers in meaningful words, about 40 characters or less, "
-                                       "never numbers or combinations that point into hidden context; recommended "
-                                       "first. Prefer two: only one or two options become phone and watch "
-                                       "buttons; with more the phone offers none.",
+                        "description": "Short action labels: 1-3 words, aim for 20 characters or fewer, e.g. "
+                                       "'Merge and deploy' / 'Keep open'. Put the target in the question instead "
+                                       "of repeating it in each label. Keep each answer unambiguous; never use "
+                                       "numbers or references to hidden context. Recommended first. Prefer two: "
+                                       "only one or two options become phone and watch buttons; with more the "
+                                       "phone offers none.",
                         "items": {"type": "string", "minLength": 1, "maxLength": 300}},
         },
         "required": ["question"],
