@@ -86,6 +86,62 @@ let
   isWsl = cfg.target == "wsl";
 
   inherit (cfg) installClaude installCodex;
+
+  # One rule set for both agents: Claude Code reads ~/.claude/CLAUDE.md, Codex
+  # ~/.codex/AGENTS.md, and neither reads the other's user-level file. Codex leaves
+  # out the Claude-only permission tiers and the question-tool text, which
+  # nix/codex-config.nix already puts in its developer_instructions.
+  agentInstructions =
+    let
+      read = f: builtins.readFile ../../files/config/${f};
+      target = read "claude/target-${cfg.target}.md";
+      # Newline-terminated, or the END marker lands on the last line of the extra text.
+      extra = lib.optionalString (cfg.claudeMdExtra != "") (
+        "\n" + lib.removeSuffix "\n" cfg.claudeMdExtra + "\n"
+      );
+    in
+    {
+      claude = pkgs.writeText "claude-md-managed.md" (
+        read "agent-instructions.md"
+        + lib.optionalString cfg.questions.enable (read "question-instructions.md")
+        + "\n"
+        + target
+        + "\n"
+        + read "claude/auto-mode.md"
+        + extra
+      );
+      codex = pkgs.writeText "codex-agents-md-managed.md" (
+        read "agent-instructions.md" + "\n" + target + extra
+      );
+    };
+
+  # A marker block, not a home.file: the tools and the user write these files too,
+  # and anything outside the markers survives. Rewritten every activation.
+  writeManagedBlock = target: body: ''
+    export PATH="${
+      lib.makeBinPath [
+        pkgs.gawk
+        pkgs.coreutils
+      ]
+    }:$PATH"
+    _md=${target}
+    mkdir -p "$(dirname "$_md")"
+    touch "$_md"
+    _tmp="$(mktemp)"
+    awk '
+      index($0, "<!-- BEGIN managed by flakelab -->") == 1 { skip = 1 }
+      skip != 1 { print }
+      index($0, "<!-- END managed by flakelab -->") == 1 { skip = 0 }
+    ' "$_md" > "$_tmp"
+    {
+      cat "$_tmp"
+      echo '<!-- BEGIN managed by flakelab -->'
+      cat ${body}
+      echo '<!-- END managed by flakelab -->'
+    } > "$_tmp.new" && $DRY_RUN_CMD install -m644 "$_tmp.new" "$_md" || \
+      ${flakelabWarn} "could not refresh the managed block in $_md."
+    rm -f "$_tmp" "$_tmp.new"
+  '';
 in
 {
   imports = [
@@ -118,6 +174,8 @@ in
       neverRestartedByActivation
       installClaude
       installCodex
+      agentInstructions
+      writeManagedBlock
       ;
   };
 

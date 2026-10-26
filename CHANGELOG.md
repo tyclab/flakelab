@@ -9,8 +9,13 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`) gets a `<!-- BEGIN managed by flakelab -->` block like `~/.claude/CLAUDE.md`: the shipped distro facts, the target facts and `claudeMdExtra`, so Codex works from the same rules as Claude Code. Text outside the markers stays. The block leaves out Claude's permission tiers and the question-tool text, which Codex already receives through `developer_instructions`.
 - `flakelab-prune` removes `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them; the next firmware build or embedding run downloads what it needs again.
 - `gitcleaner` reports a checkout parked on a landed branch — HEAD, or a linked worktree, on a branch that was pushed, merged and deleted on the remote — instead of skipping it without a word, and `--json` lists it under `parked`. At a terminal it offers to switch the checkout to the default branch (or remove the worktree) and delete the branch; `--unpark` does the same under `--yes`. Uncommitted changes, untracked files in a worktree, and a worktree lock that names no pid or a running one leave the checkout alone.
+
+### Changed
+
+- Claude's permission-tier section moved from `files/config/agent-instructions.md` to `files/config/claude/auto-mode.md` and now follows the target facts in `~/.claude/CLAUDE.md`; its text is unchanged.
 
 ### Fixed
 

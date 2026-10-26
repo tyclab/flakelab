@@ -388,6 +388,52 @@
         claude-sessions = suiteCheck "claude-sessions";
         notify = suiteCheck "notify";
         questions = suiteCheckWith [ pkgs.python3 ] "questions";
+        # Both managed blocks against a fixture home: text outside the markers survives
+        # two runs, Claude gets every part, Codex the same rules without Claude's
+        # permission tiers and the question text its config.toml already carries.
+        agent-instructions =
+          let
+            fixture = self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.questions.enable = true;
+                  flakelab.claudeMdExtra = "## Fixture rules\n\n- fixture-only rule\n";
+                }
+              ];
+            };
+            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            activation =
+              name:
+              pkgs.writeText "agent-instructions-${name}" (
+                nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.${name}.data
+              );
+          in
+          pkgs.runCommandLocal "flakelab-check-agent-instructions" { nativeBuildInputs = [ pkgs.bash ]; } ''
+            export fixtureHome="$TMPDIR/home" DRY_RUN_CMD=
+            mkdir -p "$fixtureHome/.claude" "$fixtureHome/.codex"
+            echo 'user line kept' > "$fixtureHome/.claude/CLAUDE.md"
+            echo 'hand-written codex rule' > "$fixtureHome/.codex/AGENTS.md"
+            for _ in 1 2; do
+              bash -euo pipefail ${activation "claudeMd"}
+              bash -euo pipefail ${activation "codexAgentsMd"}
+            done
+            claude="$fixtureHome/.claude/CLAUDE.md" codex="$fixtureHome/.codex/AGENTS.md"
+            for f in "$claude" "$codex"; do
+              test "$(grep -c '^<!-- BEGIN managed by flakelab -->$' "$f")" = 1
+              test "$(grep -c '^<!-- END managed by flakelab -->$' "$f")" = 1
+              grep -q '^## Environment$' "$f"
+              grep -q '^## Provisioning$' "$f"
+              grep -q '^- fixture-only rule$' "$f"
+              test "$(tail -n 1 "$f")" = '<!-- END managed by flakelab -->'
+            done
+            test "$(head -n 1 "$claude")" = 'user line kept'
+            test "$(head -n 1 "$codex")" = 'hand-written codex rule'
+            grep -q '^## Permissions and auto mode$' "$claude"
+            grep -q 'ask_question' "$claude"
+            if grep -q 'Permissions and auto mode' "$codex"; then exit 1; fi
+            if grep -q 'ask_question' "$codex"; then exit 1; fi
+            touch $out
+          '';
         # The suite; the launcher as installed, against a fixture account; the
         # account and the headless browser registered in both clients' rendered
         # configuration; and that browser server driven end to end.
