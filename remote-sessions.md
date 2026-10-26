@@ -132,8 +132,8 @@ or cancelled call returns no fabricated answer. Questions are not approval
 grants, and native dialogs are not intercepted: the agent must call this tool.
 
 The managed client instructions prefer it for clarification and decisions,
-and the tool text says what each surface shows: the phone and watch push leads
-with the question and carries a button for each of one or two choices (more
+and the tool text says what each surface shows: the phone and watch push shows
+the question and carries a button for each of one or two choices (more
 choices get none), never the context, which only the inbox record shows in
 full. So the question's first line names the decision and the recommendation,
 and two short choices are best.

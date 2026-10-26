@@ -40,7 +40,7 @@ TOOL = {
             "question": {"type": "string", "minLength": 1, "maxLength": 12000,
                          "description": "One decision, answerable alone, without context or earlier messages. "
                                         "Its first line names the decision and your recommendation, e.g. "
-                                        "'Merge !752 now? I recommend yes.'; the phone push leads with it."},
+                                        "'Merge !752 now? I recommend yes.'; a collapsed phone push shows only that line."},
             "context": {"type": "string", "maxLength": 24000,
                         "description": "Optional background. The phone and watch never show it, the terminal at "
                                        "most its first line; only the inbox record shows it in full, so nothing "
