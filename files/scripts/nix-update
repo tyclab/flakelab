@@ -345,7 +345,8 @@ _nix_relock_flakelab() {
     # A lookup that failed still exits 0: Nix warns and re-locks to its last cached answer.
     local -a _dl=(${(M)${(f)_out}:#*unable to download*})
     if [[ "${_ty}" == path ]]; then
-      _say yellow "⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
+      # Information: an overlay generated from a checkout is path: by design, so a warning would be every run's.
+      _say cyan "ℹ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
     elif [[ -n "${_a[6]:-}" ]]; then
       # A rev in the input's URL: `nix flake update` can never move it.
       _say yellow "⚠ flakelab input unchanged (${_a[6][1,7]}): inputs.flakelab.url in ${_repo}/flake.nix names that rev, so update cannot move it; drop the rev from the URL"
@@ -494,8 +495,8 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   [[ -s "${_fetched_log}" ]] && _fetched=("${(@f)$(< "${_fetched_log}")}")
   for _m in "${_claude_marketplaces}"/*(N/); do
     (( ${_fetched[(Ie)${_m:t}]} )) && continue
-    claude plugin marketplace update "${_m:t}" > /dev/null 2>&1 \
-      || _say yellow "⚠ claude marketplace ${_m:t} not refreshed (offline, or no agent key) — the permissions merge below uses its last fetch"
+    claude plugin marketplace update "${_m:t}" > /dev/null \
+      || _say yellow "⚠ claude marketplace ${_m:t} not refreshed: its error precedes this line — the permissions merge below uses its last fetch"
   done
   # `plugin install` is a no-op on an installed plugin, so changed versions are updated; </dev/null bounds its prompt.
   _installed="$HOME/.claude/plugins/installed_plugins.json"

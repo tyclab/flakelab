@@ -344,9 +344,9 @@ in
                 && _marketplaceFetched ${lib.escapeShellArg m.name} || \
                 ${
                   if lib.hasPrefix "git@" m.url then
-                    sshDefer "claude marketplace ${m.name} not added (no unlocked agent key, or host unreachable). Retry: flakelab update"
+                    sshDefer "claude marketplace ${m.name} not added: claude plugin marketplace add failed; its error precedes this line in the activation log. Retry: flakelab update"
                   else
-                    ''${flakelabDefer} "claude marketplace ${m.name} not added (offline?). Retry: flakelab update"''
+                    ''${flakelabDefer} "claude marketplace ${m.name} not added: claude plugin marketplace add failed; its error precedes this line in the activation log. Retry: flakelab update"''
                 }
             else
               # A registered marketplace never re-fetches itself.

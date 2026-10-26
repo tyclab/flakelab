@@ -876,11 +876,14 @@ excludes "nor when it had not succeeded yet this boot" "$(< "${SUDO_LOG}")" "sys
 # record is the only signal: a unit the switch restarted may have stopped before
 # that step, and a record an earlier activation left is not this run's. The sudo
 # shim's switch records what SUDO_FETCHES names; `claude` logs each refresh and
-# fails the ones CLAUDE_FAILS names. The systemctl shim stays for the unit start.
+# fails the ones CLAUDE_FAILS names, with an error of its own on stderr. The
+# systemctl shim stays for the unit start.
 cat > "${SHIM}/claude" <<'STUB'
 #!/usr/bin/env zsh
 print -r -- "$*" >> "${CLAUDE_LOG}"
-[[ " ${CLAUDE_FAILS:-} " != *" ${@[-1]} "* ]]
+[[ " ${CLAUDE_FAILS:-} " != *" ${@[-1]} "* ]] && exit 0
+print -ru2 -- "claude-stub: could not fetch ${@[-1]}"
+exit 1
 STUB
 chmod +x "${SHIM}/claude"
 export CLAUDE_LOG="${BASE}/claude.log"
@@ -906,6 +909,8 @@ check    "it carries on, then exits 4"      "${RC}" "4"
 check    "the declared one is fetched"      "$(refreshed team-tools)" "1"
 check    "and the one added by hand"        "$(refreshed by-hand)" "1"
 contains "and a failed fetch still warns"   "${OUT}" "claude marketplace team-tools not refreshed"
+contains "after the refresh's own error"    "${OUT}" "claude-stub: could not fetch team-tools"
+contains "which the warning points to"      "${OUT}" "team-tools not refreshed: its error precedes this line"
 
 print -r -- "a record an earlier activation left is not read as this run's"
 : > "${CLAUDE_LOG}"
@@ -1152,6 +1157,14 @@ relock_between "\"type\":\"git\",\"url\":\"file:///srv/flakelab\",\"rev\":\"${RE
 check    "it switches"                      "${RC}" "0"
 contains "it names the checkout"            "${OUT}" "LOCAL flakelab (git+file: /srv/flakelab) — only committed content is in this build"
 contains "and what the re-lock moved"       "${OUT}" "${REV_OLD[1,7]} → ${REV_NEW[1,7]}"
+
+# An overlay generated from a checkout locks it as path:, every run, by design.
+print -r -- "a path: input is said to be re-locked, as information"
+relock_between '"type":"path","path":"/srv/flakelab","narHash":"sha256-AAAA"' \
+               '"type":"path","path":"/srv/flakelab","narHash":"sha256-BBBB"'
+check    "it switches"                      "${RC}" "0"
+contains "it names the checkout"            "${OUT}" "ℹ LOCAL flakelab: /srv/flakelab — overrides the published repo (re-locked)"
+excludes "and does not warn"                "${OUT}" "⚠ LOCAL flakelab:"
 
 # A tarball input locks no rev, only the hash of what it unpacked to.
 print -r -- "an input with no rev is compared by its content hash"
