@@ -390,7 +390,9 @@
         questions = suiteCheckWith [ pkgs.python3 ] "questions";
         # Both managed blocks against a fixture home: text outside the markers survives
         # two runs, Claude gets every part, Codex the same rules without Claude's
-        # permission tiers and the question text its config.toml already carries.
+        # permission tiers and the question text its config.toml already carries; a
+        # missing ~/.codex, a file without a final newline and a store link are
+        # handled, and a home.file for ~/.codex/AGENTS.md is refused by assertion.
         agent-instructions =
           let
             fixture = self.nixosConfigurations.default.extendModules {
@@ -401,23 +403,34 @@
                 }
               ];
             };
-            hm = fixture.config.home-manager.users.${fixture.config.flakelab.username};
+            user = fixture.config.flakelab.username;
+            hm = fixture.config.home-manager.users.${user};
             activation =
               name:
               pkgs.writeText "agent-instructions-${name}" (
                 nixpkgs.lib.replaceStrings [ "$HOME" ] [ "$fixtureHome" ] hm.home.activation.${name}.data
               );
+            owned = fixture.extendModules {
+              modules = [ { home-manager.users.${user}.home.file.".codex/AGENTS.md".text = "owned"; } ];
+            };
+            refused = nixpkgs.lib.any (
+              a: !a.assertion && nixpkgs.lib.hasInfix "claudeMdExtra" a.message
+            ) owned.config.home-manager.users.${user}.assertions;
           in
+          assert refused;
           pkgs.runCommandLocal "flakelab-check-agent-instructions" { nativeBuildInputs = [ pkgs.bash ]; } ''
             export fixtureHome="$TMPDIR/home" DRY_RUN_CMD=
-            mkdir -p "$fixtureHome/.claude" "$fixtureHome/.codex"
-            echo 'user line kept' > "$fixtureHome/.claude/CLAUDE.md"
-            echo 'hand-written codex rule' > "$fixtureHome/.codex/AGENTS.md"
+            claude="$fixtureHome/.claude/CLAUDE.md" codex="$fixtureHome/.codex/AGENTS.md"
+            mkdir -p "$fixtureHome/.claude"
+            echo 'user line kept' > "$claude"
+            # No ~/.codex yet: the writer creates it, owner-only.
+            bash -euo pipefail ${activation "codexAgentsMd"}
+            test "$(stat -c %a "$fixtureHome/.codex")" = 700
+            printf 'hand-written codex rule' > "$codex"
             for _ in 1 2; do
               bash -euo pipefail ${activation "claudeMd"}
               bash -euo pipefail ${activation "codexAgentsMd"}
             done
-            claude="$fixtureHome/.claude/CLAUDE.md" codex="$fixtureHome/.codex/AGENTS.md"
             for f in "$claude" "$codex"; do
               test "$(grep -c '^<!-- BEGIN managed by flakelab -->$' "$f")" = 1
               test "$(grep -c '^<!-- END managed by flakelab -->$' "$f")" = 1
@@ -425,6 +438,8 @@
               grep -q '^## Provisioning$' "$f"
               grep -q '^- fixture-only rule$' "$f"
               test "$(tail -n 1 "$f")" = '<!-- END managed by flakelab -->'
+              # A part boundary that doubles a blank line shows up as two in a row.
+              if awk 'prev == "" && $0 == "" && NR > 1 { found = 1 } { prev = $0 } END { exit !found }' "$f"; then exit 1; fi
             done
             test "$(head -n 1 "$claude")" = 'user line kept'
             test "$(head -n 1 "$codex")" = 'hand-written codex rule'
@@ -432,6 +447,12 @@
             grep -q 'ask_question' "$claude"
             if grep -q 'Permissions and auto mode' "$codex"; then exit 1; fi
             if grep -q 'ask_question' "$codex"; then exit 1; fi
+            # A path another module links into the store: warned about, left alone.
+            export CODEX_HOME="$TMPDIR/owned"
+            mkdir -p "$CODEX_HOME"
+            ln -s ${activation "claudeMd"} "$CODEX_HOME/AGENTS.md"
+            bash -euo pipefail ${activation "codexAgentsMd"}
+            test -L "$CODEX_HOME/AGENTS.md"
             touch $out
           '';
         # The suite; the launcher as installed, against a fixture account; the

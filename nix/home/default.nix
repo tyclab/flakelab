@@ -116,7 +116,9 @@ let
     };
 
   # A marker block, not a home.file: the tools and the user write these files too,
-  # and anything outside the markers survives. Rewritten every activation.
+  # and anything outside the markers survives. Rewritten every activation. Every
+  # failure is a warning, never an abort: activation runs under `set -e`, and a
+  # store link (a home.file for the same path) must not stop the rest of it.
   writeManagedBlock = target: body: ''
     export PATH="${
       lib.makeBinPath [
@@ -125,21 +127,26 @@ let
       ]
     }:$PATH"
     _md=${target}
-    mkdir -p "$(dirname "$_md")"
-    touch "$_md"
     _tmp="$(mktemp)"
-    awk '
-      index($0, "<!-- BEGIN managed by flakelab -->") == 1 { skip = 1 }
-      skip != 1 { print }
-      index($0, "<!-- END managed by flakelab -->") == 1 { skip = 0 }
-    ' "$_md" > "$_tmp"
-    {
-      cat "$_tmp"
-      echo '<!-- BEGIN managed by flakelab -->'
-      cat ${body}
-      echo '<!-- END managed by flakelab -->'
-    } > "$_tmp.new" && $DRY_RUN_CMD install -m644 "$_tmp.new" "$_md" || \
+    if [ -L "$_md" ] && case "$(readlink -f "$_md")" in /nix/store/*) true ;; *) false ;; esac; then
+      ${flakelabWarn} "$_md links into the Nix store, so another module owns it; the flakelab block is not written there."
+    elif { [ ! -e "$_md" ] || awk '
+        index($0, "<!-- BEGIN managed by flakelab -->") == 1 { skip = 1 }
+        skip != 1 { print }
+        index($0, "<!-- END managed by flakelab -->") == 1 { skip = 0 }
+      ' "$_md" > "$_tmp"; } \
+      && {
+        cat "$_tmp"
+        echo '<!-- BEGIN managed by flakelab -->'
+        cat ${body}
+        echo '<!-- END managed by flakelab -->'
+      } > "$_tmp.new" \
+      && $DRY_RUN_CMD mkdir -p -m 700 "$(dirname "$_md")" \
+      && $DRY_RUN_CMD install -m644 "$_tmp.new" "$_md"; then
+      :
+    else
       ${flakelabWarn} "could not refresh the managed block in $_md."
+    fi
     rm -f "$_tmp" "$_tmp.new"
   '';
 in
