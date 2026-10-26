@@ -293,6 +293,7 @@ in
 
   # The nixpkgs build lags what this environment needs, so bootstrap the official
   # installer once; its auto-updater keeps it current, and nix-ld runs the binary.
+  # Given the channel, or a first install starts on stable whatever the settings assert.
   home.activation.installClaudeCode = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
     lib.optionalString installClaude ''
       if [ ! -x "$HOME/.local/bin/claude" ]; then
@@ -305,7 +306,7 @@ in
         }:$PATH"
         export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
         # pipefail: a failed fetch otherwise pipes an empty script into bash, which exits 0.
-        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash' || \
+        $DRY_RUN_CMD ${pkgs.bash}/bin/bash -o pipefail -c 'curl -fsSL https://claude.ai/install.sh | bash -s ${claudeAutoUpdatesChannel}' || \
           ${flakelabDefer} "Claude Code not installed (offline?). Retry: flakelab update"
       fi
     ''
