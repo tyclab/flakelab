@@ -982,12 +982,12 @@ rm -f "${SHIM}/systemctl"
 # the expression that reads the lock is under test too — which needs TOOLS in the
 # shim's own environment. The check sandbox has a nix for this suite, evaluating
 # against a dummy store, so there is no second reading of the lock to fall back on.
-export TOOLS RELOCK_ARGS="${BASE}/relock.args"
+export TOOLS
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
 if [[ "$1" == flake && "$2" == update ]]; then
-  print -r -- "$*" > "${RELOCK_ARGS}"
   [[ -n "${LOCK_AFTER:-}" ]] && cp "${LOCK_AFTER}" "${FLAKELAB_REPO_ROOT}/flake.lock"
+  [[ -n "${NIX_WARN:-}" ]] && print -r -u2 -- "${NIX_WARN}"
   print -r -- "• Updated input 'flakelab'"
   exit 0
 fi
@@ -1028,7 +1028,6 @@ check    "it switches"                      "${RC}" "0"
 contains "it names the old rev"             "${OUT}" "${REV_OLD[1,7]} →"
 contains "and the new one"                  "${OUT}" "→ ${REV_NEW[1,7]}"
 contains "and how many commits came in"     "${OUT}" "3 commit(s)"
-contains "past Nix's cached branch HEAD"    "$(< "${RELOCK_ARGS}")" "--refresh"
 
 print -r -- "an input that moved to a rev no clone has is named without a count"
 mk_lock "${REV_OLD}" "${d}/flake.lock"
@@ -1062,6 +1061,18 @@ run_update "${d}"
 check    "it switches"                      "${RC}" "0"
 contains "it says unchanged, with the rev"  "${OUT}" "flakelab input unchanged (${REV_NEW[1,7]})"
 excludes "and never claims an update"       "${OUT}" "input updated"
+
+print -r -- "a lookup that failed is not called unchanged"
+mk_lock "${REV_NEW}" "${d}/flake.lock"
+mk_lock "${REV_NEW}" "${BASE}/lock.after"
+export LOCK_AFTER="${BASE}/lock.after"
+export NIX_WARN="warning: unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 403"
+run_update "${d}"
+unset NIX_WARN
+check    "it switches"                      "${RC}" "0"
+contains "it says the input was not checked" "${OUT}" "flakelab input not checked: Nix could not reach the repo and kept its last cached answer (${REV_NEW[1,7]})"
+contains "with Nix's reason"                "${OUT}" "unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 403"
+excludes "and never calls it unchanged"     "${OUT}" "input unchanged"
 
 # The lock names a repo as `owner/repo` (a GitLab subgroup's owner keeps its `/`)
 # or, for a git input, as a whole URL; a clone's origin is any of the three URL

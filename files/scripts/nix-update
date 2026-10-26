@@ -339,15 +339,19 @@ _nix_relock_flakelab() {
     _say yellow "⚠ LOCAL flakelab (git+file: ${_b[4]#file://}) — only committed content is in this build"
   fi
   # Unprivileged: a root-written lock on the 9p mount breaks the operator's next `nix` command.
-  # --refresh: Nix caches the branch HEAD for tarball-ttl (an hour), so a run just after a merge kept the old rev.
-  if _out="$(nix flake update flakelab --refresh --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
+  if _out="$(nix flake update flakelab --flake "path:$(_url_path "${_repo}")" 2>&1)"; then
     _a=("${(@s:|:)$(_fl_locked)}")
     local _rev1="${_a[3]:-}" _id1="${_a[3]:-${_a[5]:-}}"
+    # A lookup that failed still exits 0: Nix warns and re-locks to its last cached answer.
+    local -a _dl=(${(M)${(f)_out}:#*unable to download*})
     if [[ "${_ty}" == path ]]; then
       _say yellow "⚠ LOCAL flakelab: ${_where} — overrides the published repo (re-locked)"
     elif [[ -n "${_a[6]:-}" ]]; then
       # A rev in the input's URL: `nix flake update` can never move it.
       _say yellow "⚠ flakelab input unchanged (${_a[6][1,7]}): inputs.flakelab.url in ${_repo}/flake.nix names that rev, so update cannot move it; drop the rev from the URL"
+    elif (( ${#_dl} )); then
+      _say yellow "⚠ flakelab input not checked: Nix could not reach the repo and kept its last cached answer${_rev1:+ (${_rev1[1,7]})}, which may be behind the branch; rerun the update once it answers"
+      print -r -- "  ${_dl[-1]#warning: }"
     elif [[ -z "${_id1}" || "${_rev0:-${_nar0}}" == "${_id1}" ]]; then
       _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"
     elif [[ -z "${_rev1}" ]]; then
