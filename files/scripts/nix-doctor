@@ -42,17 +42,26 @@ while (( $# > 0 )); do
       echo "  --help     show this help message"
       echo ""
       echo "Blocking checks cover: the activation (its failure log and the system's"
-      echo "recorded result), the flakelab input in the overlay's lock, the WSLInterop"
-      echo "handler, systemd as PID 1 and the cgroup it runs in (WSL target only), the"
-      echo "AI CLIs the overlay installs (Claude Code, Codex), the switcher (tycswap) and"
-      echo "its auto-switch timer, which git config file wins, secrets.env (mode +"
-      echo "CRLF), glab config modes (global and repo-local), glab auth, the ssh-agent"
-      echo "and its keys, GitLab SSH, cloned repos, and a writable npm prefix."
+      echo "recorded result), the WSLInterop handler, systemd as PID 1 and the cgroup"
+      echo "it runs in (WSL target only), the AI CLIs the overlay installs (Claude Code"
+      echo "as the native ~/.local/bin/claude; Codex), the switcher (tycswap) and its"
+      echo "auto-switch timer, which git config file wins, secrets.env (mode + CRLF),"
+      echo "glab config modes (global and repo-local), glab auth, the ssh-agent and its"
+      echo "keys, GitLab SSH, cloned repos, and a writable npm prefix."
       echo ""
       echo "Non-blocking (WARN): deferred activation steps, a skip-healthcheck marker,"
       echo "run-time overrides of the auto-switch settings, Claude plugins installed,"
-      echo "and the secret-gate findings held back from the shared state root (with"
-      echo "the transcripts held back whole)."
+      echo "a claude in ~/.npm-global/bin that shadows the native one (reported, never"
+      echo "removed), the Claude update blockers, a local flakelab checkout that is"
+      echo "dirty, behind its tracking ref or missing, and the secret-gate findings held"
+      echo "back from the shared state root (with the transcripts held back whole)."
+      echo ""
+      echo "The update blockers, in the environment and in ~/.claude/settings.json:"
+      echo "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, which stops Claude Code's"
+      echo "self-updater, and with claudeRemoteControl on DISABLE_GROWTHBOOK too; both"
+      echo "leave Remote Control unavailable. From Claude Code's own shell (CLAUDECODE) the"
+      echo "environment's NONESSENTIAL_TRAFFIC is not read, since Claude Code can set it"
+      echo "for the commands it runs; the secrets file the shell sources is searched instead."
       echo ""
       echo "The GitLab checks (token, glab auth, the git@gitlab.com SSH probe)"
       echo "are skipped when the overlay configures no gitlabGroups or repos —"
@@ -95,6 +104,26 @@ needs_glab() { (( GITLAB_GROUPS > 0 )) }
 needs_gitlab_ssh() { (( GITLAB_GROUPS > 0 || GITLAB_REPOS > 0 )) }
 SECRETS="${HOME}/.config/flakelab/secrets.env"
 SOPS_RENDER="/run/secrets/flakelab-env"
+# Whether the shell sources the render (zsh.nix decides on sopsSecretsFile); the
+# wrapper says 1 or 0, and only outside it does a render on disk stand in.
+SOPS_ENROLLED=false
+case "${FLAKELAB_SOPS_RENDER-}" in
+  1) SOPS_ENROLLED=true ;;
+  "") [[ -e "${SOPS_RENDER}" ]] && SOPS_ENROLLED=true ;;
+esac
+CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
+CLAUDE_NATIVE="${HOME}/.local/bin/claude"
+# The one competing install a box makes itself: ~/.npmrc's prefix.
+CLAUDE_NPM_GLOBAL="${HOME}/.npm-global/bin/claude"
+CLAUDE_REMOTE_CONTROL="${FLAKELAB_CLAUDE_REMOTE_CONTROL:-false}"
+CLAUDE_CHANNEL="${FLAKELAB_CLAUDE_UPDATE_CHANNEL:-}"
+CLAUDE_BLOCKERS=(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+# Only these two make Remote Control unavailable; TELEMETRY and DO_NOT_TRACK only under Trusted Devices.
+[[ "${CLAUDE_REMOTE_CONTROL}" == true ]] && CLAUDE_BLOCKERS+=(DISABLE_GROWTHBOOK)
+# Claude Code can set NONESSENTIAL_TRAFFIC for the commands it runs, so from its
+# shell the environment's copy is the tool's, not the sessions'.
+CLAUDE_TOOL_SHELL_BLOCKER=""
+[[ -n "${CLAUDECODE:-}" ]] && CLAUDE_TOOL_SHELL_BLOCKER=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 WARN_LOG="${HOME}/.local/state/flakelab/activation-failures"
 # What activation structurally could not do (no agent key, offline) rather than
 # got wrong: never fatal, and invisible everywhere else once the switch scrolls by.
@@ -124,6 +153,171 @@ user_manager_hint() {
   local see=""
   [[ "${TARGET}" == wsl ]] && see=" (see 'systemd cgroup' above)"
   log_hint "no user manager answers, so no user unit runs: systemctl status user@${UID}.service${see}"
+}
+
+# The one secrets file the shell sources, as zsh.nix picks it; nothing when none.
+_shell_secrets_file() {
+  if ${SOPS_ENROLLED}; then
+    [[ -r "${SOPS_RENDER}" ]] && print -r -- "${SOPS_RENDER}"
+  elif [[ -r "${SECRETS}" ]]; then
+    print -r -- "${SECRETS}"
+  fi
+  return 0
+}
+
+# A local override is legitimate; the findings are a checkout a rebuild would not
+# take as expected: dirty, behind its tracking ref, or gone.
+_check_flakelab_input() {
+  local root="${FLAKELAB_REPO_ROOT:-}" lock node ty="" pth="" url where upstream behind
+  lock="${root}/flake.lock"
+  if [[ -z "${root}" ]]; then
+    log_warn "FLAKELAB_REPO_ROOT is unset, so the overlay's flake.lock cannot be found"
+    log_hint "run it as 'flakelab doctor', which exports it from repoPath"
+    return 0
+  fi
+  if [[ ! -f "${lock}" ]]; then
+    # setup-wsl-nix.ps1 removes the lock its root switch writes, so a provisioned overlay may have none.
+    pth="$(sed -nE 's/^[[:space:]]*inputs\.flakelab\.url[[:space:]]*=[[:space:]]*"path:([^"?]+)".*$/\1/p' \
+      "${root}/flake.nix" 2> /dev/null | head -1)"
+    if [[ -z "${pth}" ]]; then
+      log_warn "no flake.lock at ${lock}, so which flakelab this box builds from is unknown"
+      return 0
+    fi
+    # The URL is percent-encoded (a space is %20); %b decodes the \xHH this makes.
+    [[ "${pth}" == *%* ]] && pth="$(printf '%b' "${pth//\%/\\x}")"
+    log_ok "no flake.lock: flake.nix names a path: input, re-resolved on every rebuild"
+    ty=path
+  else
+    node="$(jq -r '.nodes[.root].inputs.flakelab // empty' "${lock}" 2> /dev/null || true)"
+    if [[ -z "${node}" ]]; then
+      log_warn "the lock at ${lock} names no flakelab input"
+      return 0
+    fi
+    ty="$(jq -r --arg n "${node}" '.nodes[$n].locked.type // empty' "${lock}" 2> /dev/null || true)"
+    pth="$(jq -r --arg n "${node}" '.nodes[$n].locked.path // empty' "${lock}" 2> /dev/null || true)"
+    url="$(jq -r --arg n "${node}" '.nodes[$n].locked.url // empty' "${lock}" 2> /dev/null || true)"
+    # nix locks every git+<transport>: input as type `git`; a file:// url is the local one.
+    if [[ "${ty}" == git && "${url}" == file://* ]]; then
+      ty=git+file
+      pth="${url#file://}"
+    fi
+  fi
+  case "${ty}" in
+    github | gitlab | sourcehut | git | tarball)
+      where="$(jq -r --arg n "${node}" '.nodes[$n].locked | .url // "\(.owner // "?")/\(.repo // "?")"' \
+        "${lock}" 2> /dev/null || true)"
+      log_ok "published flakelab (${ty} ${where})"
+      return 0
+      ;;
+    path | git+file) ;;
+    "")
+      log_warn "could not read the flakelab input from ${lock}"
+      return 0
+      ;;
+    *)
+      log_warn "unrecognised flakelab input type '${ty}' in ${lock}, not checked further"
+      return 0
+      ;;
+  esac
+  if [[ -z "${pth}" ]]; then
+    log_warn "the flakelab input is a ${ty}: override with no path recorded in ${lock}"
+    return 0
+  fi
+  if [[ ! -d "${pth}" ]]; then
+    log_warn "LOCAL flakelab override points at a path that does not exist: ${pth}"
+    log_hint "the next rebuild cannot evaluate it: restore the checkout, or re-point the input"
+    return 0
+  fi
+  log_ok "LOCAL flakelab override: ${ty}:${pth}"
+  if ! git -C "${pth}" rev-parse --git-dir > /dev/null 2>&1; then
+    log_ok "the flakelab path is not a git checkout, so it has no branch state to read"
+    return 0
+  fi
+  # No optional locks: a status must not rewrite the index of a checkout it only reads.
+  if [[ -n "$(git --no-optional-locks -C "${pth}" status --porcelain --untracked-files=no 2> /dev/null)" ]]; then
+    log_warn "the flakelab checkout has uncommitted changes: ${pth}"
+    if [[ "${ty}" == path ]]; then
+      log_hint "a path: input builds the worktree as it stands, so this box includes them"
+    else
+      log_hint "a git+file: input builds the commit its lock pins, and Nix will not re-lock a dirty tree: commit, then flakelab update"
+    fi
+  fi
+  # The tracking ref as last fetched: a fetch here would touch the network.
+  upstream="$(git -C "${pth}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2> /dev/null || true)"
+  [[ -n "${upstream}" ]] || return 0
+  behind="$(git -C "${pth}" rev-list --count "HEAD..${upstream}" 2> /dev/null || true)"
+  if [[ "${behind}" != <-> ]]; then
+    log_warn "could not compare ${pth} with ${upstream}"
+  elif (( behind > 0 )); then
+    log_warn "the flakelab checkout is ${behind} commit(s) behind ${upstream} (as last fetched)"
+    log_hint "flakelab update re-locks the input but never pulls: git -C ${pth} pull --rebase, then flakelab update"
+  fi
+  return 0
+}
+
+# Only the native install self-updates, and an npm one shadows it: .zshenv prepends
+# ~/.npm-global/bin while ~/.local/bin is appended. Nothing is removed.
+_check_claude_install() {
+  if [[ -x "${CLAUDE_NATIVE}" ]]; then
+    log_ok "claude present (native, ~/.local/bin/claude — $(${CLAUDE_NATIVE} --version 2>/dev/null || echo 'version unknown'))"
+  else
+    log_fail "Claude Code is not installed natively at ~/.local/bin/claude"
+    log_hint "flakelab update installs it; by hand: curl -fsSL https://claude.ai/install.sh | bash${CLAUDE_CHANNEL:+ -s ${CLAUDE_CHANNEL}}"
+  fi
+  if [[ -x "${CLAUDE_NPM_GLOBAL}" ]]; then
+    log_warn "a competing claude executable exists: ${CLAUDE_NPM_GLOBAL}"
+    log_hint "~/.npm-global/bin comes first on PATH, so it shadows the native, self-updating one"
+    log_hint "npm -g uninstall @anthropic-ai/claude-code   (nothing is removed here)"
+  else
+    log_ok "no competing claude in ~/.npm-global/bin"
+  fi
+  return 0
+}
+
+_blocker_effect() {
+  case "$1" in
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+      print -r -- "it disables Claude Code's self-updater, freezing the box on its installed build, and Remote Control" ;;
+    *)
+      print -r -- "it turns off the feature-flag fetch, so Remote Control (claudeRemoteControl) is unavailable" ;;
+  esac
+}
+
+# Presence is the finding, never the value; empty is unset to Claude Code.
+_check_claude_blockers() {
+  local v envVal fileVal src
+  local -i hits=0
+  for v in "${CLAUDE_BLOCKERS[@]}"; do
+    # `-`, not `:-`: under set -u a bare (P) on an unset name aborts.
+    envVal="${(P)v-}"
+    if [[ -n "${envVal}" && "${v}" == "${CLAUDE_TOOL_SHELL_BLOCKER}" ]]; then
+      log_ok "${v} is not read from the environment in Claude Code's shell, which can set it for its own commands; a terminal run checks the sessions' environment"
+      src="$(_shell_secrets_file)"
+      if [[ -n "${src}" ]] \
+        && grep -qE "^[[:space:]]*(export[[:space:]]+)?${v}=([^[:space:]#\"']|\"[^\"]|'[^'])" "${src}"; then
+        hits+=1
+        log_warn "${v} is assigned in ${src}, which the shell sources: $(_blocker_effect "${v}")"
+        log_hint "remove that line"
+      fi
+    elif [[ -n "${envVal}" ]]; then
+      hits+=1
+      log_warn "${v} is set in the environment: $(_blocker_effect "${v}")"
+      log_hint "unset it where it is set: a shell profile, the secrets file, or the overlay's sessionVariables"
+    fi
+    [[ -f "${CLAUDE_SETTINGS}" ]] || continue
+    fileVal="$(jq -r --arg k "${v}" '.env[$k] // "" | tostring' "${CLAUDE_SETTINGS}" 2> /dev/null || true)"
+    if [[ -n "${fileVal}" ]]; then
+      hits+=1
+      log_warn "${v} is set in ${CLAUDE_SETTINGS} env: $(_blocker_effect "${v}")"
+      if [[ "${CLAUDE_REMOTE_CONTROL}" == true ]]; then
+        log_hint "something wrote it back since the last activation; flakelab update removes it again"
+      else
+        log_hint "delete it from .env there"
+      fi
+    fi
+  done
+  (( hits > 0 )) || log_ok "no update blockers set (${(j:, :)CLAUDE_BLOCKERS})"
+  return 0
 }
 
 # Activation warnings are recorded by flakelab-warn.
@@ -200,20 +394,7 @@ else
 fi
 
 log_head "flakelab input"
-# A local override is fine for side-by-side work, but a box left on one stops
-# following the published flakelab and no rebuild says so.
-input="$(jq -r '.nodes[.nodes[.root].inputs.flakelab // ""].locked | "\(.type // "?") \(.path // .url // "\(.owner)/\(.repo)")"' \
-  "${FLAKELAB_REPO_ROOT:-}/flake.lock" 2>/dev/null || print '? ?')"
-# nix locks every git+<transport>: input as type `git`; a file:// url is the local one.
-[[ "${input}" == "git file://"* ]] && input="git+file ${input#git file://}"
-case "${input%% *}" in
-  path|git+file)
-    log_warn "LOCAL flakelab override: ${input}"
-    log_hint "changes published to flakelab never reach this box"
-    ;;
-  github|gitlab|sourcehut|git|tarball) log_ok "published flakelab (${input})" ;;
-  *) log_warn "could not read the flakelab input from the lock" ;;
-esac
+_check_flakelab_input
 
 log_head "WSL interop"
 if [[ "${TARGET}" != "wsl" ]]; then
@@ -318,16 +499,7 @@ if (( ${#AI_CLIS} == 0 )); then
   log_ok "no AI CLI installed by this overlay - nothing to check"
 fi
 
-if installs claude; then
-  if [[ -x "${HOME}/.local/bin/claude" ]]; then
-    log_ok "claude present ($(${HOME}/.local/bin/claude --version 2>/dev/null || echo 'version unknown'))"
-  elif command -v claude > /dev/null 2>&1; then
-    log_ok "claude on PATH ($(command -v claude))"
-  else
-    log_fail "Claude Code not installed"
-    log_hint "curl -fsSL https://claude.ai/install.sh | bash"
-  fi
-fi
+installs claude && _check_claude_install
 
 if installs codex; then
   if [[ -x "${HOME}/.local/bin/codex" ]]; then
@@ -338,6 +510,11 @@ if installs codex; then
     log_fail "Codex CLI not installed"
     log_hint "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
   fi
+fi
+
+# Any claude on the box reads them, a hand-installed one too.
+if installs claude || [[ -x "${CLAUDE_NATIVE}" ]]; then
+  _check_claude_blockers
 fi
 
 # Switcher — tycswap, the account switcher: the binary, its store's modes, the

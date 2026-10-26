@@ -299,14 +299,16 @@ no unlocked ssh-agent, no network — is recorded as **deferred** and never fata
 That is what lets the first rebuild of a fresh distro succeed before anything
 has been seeded into `~`. `flakelab doctor` covers the rest, because it runs
 from an interactive shell: an agent holding a key, `glab` auth, a working
-`git@gitlab.com`.
+`git@gitlab.com`, and whether Claude Code is the native, self-updating
+`~/.local/bin/claude` with no npm copy shadowing it.
 
 Claude Code state is owned by idempotent jq/marker merges rather than store
 symlinks, because Claude rewrites these files itself:
 
 - **`settings.json`** — attribution, the classifier rules (`claudeAutoMode`),
   `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
-  the output style when `claudeOutputStyle` names one,
+  the output style when `claudeOutputStyle` names one, the auto-memory
+  directory when `claudeAutoMemoryDirectory` names one,
   the bridge environment, the statusline, and a `permissions.deny` **floor**
   against rewriting the protected default branch, asserted whole like
   `autoMode`. `AUTO-MODE.md` covers how the floor, the ask tier, the allowlist
