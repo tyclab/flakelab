@@ -22,6 +22,7 @@ ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
 bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
 contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in:      $2" } }
 lacks()    { [[ "$2" != *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       present: $3"; print -r -u2 -- "       in:      $2" } }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       want: $3"; print -r -u2 -- "       got:  $2" } }
 
 BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
@@ -43,19 +44,37 @@ mkdir -p "${BASE}/home" "${BASE}/overlay"
 section() {
   local name="$1" out
   shift
-  out="$(env -i __ETC_ZSHENV_SOURCED=1 "$@" zsh "${DOCTOR}" 2>&1 < /dev/null)"
+  out="$(env -i __ETC_ZSHENV_SOURCED=1 "$@" zsh "${SECTION_DOCTOR:-${DOCTOR}}" 2>&1 < /dev/null)"
   out="${out//$'\e'\[[0-9;]#m/}"
   out="${out#*==> ${name}$'\n'}"
   print -r -- "${out%%$'\n'==> *}"
 }
 
-# input_line <locked fields>: the doctor's finding for a lock whose flakelab input
-# is locked as given. No lock at all when the argument is empty.
-input_line() {
-  rm -f "${BASE}/overlay/flake.lock"
+# input_section <locked fields> [<flake.nix text>]: the doctor's "flakelab input"
+# section for a lock whose flakelab input is locked as given (no lock when empty),
+# beside that flake.nix (none when omitted).
+input_section() {
+  rm -f "${BASE}/overlay/flake.lock" "${BASE}/overlay/flake.nix"
   [[ -n "$1" ]] && print -r -- "{\"nodes\":{\"root\":{\"inputs\":{\"flakelab\":\"flakelab\"}},\"flakelab\":{\"locked\":{$1}}},\"root\":\"root\",\"version\":7}" > "${BASE}/overlay/flake.lock"
-  local -a lines=("${(@f)$(section 'flakelab input' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_REPO_ROOT="${BASE}/overlay")}")
+  [[ -n "${2:-}" ]] && print -r -- "$2" > "${BASE}/overlay/flake.nix"
+  section 'flakelab input' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_REPO_ROOT="${BASE}/overlay"
+}
+input_line() {
+  local -a lines=("${(@f)$(input_section "$@")}")
   print -r -- "${lines[1]:-}"
+}
+
+# g <git args>: git with an identity and no host hooks or signing, for fixtures.
+g() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@" }
+# checkout <name>: a git checkout under ${BASE} with one commit and a clean worktree.
+checkout() {
+  local d="${BASE}/$1"
+  mkdir -p "${d}"
+  print -r -- '{ }' > "${d}/flake.nix"
+  g -C "${d}" init -q -b main
+  g -C "${d}" add -A
+  g -C "${d}" commit -q -m init
+  print -r -- "${d}"
 }
 
 # ai_clis [<FLAKELAB_AI_CLIS>]: the doctor's "AI CLIs" section, with the variable
@@ -64,6 +83,23 @@ ai_clis() {
   local -a env=(PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)
   (( $# )) && env+=(FLAKELAB_AI_CLIS="$1")
   section 'AI CLIs' "${env[@]}"
+}
+
+# native_home <name>: a HOME under ${BASE} holding a native ~/.local/bin/claude.
+native_home() {
+  local h="${BASE}/$1"
+  mkdir -p "${h}/.local/bin"
+  print -rl -- '#!/bin/sh' 'echo 1.2.3' > "${h}/.local/bin/claude"
+  chmod +x "${h}/.local/bin/claude"
+  print -r -- "${h}"
+}
+# claude_section <home> [VAR=value...]: the "AI CLIs" section with only claude
+# installed and Remote Control off; a later argument wins.
+claude_section() {
+  local home="$1"
+  shift
+  section 'AI CLIs' PATH="${TOOLS}" HOME="${home}" FLAKELAB_TARGET=other FLAKELAB_AI_CLIS=claude \
+    FLAKELAB_SOPS_RENDER=0 FLAKELAB_CLAUDE_REMOTE_CONTROL=false "$@"
 }
 
 # switcher_section [<systemctl exit status>] [VAR=value...]: the doctor's Switcher
@@ -130,34 +166,188 @@ ssh_section() {
 
 print -r -- "test-nix-doctor"
 
-print -r -- "a path: input is a local override"
-contains "it warns"      "$(input_line '"type":"path","path":"/srv/flakelab"')" "[WARN] LOCAL flakelab override: path /srv/flakelab"
+print -r -- "a published input passes"
+contains "a remote git url"  "$(input_line '"type":"git","url":"https://gitlab.com/grp/flakelab.git","rev":"abc"')" "[ OK ] published flakelab (git https://gitlab.com/grp/flakelab.git)"
+contains "over ssh too"      "$(input_line '"type":"git","url":"ssh://git@gitlab.com/grp/flakelab","rev":"abc"')" "[ OK ] published flakelab (git ssh://git@gitlab.com/grp/flakelab)"
+contains "github"            "$(input_line '"type":"github","owner":"tyclab","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (github tyclab/flakelab)"
+contains "sourcehut"         "$(input_line '"type":"sourcehut","owner":"~you","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (sourcehut ~you/flakelab)"
+
+print -r -- "a local override is legitimate: a clean path: checkout passes"
+co="$(checkout path-co)"
+out="$(input_section "\"type\":\"path\",\"path\":\"${co}\"")"
+contains "it names the override"  "${out}" "[ OK ] LOCAL flakelab override: path:${co}"
+lacks    "with no warning"        "${out}" "[WARN]"
+lacks    "nor the blanket claim"  "${out}" "never reach this box"
+
+print -r -- "a path: override at a path that is gone warns"
+out="$(input_section '"type":"path","path":"/srv/no-such-flakelab"')"
+contains "it names the path"      "${out}" "[WARN] LOCAL flakelab override points at a path that does not exist: /srv/no-such-flakelab"
+
+print -r -- "an untracked file, a build's result link say, is no change"
+print -r -- edit > "${co}/result"
+lacks    "no warning"             "$(input_section "\"type\":\"path\",\"path\":\"${co}\"")" "[WARN]"
+rm -f "${co}/result"
+
+print -r -- "a dirty path: checkout warns that the build takes the worktree"
+print -r -- '{ edited = true; }' > "${co}/flake.nix"
+out="$(input_section "\"type\":\"path\",\"path\":\"${co}\"")"
+contains "it names the checkout"  "${out}" "[WARN] the flakelab checkout has uncommitted changes: ${co}"
+contains "and what path: does"    "${out}" "a path: input builds the worktree as it stands"
+g -C "${co}" checkout -q -- flake.nix
+
+print -r -- "reading a checkout does not rewrite its index"
+touch "${co}/flake.nix"
+idx="$(stat -c %y "${co}/.git/index")"
+input_section "\"type\":\"path\",\"path\":\"${co}\"" > /dev/null
+check    "the index is untouched" "$(stat -c %y "${co}/.git/index")" "${idx}"
+
+print -r -- "a checkout behind its tracking ref warns, read as last fetched"
+g init -q --bare "${BASE}/remote.git"
+g -C "${co}" remote add origin "${BASE}/remote.git"
+g -C "${co}" push -q -u origin main
+g clone -q "${BASE}/remote.git" "${BASE}/elsewhere-co"
+print -r -- ahead > "${BASE}/elsewhere-co/ahead"
+g -C "${BASE}/elsewhere-co" add -A
+g -C "${BASE}/elsewhere-co" commit -q -m ahead
+g -C "${BASE}/elsewhere-co" push -q origin main
+lacks    "the doctor fetches nothing" "$(input_section "\"type\":\"path\",\"path\":\"${co}\"")" "behind"
+g -C "${co}" fetch -q origin
+out="$(input_section "\"type\":\"path\",\"path\":\"${co}\"")"
+contains "it counts the commits"  "${out}" "[WARN] the flakelab checkout is 1 commit(s) behind origin/main"
+contains "with the pull"          "${out}" "git -C ${co} pull --rebase, then flakelab update"
 
 # nix locks every git+<transport>: input as type `git`; the url says which.
-print -r -- "a git+file: input is a local override"
-contains "it warns"      "$(input_line '"type":"git","url":"file:///srv/flakelab","rev":"abc"')" "[WARN] LOCAL flakelab override: git+file /srv/flakelab"
+print -r -- "a git+file: checkout passes clean and warns dirty"
+co="$(checkout gitfile-co)"
+out="$(input_section "\"type\":\"git\",\"url\":\"file://${co}\",\"rev\":\"abc\"")"
+contains "it names the override"  "${out}" "[ OK ] LOCAL flakelab override: git+file:${co}"
+lacks    "with no warning"        "${out}" "[WARN]"
+print -r -- '{ edited = true; }' > "${co}/flake.nix"
+out="$(input_section "\"type\":\"git\",\"url\":\"file://${co}\",\"rev\":\"abc\"")"
+contains "dirty, it warns"        "${out}" "[WARN] the flakelab checkout has uncommitted changes: ${co}"
+contains "that the lock pins a commit" "${out}" "builds the commit its lock pins, and Nix will not re-lock a dirty tree"
 
-print -r -- "a remote git input is published"
-contains "it passes"     "$(input_line '"type":"git","url":"https://gitlab.com/grp/flakelab.git","rev":"abc"')" "[ OK ] published flakelab (git https://gitlab.com/grp/flakelab.git)"
-contains "over ssh too"  "$(input_line '"type":"git","url":"ssh://git@gitlab.com/grp/flakelab","rev":"abc"')" "[ OK ] published flakelab (git ssh://git@gitlab.com/grp/flakelab)"
+print -r -- "no lock beside a path: input is the generated overlay's normal state"
+co="$(checkout 'spaced co')"
+out="$(input_section '' "{"$'\n'"  inputs.flakelab.url = \"path:${co// /%20}\";"$'\n'"  outputs = _: { };"$'\n'"}")"
+contains "it says so"             "${out}" "[ OK ] no flake.lock: flake.nix names a path: input"
+contains "and checks the decoded path" "${out}" "[ OK ] LOCAL flakelab override: path:${co}"
+lacks    "with no warning"        "${out}" "[WARN]"
 
-print -r -- "a forge input is published"
-contains "github"        "$(input_line '"type":"github","owner":"tyclab","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (github tyclab/flakelab)"
-contains "sourcehut"     "$(input_line '"type":"sourcehut","owner":"~you","repo":"flakelab","rev":"abc"')" "[ OK ] published flakelab (sourcehut ~you/flakelab)"
+print -r -- "no lock and no path: input is unknown"
+contains "a commented-out path: line does not count" "$(input_line '' $'{\n  # inputs.flakelab.url = "path:/srv/x";\n  inputs.flakelab.url = "github:tyclab/flakelab";\n}')" "[WARN] no flake.lock at ${BASE}/overlay/flake.lock"
+contains "it warns" "$(input_line '' '{ inputs.flakelab.url = "github:tyclab/flakelab"; }')" "[WARN] no flake.lock at ${BASE}/overlay/flake.lock"
+contains "with nothing beside it too" "$(input_line '')" "[WARN] no flake.lock at ${BASE}/overlay/flake.lock"
 
-print -r -- "no lock is not read as any input"
-contains "it warns"      "$(input_line '')" "[WARN] could not read the flakelab input from the lock"
+print -r -- "a lock it cannot place is reported, never called published"
+print -r -- '{"nodes":{"root":{"inputs":{}}},"root":"root","version":7}' > "${BASE}/overlay/flake.lock"
+out="$(section 'flakelab input' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_REPO_ROOT="${BASE}/overlay")"
+contains "no flakelab input"      "${out}" "[WARN] the lock at ${BASE}/overlay/flake.lock names no flakelab input"
+contains "an unknown type"        "$(input_line '"type":"mercurial"')" "[WARN] unrecognised flakelab input type 'mercurial'"
+contains "no repo root"           "$(section 'flakelab input' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "[WARN] FLAKELAB_REPO_ROOT is unset"
+rm -f "${BASE}/overlay/flake.lock"
 
 print -r -- "the AI CLIs checked are the ones the overlay installs"
 out="$(ai_clis 'claude codex')"
 contains "both"                "${out}" "[FAIL] Codex CLI not installed"
-contains "claude among them"   "${out}" "[FAIL] Claude Code not installed"
+contains "claude among them"   "${out}" "[FAIL] Claude Code is not installed natively at ~/.local/bin/claude"
 lacks    "one switched off"    "$(ai_clis claude)" "Codex CLI"
 out="$(ai_clis codex)"
 contains "only codex"          "${out}" "[FAIL] Codex CLI not installed"
 lacks    "not claude then"     "${out}" "Claude Code"
+lacks    "nor its blockers"    "${out}" "update blockers"
 contains "none"                "$(ai_clis '')" "[ OK ] no AI CLI installed by this overlay"
 contains "unset is none"       "$(ai_clis)" "[ OK ] no AI CLI installed by this overlay"
+
+print -r -- "claude: the native install passes"
+h="$(native_home claude-clean)"
+out="$(claude_section "${h}")"
+contains "it names the native binary" "${out}" "[ OK ] claude present (native, ~/.local/bin/claude — 1.2.3)"
+contains "no competitor"              "${out}" "[ OK ] no competing claude in ~/.npm-global/bin"
+contains "no blocker"                 "${out}" "[ OK ] no update blockers set (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)"
+lacks    "nothing else"               "${out}" "[WARN]"
+
+print -r -- "claude: an npm-global copy shadows it, is named and left alone"
+mkdir -p "${h}/.npm-global/bin"
+print -rl -- '#!/bin/sh' 'echo npm' > "${h}/.npm-global/bin/claude"
+chmod +x "${h}/.npm-global/bin/claude"
+out="$(claude_section "${h}")"
+contains "it warns, naming it"        "${out}" "[WARN] a competing claude executable exists: ${h}/.npm-global/bin/claude"
+contains "and why it matters"         "${out}" "comes first on PATH, so it shadows the native, self-updating one"
+contains "with the uninstall"         "${out}" "npm -g uninstall @anthropic-ai/claude-code   (nothing is removed here)"
+lacks    "no failure"                 "${out}" "[FAIL]"
+[[ -x "${h}/.npm-global/bin/claude" ]] && ok "the npm copy is still there" || bad "the npm copy is still there"
+rm -rf "${h}/.npm-global"
+
+print -r -- "blockers: NONESSENTIAL_TRAFFIC is always one, never with its value"
+out="$(claude_section "${h}" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=sentinel-2)"
+contains "it warns with its cost"     "${out}" "[WARN] CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set in the environment: it disables Claude Code's self-updater"
+contains "where to unset it"          "${out}" "a shell profile, the secrets file, or the overlay's sessionVariables"
+lacks    "no value"                   "${out}" "sentinel-2"
+lacks    "no failure"                 "${out}" "[FAIL]"
+contains "empty is unset"             "$(claude_section "${h}" CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=)" "[ OK ] no update blockers set"
+
+print -r -- "blockers: the feature-flag ones count only with Remote Control on"
+out="$(claude_section "${h}" DO_NOT_TRACK=1 DISABLE_TELEMETRY=1 DISABLE_GROWTHBOOK=1)"
+contains "off, set deliberately, they are no finding" "${out}" "[ OK ] no update blockers set (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)"
+out="$(claude_section "${h}" FLAKELAB_CLAUDE_REMOTE_CONTROL=true DO_NOT_TRACK=sentinel-1 DISABLE_TELEMETRY=1 DISABLE_GROWTHBOOK=1)"
+contains "on, DO_NOT_TRACK warns"     "${out}" "[WARN] DO_NOT_TRACK is set in the environment: it turns off the feature-flag fetch Remote Control (claudeRemoteControl) relies on"
+contains "DISABLE_TELEMETRY too"      "${out}" "[WARN] DISABLE_TELEMETRY is set in the environment"
+contains "DISABLE_GROWTHBOOK too"     "${out}" "[WARN] DISABLE_GROWTHBOOK is set in the environment: it turns off the feature-flag fetch, so Remote Control (claudeRemoteControl) is unavailable"
+lacks    "not the updater"            "${out}" "self-updater"
+lacks    "no value"                   "${out}" "sentinel-1"
+contains "all four are checked"       "$(claude_section "${h}" FLAKELAB_CLAUDE_REMOTE_CONTROL=true)" "no update blockers set (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_GROWTHBOOK, DISABLE_TELEMETRY, DO_NOT_TRACK)"
+
+print -r -- "blockers: settings.json env counts too"
+mkdir -p "${h}/.claude"
+print -r -- '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","DISABLE_GROWTHBOOK":"1","DO_NOT_TRACK":""}}' > "${h}/.claude/settings.json"
+out="$(claude_section "${h}")"
+contains "it names the file"          "${out}" "[WARN] CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set in ${h}/.claude/settings.json env"
+contains "and the remedy"             "${out}" "delete it from .env there"
+lacks    "Remote Control off, GROWTHBOOK is none" "${out}" "DISABLE_GROWTHBOOK is set"
+out="$(claude_section "${h}" FLAKELAB_CLAUDE_REMOTE_CONTROL=true)"
+contains "on, it is"                  "${out}" "[WARN] DISABLE_GROWTHBOOK is set in ${h}/.claude/settings.json env"
+contains "which an update removes"    "${out}" "flakelab update removes it again"
+lacks    "an empty one is unset"      "${out}" "DO_NOT_TRACK is set"
+contains "from Claude Code's shell too" "$(claude_section "${h}" CLAUDECODE=1)" "[WARN] CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set in ${h}/.claude/settings.json env"
+rm -rf "${h}/.claude"
+
+print -r -- "blockers: from Claude Code's shell its NONESSENTIAL_TRAFFIC is not the session's"
+out="$(claude_section "${h}" CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)"
+contains "it says it is not read"     "${out}" "[ OK ] CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is not read from the environment in Claude Code's shell"
+lacks    "nor reported"               "${out}" "is set in the environment"
+contains "the others still are"      "$(claude_section "${h}" FLAKELAB_CLAUDE_REMOTE_CONTROL=true CLAUDECODE=1 DO_NOT_TRACK=1)" "[WARN] DO_NOT_TRACK is set in the environment"
+mkdir -p "${h}/.config/flakelab"
+print -r -- "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='sentinel-3'" > "${h}/.config/flakelab/secrets.env"
+out="$(claude_section "${h}" CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)"
+contains "secrets.env assigning it is" "${out}" "[WARN] CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is assigned in ${h}/.config/flakelab/secrets.env, which the shell sources"
+lacks    "never its value"            "${out}" "sentinel-3"
+for line in 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=""' 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=' \
+            "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=''" '# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1' 'OTHER_KEY=1'; do
+  print -r -- "${line}" > "${h}/.config/flakelab/secrets.env"
+  lacks "${line} assigns nothing" "$(claude_section "${h}" CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)" "which the shell sources"
+done
+
+# The render path is fixed in the script, so these run a copy whose render is a
+# file under ${BASE}, its lib/ beside it.
+mkdir -p "${BASE}/render-doctor"
+ln -s "${DOCTOR:A:h}/lib" "${BASE}/render-doctor/lib"
+sed "s|^SOPS_RENDER=\"/run/secrets/flakelab-env\"\$|SOPS_RENDER=\"${BASE}/render\"|" "${DOCTOR}" > "${BASE}/render-doctor/nix-doctor"
+check "the copy reads the stand-in render" "$(grep -cxF "SOPS_RENDER=\"${BASE}/render\"" "${BASE}/render-doctor/nix-doctor")" "1"
+SECTION_DOCTOR="${BASE}/render-doctor/nix-doctor"
+print -r -- "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" > "${h}/.config/flakelab/secrets.env"
+print -r -- "OTHER_KEY=1" > "${BASE}/render"
+print -r -- "blockers: the shell's one secrets file is the render on an enrolled box"
+contains "un-enrolled, a stale render is not read" "$(claude_section "${h}" CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)" "is assigned in ${h}/.config/flakelab/secrets.env"
+lacks    "enrolled, secrets.env is not" "$(claude_section "${h}" FLAKELAB_SOPS_RENDER=1 CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)" "which the shell sources"
+lacks    "outside the wrapper a render on disk counts" "$(claude_section "${h}" FLAKELAB_SOPS_RENDER= CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)" "which the shell sources"
+print -r -- "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" > "${BASE}/render"
+contains "enrolled, the render is"    "$(claude_section "${h}" FLAKELAB_SOPS_RENDER=1 CLAUDECODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)" "is assigned in ${BASE}/render"
+unset SECTION_DOCTOR
+rm -rf "${BASE}/render" "${BASE}/render-doctor" "${h}/.config"
+
+print -r -- "blockers: any claude on the box reads them, a hand-installed one too"
+contains "with no AI CLI installed" "$(section 'AI CLIs' PATH="${TOOLS}" HOME="${h}" FLAKELAB_TARGET=other FLAKELAB_AI_CLIS= CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)" "[WARN] CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set in the environment"
 
 
 print -r -- "a usage error exits 2, not 1 like a failed check"
