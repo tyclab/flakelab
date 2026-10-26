@@ -46,7 +46,8 @@ cat > "${BASE}/bin/glab" <<'STUB'
 if [[ "$1" == mr && "$2" == list ]]; then
   if [[ "$*" == *--merged* ]]; then
     if [[ "$*" == *"--source-branch squashed"* || "$*" == *"--source-branch=squashed"* ]]; then
-      print -r -- '[{"source_branch":"squashed"}]'
+      [[ -z "${GITCLEANER_ADVANCE_HOOK:-}" ]] || "${GITCLEANER_ADVANCE_HOOK}"
+      printf '[{"source_branch":"squashed","sha":"%s"}]\n' "${GITCLEANER_MERGED_SHA:-}"
     else
       print -r -- '[]'
     fi
@@ -61,7 +62,25 @@ fi
 exit 1
 STUB
 chmod +x "${BASE}/bin/glab"
-cp "${BASE}/bin/glab" "${BASE}/bin/gh"
+cat > "${BASE}/bin/gh" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == auth ]] && exit 0
+if [[ "$1" == pr && "$2" == list ]]; then
+  if [[ "$*" == *"--state merged"* ]]; then
+    if [[ "$*" == *"--head squashed"* ]]; then
+      [[ -z "${GITCLEANER_ADVANCE_HOOK:-}" ]] || "${GITCLEANER_ADVANCE_HOOK}"
+      printf '[{"number":1,"headRefOid":"%s"}]\n' "${GITCLEANER_MERGED_SHA:-}"
+    else
+      print -r -- '[]'
+    fi
+  else
+    print -r -- '[{"number":2,"headRefName":"in-review"}]'
+  fi
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "${BASE}/bin/gh"
 }
 write_forge_stubs
 export PATH="${BASE}/bin:${PATH}"
@@ -133,6 +152,7 @@ build_fixture() {
   rm -rf "${dir}/wt-gone"
 
   } >/dev/null 2>&1
+  export GITCLEANER_MERGED_SHA="$(git -C "${seed}" rev-parse squashed)"
   FIXTURE_ROOTS="${dir}/roots"
 }
 
@@ -412,6 +432,88 @@ check "that worktree stays too" "$(cat "${BASE}/parkwt/wt-dirty/notes" 2>/dev/nu
 check "the respected worktrees keep their branches" \
   "$(git -C "${R}" for-each-ref --format='%(refname:short)' 'refs/heads/wt-*' | sort | tr '\n' ' ')" \
   "wt-dirty wt-live wt-manual "
+
+print -r -- "── a historical merge never covers a new local tip ────────────────"
+for forge in gitlab github; do
+  build_fixture "newtip-${forge}"; R="${FIXTURE_ROOTS}/repo"
+  if [[ "${forge}" == github ]]; then
+    git -C "${R}" remote set-url origin "git@github.com:test/repo.git"
+    git -C "${R}" config "url.${BASE}/newtip-${forge}/remote.git.insteadOf" "git@github.com:test/repo.git"
+  fi
+  WT="${BASE}/newtip-${forge}/active"
+  git -C "${R}" worktree add -q "${WT}" squashed >/dev/null 2>&1
+  print -r -- unpublished > "${WT}/follow-up"
+  git -C "${WT}" add follow-up; git -C "${WT}" commit -qm 'local follow-up'
+  TIP="$(git -C "${WT}" rev-parse HEAD)"
+  OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --json < /dev/null 2>/dev/null)"
+  check "${forge}: the new tip is not a parked candidate" \
+    "$(print -r -- "${OUT}" | jq '[.repos[].parked[] | select(.name == "squashed")] | length')" "0"
+  OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --only squashed --unpark --yes --json < /dev/null 2>/dev/null)"; RC=$?
+  check "${forge}: --unpark refuses the new local tip" "${RC}" "2"
+  check "${forge}: the active worktree survives" "$([[ -d "${WT}" ]] && print kept || print gone)" "kept"
+  check "${forge}: the unpublished commit remains referenced" "$(git -C "${R}" rev-parse refs/heads/squashed 2>/dev/null)" "${TIP}"
+  if [[ -d "${WT}" ]]; then
+    git -C "${R}" worktree remove "${WT}"
+    OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --only squashed --yes --json < /dev/null 2>/dev/null)"; RC=$?
+    check "${forge}: the same guard protects an unheld branch" "${RC}" "2"
+    check "${forge}: its unpublished commit still survives" "$(git -C "${R}" rev-parse refs/heads/squashed 2>/dev/null)" "${TIP}"
+  fi
+
+  build_fixture "matched-${forge}"; R="${FIXTURE_ROOTS}/repo"
+  if [[ "${forge}" == github ]]; then
+    git -C "${R}" remote set-url origin "git@github.com:test/repo.git"
+    git -C "${R}" config "url.${BASE}/matched-${forge}/remote.git.insteadOf" "git@github.com:test/repo.git"
+  fi
+  WT="${BASE}/matched-${forge}/landed"
+  git -C "${R}" worktree add -q "${WT}" squashed >/dev/null 2>&1
+  OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --only squashed --unpark --yes --json < /dev/null 2>/dev/null)"; RC=$?
+  check "${forge}: the recorded merged tip still unparks" "${RC}" "1"
+  check "${forge}: the matching worktree is removed" "$([[ -d "${WT}" ]] && print kept || print gone)" "gone"
+done
+
+build_fixture missingtip; R="${FIXTURE_ROOTS}/repo"
+export GITCLEANER_MERGED_SHA=""
+OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --only squashed --yes --json < /dev/null 2>/dev/null)"; RC=$?
+check "missing source-tip evidence refuses deletion" "${RC}" "2"
+check "and keeps the branch" "$(git -C "${R}" for-each-ref --format='%(refname:short)' refs/heads/squashed)" "squashed"
+
+print -r -- "── a commit during the forge query invalidates its proof ───────────"
+cat > "${BASE}/bin/advance-tip" <<'STUB'
+#!/usr/bin/env zsh
+set -eu
+tip="$(git -C "${GITCLEANER_ADVANCE_REPO}" commit-tree "${GITCLEANER_MERGED_SHA}^{tree}" \
+  -p "${GITCLEANER_MERGED_SHA}" -m 'concurrent unpublished commit')"
+git -C "${GITCLEANER_ADVANCE_REPO}" update-ref refs/heads/squashed "${tip}" "${GITCLEANER_MERGED_SHA}"
+print -r -- "${tip}" > "${GITCLEANER_ADVANCE_FILE}"
+STUB
+chmod +x "${BASE}/bin/advance-tip"
+for forge in gitlab github; do
+  for held in parked primary unheld; do
+    build_fixture "race-${forge}-${held}"; R="${FIXTURE_ROOTS}/repo"
+    if [[ "${forge}" == github ]]; then
+      git -C "${R}" remote set-url origin "git@github.com:test/repo.git"
+      git -C "${R}" config "url.${BASE}/race-${forge}-${held}/remote.git.insteadOf" "git@github.com:test/repo.git"
+    fi
+    WT="${BASE}/race-${forge}-${held}/active"
+    [[ "${held}" == parked ]] && git -C "${R}" worktree add -q "${WT}" squashed >/dev/null 2>&1
+    [[ "${held}" == primary ]] && git -C "${R}" switch -q squashed
+    export GITCLEANER_ADVANCE_HOOK="${BASE}/bin/advance-tip" GITCLEANER_ADVANCE_REPO="${R}"
+    export GITCLEANER_ADVANCE_FILE="${BASE}/race-${forge}-${held}/advanced"
+    OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --only squashed --unpark --yes --json < /dev/null 2>/dev/null)"; RC=$?
+    TIP="$(cat "${GITCLEANER_ADVANCE_FILE}")"
+    check "${forge} ${held}: the concurrent commit happened" "$([[ -n "${TIP}" && "${TIP}" != "${GITCLEANER_MERGED_SHA}" ]] && print yes || print no)" "yes"
+    check "${forge} ${held}: changed tip refuses cleanup" "${RC}" "2"
+    check "${forge} ${held}: JSON reports failure" "$(print -r -- "${OUT}" | jq .ok)" "false"
+    contains "${forge} ${held}: names the changed-tip guard" "${OUT}" "branch tip changed since eligibility check"
+    check "${forge} ${held}: the new tip remains referenced" "$(git -C "${R}" rev-parse refs/heads/squashed 2>/dev/null)" "${TIP}"
+    if [[ "${held}" == parked ]]; then
+      check "${forge}: its worktree survives the race" "$([[ -d "${WT}" ]] && print kept || print gone)" "kept"
+    elif [[ "${held}" == primary ]]; then
+      check "${forge}: the primary checkout stays on its branch" "$(git -C "${R}" branch --show-current)" "squashed"
+    fi
+    unset GITCLEANER_ADVANCE_HOOK GITCLEANER_ADVANCE_REPO GITCLEANER_ADVANCE_FILE
+  done
+done
 
 print -r -- "── guards ─────────────────────────────────────────────────────────"
 build_fixture guards; ROOTS="${FIXTURE_ROOTS}"

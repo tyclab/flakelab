@@ -192,11 +192,12 @@ gitscan_open_requests() {
   return 0
 }
 
-# gitscan_branch_merged <forge> <project> <branch>: rc 0 merged MR/PR for this branch, 1 none, 2 not asked.
-# Per branch: a paged merged-MR list turns an older merge into "not merged".
+# gitscan_branch_merged <forge> <project> <branch> <head>: rc 0 this tip merged, 1 none, 2 not asked.
+# A historical merge of the same branch name cannot vouch for new local commits.
 gitscan_branch_merged() {
-  local forge="$1" project="$2" branch="$3" n=0
+  local forge="$1" project="$2" branch="$3" head="$4" field=sha n=0
   typeset -g GITSCAN_FORGE_WHY=""
+  [[ -n "${head}" ]] || return 1
   if [[ "${forge}" == gitlab ]]; then
     if ! gitnet_retry glab mr list --repo "${project}" --source-branch "${branch}" \
         --merged --output json --per-page 100; then
@@ -204,14 +205,16 @@ gitscan_branch_merged() {
       return 2
     fi
   else
+    field=headRefOid
     if ! gitnet_retry gh pr list --repo "${project}" --head "${branch}" \
-        --state merged --limit 100 --json number; then
+        --state merged --limit 100 --json headRefOid; then
       GITSCAN_FORGE_WHY="gh pr list --state merged failed for ${branch} (after retry, ${GITNET_WHY})"
       return 2
     fi
   fi
   [[ -z "${GITNET_OUT//[[:space:]]/}" ]] && return 1
-  if ! n="$(print -r -- "${GITNET_OUT}" | jq 'length' 2>&1)"; then
+  if ! n="$(print -r -- "${GITNET_OUT}" | jq --arg head "${head}" --arg field "${field}" \
+      '[.[] | select(.[$field] == $head)] | length' 2>&1)"; then
     GITSCAN_FORGE_WHY="could not parse the merged list for ${branch}: ${n}"
     return 2
   fi
