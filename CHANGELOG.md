@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- Update tycswap to v0.7.26 so backspace in its terminal account form removes a complete Unicode character.
 - `flakelab update` no longer reports `flakelab input unchanged` when the GitHub lookup failed. `nix flake update` exits 0 on a failed lookup and re-locks to Nix's last cached answer; the update now says the input was not checked and prints Nix's reason. The `--refresh` added for this in #279 is gone: `nix flake update` already re-checks the branch on every run.
 - `flakelab sessions --open` no longer resumes a session that is still running, which started a second process appending to the same transcript; run twice, it doubled every session. A running session in the `agents` server gets a tab on its window unless a client already shows that window, and one running anywhere else is named and left alone.
 - `flakelab clone` with GitLab groups and no `GITLAB_TOKEN` exits 3 before listing anything and names where the token goes: the sops secrets file on an enrolled box, `~/.config/flakelab/secrets.env` otherwise. `setup-wsl-nix.ps1 provision` no longer sources `secrets.env` itself before the clone (`.zshenv` does, and an enrolled box must not read the fallback file), stays quiet on that refusal, and calls a missing key or `secrets.env` steps that wait rather than a distro "built but unconfigured".
