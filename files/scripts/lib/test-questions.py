@@ -199,9 +199,9 @@ class QuestionTests(unittest.TestCase):
         for text in (init["result"]["instructions"], tool["description"]):
             self.assertIn("three lines", text)
             self.assertIn("inbox record", text)
-        self.assertIn("first line names the decision and your recommendation", fields["question"]["description"])
+        self.assertIn("first line names the target and decision", fields["question"]["description"])
         self.assertIn("only the inbox record shows it in full", fields["context"]["description"])
-        self.assertIn("40 characters", fields["options"]["description"])
+        self.assertIn("20 characters", fields["options"]["description"])
         self.assertIn("only one or two options become phone and watch buttons", fields["options"]["description"])
 
     def test_secret_file_is_read_without_executing_shell(self):
