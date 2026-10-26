@@ -1713,14 +1713,15 @@ function Invoke-CloneRepos {
     if ($SkipCloneRepos) { Warn 'flakelab clone skipped (-SkipCloneRepos)'; return }
     # WSL can stop the distro between two wsl.exe calls, and the ssh-agent holding the unlocked key with it.
     $keepAlive = $null
-    if ($DryRun) { Write-Host "  [dry-run] keep '$DistroName' running across the agent load and the clone" -ForegroundColor DarkGray }
-    else {
-        $keepAlive = Start-Process -FilePath 'wsl.exe' -ArgumentList @(
-            '--distribution', $DistroName, '--user', $User, '--',
-            '/run/current-system/sw/bin/sleep', '600') -WindowStyle Hidden -PassThru
-        Start-Sleep -Milliseconds 750
-    }
     try {
+        # Inside the try, so a Ctrl+C during the start or the wait still reaches the finally.
+        if ($DryRun) { Write-Host "  [dry-run] keep '$DistroName' running across the agent load and the clone" -ForegroundColor DarkGray }
+        else {
+            $keepAlive = Start-Process -FilePath 'wsl.exe' -ArgumentList @(
+                '--distribution', $DistroName, '--user', $User, '--',
+                '/run/current-system/sw/bin/sleep', '600') -WindowStyle Hidden -PassThru
+            Start-Sleep -Milliseconds 750
+        }
         if (@(Get-OverlayPrivateKeyName).Count -gt 0) {
             Say 'reloading the SSH key(s) into the agent the clone will use'
             if (-not (Add-SshKeyToAgent) -and -not $DryRun) {
