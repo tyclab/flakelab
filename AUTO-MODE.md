@@ -47,7 +47,10 @@ removing or weakening branch protection, protected tags, rulesets or push
 rules, changing members, deploy keys or project, group and personal access
 tokens, through the CLI or the raw API — removes it, so `claudeAutoMode` lists
 it in `soft_deny`: it clears only when the operator names the project or group
-and the operation.
+and the operation. An overlay that sets `claudeAutoMode` replaces the whole
+attrset, so the default reaches no box built from it; the private
+`flakelab-config` overlay carries the same entry, right after its force-push
+rule.
 
 ## Globs match raw text
 
