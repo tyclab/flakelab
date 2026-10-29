@@ -5,7 +5,7 @@ set -uo pipefail
 #
 # Offline suite for claude-plugin-orphans: the real script against a throwaway
 # HOME under a mktemp root. Its `claude` is a stub in that HOME's ~/.local/bin
-# that records each call with its directory. The PATH is rebuilt from symlinks
+# that records the arguments of each call. The PATH is rebuilt from symlinks
 # without `claude`, plus a tripwire `claude` that fails the suite if anything
 # reaches past the stub to a real binary; CLAUDE_CONFIG_DIR is unset, so no
 # real Claude state is in reach either.
@@ -46,8 +46,8 @@ new_home() {
   mkdir -p "${H}/.local/bin" "${H}/.claude/plugins/marketplaces" "${H}/proj"
   cat > "${H}/.local/bin/claude" <<'STUB'
 #!/bin/sh
-# Records every call with its directory; an uninstall-fails file fails uninstalls.
-printf '%s | %s\n' "$*" "$PWD" >> "$HOME/calls"
+# Records the arguments of every call; an uninstall-fails file fails uninstalls.
+printf '%s\n' "$*" >> "$HOME/calls"
 [ "$1 $2" = "plugin uninstall" ] && [ -e "$HOME/uninstall-fails" ] && exit 1
 exit 0
 STUB
@@ -91,12 +91,13 @@ catalogue() {
   jq -n '{plugins: [$ARGS.positional[] | {name: .}]}' --args "$@" > "${_d}/marketplace.json"
 }
 
-# run_orphans <marketplaces> <declared> - the real script, from HOME, with the
-# rebuilt PATH. Sets OUT, RC and CALLS.
+# run_orphans <marketplaces> <declared> - the real script with the rebuilt PATH,
+# run from the fixture's project directory: the scope is the uninstall's
+# --scope argument, never the directory. Sets OUT, RC and CALLS.
 typeset -i RC=0
 OUT="" CALLS=""
 run_orphans() {
-  OUT="$(cd "${H}" && HOME="${H}" PATH="${TOOLS}" FLAKELAB_CLAUDE_MARKETPLACES="$1" \
+  OUT="$(cd "${H}/proj" && HOME="${H}" PATH="${TOOLS}" FLAKELAB_CLAUDE_MARKETPLACES="$1" \
     FLAKELAB_CLAUDE_PLUGINS="$2" zsh "${ORPHANS}" 2>&1)"
   RC=$?
   CALLS="$(< "${H}/calls")"
@@ -108,7 +109,7 @@ installed "gone@mkt" "kept@mkt"
 catalogue mkt kept
 run_orphans "mkt" ""
 check    "exits 0"                          "${RC}" "0"
-check    "is uninstalled from user scope, from HOME, keeping its data; the offered kept@mkt stays" "${CALLS}" "plugin uninstall --keep-data gone@mkt | ${H}"
+check    "is uninstalled from user scope, keeping its data; the offered kept@mkt stays" "${CALLS}" "plugin uninstall --scope user --keep-data gone@mkt"
 contains "with a note naming it"            "${OUT}" "uninstalled gone@mkt: the mkt marketplace no longer offers it."
 
 print -r -- "a withdrawn plugin claudePlugins still declares is left to the installer"
@@ -131,14 +132,14 @@ new_home
 installed "gone@mkt:user,project"
 catalogue mkt kept
 run_orphans "mkt" ""
-check    "one uninstall, from HOME"         "${CALLS}" "plugin uninstall --keep-data gone@mkt | ${H}"
+check    "one uninstall, from user scope"   "${CALLS}" "plugin uninstall --scope user --keep-data gone@mkt"
 
 print -r -- "a registry without scopes counts as user scope"
 new_home
 print -r -- '{"plugins":{"gone@mkt":{}}}' > "${H}/.claude/plugins/installed_plugins.json"
 catalogue mkt kept
 run_orphans "mkt" ""
-check    "it is uninstalled"                "${CALLS}" "plugin uninstall --keep-data gone@mkt | ${H}"
+check    "it is uninstalled"                "${CALLS}" "plugin uninstall --scope user --keep-data gone@mkt"
 
 print -r -- "only declared marketplaces, each on its own"
 new_home
@@ -147,8 +148,10 @@ catalogue mkt kept
 catalogue other kept
 catalogue two y
 run_orphans "mkt two" ""
-contains "the first is pruned"              "${CALLS}" "plugin uninstall --keep-data gone@mkt "
-contains "the second too"                   "${CALLS}" "plugin uninstall --keep-data x@two "
+lines=( "${(@f)CALLS}" )
+check    "the first is pruned"              "${lines[1]:-}" "plugin uninstall --scope user --keep-data gone@mkt"
+check    "the second too"                   "${lines[2]:-}" "plugin uninstall --scope user --keep-data x@two"
+check    "and nothing else is run"          "${#lines}" "2"
 excludes "an undeclared one is not"         "${CALLS}" "gone@other"
 
 print -r -- "a catalogue that is missing, empty or unreadable prunes nothing, with a note"

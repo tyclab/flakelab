@@ -38,7 +38,8 @@ for _m in "${_markets[@]}"; do
   for _key in ${(f)_installed}; do
     # Exact-match lookups, not patterns: a plugin name is data.
     (( ${_offered[(Ie)${_key%"@${_m}"}]} || ${_declared[(Ie)${_key}]} )) && continue
-    if "${_claude}" plugin uninstall --keep-data "${_key}" < /dev/null > /dev/null 2>&1; then
+    # Named, not left to claude's default scope.
+    if "${_claude}" plugin uninstall --scope user --keep-data "${_key}" < /dev/null > /dev/null 2>&1; then
       _note "uninstalled ${_key}: the ${_m} marketplace no longer offers it."
     else
       _note "could not uninstall ${_key}, which the ${_m} marketplace no longer offers; it stays installed."

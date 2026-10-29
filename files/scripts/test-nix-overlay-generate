@@ -526,6 +526,28 @@ contains "and opt-in MCP plugins"           "${f}" '"mcp-whatsapp"'
 contains "an enabled mcp-whatsapp with no dir warns" "${OUT}" "whatsapp_mcp_dir is unset"
 excludes "and no whatsappMcpDir is invented" "${f}" 'whatsappMcpDir'
 
+# A qualified name installs the same server, so it needs the checkout just as much.
+print -r -- "an mcp-whatsapp named with its marketplace"
+bare_cfg qualwa <<'YAML'
+profiles:
+  - example
+claude_mcp_plugins:
+  - mcp-whatsapp@Example-tools
+YAML
+o="$(out qualwa)"
+run_gen --out "${o}" --config "${BASE}/qualwa.yaml"
+check    "it generates"                     "${RC}" "0"
+contains "it warns that whatsapp_mcp_dir is unset" "${OUT}" "whatsapp_mcp_dir is unset"
+bare_cfg lookalike <<'YAML'
+profiles:
+  - example
+claude_mcp_plugins:
+  - mcp-whatsapp-extra@Example-tools
+YAML
+o="$(out lookalike)"
+run_gen --out "${o}" --config "${BASE}/lookalike.yaml"
+excludes "a longer name that only starts the same does not" "${OUT}" "whatsapp_mcp_dir is unset"
+
 # Derivation is for a config that names no profiles; a group named on the command line is an
 # explicit request, and inferring profiles from it would surprise the caller.
 print -r -- "a command-line group is not turned into a profile"
@@ -1084,6 +1106,9 @@ contains "the zsh split goes through the classifier" "$(< "${GEN}")" 'if _is_sec
 contains "the twin has one classifier"               "${ps1_src}" 'function Test-SecretName'
 contains "which its flake emitter calls"             "${ps1_src}" 'if (Test-SecretName $k) {'
 contains "and its secrets.env harvester too"         "${ps1_src}" '(Test-SecretName $_) -and'
+# The whatsapp_mcp_dir warning takes a qualified mcp-whatsapp in both writers.
+contains "the zsh writer matches mcp-whatsapp bare or qualified" "$(< "${GEN}")" '${_claude_plugins[(I)mcp-whatsapp(|@*)]}'
+contains "and the twin matches the same names"     "${ps1_src}" "\$claudePlugins -match '^mcp-whatsapp(@|\$)'"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
