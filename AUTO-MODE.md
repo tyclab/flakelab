@@ -50,7 +50,8 @@ it in `soft_deny`: it clears only when the operator names the project or group
 and the operation. An overlay that sets `claudeAutoMode` replaces the whole
 attrset, so the default reaches no box built from it; the private
 `flakelab-config` overlay carries the same entry, right after its force-push
-rule.
+rule
+([Tyc0rc/flakelab-config!153](https://gitlab.com/Tyc0rc/flakelab-config/-/merge_requests/153)).
 
 ## Globs match raw text
 
