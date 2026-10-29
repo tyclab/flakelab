@@ -1722,6 +1722,14 @@ function Invoke-CloneRepos {
                 '/run/current-system/sw/bin/sleep', '600') -WindowStyle Hidden -PassThru
             Start-Sleep -Milliseconds 750
         }
+        # A stopped distro cold-boots on the keep-alive, and the agent socket needs the user manager that boot starts:
+        # wait for the boot, bounded, with the command flakelab-switch-result runs before the bootstrap's agent load.
+        # Degraded counts as booted; a timeout warns and the run carries on, as every failure in this step does.
+        $bootWait = 180
+        Do-Step "wait for '$DistroName' to finish booting, at most ${bootWait}s (systemctl is-system-running --wait)" {
+            & wsl.exe -d $DistroName -u root -- timeout $bootWait systemctl is-system-running --wait | Out-Null
+            if ($LASTEXITCODE -eq 124) { Warn "'$DistroName' is still booting after ${bootWait}s - loading the key and cloning anyway" }
+        }
         if (@(Get-OverlayPrivateKeyName).Count -gt 0) {
             Say 'reloading the SSH key(s) into the agent the clone will use'
             if (-not (Add-SshKeyToAgent) -and -not $DryRun) {

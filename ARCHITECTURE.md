@@ -237,10 +237,17 @@ the distro between two `wsl.exe` calls even with the user lingering, which
 takes the agent and its unlocked key with it: the clone then refused on an
 empty agent and the provision closed with an empty `~/git`. So the run keeps a
 hidden `wsl.exe` running `sleep` in the distro across the key load and the
-start of the clone, loads the key again into that distro's agent, and only then
-runs `flakelab clone`. A key that does not load is a warning and the clone still
-runs: an unencrypted key needs no agent, and an encrypted one makes the clone
-refuse with its own message.
+start of the clone, waits for the distro to finish booting, loads the key again
+into that distro's agent, and only then runs `flakelab clone`. The wait is the
+one the bootstrap's agent load follows (`systemctl is-system-running --wait`,
+at most 180 s): a distro the keep-alive had to start again has no agent socket
+until its user manager is up. A key that does not load is a warning and the
+clone still runs: an unencrypted key needs no agent, and an encrypted one makes
+the clone refuse with its own message.
+
+The keep-alive is not yet verified on a host: no run has shown the distro
+staying up across the key load and the clone, or the `sleep` inside it ending
+when the run stops the keep-alive's `wsl.exe`.
 
 Both switches wipe VM-wide WSL interop, so each is followed by an interop probe
 and an offer to `wsl --shutdown` (`-Shutdown` answers yes up front; declining
