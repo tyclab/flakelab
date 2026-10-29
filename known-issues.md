@@ -113,6 +113,53 @@ from a Windows terminal; its next start is moved.
 
 ---
 
+## `user@<uid>.service` fails on the first switch of a fresh import
+
+### Symptom
+
+The first `nixos-rebuild switch` of a freshly imported distro (`setup-wsl-nix.ps1`
+`provision` or `bootstrap`, switch 1/2, or `flakelab build-distro`) activates its
+generation and then ends on:
+
+```text
+warning: the following units failed: user@1000.service
+... switch-to-configuration switch' returned non-zero exit status 4
+```
+
+`systemctl status user@1000.service` shows `Active: failed (Result: resources)`,
+and the journal has `Failed to spawn executor: Device or resource busy`.
+`setup-wsl-nix.ps1` prints `switch 1/2: activated, but units are not running:
+user@1000.service` and carries on.
+
+### Root Cause
+
+That switch creates the flakelab user, and NixOS-WSL gives the default user
+uid 1000, which the base image's `nixos` user held until then. Because the user
+lingers (`users.users.<name>.linger`, `nix/configuration.nix`), the activation
+starts its user manager at once, still under the `systemd-logind` of the base
+image's boot: a switch never restarts logind (nixpkgs sets
+`restartIfChanged = false` on it). That start is the one that fails; the same
+unit starts cleanly once the distro boots with the user in place.
+
+### Fix
+
+None needed: a fresh boot clears it. `setup-wsl-nix.ps1` runs
+`wsl --terminate` right after switch 1/2 and reads the restarted boot's own
+verdict before it seeds anything, and on that boot the user manager and its
+ssh-agent come up. Exit 4 is "a unit failed", not "the switch failed"
+([A switch's result](ARCHITECTURE.md#a-switchs-result)), so the provisioner,
+`flakelab update` and `flakelab build-distro` warn on it and carry on; units
+still failed when the run ends make it exit 4 rather than 0. `build-distro`
+does not restart the distro: it carries on into its verification and reads the
+units again at the end.
+
+If `user@<uid>.service` is still failed after the distro restarted, it is not
+this: read it with `systemctl --failed` and `journalctl -u user@<uid>.service`,
+and see [No user manager](#no-user-manager-useruidservice-fails-with-permission-denied)
+above.
+
+---
+
 ## Terminal Rendering Corruption (Null Bytes from wsl.exe)
 
 ### Symptom

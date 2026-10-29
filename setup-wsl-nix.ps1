@@ -1711,12 +1711,44 @@ function Restore-Backup {
 # Exit 3 is the clone's own refusal for a missing GITLAB_TOKEN, which it has already explained.
 function Invoke-CloneRepos {
     if ($SkipCloneRepos) { Warn 'flakelab clone skipped (-SkipCloneRepos)'; return }
-    Say 'flakelab clone (GitLab group discovery)'
-    $cmd = 'flakelab clone'
-    if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
-    & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd
-    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) {
-        Warn "flakelab clone returned $LASTEXITCODE - see its output above"
+    # WSL can stop the distro between two wsl.exe calls, and the ssh-agent holding the unlocked key with it.
+    $keepAlive = $null
+    try {
+        # Inside the try, so a Ctrl+C during the start or the wait still reaches the finally.
+        if ($DryRun) { Write-Host "  [dry-run] keep '$DistroName' running across the agent load and the clone" -ForegroundColor DarkGray }
+        else {
+            $keepAlive = Start-Process -FilePath 'wsl.exe' -ArgumentList @(
+                '--distribution', $DistroName, '--user', $User, '--',
+                '/run/current-system/sw/bin/sleep', '600') -WindowStyle Hidden -PassThru
+            Start-Sleep -Milliseconds 750
+        }
+        # A stopped distro cold-boots on the keep-alive, and the agent socket needs the user manager that boot starts:
+        # wait for the boot, bounded, with the command flakelab-switch-result runs before the bootstrap's agent load.
+        # Degraded counts as booted; a timeout warns and the run carries on, as every failure in this step does.
+        $bootWait = 180
+        Do-Step "wait for '$DistroName' to finish booting, at most ${bootWait}s (systemctl is-system-running --wait)" {
+            & wsl.exe -d $DistroName -u root -- timeout $bootWait systemctl is-system-running --wait | Out-Null
+            if ($LASTEXITCODE -eq 124) { Warn "'$DistroName' is still booting after ${bootWait}s - loading the key and cloning anyway" }
+        }
+        if (@(Get-OverlayPrivateKeyName).Count -gt 0) {
+            Say 'reloading the SSH key(s) into the agent the clone will use'
+            if (-not (Add-SshKeyToAgent) -and -not $DryRun) {
+                Warn "the key could not be loaded into the distro's ssh-agent - cloning anyway; a passphrase-protected key makes the clone refuse until it is loaded (ssh-add, then flakelab clone)"
+            }
+        }
+        Say 'flakelab clone (GitLab group discovery)'
+        $cmd = 'flakelab clone'
+        if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
+        & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) {
+            Warn "flakelab clone returned $LASTEXITCODE - see its output above"
+        }
+    }
+    finally {
+        if ($keepAlive -and -not $keepAlive.HasExited) {
+            Stop-Process -Id $keepAlive.Id -ErrorAction SilentlyContinue
+            $keepAlive.WaitForExit(5000) | Out-Null
+        }
     }
 }
 

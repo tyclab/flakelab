@@ -34,7 +34,9 @@ in
     }:$PATH"
     export NPM_CONFIG_PREFIX="$HOME/.npm-global"
     if [ "$("$NPM_CONFIG_PREFIX/bin/npm" --version 2>/dev/null || true)" != "${npmVersion}" ]; then
-      $DRY_RUN_CMD npm install -g "npm@${npmVersion}" || \
+      # npm's 5 min default timeout and 2 retries outlive the unit's 5 min TimeoutStartSec, so the defer never ran.
+      $DRY_RUN_CMD npm install -g "npm@${npmVersion}" --fetch-timeout=60000 --fetch-retries=1 \
+        --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=15000 || \
         ${flakelabDefer} "npm ${npmVersion} pin failed: the npm registry was unreachable (offline?). Until it lands, pre-commit node hooks EALLOWGIT on the bundled npm 11. Retry: flakelab update"
     fi
   '';
