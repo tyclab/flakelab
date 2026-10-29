@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `test-nix-doctor` creates its bare fixture remote on `main` (`git init -b main`). Without `init.defaultBranch` the remote's HEAD named `master`, the clone had no `main`, and the "behind its tracking ref" case failed twice on a box outside the flake-managed git config; CI, which sets the default, never saw it.
 - Update tycswap to v0.7.26 so backspace in its terminal account form removes a complete Unicode character.
 - `gitcleaner` keeps local commits added after a branch's MR or PR merged. Squash-merge cleanup requires the merged source SHA to match the local tip, and cleanup rechecks that tip after forge queries or confirmation before removing a checkout or branch. A refused deletion also returns a failure exit code in JSON mode.
 - `flakelab update` no longer reports `flakelab input unchanged` when the GitHub lookup failed. `nix flake update` exits 0 on a failed lookup and re-locks to Nix's last cached answer; the update now says the input was not checked and prints Nix's reason. The `--refresh` added for this in #279 is gone: `nix flake update` already re-checks the branch on every run.

@@ -202,7 +202,7 @@ input_section "\"type\":\"path\",\"path\":\"${co}\"" > /dev/null
 check    "the index is untouched" "$(stat -c %y "${co}/.git/index")" "${idx}"
 
 print -r -- "a checkout behind its tracking ref warns, read as last fetched"
-g init -q --bare "${BASE}/remote.git"
+g init -q --bare -b main "${BASE}/remote.git"
 g -C "${co}" remote add origin "${BASE}/remote.git"
 g -C "${co}" push -q -u origin main
 g clone -q "${BASE}/remote.git" "${BASE}/elsewhere-co"
