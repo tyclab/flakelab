@@ -89,7 +89,7 @@ run --repos-dir "${REPOS}" --bogus
 check "an unknown argument is a usage error" "${RC}" "2"
 run --help
 check "--help exits 0" "${RC}" "0"
-contains "with the usage" "${OUT}" "Usage: activate-hooks --repos-dir <path>"
+contains "with the usage" "${OUT}" "Usage: flakelab activate-hooks --repos-dir <path>"
 
 print -r -- ""
 print -r -- "one sweep over every shape of repo"

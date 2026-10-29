@@ -56,7 +56,7 @@
           "flakelab-config"
         ];
 
-        # Extra roots for the gitcheck/gitclean aliases beyond ~/git.
+        # Extra roots the gitcheck alias scans beyond ~/git (gitclean stays on ~/git).
         extraReposDirs = [ "/mnt/c/Users/WindowsUser/git" ];
 
         # Keys under <overlay>-payload/shared/ssh/keys/ to load on login; the first is

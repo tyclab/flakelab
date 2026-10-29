@@ -31,11 +31,12 @@ let
     lib.optionalString (cfg.sopsKeyFiles != { })
       " | ${pkgs.gnugrep}/bin/grep -vE ${lib.escapeShellArg "^(${lib.concatStringsSep "|" (builtins.attrNames cfg.sopsKeyFiles)})="}";
 
-  # Built once so the reporter and the deleter cannot disagree about the scan scope.
+  # The deleter stays on ~/git: extraReposDirs names trees whose clones exist nowhere else.
   inherit (cfg) extraReposDirs;
-  gitRootArgs = lib.concatStringsSep " " (
+  gitCheckRootArgs = lib.concatStringsSep " " (
     [ ''--repos-dir "$HOME/git"'' ] ++ map (d: ''--repos-dir "${d}"'') extraReposDirs
   );
+  gitCleanRootArgs = ''--repos-dir "$HOME/git"'';
 in
 {
   programs.zsh = {
@@ -53,8 +54,8 @@ in
       ll = "ls -alF";
 
       # `gitcheck` reports, `gitclean` deletes; both take their scripts' own flags appended.
-      gitcheck = "gitchecker ${gitRootArgs}";
-      gitclean = "gitcleaner ${gitRootArgs}";
+      gitcheck = "gitchecker ${gitCheckRootArgs}";
+      gitclean = "gitcleaner ${gitCleanRootArgs}";
 
       c = "claude";
     }

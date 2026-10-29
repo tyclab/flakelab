@@ -14,7 +14,7 @@ while (( $# > 0 )); do
   case $1 in
     --repos-dir) REPOS_DIR="$2"; shift ;;
     --help|-h)
-      echo "Usage: activate-hooks --repos-dir <path>"
+      echo "Usage: flakelab activate-hooks --repos-dir <path>"
       exit 0 ;;
     *) print -r -- "Unknown arg: $1" >&2; exit 2 ;;
   esac

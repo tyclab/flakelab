@@ -22,7 +22,7 @@ while (( $# > 0 )); do
     --per-page)
       PER_PAGE="$2"; shift ;;
     --help|-h)
-      echo "Usage: glab-group-projects --group <path> [--member] [--no-archived] [--per-page N]"
+      echo "Usage: flakelab glab-projects --group <path> [--member] [--no-archived] [--per-page N]"
       echo "Emits one project JSON object per line, across all pages."
       echo "  --no-archived  let GitLab drop archived projects (archived=false)"
       exit 0 ;;

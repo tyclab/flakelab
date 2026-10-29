@@ -17,7 +17,7 @@ while (( $# > 0 )); do
     --repos-dir)
       REPOS_DIR="$2"; shift ;;
     --help|-h)
-      echo "Usage: clone-repos --key-file <path> --repos-dir <path> [--max-jobs N]"
+      echo "Usage: flakelab clone-repos --key-file <path> --repos-dir <path> [--max-jobs N]"
       echo "Reads repo specs from stdin (one per line): ssh_url [dest_path]"
       exit 0 ;;
     *)

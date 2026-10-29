@@ -322,6 +322,12 @@ for s in "${HELP_SCRIPTS[@]}"; do
   check "${s} refuses an unknown flag with exit 2" "${RC}" "2"
   check "${s} runs no tool on one" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
 done
+# No script name is on PATH, so a usage line names the verb a person can type.
+typeset -A HELP_VERB=(clone-repos clone-repos activate-hooks activate-hooks report-stale-repos stale-repos glab-group-projects glab-projects)
+for s v in "${(@kv)HELP_VERB}"; do
+  OUT="$(HOME="${BASE}/helphome" PATH="${HELPBIN}:${PATH}" timeout 20 zsh "${SCRIPT_DIR}/${s}" --help </dev/null 2>&1)"
+  contains "${s} --help names its verb" "${OUT}" "Usage: flakelab ${v} "
+done
 
 print -r -- ""
 print -r -- "no pipefail script decides on a pipe that ends in grep -q"

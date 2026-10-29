@@ -11,7 +11,7 @@ set -uo pipefail
 # by whether it holds local work, so removal needs no interactive prompt.
 #
 # Usage:
-#   report-stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]
+#   flakelab stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]
 #
 
 REPOS_DIR=""
@@ -27,7 +27,7 @@ while (( $# > 0 )); do
     --member)
       MEMBER=1 ;;
     --help|-h)
-      echo "Usage: report-stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]"
+      echo "Usage: flakelab stale-repos --repos-dir <dir> --group <path> [--group <path>...] [--member]"
       exit 0 ;;
     *)
       print -r -- "Unknown option: $1" >&2; exit 2 ;;
