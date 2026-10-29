@@ -32,7 +32,7 @@ lint-nix: ## nix fmt must change nothing, then statix and deadnix
 # The offline suites. test-provision-nix imports a distro and needs a disposable
 # session. All suites run, then the target fails if any of them did.
 test: ## Run every offline suite (the required local gate)
-	@rc=0; for suite in test-clone-repos test-gh-repos test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-sessions test-notify test-questions test-web test-mcp test-nix-update test-nix-doctor test-switch-result test-wsl-init-cgroup test-xdg-open test-activate-hooks test-report-stale-repos test-nix-provision; do \
+	@rc=0; for suite in test-clone-repos test-gh-repos test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-sessions test-notify test-questions test-web test-mcp test-nix-update test-claude-plugin-orphans test-nix-doctor test-switch-result test-wsl-init-cgroup test-xdg-open test-activate-hooks test-report-stale-repos test-nix-provision; do \
 		echo "==> $$suite"; \
 		files/scripts/$$suite || rc=1; \
 	done; \

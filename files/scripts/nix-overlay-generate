@@ -538,7 +538,8 @@ if [[ -n "${_config}" ]]; then
   # A config key, not a constant: it names a private checkout path.
   _whatsapp_dir="${YS[whatsapp_mcp_dir]:-}"
   [[ -z "${_overlay_url}" ]] && _overlay_url="${YS[overlay_url]:-}"
-  if [[ -z "${_whatsapp_dir}" ]] && (( ${_claude_plugins[(Ie)mcp-whatsapp]} )); then
+  # Bare or qualified (mcp-whatsapp@<marketplace>): both install the server.
+  if [[ -z "${_whatsapp_dir}" ]] && (( ${_claude_plugins[(I)mcp-whatsapp(|@*)]} )); then
     warn "mcp-whatsapp is enabled but whatsapp_mcp_dir is unset - the server has no checkout to run from"
   fi
 

@@ -560,6 +560,7 @@
         ] "web";
         # The input report reads the lock with `nix eval`, which is under test too.
         nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
+        claude-plugin-orphans = suiteCheck "claude-plugin-orphans";
         # The native MCP section runs lib/mcp.py, a python3 program.
         nix-doctor = suiteCheckWith [ pkgs.python3 ] "nix-doctor";
         switch-result = suiteCheck "switch-result";
@@ -829,8 +830,8 @@
                 {
                   flakelab = {
                     claudePlugins = [
-                      "mcp-playwright"
-                      "mcp-whatsapp"
+                      "mcp-playwright@fixture-market"
+                      "mcp-whatsapp@fixture-market"
                       "statusbar@fixture-market"
                     ];
                     sessionVariables.WHATSAPP_BRIDGE_HOST = "bridge.example.invalid:8180";
@@ -915,6 +916,77 @@
               jq -e '. | length == 9' "$record" > /dev/null
               touch $out
             '';
+        # A plugin's settings.json env follows the plugin however claudePlugins spells it:
+        # gated on the bare name, `mcp-playwright@<m>` installed the plugin without the
+        # env, and the server started a local chrome. The prune entry, run against a stub
+        # claude, removes an undeclared plugin the catalogue withdrew, never a declared one.
+        claude-plugins =
+          let
+            activation =
+              attrs: name:
+              let
+                sys =
+                  (self.nixosConfigurations.default.extendModules {
+                    modules = [
+                      {
+                        flakelab = {
+                          sessionVariables.WHATSAPP_BRIDGE_HOST = "bridge.example.invalid:8180";
+                          whatsappMcpDir = "/example/whatsapp-mcp-server";
+                        }
+                        // attrs;
+                      }
+                    ];
+                  }).config;
+              in
+              sys.home-manager.users.${sys.flakelab.username}.home.activation.${name}.data;
+            market = [
+              {
+                name = "fixture-market";
+                url = "https://example.invalid/fixture-market.git";
+              }
+            ];
+            settings =
+              plugins:
+              activation {
+                claudePluginMarketplaces = market;
+                claudePlugins = plugins;
+              } "claudeSettings";
+            playwright = nixpkgs.lib.hasInfix ''"PLAYWRIGHT_MCP_EXTENSION":"true"'';
+            whatsapp = nixpkgs.lib.hasInfix ''"WHATSAPP_MCP_DIR":"/example/whatsapp-mcp-server"'';
+            prune = pkgs.writeText "claude-plugins-prune-activation" (
+              activation {
+                claudePluginMarketplaces = market;
+                claudePlugins = [
+                  "agents"
+                  "mcp-x"
+                ];
+              } "pruneClaudeMcpPlugins"
+            );
+          in
+          assert playwright (settings [ "mcp-playwright" ]);
+          assert playwright (settings [ "mcp-playwright@fixture-market" ]);
+          assert !(playwright (settings [ "agents@fixture-market" ]));
+          # A bare name with no marketplace to resolve against is never installed.
+          assert !(playwright (activation { claudePlugins = [ "mcp-playwright" ]; } "claudeSettings"));
+          assert whatsapp (settings [ "mcp-whatsapp@fixture-market" ]);
+          assert !(whatsapp (settings [ "agents@fixture-market" ]));
+          pkgs.runCommandLocal "flakelab-check-claude-plugins" { nativeBuildInputs = [ pkgs.bash ]; } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME/.local/bin" "$HOME/.claude/plugins/marketplaces/fixture-market/.claude-plugin"
+            printf '#!%s\n%s\n' "$(command -v bash)" 'printf "%s\n" "$*" >> "$HOME/calls"' > "$HOME/.local/bin/claude"
+            chmod +x "$HOME/.local/bin/claude"
+            echo '{"plugins":[{"name":"mcp-x"},{"name":"mcp-old"}]}' \
+              > "$HOME/.claude/plugins/marketplaces/fixture-market/.claude-plugin/marketplace.json"
+            echo '{"version":2,"plugins":{"agents@fixture-market":[{"scope":"user"}],"gone@fixture-market":[{"scope":"user"}],"mcp-x@fixture-market":[{"scope":"user"}],"mcp-old@fixture-market":[{"scope":"user"}]}}' \
+              > "$HOME/.claude/plugins/installed_plugins.json"
+            bash -euo pipefail ${prune} > out
+            # The opt-out takes the undeclared mcp-old, the orphan pass the withdrawn gone;
+            # agents, withdrawn but declared, stays for the installer.
+            test "$(cat "$HOME/calls")" = "$(printf '%s\n' 'plugin uninstall mcp-old@fixture-market' 'plugin uninstall --scope user --keep-data gone@fixture-market')"
+            grep -q 'uninstalled gone@fixture-market' out
+            test ! -e "$HOME/.local/state/flakelab/activation-failures"
+            touch $out
+          '';
         # Remote Control follows claudeRemoteControl alone: the agent bundle writes
         # the permission mode and nothing of Remote Control, so a box can have
         # either without the other. Both entries run against a settings.json the

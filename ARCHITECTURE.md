@@ -344,6 +344,12 @@ symlinks, because Claude rewrites these files itself:
   `WebFetch(domain:*)`), is refused with a warning and the tier stays as it
   was. Not an activation: the clone is runtime data, and activation reruns only
   when the built config changed.
+- **Installed plugins** — after installing `claudePlugins`, activation
+  uninstalls from user scope an `mcp-*` plugin the list stopped naming and,
+  through `files/scripts/claude-plugin-orphans`, a plugin it does not name that
+  a declared marketplace's catalogue no longer offers. A withdrawn plugin the
+  list still names is the installer's to report; a missing or empty catalogue
+  prunes nothing and says so.
 - **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
   shipped facts, the permission tiers (`files/config/claude/auto-mode.md`) and
   `claudeMdExtra`; anything outside the markers is left alone. Codex's

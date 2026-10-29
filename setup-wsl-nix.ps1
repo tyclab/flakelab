@@ -866,7 +866,8 @@ function New-OverlayFlakeText($ud, [string]$udPath) {
         $body += '        # uv runs the whatsapp MCP server out of this checkout.'
         $body += ("        whatsappMcpDir = {0};" -f (ConvertTo-NixString $whatsappDir))
     }
-    elseif ($claudePlugins -contains 'mcp-whatsapp') {
+    # Bare or qualified (mcp-whatsapp@<marketplace>): both install the server.
+    elseif ($claudePlugins -match '^mcp-whatsapp(@|$)') {
         Warn '  mcp-whatsapp is enabled but whatsapp_mcp_dir is unset - the server has no checkout to run from'
     }
 
