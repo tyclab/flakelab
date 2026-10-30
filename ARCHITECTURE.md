@@ -87,6 +87,39 @@ option. Selecting none is legal but warns — no profile packages, no profile
 groups. A selected profile with a key `merge.nix` does not read (its
 `profileKeys` list) aborts evaluation, naming the profile and the key.
 
+From the overlay's call to a built system, with the point where each guard
+aborts and where the escape hatch enters:
+
+```mermaid
+flowchart TB
+    subgraph ovl["private overlay"]
+        CALL["lib.mkSystem<br/>{ target, userData,<br/>modules, homeModules }<br/>or a bare userData attrset"]
+        MODS["modules"]
+        HMODS["homeModules"]
+    end
+    subgraph mk["flake.nix: mkSystem"]
+        ARGS["call-form guard<br/>unknown argument → throw"]
+        PROF["profiles/merge.nix<br/>profiles → gitlabGroups,<br/>profileCliTools, customAliases,<br/>sessionVariables<br/>unknown profile or key → throw"]
+        KEYS["userData key guard<br/>unknown key → throw"]
+        TGT["targetModules.#lt;target#gt;<br/>unknown target → throw"]
+    end
+    subgraph ns["nixpkgs.lib.nixosSystem"]
+        OPT["nix/options.nix<br/>options.flakelab.*<br/>wrong type or missing<br/>required value → abort"]
+        SYS["nix/targets/#lt;target#gt;.nix<br/>+ nix/configuration.nix"]
+        HOME["home-manager.users.#lt;username#gt;<br/>nix/home/ + homeModules,<br/>reading osConfig.flakelab"]
+        TOP["NixOS configuration<br/>system.build.toplevel"]
+    end
+    CALL --> ARGS --> PROF --> KEYS
+    KEYS -->|"flakelab.* = mkDefault userData"| OPT
+    CALL --> TGT --> SYS
+    MODS -->|"appended last; a flakelab.*<br/>value outranks mkDefault"| OPT
+    HMODS --> HOME
+    OPT --> SYS
+    OPT --> HOME
+    SYS --> TOP
+    HOME --> TOP
+```
+
 Generating the overlay from a `user_data.yaml` is one script with two call
 sites, because it reads `templates/overlay/` and `profiles/` relative to itself:
 
@@ -180,6 +213,38 @@ asserts the snippet is on the wsl target alone.
 environment (`FLAKELAB_REPO_ROOT` from `repoPath`, `FLAKELAB_BACKUP_ROOT`,
 `FLAKELAB_STATE_ROOT` from `stateRoot` when set). `nix/cli.nix` assembles those
 wrappers into the dispatch directory the router reads.
+
+A typed command, the menu a bare `flakelab` opens at a terminal, and the gate
+every question passes (see "At a terminal" below):
+
+```mermaid
+flowchart TB
+    CMD["flakelab #lt;verb#gt; [flags]"]
+    CHK["./files/scripts/flakelab #lt;verb#gt;<br/>in a checkout"]
+    WRAP["flakelab wrapper, nix/cli.nix<br/>exports FLAKELAB_DISPATCH_DIR,<br/>FLAKELAB_TARGET"]
+    ROUTER{"router<br/>files/scripts/flakelab"}
+    MENU["flakelab-menu<br/>pick a command and its flags,<br/>then run the router again"]
+    USAGE(["command list, exit 0"])
+    REFUSE(["unknown verb: did you mean,<br/>exit 2; verb not on this<br/>target: exit 2"])
+    DISP["dispatch dir<br/>symlinkJoin of the wrappers"]
+    PERVERB["per-verb wrapper, nix/scripts.nix<br/>pinned PATH and env:<br/>FLAKELAB_REPO_ROOT,<br/>FLAKELAB_BACKUP_ROOT,<br/>FLAKELAB_STATE_ROOT"]
+    SCRIPT["files/scripts/#lt;name#gt;"]
+    TTY{"prompt_tty<br/>lib/prompt.zsh"}
+    ASK["asks: a pick list,<br/>a line, y/N"]
+    FLAGS["refuses, takes the default<br/>or needs the flag"]
+
+    CMD --> WRAP --> ROUTER
+    CHK --> ROUTER
+    ROUTER -->|"no verb, a terminal,<br/>not an agent"| MENU
+    MENU -.-> ROUTER
+    ROUTER -->|"no verb otherwise"| USAGE
+    ROUTER --> REFUSE
+    ROUTER -->|"installed"| DISP --> PERVERB -->|exec| SCRIPT
+    ROUTER -->|"checkout:<br/>sibling script"| SCRIPT
+    SCRIPT -->|"before a question"| TTY
+    TTY -->|"a terminal,<br/>not an agent"| ASK
+    TTY -->|"no terminal, an agent's shell<br/>or FLAKELAB_NO_PROMPT"| FLAGS
+```
 
 `FLAKELAB_REPO_ROOT` is what makes `flakelab build-distro` and
 `flakelab test-provision` callable from anywhere: both need the repo root, and
@@ -309,6 +374,37 @@ reads around its one switch and its verification, with nothing to carry, and
 before the recorder existed is `unrecorded`: only an exit 0 or 2 is taken from
 the switch, since a 4 cannot be told from a failed activation.
 
+`flakelab update` (`files/scripts/nix-update`) from its pre-flight to its exit
+status, with every point where it stops:
+
+```mermaid
+flowchart TB
+    START["flakelab update"]
+    subgraph pre["pre-flight"]
+        BOOT["wait out the boot activation,<br/>at most 180 s"]
+        DRIFT["overlay checkout: fetch,<br/>pull --rebase when behind;<br/>behind the default branch:<br/>warn, offer a rebase"]
+        LOCK["take flake.lock back,<br/>re-lock the flakelab input,<br/>prefetch inputs as the caller"]
+    end
+    subgraph sw["switch"]
+        REBUILD["sudo nixos-rebuild switch<br/>--flake path:#lt;repoPath#gt;#35;#lt;flakeAttr#gt;"]
+        HM["home-manager-#lt;user#gt;.service<br/>Home Manager activation;<br/>a failed health check<br/>fails the unit"]
+        RESULT{"flakelab-switch-result"}
+    end
+    POST["restart the Home Manager unit<br/>if the switch left failed or<br/>deferred steps alone;<br/>print the deferred steps;<br/>refresh Claude marketplaces,<br/>assert the allow and ask tiers;<br/>--all: flakelab clone"]
+    STOP(["exit 1"])
+    CODE(["exit with the verdict's code"])
+    DONE(["exit 0 applied, 4 degraded"])
+    DOCTOR["flakelab doctor,<br/>run by hand"]
+
+    START --> BOOT --> DRIFT --> LOCK --> REBUILD --> HM --> RESULT
+    BOOT -->|"still booting"| STOP
+    DRIFT -->|"behind and dirty, a conflict,<br/>or the fetch failed"| STOP
+    LOCK -->|"path: input, lock<br/>not writable"| STOP
+    RESULT -->|"applied, degraded"| POST --> DONE
+    RESULT -->|"activation-failed, unverified,<br/>reboot-required, not-applied"| CODE
+    POST -.->|"lists the deferred<br/>steps too"| DOCTOR
+```
+
 ## Activation and the health check
 
 Activation ends in a health check that fails the rebuild on anything a step
@@ -403,6 +499,41 @@ the hub and its disk only ever see ciphertext.
 <stateRoot>/shell/.zsh_history_merged                 # union of every machine's history
 <stateRoot>/claude/projects/<slug>/memory/            # auto-memory, per checkout path
 <stateRoot>/claude/projects/<slug>/<session>.jsonl    # transcripts, opt-in
+```
+
+Where each category goes, which of them pass the secret gate, and how they come
+back:
+
+```mermaid
+flowchart TB
+    SEED["provisioning seed<br/>SSH keys, secrets.env, git,<br/>kube, k9s, glab, helm, tycswap,<br/>Claude and Codex config, logins"]
+    STATE["state<br/>~/.zsh_history, Claude memory,<br/>Codex memories, transcripts"]
+    CHECK{"stateRoot"}
+    GATE["secret gate: gitleaks<br/>held findings: --review-secrets<br/>no scanner: nothing written"]
+    SKIP(["state skipped;<br/>in a git checkout: exit 1"])
+    subgraph payload["payload root"]
+        SHARED["shared/<br/>ssh, gitconfig, secrets"]
+        INST["instances/#lt;box#gt;/<br/>shell, kube, k9s, glab-cli,<br/>claude, codex, helm, tycswap"]
+    end
+    subgraph sroot["state root"]
+        HIST["shell/<br/>.zsh_history_merged"]
+        TX["transcripts, sessions<br/>with stateTranscripts"]
+        MEM["claude/projects/#lt;slug#gt;/memory/<br/>codex/memories/"]
+    end
+    HOME["$HOME, additive"]
+
+    SEED --> SHARED
+    SEED --> INST
+    STATE -->|"raw history copy"| INST
+    STATE --> CHECK
+    CHECK -->|"unset: merged<br/>history, memory"| payload
+    CHECK -->|"not usable"| SKIP
+    CHECK -->|"usable"| GATE
+    CHECK -->|"usable: memory,<br/>ungated"| MEM
+    GATE -->|"flagged records<br/>held back"| HIST
+    GATE -->|"secrets redacted"| TX
+    payload -->|"--restore<br/>--from, --instance"| HOME
+    sroot -->|"--restore, or<br/>--state-only both ways"| HOME
 ```
 
 Restore on the second machine with `flakelab backup --restore`. The daily timer
