@@ -84,7 +84,8 @@ is only the reasoning a description has no room for:
 turns the selected `profiles` into effective `gitlabGroups`, `profileCliTools`,
 `customAliases` and `sessionVariables`, which is why `profiles` itself is not an
 option. Selecting none is legal but warns — no profile packages, no profile
-groups.
+groups. A selected profile with a key `merge.nix` does not read (its
+`profileKeys` list) aborts evaluation, naming the profile and the key.
 
 Generating the overlay from a `user_data.yaml` is one script with two call
 sites, because it reads `templates/overlay/` and `profiles/` relative to itself:

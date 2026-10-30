@@ -1059,6 +1059,18 @@
                 }
               ];
             };
+            # `seq`, not `deepSeq`, on a rejection: the guard must fire with no field forced.
+            evals =
+              force: profile:
+              (builtins.tryEval (force (resolveUserData { profiles = [ profile ]; }) null)).success;
+            viaMkSystem =
+              profile:
+              (builtins.tryEval (
+                builtins.seq (mkSystem (import ./nix/users // { profiles = [ profile ]; })) null
+              )).success;
+            typo = {
+              gitlabGroup = [ "typo-group" ];
+            };
           in
           assert
             merged.gitlabGroups == [
@@ -1070,6 +1082,15 @@
               "ansible"
               "inline-tool"
             ];
+          assert !(evals builtins.seq typo);
+          assert !(viaMkSystem typo);
+          assert viaMkSystem "example";
+          assert builtins.all (evals builtins.deepSeq) (builtins.attrNames (import ./profiles));
+          assert evals builtins.deepSeq {
+            teamCliTools = [ "legacy-tool" ];
+            customAliases.ll = "ls -l";
+            sessionVariables.EDITOR = "vi";
+          };
           pkgs.runCommandLocal "flakelab-check-profiles-merge" { } "touch $out";
 
         # The target seam: the two systems must differ exactly as nix/targets/ says,

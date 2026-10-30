@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 - `gitclean` deletes under `~/git` only; `gitcheck` still reports across `extraReposDirs` as well. Both aliases had the same roots, so the deleter reached the trees `extraReposDirs` exists for, whose clones are kept nowhere else. `gitcleaner --repos-dir <dir>` still covers one of them on demand.
 - Git starts a new repository on `main` (`init.defaultBranch`, a default an overlay's own `programs.git.settings.init.defaultBranch` overrides). Unset, `git init` named it `master` and printed its hint each time, and `git config --global` cannot add it, since `~/.gitconfig` is managed by the flake.
 - The plumbing commands' `--help` names the verb you type: `flakelab clone-repos`, `flakelab activate-hooks`, `flakelab stale-repos`, `flakelab glab-projects`, not a script name that is on no PATH. A bare `make` lists the targets (`make help`) instead of installing the git hooks.
+- A selected profile with a key `profiles/merge.nix` does not read aborts evaluation, naming the profile (its registry name, or `<inline>` for an attrset), the unknown keys and the keys it reads. A misspelt `gitlabGroup` used to be dropped without a word, leaving the box short of that profile's groups. The keys read are one list, `profileKeys`, so a flake that collects another field adds it there in one line.
 
 ### Fixed
 

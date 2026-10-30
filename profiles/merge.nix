@@ -24,6 +24,28 @@ let
     lib.warnIf (profiles == [ ])
       "profiles: none selected, so profiles/ contributes nothing (known: ${lib.concatStringsSep ", " known}). Set `profiles = [ ... ]` in the flake that calls mkSystem.";
 
+  # Every key read from a profile below; a downstream that collects more adds it here.
+  profileKeys = [
+    "gitlabGroups"
+    "profileCliTools"
+    "teamCliTools"
+    "customAliases"
+    "sessionVariables"
+  ];
+  strayKeys = lib.concatLists (
+    lib.zipListsWith (
+      p: s:
+      let
+        extra = lib.subtractLists profileKeys (builtins.attrNames s);
+      in
+      lib.optional (extra != [ ])
+        "${if builtins.isAttrs p then "<inline>" else "'${p}'"}: ${lib.concatStringsSep ", " extra}"
+    ) profiles selected
+  );
+  rejectStrayKeys =
+    lib.throwIf (strayKeys != [ ])
+      "profiles: unknown key(s) in profile ${lib.concatStringsSep "; " strayKeys} (read: ${lib.concatStringsSep ", " profileKeys})";
+
   userCliTools = userData.profileCliTools or userData.teamCliTools or [ ];
 
   mergedGroups = lib.unique (
@@ -40,12 +62,14 @@ let
     acc: p: (p.sessionVariables or { }) // acc
   ) (userData.sessionVariables or { }) selected;
 in
-warnIfNoProfiles (
-  userData
-  // {
-    gitlabGroups = mergedGroups;
-    profileCliTools = mergedCliTools;
-    customAliases = mergedAliases;
-    sessionVariables = mergedSessionVars;
-  }
+rejectStrayKeys (
+  warnIfNoProfiles (
+    userData
+    // {
+      gitlabGroups = mergedGroups;
+      profileCliTools = mergedCliTools;
+      customAliases = mergedAliases;
+      sessionVariables = mergedSessionVars;
+    }
+  )
 )

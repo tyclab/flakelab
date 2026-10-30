@@ -362,7 +362,9 @@ the new name; the old one stays for `--restore --instance <old>`.
 This repo ships **no committed secrets**; the personal values live in the
 private overlay. `profiles/example.nix` and
 `files/config/user_data.example.yaml` are neutral placeholders — replace them
-with your own rather than reading them as defaults.
+with your own rather than reading them as defaults. A selected profile with a
+key `profiles/merge.nix` does not read, such as a misspelt `gitlabGroup`,
+aborts evaluation instead of being dropped.
 
 ### Layout
 
