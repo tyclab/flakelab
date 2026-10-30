@@ -273,7 +273,7 @@ still open), WSL 3.0.2 only re-enabled it as experimental without a fix, and a
 sparse image on a drive that ran out of space came back unreadable
 ([microsoft/WSL#41837](https://github.com/microsoft/WSL/issues/41837)).
 
-What runs inside the VM, by an agent or the weekly timers:
+What runs inside the VM, by an agent or the daily timers:
 `sudo systemctl start nix-gc.service docker-prune.service` and the
 `flakelab-prune` user timer free the Nix store, Docker and the tool caches.
 `docker-prune` keeps whatever is younger than a week (`until=168h`), so images
