@@ -120,7 +120,7 @@ in
   # relies on is `flakelab backup`'s payload snapshots.
   nix.gc = {
     automatic = true;
-    dates = "weekly";
+    dates = "daily";
     options = "--delete-older-than 30d";
   };
   nix.optimise = {
