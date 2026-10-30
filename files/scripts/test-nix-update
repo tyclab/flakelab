@@ -1226,6 +1226,43 @@ run_update "${d}" --bogus
 check    "an unknown flag exits 2"          "${RC}" "2"
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 7b. The Windows tray after the switch
+# ---------------------------------------------------------------------------
+# On the wsl target the new generation's `flakelab tray sync` runs after the
+# switch; elsewhere, and in checkout mode (no FLAKELAB_TARGET), it does not. The
+# stub logs its argv and fails when TRAY_FAILS is set.
+cat > "${SHIM}/flakelab" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${TRAY_LOG}"
+[[ -n "${TRAY_FAILS:-}" ]] && { print -ru2 -- "flakelab-stub: tray: powershell.exe not found"; exit 1 }
+exit 0
+STUB
+chmod +x "${SHIM}/flakelab"
+export TRAY_LOG="${BASE}/tray.log"
+d="$(mk_local tray)"
+
+print -r -- "the wsl target syncs the Windows tray after the switch"
+: > "${TRAY_LOG}"
+FLAKELAB_TARGET=wsl run_update "${d}"
+check    "it switches"                 "${RC}" "0"
+check    "and runs flakelab tray sync" "$(grep -cx 'tray sync' "${TRAY_LOG}")" "1"
+
+print -r -- "a tray that cannot be synced warns and the update still succeeds"
+: > "${TRAY_LOG}"
+FLAKELAB_TARGET=wsl TRAY_FAILS=1 run_update "${d}"
+check    "it exits 0"                  "${RC}" "0"
+contains "with the stub's error first"  "${OUT}" "powershell.exe not found"
+contains "and a retry hint"             "${OUT}" "the Windows tray was not synced"
+
+print -r -- "another target, and checkout mode, leave the tray alone"
+: > "${TRAY_LOG}"
+FLAKELAB_TARGET=proxmox-vm run_update "${d}"
+check    "proxmox-vm: no tray call"    "$(grep -c . "${TRAY_LOG}")" "0"
+run_update "${d}"
+check    "no target: no tray call"     "$(grep -c . "${TRAY_LOG}")" "0"
+rm -f "${SHIM}/flakelab"
+
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

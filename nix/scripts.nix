@@ -232,6 +232,29 @@ rec {
     exec ${zsh} ${s}/get_current_wsl_distro_name "$@"
   '';
 
+  # The Windows tray for the dashboard behind tycswapAppPort, installed from the
+  # flake's pin: files/scripts/tycswap-tray.ps1 over PowerShell, driven by
+  # nix-tycswap-tray (`flakelab tray`). The exe is referenced only where a tray is
+  # configured, so a box without one never fetches it; the script reads an unset
+  # port as "no tray" and exits 0.
+  trayConfigured = cfg.target == "wsl" && cfg.installTycswap && cfg.tycswapAppPort != null;
+  trayEnv = lib.optionalString trayConfigured ''
+    export FLAKELAB_TYCSWAP_APP_PORT=${toString cfg.tycswapAppPort}
+    export FLAKELAB_TYCSWAP_VERSION=${pkgs.tycswap.version}
+    export FLAKELAB_TYCSWAP_TRAY_EXE=${pkgs.tycswapWindows}
+    export FLAKELAB_TYCSWAP_TRAY_PS1=${s}/tycswap-tray.ps1
+  '';
+  nix-tycswap-tray = pkgs.writeShellScriptBin "nix-tycswap-tray" ''
+    ${trayEnv}
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/nix-tycswap-tray "$@"
+  '';
+
   # $0 yields /nix once packaged, so FLAKELAB_REPO_ROOT carries the repo root instead.
   # `nix` and `nixos-rebuild` stay on $PATH: they must be the running system's, not a
   # second copy pinned here.
@@ -327,6 +350,7 @@ rec {
   nix-update = pkgs.writeShellScriptBin "nix-update" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
+    export FLAKELAB_TARGET=${cfg.target}
     export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
     export FLAKELAB_CLAUDE_MARKETPLACES=${
       lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
@@ -348,6 +372,7 @@ rec {
   nix-update-all = pkgs.writeShellScriptBin "nix-update-all" ''
     export FLAKELAB_REPO_ROOT=${cfg.repoPath}
     export FLAKELAB_FLAKE_ATTR=${cfg.flakeAttr}
+    export FLAKELAB_TARGET=${cfg.target}
     export FLAKELAB_OVERLAY_GITIGNORE=${overlayGitignore}
     export FLAKELAB_CLAUDE_MARKETPLACES=${
       lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
@@ -439,6 +464,7 @@ rec {
     }"
     export FLAKELAB_INSTALL_TYCSWAP=${lib.boolToString cfg.installTycswap}
     export FLAKELAB_TYCSWAP_AUTOSWITCH=${lib.boolToString (cfg.tycswapAutoSwitchInterval != null)}
+    ${trayEnv}
     # Which secrets file the shell sources, decided on the same option as zsh.nix.
     export FLAKELAB_SOPS_RENDER=${if cfg.sopsSecretsFile != null then "1" else "0"}
     export FLAKELAB_CLAUDE_REMOTE_CONTROL=${lib.boolToString cfg.claudeRemoteControl}
@@ -446,6 +472,7 @@ rec {
     export PATH=${
       bin [
         pkgs.zsh
+        nix-tycswap-tray
         pkgs.git
         pkgs.openssh
         pkgs.glab

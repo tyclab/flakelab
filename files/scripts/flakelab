@@ -42,6 +42,7 @@ _order=(
   build-distro
   test-provision
   distro-name
+  tray
   clone-repos
   activate-hooks
   stale-repos
@@ -65,6 +66,7 @@ _bin=(
   build-distro    build-dev-wsl-nix
   test-provision  test-provision-nix
   distro-name     get_current_wsl_distro_name
+  tray            nix-tycswap-tray
   clone-repos     clone-repos
   activate-hooks  activate-hooks
   stale-repos     report-stale-repos
@@ -89,6 +91,7 @@ _file=(
   build-distro    build-dev-wsl-nix
   test-provision  test-provision-nix
   distro-name     get_current_wsl_distro_name
+  tray            nix-tycswap-tray
   clone-repos     clone-repos
   activate-hooks  activate-hooks
   stale-repos     report-stale-repos
@@ -110,6 +113,7 @@ _desc=(
   build-distro    'build a THROWAWAY dev distro from this flake (interop-wiping)'
   test-provision  'end-to-end provisioning test in a throwaway distro (interop-wiping)'
   distro-name     'print this distro'\''s WSL name'
+  tray            'the Windows tray for the tycswap dashboard, from the flake'\''s pin: sync (default) or status'
   clone-repos     'plumbing: clone the repo list arriving on stdin'
   activate-hooks  'plumbing: install pre-commit hooks across a repos dir'
   stale-repos     'plumbing: report archived/deletion-scheduled clones still on disk'
@@ -123,6 +127,7 @@ _targets=(
   build-distro    wsl
   test-provision  wsl
   distro-name     wsl
+  tray            wsl
 )
 
 # FLAKELAB_TARGET is exported by the nix wrapper (nix/cli.nix) from

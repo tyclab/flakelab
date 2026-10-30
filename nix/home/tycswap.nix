@@ -8,7 +8,7 @@
 let
   cfg = osConfig.flakelab;
   # Timer: one `tycswap auto --once` per interval; tycswap has no engine on/off, so an installed timer is live.
-  # App: tycswap's dashboard on loopback for the Windows tray (`tycswap app --remote`); no update check, the binary is this pin.
+  # App: tycswap's dashboard on loopback for the Windows tray (`tycswap app --remote`, installed by `flakelab tray`); no update check, the binary is this pin.
   on = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
   app = cfg.installTycswap && cfg.tycswapAppPort != null;
   inherit (flakelab) neverRestartedByActivation;

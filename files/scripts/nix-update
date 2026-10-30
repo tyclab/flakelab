@@ -488,6 +488,14 @@ if [[ -s "${_deferred}" ]]; then
   print -l -- "${_deferred_lines[@]/#/    }"
 fi
 
+# The Windows tray follows the pin: the generation just switched to owns it (its
+# `flakelab tray` installs the exe, registers the logon task and starts the tray),
+# and only a WSL box has one. Not from the activation: that runs in a unit.
+if [[ "${FLAKELAB_TARGET:-}" == wsl ]] && command -v flakelab > /dev/null 2>&1; then
+  flakelab tray sync \
+    || _say yellow "⚠ the Windows tray was not synced: its error precedes this line — retry: flakelab tray"
+fi
+
 # Marketplace clones are runtime data: replay after every switch, skipping those this run's activation fetched.
 _claude_marketplaces="$HOME/.claude/plugins/marketplaces"
 if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then

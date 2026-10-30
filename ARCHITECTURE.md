@@ -65,9 +65,13 @@ is only the reasoning a description has no room for:
   `installTycswap`. Thresholds, strategy and cooldown are `tycswap config`.
 - `tycswapAppPort` (nullable port, default `null`) runs `tycswap app --headless`
   as the `flakelab-tycswap-app` user service on loopback for the Windows tray,
-  which is tycswap's own binary on the host (`tycswap app --remote`); flakelab
-  carries no Windows side of it. Unlike `flakelab-web`, the service follows the
-  activation: a new pin restarts it, and the tray re-reads the token it writes.
+  tycswap's own binary on the host (`tycswap app --remote`). `flakelab tray`
+  (`nix-tycswap-tray` driving `files/scripts/tycswap-tray.ps1` over PowerShell)
+  installs that binary from the same pin (`tycswapWindows`, a fixed-output
+  fetch) as an at-logon scheduled task; `flakelab update` syncs it after the
+  switch on the wsl target and `flakelab doctor` reads its status. Unlike
+  `flakelab-web`, the service follows the activation: a new pin restarts it,
+  and the tray re-reads the token it writes.
 - `notify.*`, `mosh.enable` and `web.*` reach outside the box — a push, an open
   port, a dashboard — so each is its own switch. `web.bind` off loopback opens
   the port in the proxmox-vm firewall, and ttyd is reached only through the

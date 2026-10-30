@@ -1,0 +1,144 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for nix-tycswap-tray, the WSL side of the Windows tray install:
+# the real script against stub `powershell.exe` and `wslpath` executables, so no
+# case needs WSL interop. What reaches PowerShell is the contract under test; the
+# .ps1 itself runs on Windows and is checked live by `flakelab doctor`.
+
+SCRIPT_DIR="${0:A:h}"
+SCRIPT="${SCRIPT_DIR}/nix-tycswap-tray"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in:      $2" } }
+lacks()    { [[ "$2" != *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       unexpected: $3" } }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# powershell.exe records its argv one per line and exits as FAKE_PS_RC says;
+# wslpath marks what it converted, so an unconverted path is distinguishable.
+STUBS="${BASE}/bin"
+CALLS="${BASE}/calls"
+mkdir -p "${STUBS}" "${BASE}/home"
+cat > "${STUBS}/powershell.exe" <<STUB
+#!/usr/bin/env zsh
+print -rl -- "\$@" > "${CALLS}"
+print -r -- "ps-stub: ran in \$PWD"
+exit "\${FAKE_PS_RC:-0}"
+STUB
+cat > "${STUBS}/wslpath" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == "-w" ]] || exit 1
+print -r -- "WIN:$2"
+STUB
+chmod +x "${STUBS}/powershell.exe" "${STUBS}/wslpath"
+NOPS="${BASE}/nops"; mkdir -p "${NOPS}"; ln -s "${STUBS}/wslpath" "${NOPS}/wslpath"; ln -s "$(command -v zsh)" "${NOPS}/zsh"
+
+EXE="${BASE}/store/tycswap_v0.8.2_windows_amd64.exe"
+PS1_FILE="${BASE}/store/tycswap-tray.ps1"
+mkdir -p "${BASE}/store"; : > "${EXE}"; : > "${PS1_FILE}"
+
+# run_tray [VAR=value...] -- <args...>: the script under the stubs with the
+# wrapper's environment; sets OUT (stdout+stderr), RC and ARGV (what powershell.exe
+# got, empty when it never ran). The port is set unless a caller unsets it.
+typeset -i RC=0
+OUT=""
+typeset -a ARGV=()
+run_tray() {
+  local -a env=(
+    PATH="${STUBS}:${PATH}" HOME="${BASE}/home" WSL_DISTRO_NAME=flakelab
+    FLAKELAB_TYCSWAP_APP_PORT=7337 FLAKELAB_TYCSWAP_VERSION=0.8.2
+    FLAKELAB_TYCSWAP_TRAY_EXE="${EXE}" FLAKELAB_TYCSWAP_TRAY_PS1="${PS1_FILE}"
+  )
+  while (( $# )) && [[ "$1" != -- ]]; do env+=("$1"); shift; done
+  [[ "${1:-}" == -- ]] && shift
+  rm -f "${CALLS}"
+  OUT="$(env -i "${env[@]}" zsh "${SCRIPT}" "$@" 2>&1)"
+  RC=$?
+  ARGV=()
+  [[ -f "${CALLS}" ]] && ARGV=( "${(@f)$(<"${CALLS}")}" )
+  return 0
+}
+# argv_has <flag> <value>: the flag and the value it carries, adjacent in ARGV.
+argv_has() {
+  local -i i
+  for (( i = 1; i < ${#ARGV}; i++ )); do
+    [[ "${ARGV[i]}" == "$1" && "${ARGV[i+1]}" == "$2" ]] && return 0
+  done
+  return 1
+}
+
+print -r -- "usage"
+run_tray -- --help
+check "--help exits 0" "${RC}" "0"
+contains "and prints the usage" "${(L)OUT}" "usage"
+run_tray -- bogus
+check "an unknown verb exits 2" "${RC}" "2"
+run_tray -- sync --bogus
+check "an unknown option exits 2" "${RC}" "2"
+check "and powershell never ran" "${#ARGV}" "0"
+
+print -r -- "no tray configured"
+run_tray FLAKELAB_TYCSWAP_APP_PORT= -- sync
+check "sync without a port exits 0" "${RC}" "0"
+contains "and says the tray is not configured" "${OUT}" "no Windows tray configured (flakelab.tycswapAppPort is null)"
+check "and powershell never ran" "${#ARGV}" "0"
+run_tray FLAKELAB_TYCSWAP_APP_PORT= -- status
+check "status without a port exits 0 too" "${RC}" "0"
+
+print -r -- "sync hands the .ps1 everything it needs, as Windows paths"
+run_tray -- sync
+check "exits 0" "${RC}" "0"
+check "powershell.exe is driven non-interactively" "${ARGV[1]} ${ARGV[2]} ${ARGV[3]} ${ARGV[4]}" "-NoProfile -NonInteractive -ExecutionPolicy Bypass"
+argv_has -File "WIN:${PS1_FILE}" && ok "the .ps1 by its Windows path" || bad "the .ps1 by its Windows path: ${ARGV[*]}"
+argv_has -Exe "WIN:${EXE}" && ok "the pinned exe by its Windows path" || bad "the pinned exe by its Windows path: ${ARGV[*]}"
+argv_has -Version 0.8.2 && ok "the pinned version" || bad "the pinned version: ${ARGV[*]}"
+argv_has -Port 7337 && ok "the dashboard port" || bad "the dashboard port: ${ARGV[*]}"
+argv_has -Token "WIN:${BASE}/home/.local/share/tycswap/remote.token" && ok "the remote.token by its Windows path" || bad "the remote.token: ${ARGV[*]}"
+argv_has -Distro flakelab && ok "the distro name from WSL_DISTRO_NAME" || bad "the distro name: ${ARGV[*]}"
+argv_has -Mode sync && ok "mode sync" || bad "mode sync: ${ARGV[*]}"
+lacks "and no -DryRun" "${ARGV[*]}" "-DryRun"
+contains "powershell's output passes through" "${OUT}" "ps-stub: ran in"
+run_tray --
+argv_has -Mode sync && ok "a bare call is sync" || bad "a bare call is sync: ${ARGV[*]}"
+
+print -r -- "the other modes"
+run_tray -- sync --dry-run
+argv_has -Mode sync && ok "--dry-run keeps mode sync" || bad "--dry-run keeps mode sync: ${ARGV[*]}"
+contains "and adds -DryRun" "${ARGV[*]}" "-DryRun"
+run_tray -- status
+argv_has -Mode status && ok "status is mode status" || bad "status: ${ARGV[*]}"
+run_tray XDG_DATA_HOME="${BASE}/xdg" -- sync
+argv_has -Token "WIN:${BASE}/xdg/tycswap/remote.token" && ok "XDG_DATA_HOME moves the token" || bad "XDG_DATA_HOME: ${ARGV[*]}"
+
+print -r -- "the distro name outside a WSL shell"
+mkdir -p "${BASE}/home/.local/state/flakelab"
+print -r -- "flakelab-two" > "${BASE}/home/.local/state/flakelab/distro-name"
+run_tray WSL_DISTRO_NAME= -- sync
+argv_has -Distro flakelab-two && ok "comes from the shell's record" || bad "record: ${ARGV[*]}"
+rm -f "${BASE}/home/.local/state/flakelab/distro-name"
+run_tray WSL_DISTRO_NAME= -- sync
+check "with neither, sync exits 1" "${RC}" "1"
+contains "and says which fact is missing" "${OUT}" "distro name unknown"
+check "and powershell never ran" "${#ARGV}" "0"
+
+print -r -- "failures"
+run_tray PATH="${NOPS}" FLAKELAB_POWERSHELL_EXE="${BASE}/no-powershell.exe" -- sync
+check "no powershell.exe exits 1" "${RC}" "1"
+contains "and names it" "${OUT}" "powershell.exe not found"
+run_tray FAKE_PS_RC=1 -- status
+check "powershell's exit status is the script's" "${RC}" "1"
+run_tray FAKE_PS_RC=3 -- sync
+check "whatever it is" "${RC}" "3"
+run_tray FLAKELAB_TYCSWAP_TRAY_EXE="${BASE}/missing.exe" -- sync
+check "a pinned exe that is not on disk exits 1" "${RC}" "1"
+contains "and is named" "${OUT}" "missing.exe"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

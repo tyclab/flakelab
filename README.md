@@ -544,20 +544,26 @@ conversation when you choose to restart it.
 
 A distro has no tray, so `flakelab.tycswapAppPort = 7337;` runs `tycswap app
 --headless --port 7337` as the user service `flakelab-tycswap-app`, and the
-Windows binary (`tycswap_<version>_windows_amd64.exe` from the release, checked
-against its `SHA256SUMS`) is the tray for it, registered once per PC from a
-PowerShell as the user:
+same release's Windows binary is the tray for it. The flake owns that side
+too: on a WSL box `flakelab update` ends with `flakelab tray sync`, which
 
-```powershell
-$token = '\\wsl.localhost\<distro>\home\<user>\.local\share\tycswap\remote.token'
-tycswap.exe app --remote http://127.0.0.1:7337 --token-file $token --autostart on
-Start-Process tycswap.exe -ArgumentList 'app', '--remote', 'http://127.0.0.1:7337', '--token-file', $token
-```
+- installs the pinned `tycswap.exe` (a fixed-output fetch in `flake.nix`,
+  verified by hash) under `%LOCALAPPDATA%\Programs\tycswap`, renaming a
+  running one to `.old` first;
+- registers the scheduled task `io.github.tyclab.tycswap.remote`, which at
+  your logon starts the distro and then the tray — at once, not from
+  Explorer's startup queue, which runs the Run key entries half a minute
+  apart — restarts a crashed tray, and has the Task Scheduler service as the
+  tray's parent, so `wsl --shutdown` cannot end it;
+- removes the Run key value an earlier `--autostart on` left, since two
+  starts would race for the tray's single-instance lock;
+- starts the tray when none runs.
 
-The tray is not managed by the flake. When `tycswap.exe upgrade` answers
-HTTP 403 (the unauthenticated GitHub API quota is spent), fetch the exe and
-`SHA256SUMS` with `gh release download`, verify, rename the running exe to
-`.exe.old`, move the new one in and start the tray again.
+`flakelab tray status` reports those facts and `flakelab doctor` shows them
+under Switcher; a tray that is gone comes back with `flakelab tray`. Nothing
+on the Windows side updates itself: the tray runs with `--no-update-check`
+and follows the pin like the distro's binary, so a tycswap bump is a
+`flakelab update` on each box.
 
 The app writes that token on every start and the tray reads it again by
 itself; the tray switches, toggles auto-switch and opens the distro's
@@ -567,7 +573,7 @@ the timer is the engine. The service sets `TYCSWAP_AUTO_MANAGED_BY`, so
 the dashboard and tray show the owner and disable that toggle, and the
 server rejects hosted-engine starts (including remembered startup and dry
 runs). Model-window settings remain editable and apply on the next timer
-tick. The Windows binary upgrades itself from the releases; the distro's follows the flake's pin.
+tick.
 
 #### Migrating from flakelab accounts
 

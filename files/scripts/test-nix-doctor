@@ -443,6 +443,37 @@ chmod +x "${UMT}/systemctl"; ln -sf "${TOOLS}/tycswap" "${UMT}/tycswap"
 out="$(section Switcher PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_AUTOSWITCH=true FAKE_TIMERS='flakelab-tycswap-autoswitch.timer  loaded active waiting')"
 contains "a scheduled timer passes" "${out}" "[ OK ] auto-switch timer scheduled (flakelab-tycswap-autoswitch.timer)"
 
+# The Windows tray: nix-tycswap-tray stubbed on PATH answers status with
+# FAKE_TRAY_OUT and exits FAKE_TRAY_RC; only the wsl target reads it.
+cat > "${TOOLS}/nix-tycswap-tray" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == status ]] || exit 2
+print -r -- "${FAKE_TRAY_OUT}"
+exit "${FAKE_TRAY_RC:-0}"
+STUB
+chmod +x "${TOOLS}/nix-tycswap-tray"
+NOTRAY="${BASE}/notray"; mkdir -p "${NOTRAY}"
+for f in "${TOOLS}"/*(N); do [[ "${f:t}" == nix-tycswap-tray ]] || ln -s "${f}" "${NOTRAY}/${f:t}"; done
+print -r -- "the Windows tray"
+out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_OUT=$'tray: exe: tycswap 0.8.2 at C:\\x\\tycswap.exe\ntray: task: io.github.tyclab.tycswap.remote starts the distro and the tray at logon\ntray: run key: none (the task is the only start)\ntray: running: pid 7 since 2026-10-30 17:09:33')"
+contains "a clean status is three OK lines: the exe" "${out}" "[ OK ] tray exe: tycswap 0.8.2"
+contains "the task"                                   "${out}" "[ OK ] tray task: io.github.tyclab.tycswap.remote"
+contains "the tray"                                   "${out}" "[ OK ] tray running: pid 7"
+lacks    "and no hint"                                "${out}" "flakelab tray   #"
+out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT=$'tray: exe: tycswap 0.8.2 at C:\\x\\tycswap.exe\ntray: off: register the logon task io.github.tyclab.tycswap.remote (it is not registered)\ntray: off: start the tray (none running)')"
+contains "an off line is a warning"                   "${out}" "[WARN] tray: register the logon task io.github.tyclab.tycswap.remote"
+contains "each of them"                               "${out}" "[WARN] tray: start the tray (none running)"
+contains "and the hint names the fix"                 "${out}" "flakelab tray   # installs the pinned exe"
+out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT='powershell.exe not found - is /mnt/c mounted?')"
+contains "a line that is not a tray fact is a warning too" "${out}" "[WARN] tray: powershell.exe not found"
+out="$(section Switcher PATH="${NOTRAY}" HOME="${BASE}/home" FLAKELAB_TARGET=wsl FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_APP_PORT=7337)"
+contains "no nix-tycswap-tray on PATH warns"          "${out}" "[WARN] tycswapAppPort is set, but nix-tycswap-tray is not on PATH"
+out="$(switcher_section FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_OUT='tray: off: start the tray (none running)' FAKE_TRAY_RC=1)"
+contains "another target is a note"                   "${out}" "[ OK ] note: tycswapAppPort is set, but only the wsl target has a Windows tray"
+lacks    "and never runs the status"                  "${out}" "[WARN] tray"
+out="$(switcher_section)"
+lacks    "no port: no tray line at all"               "${out}" "tray"
+
 # dashboard_section <systemctl show answer> [<cmdline word>...]: the doctor's
 # Dashboard section under a systemctl whose `show flakelab-web.service` prints the
 # answer, with /proc faked so that PID 4242's cmdline is the given words (none: no

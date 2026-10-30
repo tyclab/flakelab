@@ -1,0 +1,91 @@
+#!/usr/bin/env zsh
+# The Windows tray for tycswap's dashboard, owned by the flake: installs the pinned
+# tycswap.exe under %LOCALAPPDATA%\Programs\tycswap, registers it as an at-logon
+# scheduled task driving `tycswap app --remote` against the `flakelab-tycswap-app`
+# service, and starts it when it is not running. `flakelab update` runs `sync` after
+# every switch; `flakelab doctor` reads `status`.
+#
+# This side only gathers the facts and hands them to files/scripts/tycswap-tray.ps1,
+# which PowerShell runs straight from the nix store over \\wsl.localhost: the
+# exe, the version, the port, the remote.token the service writes, and the distro
+# name the task starts before the tray. Every path crosses as a Windows path.
+set -uo pipefail
+_self="flakelab tray"
+die() { print -ru2 -- "${_self}: $*"; exit 1 }
+usage_error() { print -ru2 -- "${_self}: $*"; exit 2 }
+usage() {
+  cat <<EOF
+${_self} - the Windows tray for tycswap's dashboard, installed from the flake's pin
+Usage: ${_self} [sync|status] [--dry-run]
+Commands:
+  sync     (default) install the pinned tycswap.exe, register the at-logon task,
+           drop the Run key an earlier hand registration left, start the tray
+  status   report the installed exe, the task and the running tray; changes nothing;
+           exits 1 when sync has work to do
+Options:
+  --dry-run   with sync: print what would change, change nothing
+  -h, --help  this text
+The service side is flakelab.tycswapAppPort (nix/home/tycswap.nix); null means no tray.
+EOF
+}
+
+_mode=""
+_dry=false
+while (( $# )); do
+  case "$1" in
+    sync|status) [[ -z "${_mode}" ]] || usage_error "one command only (got '${_mode}' and '$1')"; _mode="$1" ;;
+    --dry-run)   _dry=true ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           usage_error "unknown argument '$1'; see --help" ;;
+  esac
+  shift
+done
+_mode="${_mode:-sync}"
+${_dry} && [[ "${_mode}" != sync ]] && usage_error "--dry-run goes with sync"
+
+if [[ -z "${FLAKELAB_TYCSWAP_APP_PORT:-}" ]]; then
+  print -r -- "${_self}: no Windows tray configured (flakelab.tycswapAppPort is null)"
+  exit 0
+fi
+_exe="${FLAKELAB_TYCSWAP_TRAY_EXE:-}"
+_ps1="${FLAKELAB_TYCSWAP_TRAY_PS1:-}"
+_version="${FLAKELAB_TYCSWAP_VERSION:-}"
+[[ -n "${_exe}" && -n "${_ps1}" && -n "${_version}" ]] || die "not run through the flakelab wrapper: the pinned exe, the .ps1 and the version are unset"
+[[ -f "${_exe}" ]] || die "the pinned tycswap.exe is not on disk: ${_exe}"
+[[ -f "${_ps1}" ]] || die "the tray script is not on disk: ${_ps1}"
+
+# The distro name wsl.exe -d takes: the shell's variable, else the record the zsh
+# init leaves for contexts without one (`flakelab distro-name` reads the same).
+_distro="${WSL_DISTRO_NAME:-}"
+if [[ -z "${_distro}" ]]; then
+  _record="${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name"
+  [[ -s "${_record}" ]] && IFS= read -r _distro < "${_record}"
+fi
+[[ -n "${_distro}" ]] || die "distro name unknown: neither WSL_DISTRO_NAME nor ${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name; open a WSL shell once, or run this from one"
+
+# The token the app writes at every start; the tray re-reads it by itself.
+_token="${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap/remote.token"
+
+# powershell.exe is an interop call; the absolute path covers a PATH without the
+# Windows directories, and FLAKELAB_POWERSHELL_EXE names one outright (the suite's
+# hook). cwd /mnt/c: from ext4 PowerShell inherits a \\wsl.localhost cwd it
+# cannot use.
+_ps="${FLAKELAB_POWERSHELL_EXE:-$(command -v powershell.exe 2> /dev/null || print -- /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)}"
+[[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
+command -v wslpath > /dev/null 2>&1 || die "wslpath not found - not a WSL distro?"
+_w() { wslpath -w "$1" || die "wslpath -w failed for $1" }
+_win_ps1="$(_w "${_ps1}")" || exit 1
+_win_exe="$(_w "${_exe}")" || exit 1
+_win_token="$(_w "${_token}")" || exit 1
+
+[[ -d /mnt/c ]] && cd /mnt/c
+_args=(
+  -NoProfile -NonInteractive -ExecutionPolicy Bypass
+  -File "${_win_ps1}"
+  -Exe "${_win_exe}" -Version "${_version}" -Port "${FLAKELAB_TYCSWAP_APP_PORT}"
+  -Token "${_win_token}" -Distro "${_distro}" -Mode "${_mode}"
+)
+${_dry} && _args+=(-DryRun)
+"${_ps}" "${_args[@]}" < /dev/null
+_rc=$?
+exit "${_rc}"
