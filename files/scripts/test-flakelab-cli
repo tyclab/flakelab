@@ -66,10 +66,10 @@ chmod +x "${MENUDISPATCH}/flakelab-menu"
 # Mirrored, not sourced: the router's arrays are not meant to be sourced by anything.
 typeset -a ORDER=(
   update update-all doctor backup sessions notify web mcp clone provision overlay-gen build-distro
-  test-provision distro-name clone-repos activate-hooks stale-repos
+  test-provision distro-name tray clone-repos activate-hooks stale-repos
   glab-projects
 )
-typeset -a WSL_ONLY=( provision build-distro test-provision distro-name )
+typeset -a WSL_ONLY=( provision build-distro test-provision distro-name tray )
 
 # run_router <target|""> <args...> — sets OUT and RC; an empty target leaves the env
 # var genuinely unset, which is what checkout mode looks like.
@@ -99,7 +99,7 @@ count_listed() {
 
 print -r -- "no FLAKELAB_TARGET (checkout mode): every verb available"
 run_router "" --help
-check "--help lists all 18 commands" "$(count_listed)" "18"
+check "--help lists all 19 commands" "$(count_listed)" "19"
 check "--help exits 0" "${RC}" "0"
 
 run_router "" mcp
@@ -111,9 +111,9 @@ contains "build-distro dispatches with no target set" "${OUT}" "ran:build-dev-ws
 check "build-distro exits 0 with no target set" "${RC}" "0"
 
 print -r -- ""
-print -r -- "FLAKELAB_TARGET=proxmox-vm: the four wsl-only verbs are gated"
+print -r -- "FLAKELAB_TARGET=proxmox-vm: the five wsl-only verbs are gated"
 run_router "proxmox-vm" --help
-check "--help lists 14 commands (18 minus the four wsl-only verbs)" "$(count_listed)" "14"
+check "--help lists 14 commands (19 minus the five wsl-only verbs)" "$(count_listed)" "14"
 for c in "${WSL_ONLY[@]}"; do
   excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
 done

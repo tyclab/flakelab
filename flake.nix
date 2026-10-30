@@ -82,9 +82,10 @@
 
       # tycswap: the account switcher for Claude Code and Codex logins, one static
       # Go binary named `tycswap`. Pinned to a release tag: `version` is the one
-      # place it is written (the tag and the ldflag derive from it), and a bump
-      # needs both hashes with it - a build with a stale hash prints the new one,
-      # and checks.tycswap fails in CI rather than on a box's update.
+      # place it is written (the tag, the ldflag and the Windows asset derive from
+      # it), and a bump needs all three hashes with it - a build with a stale hash
+      # prints the new one, and checks.tycswap / checks.tycswap-windows fail in CI
+      # rather than on a box's update.
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
@@ -112,7 +113,14 @@
           doCheck = false;
           meta.mainProgram = "tycswap";
         };
-      tycswapOverlay = _final: _prev: { inherit tycswap; };
+      # The same release's Windows binary: the tray `flakelab tray` installs on the
+      # host of a WSL box (nix/scripts.nix, files/scripts/tycswap-tray.ps1). A
+      # fixed-output fetch, so the exe a box runs is the one the hash names.
+      tycswapWindows = pkgs.fetchurl {
+        url = "https://github.com/tyclab/tycswap/releases/download/v${tycswap.version}/tycswap_v${tycswap.version}_windows_amd64.exe";
+        hash = "sha256-ZJj72/vr+CEaSrVNvK/+KCD9PaTimBpt01f2V922KFE=";
+      };
+      tycswapOverlay = _final: _prev: { inherit tycswap tycswapWindows; };
 
       # One flake check per offline suite, so CI runs them; `make test` runs the same
       # scripts against the working tree. The shebang rewrite is required because the
@@ -354,9 +362,10 @@
       # The offline suites, the nix linters, and the eval-time assertions. `targets`
       # instantiates both systems and builds neither.
       checks.${system} = {
-        # The pinned switcher builds: a tag bump with a stale hash fails here, not
-        # on a box's `flakelab update`.
+        # The pinned switcher builds, and its Windows tray fetches: a tag bump with
+        # a stale hash fails here, not on a box's `flakelab update`.
         inherit tycswap;
+        tycswap-windows = tycswapWindows;
         # The distro's pre-commit gives a hook installer no GIT_* of the commit: npm's
         # clone of a node hook wrote its own index over the one being committed.
         pre-commit-installer-env =
@@ -570,6 +579,7 @@
         activate-hooks = suiteCheckWith [ pkgs.gnumake ] "activate-hooks";
         report-stale-repos = suiteCheck "report-stale-repos";
         nix-provision = suiteCheck "nix-provision";
+        nix-tycswap-tray = suiteCheck "nix-tycswap-tray";
         codex-config =
           let
             manifest = builtins.toFile "codex-mcp-fixture.json" (

@@ -44,8 +44,9 @@ while (( $# > 0 )); do
       echo "Blocking checks cover: the activation (its failure log and the system's"
       echo "recorded result), the WSLInterop handler, systemd as PID 1 and the cgroup"
       echo "it runs in (WSL target only), the AI CLIs the overlay installs (Claude Code"
-      echo "as the native ~/.local/bin/claude; Codex), the switcher (tycswap) and its"
-      echo "auto-switch timer, which git config file wins, secrets.env (mode + CRLF),"
+      echo "as the native ~/.local/bin/claude; Codex), the switcher (tycswap), its"
+      echo "auto-switch timer and, on WSL, its Windows tray (flakelab tray status),"
+      echo "which git config file wins, secrets.env (mode + CRLF),"
       echo "glab config modes (global and repo-local), glab auth, the ssh-agent and its"
       echo "keys, GitLab SSH, cloned repos, and a writable npm prefix."
       echo ""
@@ -579,6 +580,28 @@ else
     fi
   else
     log_ok "note: no auto-switch timer (flakelab.tycswapAutoSwitchInterval schedules tycswap auto --once)"
+  fi
+fi
+# The Windows tray (flakelab.tycswapAppPort): `nix-tycswap-tray status` reports the
+# pinned exe, the logon task and the running tray, one line each; an `off:` line
+# is a fact `flakelab tray` would change.
+if [[ -n "${FLAKELAB_TYCSWAP_APP_PORT:-}" ]]; then
+  if [[ "${TARGET}" != wsl ]]; then
+    log_ok "note: tycswapAppPort is set, but only the wsl target has a Windows tray"
+  elif ! command -v nix-tycswap-tray > /dev/null 2>&1; then
+    log_warn "tycswapAppPort is set, but nix-tycswap-tray is not on PATH"
+    log_hint "flakelab update installs it"
+  else
+    _tray_out="$(nix-tycswap-tray status 2>&1)"
+    _tray_rc=$?
+    for _tray_line in "${(@f)_tray_out}"; do
+      case "${_tray_line}" in
+        "tray: off: "*) log_warn "tray: ${_tray_line#tray: off: }" ;;
+        "tray: "*)      log_ok "tray ${_tray_line#tray: }" ;;
+        *)              log_warn "tray: ${_tray_line}" ;;
+      esac
+    done
+    (( _tray_rc == 0 )) || log_hint "flakelab tray   # installs the pinned exe, registers the logon task, starts the tray"
   fi
 fi
 if [[ -d "${OLD_ACCT_STORE}" ]]; then

@@ -27,6 +27,7 @@ let
       scripts.build-dev-wsl-nix
       scripts.test-provision-nix
       scripts.get_current_wsl_distro_name
+      scripts.nix-tycswap-tray
       scripts.clone-repos
       scripts.activate-hooks
       scripts.report-stale-repos

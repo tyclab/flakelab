@@ -49,7 +49,10 @@ Read for this topic; paths below are relative to the repository root unless stat
     `flake.nix`); flakelab carries the glue only: `nix/home/tycswap.nix` (the
     `flakelab-tycswap-autoswitch` timer behind `tycswapAutoSwitchInterval`, the
     `flakelab-tycswap-app` service behind `tycswapAppPort` for the Windows tray,
-    and the quota hook in `claude.nix` that ticks the timer), the `tycswap` backup
+    and the quota hook in `claude.nix` that ticks the timer), `flakelab tray`
+    (`nix-tycswap-tray` and `tycswap-tray.ps1`: the tray exe from the pin
+    `tycswapWindows`, its logon task, its start; run by `nix-update` after a
+    switch on the wsl target), the `tycswap` backup
     category, the doctor's `Switcher` section, `claude-sessions` reading
     tycswap's session profiles, and `flakelab web` over `tycswap list --json`
     and `tycswap switch`. The store is `~/.local/share/tycswap`; nothing reads
