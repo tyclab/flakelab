@@ -1,4 +1,3 @@
-# zsh + Oh My Zsh: history, aliases, env, and the interactive init block.
 # initContent is only for work that must happen in the interactive shell; a real
 # command belongs in files/scripts with a wrapper in nix/scripts.nix.
 {
@@ -59,8 +58,7 @@ in
 
       c = "claude";
     }
-    # Trust-all skips every permission prompt, the one thing between an agent and
-    # an unreviewed command; hence the opt-in.
+    # Opt-in: trust-all skips every permission prompt, the one guard before an unreviewed command.
     // lib.optionalAttrs cfg.claudeTrustAll {
       cc = "claude --dangerously-skip-permissions";
     }
@@ -82,21 +80,16 @@ in
       # Prepend: the pinned npm must beat the nix profile's, and sessionPath only appends.
       export PATH="$HOME/.npm-global/bin:$PATH"
 
-      # nixpkgs' pre-patched browsers, so nix-ld is not needed. Playwright matches
-      # browsers by revision, so a harness that npm-installs playwright must take the
-      # release these were built for: PLAYWRIGHT_VERSION, never a pin of its own.
+      # nixpkgs' pre-patched browsers, so nix-ld is not needed. Playwright matches browsers by
+      # revision: a harness that npm-installs playwright takes PLAYWRIGHT_VERSION, never its own pin.
       export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
       export PLAYWRIGHT_VERSION="${pkgs.playwright-driver.version}"
       export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-      # Runtime secrets from exactly one source, chosen at build time by whether
-      # the overlay set `sopsSecretsFile`. No runtime fallback: an enrolled box
-      # with no render must start with no secrets rather than source a stale file.
-      # The `tr -d` strips CRs, which land inside the quoted value and corrupt tokens.
-      # This lives in .zshenv, not .zshrc: an agent's `zsh -c` is not interactive
-      # and never reads .zshrc, so tokens placed there reach a human terminal and
-      # nothing else — `glab` then reports "no token found" mid-session while the
-      # operator's own shell works.
+      # Secrets from exactly one source, chosen at build time by `sopsSecretsFile`; no runtime
+      # fallback, so an enrolled box with no render starts with none, not a stale file.
+      # `tr -d` strips CRs, which land inside quoted values and corrupt tokens. Here in
+      # .zshenv, not .zshrc: an agent's non-interactive `zsh -c` never reads .zshrc.
       ${
         if cfg.sopsSecretsFile != null then
           ''
@@ -112,9 +105,8 @@ in
           ''
       }
 
-      # The Claude mcp-homeassistant plugin expands HA_URL/HA_TOKEN, not HASS_*.
-      # Here, after the secrets and in .zshenv, so a non-interactive start - an
-      # agent's `zsh -c`, a session the dashboard starts - carries them too.
+      # The Claude mcp-homeassistant plugin expands HA_URL/HA_TOKEN, not HASS_*; after the
+      # secrets and in .zshenv, so non-interactive starts (agent `zsh -c`, dashboard) get them.
       [[ -n "''${HASS_URL:-}" ]] && export HA_URL="$HASS_URL"
       [[ -n "''${HASS_TOKEN:-}" ]] && export HA_TOKEN="$HASS_TOKEN"
     '';
