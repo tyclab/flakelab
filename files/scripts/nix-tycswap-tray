@@ -63,20 +63,30 @@ if [[ -z "${_distro}" ]]; then
 fi
 [[ -n "${_distro}" ]] || die "distro name unknown: neither WSL_DISTRO_NAME nor ${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name; open a WSL shell once, or run this from one"
 
-# The token the app writes at every start; the tray re-reads it by itself.
+# The token the app writes at every start; the tray re-reads it by itself. Its
+# Windows spelling is derived, not resolved: wslpath -w refuses a path that does
+# not exist yet, and the token is absent until the service's first start.
 _token="${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap/remote.token"
+_win_token="\\\\wsl.localhost\\${_distro}${_token//\//\\}"
 
-# powershell.exe is an interop call; the absolute path covers a PATH without the
-# Windows directories, and FLAKELAB_POWERSHELL_EXE names one outright (the suite's
-# hook). cwd /mnt/c: from ext4 PowerShell inherits a \\wsl.localhost cwd it
-# cannot use.
+# powershell.exe is itself an interop call, so a wiped WSLInterop handler is the
+# first thing to check - otherwise the failure is 'exec format error' from a
+# binary the user never mentioned. known-issues.md covers the wipe.
+_binfmt="${FLAKELAB_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
+if [[ ! -e "${_binfmt}/WSLInterop" && ! -e "${_binfmt}/WSLInterop-late" ]]; then
+  die "WSL interop is broken (no WSLInterop in /proc/sys/fs/binfmt_misc), so .exe calls fail.
+  Heal it from a Windows terminal:  wsl --shutdown
+  then re-enter this distro and retry."
+fi
+# The absolute path covers a PATH without the Windows directories, and
+# FLAKELAB_POWERSHELL_EXE names one outright (the suite's hook). cwd /mnt/c: from
+# ext4 PowerShell inherits a \\wsl.localhost cwd it cannot use.
 _ps="${FLAKELAB_POWERSHELL_EXE:-$(command -v powershell.exe 2> /dev/null || print -- /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)}"
 [[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
 command -v wslpath > /dev/null 2>&1 || die "wslpath not found - not a WSL distro?"
 _w() { wslpath -w "$1" || die "wslpath -w failed for $1" }
 _win_ps1="$(_w "${_ps1}")" || exit 1
 _win_exe="$(_w "${_exe}")" || exit 1
-_win_token="$(_w "${_token}")" || exit 1
 
 [[ -d /mnt/c ]] && cd /mnt/c
 _args=(
@@ -86,6 +96,11 @@ _args=(
   -Token "${_win_token}" -Distro "${_distro}" -Mode "${_mode}"
 )
 ${_dry} && _args+=(-DryRun)
-"${_ps}" "${_args[@]}" < /dev/null
-_rc=$?
+# Bounded: an interop call that hangs (a distro mid-shutdown, a stuck 9P share)
+# must not hang `flakelab update`. PowerShell ends every line with CR LF; the CR
+# goes, the exit status stays PowerShell's.
+_limit="${FLAKELAB_TRAY_TIMEOUT:-120}"
+timeout "${_limit}" "${_ps}" "${_args[@]}" < /dev/null 2>&1 | tr -d '\r'
+_rc="${pipestatus[1]}"
+(( _rc == 124 )) && die "powershell.exe gave no answer within ${_limit} s"
 exit "${_rc}"

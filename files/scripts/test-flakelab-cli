@@ -111,9 +111,9 @@ contains "build-distro dispatches with no target set" "${OUT}" "ran:build-dev-ws
 check "build-distro exits 0 with no target set" "${RC}" "0"
 
 print -r -- ""
-print -r -- "FLAKELAB_TARGET=proxmox-vm: the four wsl-only verbs are gated"
+print -r -- "FLAKELAB_TARGET=proxmox-vm: the five wsl-only verbs are gated"
 run_router "proxmox-vm" --help
-check "--help lists 14 commands (18 minus the four wsl-only verbs)" "$(count_listed)" "14"
+check "--help lists 14 commands (19 minus the five wsl-only verbs)" "$(count_listed)" "14"
 for c in "${WSL_ONLY[@]}"; do
   excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
 done

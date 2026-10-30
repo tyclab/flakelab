@@ -491,9 +491,13 @@ fi
 # The Windows tray follows the pin: the generation just switched to owns it (its
 # `flakelab tray` installs the exe, registers the logon task and starts the tray),
 # and only a WSL box has one. Not from the activation: that runs in a unit.
-if [[ "${FLAKELAB_TARGET:-}" == wsl ]] && command -v flakelab > /dev/null 2>&1; then
-  flakelab tray sync \
-    || _say yellow "⚠ the Windows tray was not synced: its error precedes this line — retry: flakelab tray"
+if [[ "${FLAKELAB_TARGET:-}" == wsl ]]; then
+  if command -v flakelab > /dev/null 2>&1; then
+    flakelab tray sync \
+      || _say yellow "⚠ the Windows tray was not synced: its error precedes this line — retry: flakelab tray"
+  else
+    _say yellow "⚠ flakelab is not on PATH, so the Windows tray was not synced — from a new shell: flakelab tray"
+  fi
 fi
 
 # Marketplace clones are runtime data: replay after every switch, skipping those this run's activation fetched.

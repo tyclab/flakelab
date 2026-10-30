@@ -144,7 +144,16 @@ if ($run) {
   Say 'run key: none (the task is the only start)'
 }
 
-# 4. The tray.
+# 4. The tray. One from another path (a copy started by hand, an upgrade left
+# elsewhere) holds the single-instance lock, so the pinned one could not start.
+$others = @(Get-Process -Name tycswap -ErrorAction SilentlyContinue | Where-Object {
+  try { $_.Path -ne $Dest } catch { $false }
+})
+foreach ($o in $others) {
+  Off "stop the tray running from $($o.Path) (pid $($o.Id); it holds the single-instance lock)"
+  if ($Apply) { Stop-Process -Id $o.Id -Force; Say "stopped it" }
+}
+if ($Apply -and $others.Count -gt 0) { Start-Sleep -Seconds 1 }
 $procs = @(Running)
 if ($procs.Count -gt 0) {
   Say "running: pid $($procs[0].Id) since $($procs[0].StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"

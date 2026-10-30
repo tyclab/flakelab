@@ -28,9 +28,12 @@ mkdir -p "${STUBS}" "${BASE}/home"
 cat > "${STUBS}/powershell.exe" <<STUB
 #!/usr/bin/env zsh
 print -rl -- "\$@" > "${CALLS}"
-print -r -- "ps-stub: ran in \$PWD"
+print -r -- "ps-stub: ran in \$PWD"\$'\r'
+[[ -n "\${FAKE_PS_HANG:-}" ]] && sleep 30
 exit "\${FAKE_PS_RC:-0}"
 STUB
+# The interop handler the script checks for, under a root the suite owns.
+BINFMT="${BASE}/binfmt"; mkdir -p "${BINFMT}"; : > "${BINFMT}/WSLInterop"
 cat > "${STUBS}/wslpath" <<'STUB'
 #!/usr/bin/env zsh
 [[ "$1" == "-w" ]] || exit 1
@@ -54,6 +57,7 @@ run_tray() {
     PATH="${STUBS}:${PATH}" HOME="${BASE}/home" WSL_DISTRO_NAME=flakelab
     FLAKELAB_TYCSWAP_APP_PORT=7337 FLAKELAB_TYCSWAP_VERSION=0.8.2
     FLAKELAB_TYCSWAP_TRAY_EXE="${EXE}" FLAKELAB_TYCSWAP_TRAY_PS1="${PS1_FILE}"
+    FLAKELAB_BINFMT_ROOT="${BINFMT}"
   )
   while (( $# )) && [[ "$1" != -- ]]; do env+=("$1"); shift; done
   [[ "${1:-}" == -- ]] && shift
@@ -99,11 +103,12 @@ argv_has -File "WIN:${PS1_FILE}" && ok "the .ps1 by its Windows path" || bad "th
 argv_has -Exe "WIN:${EXE}" && ok "the pinned exe by its Windows path" || bad "the pinned exe by its Windows path: ${ARGV[*]}"
 argv_has -Version 0.8.2 && ok "the pinned version" || bad "the pinned version: ${ARGV[*]}"
 argv_has -Port 7337 && ok "the dashboard port" || bad "the dashboard port: ${ARGV[*]}"
-argv_has -Token "WIN:${BASE}/home/.local/share/tycswap/remote.token" && ok "the remote.token by its Windows path" || bad "the remote.token: ${ARGV[*]}"
+argv_has -Token "\\\\wsl.localhost\\flakelab${${BASE}//\//\\}\\home\\.local\\share\\tycswap\\remote.token" && ok "the remote.token spelled from the distro name, not resolved (it may not exist yet)" || bad "the remote.token: ${ARGV[*]}"
 argv_has -Distro flakelab && ok "the distro name from WSL_DISTRO_NAME" || bad "the distro name: ${ARGV[*]}"
 argv_has -Mode sync && ok "mode sync" || bad "mode sync: ${ARGV[*]}"
 lacks "and no -DryRun" "${ARGV[*]}" "-DryRun"
 contains "powershell's output passes through" "${OUT}" "ps-stub: ran in"
+lacks    "without PowerShell's CR" "${OUT}" $'\r'
 run_tray --
 argv_has -Mode sync && ok "a bare call is sync" || bad "a bare call is sync: ${ARGV[*]}"
 
@@ -114,7 +119,7 @@ contains "and adds -DryRun" "${ARGV[*]}" "-DryRun"
 run_tray -- status
 argv_has -Mode status && ok "status is mode status" || bad "status: ${ARGV[*]}"
 run_tray XDG_DATA_HOME="${BASE}/xdg" -- sync
-argv_has -Token "WIN:${BASE}/xdg/tycswap/remote.token" && ok "XDG_DATA_HOME moves the token" || bad "XDG_DATA_HOME: ${ARGV[*]}"
+argv_has -Token "\\\\wsl.localhost\\flakelab${${BASE}//\//\\}\\xdg\\tycswap\\remote.token" && ok "XDG_DATA_HOME moves the token" || bad "XDG_DATA_HOME: ${ARGV[*]}"
 
 print -r -- "the distro name outside a WSL shell"
 mkdir -p "${BASE}/home/.local/state/flakelab"
@@ -128,6 +133,10 @@ contains "and says which fact is missing" "${OUT}" "distro name unknown"
 check "and powershell never ran" "${#ARGV}" "0"
 
 print -r -- "failures"
+run_tray FLAKELAB_BINFMT_ROOT="${BASE}/no-binfmt" -- sync
+check "a wiped WSLInterop handler exits 1" "${RC}" "1"
+contains "and names the heal" "${OUT}" "WSL interop is broken"
+check "and powershell never ran" "${#ARGV}" "0"
 run_tray PATH="${NOPS}" FLAKELAB_POWERSHELL_EXE="${BASE}/no-powershell.exe" -- sync
 check "no powershell.exe exits 1" "${RC}" "1"
 contains "and names it" "${OUT}" "powershell.exe not found"
@@ -138,6 +147,9 @@ check "whatever it is" "${RC}" "3"
 run_tray FLAKELAB_TYCSWAP_TRAY_EXE="${BASE}/missing.exe" -- sync
 check "a pinned exe that is not on disk exits 1" "${RC}" "1"
 contains "and is named" "${OUT}" "missing.exe"
+run_tray FAKE_PS_HANG=1 FLAKELAB_TRAY_TIMEOUT=1 -- status
+check "a PowerShell that hangs is cut off, exit 1" "${RC}" "1"
+contains "and says so" "${OUT}" "gave no answer within"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

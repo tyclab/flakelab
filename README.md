@@ -545,7 +545,8 @@ conversation when you choose to restart it.
 A distro has no tray, so `flakelab.tycswapAppPort = 7337;` runs `tycswap app
 --headless --port 7337` as the user service `flakelab-tycswap-app`, and the
 same release's Windows binary is the tray for it. The flake owns that side
-too: on a WSL box `flakelab update` ends with `flakelab tray sync`, which
+too: on a WSL box `flakelab update` runs `flakelab tray sync` after the
+switch, which
 
 - installs the pinned `tycswap.exe` (a fixed-output fetch in `flake.nix`,
   verified by hash) under `%LOCALAPPDATA%\Programs\tycswap`, renaming a
@@ -560,7 +561,9 @@ too: on a WSL box `flakelab update` ends with `flakelab tray sync`, which
 - starts the tray when none runs.
 
 `flakelab tray status` reports those facts and `flakelab doctor` shows them
-under Switcher; a tray that is gone comes back with `flakelab tray`. Nothing
+under Switcher; a tray that is gone comes back with `flakelab tray`. The task
+is one per Windows user, so set `tycswapAppPort` in one distro per PC: a
+second distro's sync would point the task, and the tray, at itself. Nothing
 on the Windows side updates itself: the tray runs with `--no-update-check`
 and follows the pin like the distro's binary, so a tycswap bump is a
 `flakelab update` on each box.
