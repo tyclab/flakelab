@@ -6,6 +6,7 @@
   "minimumReleaseAge": "3 days",
   "prHourlyLimit": 2,
   "prConcurrentLimit": 3,
+  "platformAutomerge": true,
   "nix": {
     "description": "Off by default in Renovate; reads the flake inputs in flake.nix",
     "enabled": true
@@ -29,6 +30,11 @@
     }
   ],
   "packageRules": [
+    {
+      "description": "Digest, patch and minor updates merge themselves once the branch is green and up to date with main, after the 3-day minimumReleaseAge, as in the sibling repos. Majors stay PRs. platformAutomerge arms GitHub auto-merge, which main's ruleset holds until lint, test and gitleaks pass on an up-to-date branch.",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
+    },
     {
       "description": "A third-party release pin is never automerged: nothing else vouches for an unreviewed upstream release. The 14-day hold gives a fresh tag time to be pulled or re-cut.",
       "matchDatasources": ["github-releases"],
