@@ -1,4 +1,4 @@
-# Example profile: copy to `profiles/<name>.nix` and add the name to default.nix.
+# Example profile: copy it to `profiles/<name>.nix`; the file name is the profile name.
 # A key merge.nix does not read aborts evaluation, so a typo cannot drop silently.
 {
   gitlabGroups = [ "example-group" ];

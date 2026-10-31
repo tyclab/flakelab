@@ -89,7 +89,13 @@ turns the selected `profiles` into effective `gitlabGroups`, `profileCliTools`,
 `customAliases` and `sessionVariables`, which is why `profiles` itself is not an
 option. Selecting none is legal but warns — no profile packages, no profile
 groups. A selected profile with a key `merge.nix` does not read (its
-`profileKeys` list) aborts evaluation, naming the profile and the key.
+`profileKeys` list) aborts evaluation, naming the profile and the key. The
+registry is the directory: `profiles/default.nix` lists every
+`profiles/<name>.nix` but itself and `merge.nix`, so a new profile is one new
+file. A `profileCliTools` name installs the nixpkgs package of that name, or
+what `profileCliMap` in `nix/home/packages.nix` maps a differently spelt name
+to; one that resolves to no package aborts, naming the tool and the profile
+that listed it.
 
 From the overlay's call to a built system, with the point where each guard
 aborts and where the escape hatch enters:
