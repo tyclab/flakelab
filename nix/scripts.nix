@@ -419,6 +419,8 @@ rec {
         pkgs.coreutils
         pkgs.gnutar
         pkgs.gzip
+        # mirror_tree and verify_tree.
+        pkgs.rsync
         pkgs.findutils
         pkgs.gnugrep
         pkgs.diffutils
