@@ -1,5 +1,6 @@
 # Folds userData.profiles into effective gitlabGroups, profileCliTools,
-# customAliases and sessionVariables. `teams` / `teamCliTools` are the pre-rename
+# customAliases and sessionVariables, and records which profile listed each CLI
+# tool (profileCliToolSources). `teams` / `teamCliTools` are the pre-rename
 # spellings, still read for an overlay that has not moved (CHANGELOG: deprecated);
 # new overlays write `profiles` / `profileCliTools`.
 { lib }:
@@ -18,6 +19,9 @@ let
       registry.${p}
         or (throw "profiles: unknown profile '${p}' (known: ${lib.concatStringsSep ", " known})")
   ) profiles;
+
+  # How messages name a selected profile.
+  label = p: if builtins.isAttrs p then "<inline>" else "'${p}'";
 
   # Warn, not error: a fork wanting no profiles at all is legitimate.
   warnIfNoProfiles =
@@ -38,21 +42,25 @@ let
       let
         extra = lib.subtractLists profileKeys (builtins.attrNames s);
       in
-      lib.optional (extra != [ ])
-        "${if builtins.isAttrs p then "<inline>" else "'${p}'"}: ${lib.concatStringsSep ", " extra}"
+      lib.optional (extra != [ ]) "${label p}: ${lib.concatStringsSep ", " extra}"
     ) profiles selected
   );
   rejectStrayKeys =
     lib.throwIf (strayKeys != [ ])
       "profiles: unknown key(s) in profile ${lib.concatStringsSep "; " strayKeys} (read: ${lib.concatStringsSep ", " profileKeys})";
 
-  userCliTools = userData.profileCliTools or userData.teamCliTools or [ ];
+  cliToolsOf = p: p.profileCliTools or p.teamCliTools or [ ];
 
   mergedGroups = lib.unique (
     (userData.gitlabGroups or [ ]) ++ lib.concatMap (p: p.gitlabGroups or [ ]) selected
   );
-  mergedCliTools = lib.unique (
-    userCliTools ++ lib.concatMap (p: p.profileCliTools or p.teamCliTools or [ ]) selected
+  mergedCliTools = lib.unique (cliToolsOf userData ++ lib.concatMap cliToolsOf selected);
+  # tool -> [ "profile 'example'" ... ], read only by nix/home/packages.nix's abort.
+  cliToolSources = lib.zipAttrs (
+    map (t: { ${t} = "userData"; }) (cliToolsOf userData)
+    ++ lib.concatLists (
+      lib.zipListsWith (p: s: map (t: { ${t} = "profile ${label p}"; }) (cliToolsOf s)) profiles selected
+    )
   );
 
   # User values win on key collision: the overlay is the more specific source.
@@ -68,6 +76,7 @@ rejectStrayKeys (
     // {
       gitlabGroups = mergedGroups;
       profileCliTools = mergedCliTools;
+      profileCliToolSources = cliToolSources;
       customAliases = mergedAliases;
       sessionVariables = mergedSessionVars;
     }

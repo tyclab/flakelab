@@ -37,7 +37,9 @@
         # stateTranscripts = true;
 
         # Which flakelab/profiles/ entries apply; an entry may also be an imported
-        # profile attrset, which this overlay must `git add` before switching.
+        # profile attrset, which this overlay must `git add` before switching. A team
+        # ships its config as such an attrset: listed here, its lists are unioned
+        # with yours, and on an alias or variable name yours wins.
         profiles = [
           "example"
         ];

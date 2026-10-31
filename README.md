@@ -364,7 +364,8 @@ private overlay. `profiles/example.nix` and
 `files/config/user_data.example.yaml` are neutral placeholders — replace them
 with your own rather than reading them as defaults. A selected profile with a
 key `profiles/merge.nix` does not read, such as a misspelt `gitlabGroup`,
-aborts evaluation instead of being dropped.
+aborts evaluation instead of being dropped, and so does a `profileCliTools` name
+that resolves to no package, such as a misspelt `ansibel`.
 
 ### Layout
 

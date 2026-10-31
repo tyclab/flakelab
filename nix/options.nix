@@ -119,7 +119,14 @@ in
     profileCliTools = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Profile-gated CLI tools to install, on top of the profile-derived set. Unmapped names warn rather than fail — see profileCliMap in nix/home/packages.nix.";
+      description = "Profile-gated CLI tools to install, on top of the profile-derived set. Each name installs the nixpkgs package of that attribute name, unless profileCliMap in nix/home/packages.nix maps it to another: for a name nixpkgs spells differently or gives to another program, such as `helm`. A name that resolves to no package aborts evaluation, naming the tool and the profile that listed it.";
+    };
+
+    profileCliToolSources = mkOption {
+      type = types.attrsOf (types.listOf types.str);
+      default = { };
+      internal = true;
+      description = "Set by profiles/merge.nix, never by hand: which profiles (or userData) listed each profileCliTools name, so the abort on a name that resolves to no package can say where to correct it.";
     };
 
     customAliases = mkOption {

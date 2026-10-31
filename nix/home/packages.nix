@@ -15,16 +15,34 @@ let
   scripts = import ../scripts.nix { inherit pkgs cfg; };
   cli = import ../cli.nix { inherit pkgs cfg; };
 
-  # Unmapped entries only warn, so a profile may name a tool this repo has not wired.
-  inherit (cfg) profileCliTools;
+  # A name resolves through profileCliMap, else as pkgs.<name>, and must be a derivation (a
+  # listed `stdenv` installs). Anything else aborts, naming its source: a typo is never silent.
+  inherit (cfg) profileCliTools profileCliToolSources;
+  # Names whose nixpkgs attribute is spelt differently or is another program (pkgs.helm: a synth).
   profileCliMap = {
-    inherit (pkgs) ansible k6;
+    helm = pkgs.kubernetes-helm;
   };
-  unmappedCliTools = builtins.filter (t: !(profileCliMap ? ${t})) profileCliTools;
-  profilePkgs =
-    lib.warnIf (unmappedCliTools != [ ])
-      "profileCliTools: no package mapped for ${lib.concatStringsSep ", " unmappedCliTools} (mapped: ${lib.concatStringsSep ", " (builtins.attrNames profileCliMap)}); nothing is installed for them. Add them to profileCliMap in nix/home/packages.nix."
-      (map (t: profileCliMap.${t}) (builtins.filter (t: profileCliMap ? ${t}) profileCliTools));
+  resolveCliTool =
+    t:
+    let
+      # `or` misses a throwing alias (pkgs.nodePackages); tryEval catches it.
+      fallback = builtins.tryEval (pkgs.${t} or null);
+      pkg = profileCliMap.${t} or (if fallback.success then fallback.value else null);
+      why =
+        if !(pkgs ? ${t}) then
+          "nixpkgs has no attribute of that name"
+        else if !fallback.success then
+          "pkgs.${t} throws when evaluated, as a removed package does"
+        else
+          "pkgs.${t} is a ${builtins.typeOf fallback.value}, not a package";
+      from = lib.concatStringsSep ", " (
+        profileCliToolSources.${t} or [ "a module setting flakelab.profileCliTools" ]
+      );
+    in
+    lib.throwIfNot (lib.isDerivation pkg)
+      "profileCliTools: '${t}' (listed by ${from}) resolves to no package: ${why}. Correct the name, or map it to its package in profileCliMap (nix/home/packages.nix)."
+      pkg;
+  profilePkgs = map resolveCliTool profileCliTools;
 in
 {
   home.username = cfg.username;

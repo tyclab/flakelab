@@ -269,12 +269,14 @@ function Test-InteractiveConsole {
     return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
 }
 
+# The files profiles/default.nix discovers, sorted as Nix lists them. Get-KnownProfileName lists the same files, but
+# is defined after the wizard runs.
 function Get-ProfileNames {
-    $p = Join-Path $RepoWin 'profiles\default.nix'
-    if (-not (Test-Path $p)) { return @() }
-    return @([IO.File]::ReadAllLines($p) | ForEach-Object {
-            if ($_ -match '^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*import\s') { $Matches[1] }
-        })
+    $dir = Join-Path $RepoWin 'profiles'
+    if (-not (Test-Path $dir)) { return @() }
+    return @(Get-ChildItem -Path $dir -Filter '*.nix' -File |
+        Where-Object { $_.BaseName -ne 'default' -and $_.BaseName -ne 'merge' } |
+        Select-Object -ExpandProperty BaseName | Sort-Object)
 }
 
 function Read-Answer([string]$prompt, [string]$default, [scriptblock]$valid, [string]$hint) {

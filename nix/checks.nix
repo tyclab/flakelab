@@ -816,6 +816,45 @@ in
     };
     pkgs.runCommandLocal "flakelab-check-profiles-merge" { } "touch $out";
 
+  # profileCliTools from a selected profile, which the default system never has:
+  # pkgs.<name> as the fallback, profileCliMap for a rename, and the abort on a
+  # name that is no package. `path` would pass home.packages' own type check.
+  profile-cli-tools =
+    let
+      installed =
+        tools:
+        let
+          sys =
+            (mkSystem (
+              import ./users
+              // {
+                profiles = [
+                  "example"
+                  { profileCliTools = tools; }
+                ];
+              }
+            )).config;
+        in
+        map (p: p.pname or p.name) sys.home-manager.users.${sys.flakelab.username}.home.packages;
+      aborts = tools: !(builtins.tryEval (builtins.deepSeq (installed tools) null)).success;
+      names = installed [
+        "hello"
+        "helm"
+      ];
+    in
+    # example's ansible, and hello, are the nixpkgs attributes of those names.
+    assert builtins.elem "ansible-core" names;
+    assert builtins.elem "hello" names;
+    # The map sends helm to the Kubernetes CLI, not to pkgs.helm, a synthesizer.
+    assert builtins.elem "kubernetes-helm" names;
+    assert !(builtins.elem "helm" names);
+    assert aborts [ "ansibel" ];
+    assert aborts [ "lib" ];
+    assert aborts [ "callPackage" ];
+    assert aborts [ "path" ];
+    assert aborts [ "nodePackages" ];
+    pkgs.runCommandLocal "flakelab-check-profile-cli-tools" { } "touch $out";
+
   # The target seam: the two systems must differ exactly as nix/targets/ says,
   # and both must still evaluate.
   targets =
