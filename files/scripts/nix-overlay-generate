@@ -2,8 +2,9 @@
 # Scaffold a private flakelab overlay from a flakelab checkout - on Linux or macOS.
 # Reads a user_data.yaml (files/config/user_data.example.yaml is the schema) and
 # writes the overlay directory; it never provisions, imports or rebuilds anything.
-# It is the one overlay-flake writer: setup-wsl-nix.ps1 runs this checkout copy inside
-# the freshly imported distro, and its own YAML reader only harvests secrets.env.
+# It is the one writer of a flake generated from a config: setup-wsl-nix.ps1 runs this
+# checkout copy inside the freshly imported distro, and its own YAML reader only
+# harvests secrets.env.
 #
 # The YAML is parsed by hand in zsh: the schema is flat by construction, and neither
 # PyYAML nor python3 is available in `nix develop` or the flake-check sandbox this

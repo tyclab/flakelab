@@ -9,10 +9,11 @@
 
     ONE command does all of it, because every value the overlay needs is in one
     user_data.yaml (files\config\user_data.example.yaml is the schema):
-    `provision` GENERATES the overlay flake from that config and harvests
-    secrets.env out of the same file, then imports and applies. -Config names
-    the config file; without it the copy beside the overlay is read. Nothing to
-    hand-edit.
+    `provision` harvests secrets.env out of that config, imports the base image,
+    GENERATES the overlay flake from the same file inside it with this checkout's
+    files/scripts/nix-overlay-generate (the generator `flakelab overlay-gen`
+    runs; there is no PowerShell copy), then applies. -Config names the config
+    file; without it the copy beside the overlay is read. Nothing to hand-edit.
 
     FRESH PC, NO CONFIG: in an interactive console `provision` asks for the four
     values a config cannot do without (Linux user, git name, git mail, profiles)
@@ -23,16 +24,20 @@
 
     Commands:
       generate   Write the overlay (skeleton + a flake GENERATED from the config)
-                 and STOP - what `provision` does first, on its own, so the
-                 profile can be read or `nix eval`-ed before anything is imported.
+                 and STOP, so the profile can be read or `nix eval`-ed before
+                 anything is applied. The generator runs inside the distro, so
+                 this IMPORTS the base image first when -DistroName is not there
+                 yet; the `provision` after it finds the distro and skips that.
       init       Overlay skeleton with PLACEHOLDERS (flake.nix + .gitignore + the
                  SSH key folder) from templates/overlay, for writing the flake by
                  hand. Only needed when there is no user_data.yaml to generate it
-                 from. Nothing else touches WSL.
-      provision  Full run: generate the overlay flake from the config, seed
-                 secrets.env + the SSH key from it, bootstrap, then restore the
-                 `flakelab backup` payload and clone the GitLab groups. The fresh-PC
-                 command.
+                 from. Unlike `generate`, it never touches WSL.
+      provision  Full run: check the config, harvest secrets.env from it, import
+                 the base image, generate the overlay flake from the config inside
+                 it, bootstrap, then restore the `flakelab backup` payload and
+                 clone the GitLab groups. The fresh-PC command. A config the
+                 generator refuses stops the run after the import; re-running
+                 skips the import.
       bootstrap  Download/import the base image and apply the overlay with TWO
                  `nixos-rebuild switch` runs (see Invoke-Bootstrap for why),
                  seeding the SSH key + secrets.env and loading the key into the
@@ -66,9 +71,14 @@
 
 .PARAMETER Config
     A user_data.yaml (start from files\config\user_data.example.yaml in this
-    repo). `generate`/`provision` build the overlay flake from it and harvest
-    secrets.env from it, so nothing has to be hand-edited. Defaults to
-    <overlay>-payload\user_data.yaml, the file the first-run questions write.
+    repo). `generate`/`provision` hand it to files/scripts/nix-overlay-generate
+    inside the distro, which writes the overlay flake, and `provision` harvests
+    secrets.env from it, so nothing has to be hand-edited. Keys are lowercase,
+    as YAML reads them: `User:` is not `user:`. Before anything is downloaded,
+    the config must exist on a Windows drive, name user, gitfullname and gitmail,
+    and name no target other than wsl; everything else is the generator's to
+    check, inside the distro. Defaults to <overlay>-payload\user_data.yaml, the
+    file the first-run questions write.
 
     The generated flake is the profile from then on: it is never overwritten
     without -Force, so a hand-edit survives every later `provision`.
@@ -123,7 +133,10 @@
     without it, so a hand-edit survives).
 
 .PARAMETER DryRun
-    Print every step without touching WSL, the overlay or the network.
+    Print every step without touching WSL, the overlay or the network. The
+    overlay flake is NOT generated: the generator runs inside the imported
+    distro and a dry run imports nothing, so it prints the generator command,
+    and the config gets only the early check (see -Config).
 
 .EXAMPLE
     # ONE command: flake and secrets derived from the config.
@@ -444,14 +457,14 @@ function Test-SecretsSeedNeeded {
 
 $UserSourceWin = Join-Path $OverlayWin 'nix\users\default.nix'
 if (-not (Test-Path $UserSourceWin)) { $UserSourceWin = Join-Path $OverlayWin 'flake.nix' }
-if (-not (Test-Path $UserSourceWin)) {
-    $User = ''
-}
-else {
+# Read again once the generator has run: a kept, hand-edited flake names its own user.
+function Get-OverlayUser {
+    if (-not (Test-Path $UserSourceWin)) { return '' }
     $um = Select-String -Path $UserSourceWin -Pattern 'username\s*=\s*"([^"]+)"'
     if (-not $um) { throw "Could not read 'username' from $UserSourceWin" }
-    $User = $um.Matches[0].Groups[1].Value
+    return $um.Matches[0].Groups[1].Value
 }
+$User = Get-OverlayUser
 
 # NAMES of the runtime secrets ~/.config/flakelab/secrets.env must define - the same
 # set as files/config/secrets.env.example. Shared by the config harvester and
@@ -489,12 +502,18 @@ $SshPassphraseGiven = $PSBoundParameters.ContainsKey('SshPassphrase')
 if (-not $SshPassphrase) { $SshPassphrase = '' }
 $SshPassphraseResolved = $false
 
-# Set once the overlay flake has been GENERATED from the config, which makes the
-# non-secret half of custom_env_vars part of the flake by construction. StrictMode:
-# initialise before first use.
+# Set when the overlay flake is to be GENERATED from the config (none yet, or -Force),
+# which makes the non-secret half of custom_env_vars part of the flake by construction.
+# StrictMode: initialise before first use.
 $FlakeFromConfig = $false
+# Set by Confirm-ConfigBeforeImport: the config as the distro sees it, and the Windows user
+# the generator is told (empty when the config names its own).
+$ConfigWsl = ''
+$GenWindowsUser = ''
 
 # user_data.yaml is the one schema. Parsed by hand: PS 5.1 has no YAML reader, and the file is flat.
+# Read here only for the early check and the secrets.env harvest: the overlay flake is
+# files/scripts/nix-overlay-generate's, run inside the distro (Invoke-OverlayGenerator).
 # A line outside that subset is named by number, never quoted: its value may be a token.
 function ConvertFrom-YamlScalar([string]$raw) {
     $s = $raw.Trim()
@@ -504,7 +523,7 @@ function ConvertFrom-YamlScalar([string]$raw) {
     return ($s -replace '\s+#.*$', '').Trim()
 }
 
-# Read twice by `provision` (the flake, then the secrets), reported once.
+# Read more than once by `provision` (the early check, then the secrets), reported once.
 $YamlReported = @{}
 function Read-UserDataYaml([string]$path) {
     if (-not (Test-Path $path)) { throw "config not found: $path" }
@@ -593,356 +612,44 @@ function Get-UserDataValue($ud, [string]$key) {
     return $null
 }
 
-# @($null) is a ONE-element array: an absent key would yield one empty entry.
-function Get-UserDataList($ud, [string]$key) {
-    $v = Get-UserDataValue $ud $key
-    if ($null -eq $v) { return @() }
-    return @(@($v) | Where-Object { $null -ne $_ })
-}
-
-# Every top-level key is mapped, harvested or named; s scalar, l list, m map, i list of maps.
-# Keep in step with nix-overlay-generate's _shape and _fields.
-$ConfigShape = @{
-    user = 's'; target = 's'; gitfullname = 's'; gitmail = 's'; userlocale = 's'; windows_username = 's'
-    backupautostart = 's'; state_root = 's'; state_transcripts = 's'; giteditor = 's'
-    whatsapp_mcp_dir = 's'; overlay_url = 's'
-    profiles = 'l'; teams = 'l'; team = 'l'; gitlab_groups = 'l'; sshkeyautoadd = 'l'
-    claude_plugins = 'l'; claude_mcp_plugins = 'l'; clone_exclude = 'l'
-    custom_env_vars = 'm'; claude_plugin_marketplace = 'm'; repos = 'i'; custom_aliases = 'i'
-}
-$ConfigFields = @('repos.url', 'repos.rel_path', 'custom_aliases.name', 'custom_aliases.command',
-    'claude_plugin_marketplace.name', 'claude_plugin_marketplace.url')
-
-function Write-DroppedKey([string]$k) {
-    Warn "  '$k' in the config maps to nothing in the overlay - dropped; it needs a hand-written overlay entry if this box still wants it"
-}
-
-# Names what the overlay has no field for, and removes a key whose shape the
-# mapping does not read, so the flake never carries half of it.
-function Remove-UnmappedConfig($ud) {
-    $shapeName = @{ s = 'scalar'; l = 'list'; m = 'map'; i = 'list of maps' }
-    foreach ($k in @($ud.Keys)) {
-        $v = $ud[$k]
-        $got = if ($v -is [Collections.IDictionary]) { 'm' }
-        elseif ($v -isnot [array]) { 's' }
-        elseif (@($v | Where-Object { $_ -is [Collections.IDictionary] }).Count -gt 0) { 'i' }
-        else { 'l' }
-        $empty = if ($got -eq 's') { -not [string]$v } else { $v.Count -eq 0 }
-        if (-not $ConfigShape.ContainsKey($k)) {
-            if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written" }
-            elseif ($SecretKeyNames -notcontains $k -and -not $empty) { Write-DroppedKey $k }
-            continue
-        }
-        $want = $ConfigShape[$k]
-        if ($empty -or $got -eq $want -or ($want -eq 'l' -and $got -eq 's')) { continue }
-        Warn ("  '{0}' is a {1} in the config where the overlay reads a {2} - dropped" -f $k, $shapeName[$got], $shapeName[$want])
-        $ud.Remove($k)
+# The generator reads the config inside the distro, so after the download and the import.
+# What a config is most often refused for is refused here first: the identity nothing
+# defaults, a target this script does not provision, a path the distro cannot reach.
+# Profiles, shapes and the rest stay the generator's to judge, so the two cannot drift.
+function Confirm-ConfigBeforeImport([string]$udPath) {
+    $ud = Read-UserDataYaml $udPath
+    # -cnotcontains: the generator reads keys as YAML does, case and all; this dictionary ignores case.
+    $keys = @($ud.Keys)
+    $absent = @(@('user', 'gitfullname', 'gitmail') | Where-Object { $keys -cnotcontains $_ -or -not [string]$ud[$_] })
+    if ($absent.Count -gt 0) {
+        $names = ($absent | ForEach-Object { "'$($_):'" }) -join ', '
+        throw "no $names in $udPath - the Linux username and the git identity have no default (keys are lowercase)"
     }
-    $seen = @()
-    foreach ($k in @($ud.Keys)) {
-        if ($ConfigShape[$k] -ne 'i') { continue }
-        foreach ($r in @($ud[$k])) { if ($r -is [Collections.IDictionary]) { $seen += @($r.Keys | ForEach-Object { "$k.$_" }) } }
-    }
-    $market = Get-UserDataValue $ud 'claude_plugin_marketplace'
-    if ($market -is [Collections.IDictionary]) { $seen += @($market.Keys | ForEach-Object { "claude_plugin_marketplace.$_" }) }
-    foreach ($f in @($seen | Sort-Object -Unique)) { if ($ConfigFields -notcontains $f) { Write-DroppedKey $f } }
-}
-
-function Get-ProfileGroupMap {
-    $map = [ordered]@{}
-    $dir = Join-Path $RepoWin 'profiles'
-    if (-not (Test-Path $dir)) { return $map }
-    foreach ($f in Get-ChildItem -Path $dir -Filter '*.nix' -File) {
-        if ($f.BaseName -eq 'default' -or $f.BaseName -eq 'merge') { continue }
-        $text = [IO.File]::ReadAllText($f.FullName)
-        if ($text -match 'gitlabGroups\s*=\s*\[([^\]]*)\]') {
-            foreach ($m in [regex]::Matches($Matches[1], '"([^"]+)"')) { $map[$m.Groups[1].Value] = $f.BaseName }
-        }
-    }
-    return $map
-}
-
-# Backslash first; `${` escaped as nix antiquotation; .Replace, not -replace.
-function ConvertTo-NixString([string]$s) {
-    return '"' + $s.Replace('\', '\\').Replace('"', '\"').Replace('${', '\${') + '"'
-}
-function ConvertTo-NixAttrName([string]$n) {
-    if ($n -match "^[A-Za-z_][A-Za-z0-9_'-]*$") { return $n }
-    return (ConvertTo-NixString $n)
-}
-function ConvertTo-NixBool([string]$v) {
-    if ($v -match '^\s*(true|yes|on|1)\s*$') { return 'true' }
-    return 'false'
-}
-function Format-NixList([string]$name, [string[]]$values, [string]$indent) {
-    if ($values.Count -eq 0) { return @("$indent$name = [ ];") }
-    if ($values.Count -eq 1) { return @("$indent$name = [ $(ConvertTo-NixString $values[0]) ];") }
-    $out = @("$indent$name = [")
-    foreach ($v in $values) { $out += "$indent  $(ConvertTo-NixString $v)" }
-    return $out + @("$indent];")
-}
-function Format-NixAttrs([string]$name, $map, [string]$indent) {
-    if ($null -eq $map -or $map.Keys.Count -eq 0) { return @() }
-    $out = @("$indent$name = {")
-    foreach ($k in $map.Keys) { $out += ("{0}  {1} = {2};" -f $indent, (ConvertTo-NixAttrName $k), (ConvertTo-NixString ([string]$map[$k]))) }
-    return $out + @("$indent};")
-}
-
-# Read from profiles/: a silently dropped name means a box with none of that profile's tools or groups.
-function Get-KnownProfileName {
-    $dir = Join-Path $RepoWin 'profiles'
-    if (-not (Test-Path $dir)) { return @() }
-    return @(Get-ChildItem -Path $dir -Filter '*.nix' -File |
-        Where-Object { $_.BaseName -ne 'default' -and $_.BaseName -ne 'merge' } |
-        Select-Object -ExpandProperty BaseName)
-}
-
-# mkSystem does not layer nix/users/default.nix, so every option without a default must be emitted (options.nix is the
-# schema). NO SECRET here: custom_env_vars is split by Test-SecretName, the nix store is world-readable.
-function New-OverlayFlakeText($ud, [string]$udPath) {
     $target = [string](Get-UserDataValue $ud 'target')
     if ($target -and $target -ne 'wsl') {
-        throw "target '$target' in $udPath - setup-wsl-nix.ps1 writes wsl overlays only; generate this one with files/scripts/nix-overlay-generate"
+        throw "target '$target' in $udPath - setup-wsl-nix.ps1 provisions wsl overlays only; write this one with files/scripts/nix-overlay-generate"
     }
-    $username = [string](Get-UserDataValue $ud 'user')
-    if (-not $username) { throw "no 'user:' in $udPath - that is the Linux username, there is no sane default for it" }
-    # Required: git would otherwise commit as a placeholder identity.
-    $gitName = [string](Get-UserDataValue $ud 'gitfullname')
-    $gitEmail = [string](Get-UserDataValue $ud 'gitmail')
-    if (-not $gitName -or -not $gitEmail) { throw "no 'gitfullname:'/'gitmail:' in $udPath - the git identity has no default" }
-
-    $windowsUser = [string](Get-UserDataValue $ud 'windows_username')
-    if (-not $windowsUser) {
-        $windowsUser = $env:USERNAME
+    try { $script:ConfigWsl = ToWslPath $udPath }
+    catch { throw "-Config: the generator reads it from inside the distro, which sees Windows drives only - $($_.Exception.Message)" }
+    # From the C:\Users\<name> the overlay sits under, which the distro cannot tell; the config's own value wins.
+    $script:GenWindowsUser = ''
+    if ($keys -cnotcontains 'windows_username' -or -not [string]$ud['windows_username']) {
+        $winUser = $env:USERNAME
         $mUser = [regex]::Match($OverlayWin, '(?i)\\Users\\([^\\]+)\\')
-        if ($mUser.Success) { $windowsUser = $mUser.Groups[1].Value }
+        if ($mUser.Success) { $winUser = $mUser.Groups[1].Value }
+        # It crosses wsl.exe's login shell as an argument; the config's value is read from the file.
+        if ($winUser -match '[''"$`\\]') { throw "Windows user name '$winUser' cannot cross the wsl.exe boundary - set windows_username in $udPath" }
+        $script:GenWindowsUser = $winUser
     }
-    $locale = [string](Get-UserDataValue $ud 'userlocale')
-    if (-not $locale) { $locale = 'en_US.UTF-8'; Warn "  no 'userlocale' in the config - locale defaults to $locale" }
-
-    $body = @()
-    $body += "        username = $(ConvertTo-NixString $username);"
-    $body += "        gitName = $(ConvertTo-NixString $gitName);"
-    $body += "        gitEmail = $(ConvertTo-NixString $gitEmail);"
-    $body += "        locale = $(ConvertTo-NixString $locale);"
-    # Declared without a default, so absence is emitted as null/false, not omitted.
-    $editor = [string](Get-UserDataValue $ud 'giteditor')
-    $body += if ($editor) { "        gitEditor = $(ConvertTo-NixString $editor);" } else { '        gitEditor = null;' }
-    $body += "        backupAutostart = $(ConvertTo-NixBool ([string](Get-UserDataValue $ud 'backupautostart')));"
-    $stateRoot = [string](Get-UserDataValue $ud 'state_root')
-    $stateTranscripts = [string](Get-UserDataValue $ud 'state_transcripts')
-    if ($stateRoot) {
-        $body += '        # Shareable backup state (merged history, Claude and Codex memory) - a plain'
-        $body += '        # directory your folder-sync client replicates. Never a git checkout.'
-        $body += "        stateRoot = $(ConvertTo-NixString $stateRoot);"
-        if ($stateTranscripts) { $body += "        stateTranscripts = $(ConvertTo-NixBool $stateTranscripts);" }
-    }
-    elseif ($stateTranscripts) { Warn '  state_transcripts is set without state_root - dropped' }
-
-    $body += ''
-    $body += '        # Derived from where the overlay sits - no human input.'
-    $body += "        windowsUsername = $(ConvertTo-NixString $windowsUser);"
-    $body += "        repoPath = $(ConvertTo-NixString $OverlayWsl);"
-    $body += ''
-    $body += '        # Keep this overlay and flakelab itself out of ~/git.'
-    # clone_exclude is unioned in, not replaced: dropping it re-clones Windows-mount repos into ~/git.
-    $overlayUrl = [string](Get-UserDataValue $ud 'overlay_url')
-    $overlayName = if ($overlayUrl) { (($overlayUrl -replace '/$', '') -replace '\.git$', '') -replace '^.*[/:]', '' } else { Split-Path $OverlayWin -Leaf }
-    if ($overlayUrl -and -not $overlayName) { throw "overlay_url names no repository: '$overlayUrl'" }
-    $body += Format-NixList 'cloneExclude' @(
-        @('flakelab', $overlayName) + @(Get-UserDataList $ud 'clone_exclude' | Where-Object { $_ }) |
-            Select-Object -Unique) '        '
-
-    $profiles = @()
-    $profilesFrom = ''
-    foreach ($k in @('profiles', 'teams', 'team')) {
-        $list = @(Get-UserDataList $ud $k | Where-Object { $_ })
-        if ($list.Count -eq 0) { continue }
-        if ($profilesFrom) { Warn "  '$k' is ignored while '$profilesFrom' is set - dropped" }
-        else { $profiles = $list; $profilesFrom = $k }
-    }
-    $known = @(Get-KnownProfileName)
-
-    # No profiles named: a group a profile declares selects that profile.
-    $groups = @(Get-UserDataList $ud 'gitlab_groups' | Where-Object { $_ })
-    $groupMap = Get-ProfileGroupMap
-    if ($profiles.Count -eq 0 -and $groups.Count -gt 0) {
-        $derived = @()
-        foreach ($g in $groups) { if ($groupMap.Contains($g)) { $derived += $groupMap[$g] } }
-        $profiles = @($derived | Select-Object -Unique)
-        if ($profiles.Count -gt 0) {
-            Say ("  profiles derived from gitlab_groups: {0}" -f ($profiles -join ', '))
+    if ((Test-Path $OverlayFlakeWin) -and -not $Force) {
+        if ((Get-Content -Raw -Path $OverlayFlakeWin) -match 'CHANGEME') {
+            Warn "the kept flake.nix still has the template's CHANGEME placeholders - regenerate it from the config with -Force"
         }
+        return
     }
-    $personalGroups = @($groups | Where-Object { -not ($groupMap.Contains($_) -and $profiles -contains $groupMap[$_]) })
-
-    $unknown = @($profiles | Where-Object { $known -notcontains $_ })
-    if ($unknown.Count -gt 0) {
-        throw ("unknown profile(s) in {0}: {1} - known: {2}" -f $udPath, ($unknown -join ', '), ($known -join ', '))
-    }
-    # Only url-carrying entries count: url-less ones are skipped below and would let an empty overlay through.
-    $namedRepos = @(Get-UserDataList $ud 'repos' | Where-Object { [string](Get-UserDataValue $_ 'url') })
-    # No profile, group or repo yields an empty box that reports success: refuse.
-    if ($profiles.Count -eq 0 -and $personalGroups.Count -eq 0 -and $namedRepos.Count -eq 0) {
-        throw ("no profiles, no gitlab_groups and no repos resolved from {0} - the overlay would install no profile packages and clone no repos. Add 'profiles:' (known: {1}), 'gitlab_groups:' or 'repos:'." -f $udPath, ($known -join ', '))
-    }
-    if ($profiles.Count -eq 0) {
-        Warn ("  no profiles selected - the box gets NO profile packages or profile GitLab groups; 'repos:' entries are still cloned. Known: {0}" -f ($known -join ', '))
-    }
-    $body += ''
-    $body += '        # profiles/ entries. Selecting a profile is the only thing that'
-    $body += '        # installs its gitlabGroups and profileCliTools.'
-    $body += Format-NixList 'profiles' $profiles '        '
-
-    if ($personalGroups.Count -gt 0) {
-        $body += ''
-        $body += '        # Personal groups only - profile groups are unioned in by profiles/merge.nix.'
-        $body += Format-NixList 'gitlabGroups' $personalGroups '        '
-    }
-
-    # Space-separated; the FIRST key is the git identity.
-    $sshRaw = [string](Get-UserDataValue $ud 'sshkeyautoadd')
-    if ($sshRaw) {
-        $sshKeys = @($sshRaw -split '\s+' | Where-Object { $_ })
-        if ($sshKeys.Count -gt 0) {
-            $body += ''
-            $body += '        # sshkeyautoadd: agent-loaded on login, first one is the git identity.'
-            $body += Format-NixList 'sshKeys' $sshKeys '        '
-        }
-    }
-
-    $repoLines = @()
-    foreach ($r in (Get-UserDataList $ud 'repos')) {
-        $url = [string](Get-UserDataValue $r 'url')
-        if (-not $url) { Warn '  skipping a repos entry with no url'; continue }
-        $rel = [string](Get-UserDataValue $r 'rel_path')
-        $repoLines += ("          {{ relPath = {0}; url = {1}; }}" -f (ConvertTo-NixString $rel), (ConvertTo-NixString $url))
-    }
-    if ($repoLines.Count -gt 0) {
-        $body += ''
-        $body += '        # Extra repos beyond group discovery; relPath is relative to ~/git.'
-        $body += '        repos = ['
-        $body += $repoLines
-        $body += '        ];'
-    }
-
-    # claude_plugins + claude_mcp_plugins concatenate; without the marketplace every install fails silently.
-    $marketplace = Get-UserDataValue $ud 'claude_plugin_marketplace'
-    if ($marketplace) {
-        $mName = [string](Get-UserDataValue $marketplace 'name')
-        $mUrl = [string](Get-UserDataValue $marketplace 'url')
-        if ($mName -and $mUrl) {
-            $body += ''
-            $body += '        # Must match the `name` in the marketplace''s own marketplace.json.'
-            $body += '        claudePluginMarketplaces = ['
-            $body += '          {'
-            $body += ("            name = {0};" -f (ConvertTo-NixString $mName))
-            $body += ("            url = {0};" -f (ConvertTo-NixString $mUrl))
-            $body += '          }'
-            $body += '        ];'
-        }
-        else { Warn '  claude_plugin_marketplace has no name/url - skipping' }
-    }
-    $claudePlugins = @(
-        @(Get-UserDataList $ud 'claude_plugins' | Where-Object { $_ }) +
-        @(Get-UserDataList $ud 'claude_mcp_plugins' | Where-Object { $_ }) |
-            Select-Object -Unique)
-    if ($claudePlugins.Count -gt 0) {
-        $body += ''
-        $body += '        # claude_plugins (always on) + claude_mcp_plugins (opt-in MCP servers).'
-        $body += Format-NixList 'claudePlugins' $claudePlugins '        '
-    }
-
-    if ($overlayUrl) {
-        $body += ''
-        $body += "        # This overlay's own remote: origin here, the bootstrap's OVERLAY_URL"
-        $body += '        # default on a proxmox-vm seed built from it.'
-        $body += ("        overlayUrl = {0};" -f (ConvertTo-NixString $overlayUrl))
-    }
-    # A config key, not a constant: it names a private checkout path.
-    $whatsappDir = [string](Get-UserDataValue $ud 'whatsapp_mcp_dir')
-    if ($whatsappDir) {
-        $body += ''
-        $body += '        # uv runs the whatsapp MCP server out of this checkout.'
-        $body += ("        whatsappMcpDir = {0};" -f (ConvertTo-NixString $whatsappDir))
-    }
-    # Bare or qualified (mcp-whatsapp@<marketplace>): both install the server.
-    elseif ($claudePlugins -match '^mcp-whatsapp(@|$)') {
-        Warn '  mcp-whatsapp is enabled but whatsapp_mcp_dir is unset - the server has no checkout to run from'
-    }
-
-    $aliases = [ordered]@{}
-    foreach ($a in (Get-UserDataList $ud 'custom_aliases')) {
-        $n = [string](Get-UserDataValue $a 'name')
-        $c = [string](Get-UserDataValue $a 'command')
-        if ($n -and $c) { $aliases[$n] = $c } else { Warn '  skipping a custom_aliases entry with no name/command' }
-    }
-    if ($aliases.Keys.Count -gt 0) {
-        $body += ''
-        $body += Format-NixAttrs 'customAliases' $aliases '        '
-    }
-
-    # The non-secret half of custom_env_vars. The other half is secrets.env.
-    $envVars = Get-UserDataValue $ud 'custom_env_vars'
-    $session = [ordered]@{}
-    $withheld = @()
-    if ($envVars) {
-        foreach ($k in $envVars.Keys) {
-            if ($RetiredSecretKeyNames -contains $k) { Warn "  '$k' is a retired secret - neither harvested nor written"; continue }
-            if (Test-SecretName $k) {
-                if ($envVars[$k] -and $SecretKeyNames -notcontains $k) { $withheld += $k }
-                continue
-            }
-            if ($envVars[$k]) { $session[$k] = $envVars[$k] }
-        }
-    }
-    # Names only, never values.
-    if ($withheld.Count -gt 0) {
-        Say ("  secret-shaped custom_env_vars withheld from the flake (provision copies them into secrets.env): {0}" -f ($withheld -join ', '))
-    }
-    if ($session.Keys.Count -gt 0) {
-        $body += ''
-        $body += '        # NON-SECRET custom_env_vars only - the tokens went to secrets.env.'
-        $body += '        # GRAFANA_URL and WHATSAPP_BRIDGE_HOST also gate a Claude MCP server (nix/home/claude.nix).'
-        $body += Format-NixAttrs 'sessionVariables' $session '        '
-    }
-
-    $head = @(
-        '{',
-        '  description = "Private flakelab overlay - generated from user_data.yaml (no secrets, no remote)";',
-        '',
-        '  # Local flakelab checkout - no auth, no fetch.',
-        ("  inputs.flakelab.url = `"path:{0}`";" -f (ConvertTo-PathUrl $RepoWsl)),
-        '',
-        '  outputs =',
-        '    { flakelab, ... }:',
-        '    {',
-        ("      # Generated by setup-wsl-nix.ps1 from {0}." -f $udPath),
-        '      # From here on THIS file is the profile: edit it directly, or regenerate',
-        '      # it with `provision -Force`, which overwrites whatever is here.',
-        '      #',
-        '      # Every field below is a DECLARED OPTION: flakelab/nix/options.nix lists',
-        '      # them all with their types and what each one does, and that file is the',
-        '      # schema this attrset is checked against - a misspelt key or a value of',
-        '      # the wrong type aborts evaluation instead of being ignored.',
-        '      #',
-        '      # mkSystem does NOT layer flakelab/nix/users/default.nix underneath, so',
-        '      # every option declared without a default is emitted below whether the',
-        '      # config named it or not. Attrsets and lists REPLACE rather than merge;',
-        '      # only gitlabGroups, profileCliTools, customAliases and sessionVariables',
-        '      # are unioned, and only with the profile values from flakelab/profiles/.',
-        '      #',
-        '      # Need something no field covers? mkSystem also takes',
-        '      # { userData = { ... }; modules = [ ... ]; homeModules = [ ... ]; }, and a',
-        '      # modules entry may set any flakelab.* option: scalars and lists are',
-        '      # replaced, while sessionVariables, customAliases and claudeMcpServers',
-        '      # merge per key (replacing one wholesale needs lib.mkForce).',
-        '      #',
-        '      # No secrets: the nix store is world-readable. The tokens from the same',
-        '      # config live in ~/.config/flakelab/secrets.env instead.',
-        '      nixosConfigurations.default = flakelab.lib.mkSystem {'
-    )
-    return $head + $body + @('      };', '    };', '}')
+    # Until the generator writes the flake and Get-OverlayUser reads it back.
+    $script:User = [string]$ud['user']
+    $script:FlakeFromConfig = $true
 }
 
 $InProvision = $false
@@ -1398,7 +1105,7 @@ function Get-OverlayGitLeaks([string]$root) {
 
 # As nix-overlay-generate: one commit, no remote, autocrlf off (the distro reads the same files). An existing .git is
 # left as is. All or nothing; only the checked list is staged; signing and hooks off.
-function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
+function Initialize-OverlayRepository([string]$root) {
     if (Test-Path -LiteralPath (Join-Path $root '.git')) { return }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Warn "no git on this Windows host - $root is not a git repository. 'git init' it later for history; 'flakelab update' checks drift once it has a remote."
@@ -1440,18 +1147,11 @@ function Initialize-OverlayRepository([string]$root, [string]$overlayUrl) {
             Remove-Item -LiteralPath $list -Force -ErrorAction SilentlyContinue
             if (-not $done -and (Test-Path -LiteralPath $dotGit)) { Remove-Item -LiteralPath $dotGit -Recurse -Force -ErrorAction SilentlyContinue }
         }
-        # Named, never pushed to: the first push needs a credential this run
-        # does not hold.
-        if ($overlayUrl) {
-            Invoke-NativeQuiet 'git' @('-C', $root, 'remote', 'add', 'origin', $overlayUrl) | Out-Null
-            if ($LASTEXITCODE -ne 0) { Warn "git remote add origin $overlayUrl failed in $root" }
-            else { Say "  origin $overlayUrl (not pushed)" 'DarkGray' }
-        }
     }
 }
 
-# The overlay skeleton from templates/overlay (one copy of the layout); refuses to clobber without -Force.
-function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlayUrl) {
+# The `init` skeleton from templates/overlay (one copy of the layout); refuses to clobber without -Force.
+function New-OverlaySkeleton([string]$root) {
     if ($root -eq $RepoWin) { throw "refusing to write the overlay over this repo - pass -FlakeRef <path to the overlay>" }
     if (-not (Test-Path (Join-Path $TemplateWin 'flake.nix'))) { throw "template not found at $TemplateWin" }
     # The key directory is made BESIDE the overlay (Get-PayloadRoot): the overlay
@@ -1464,8 +1164,7 @@ function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlay
     foreach ($name in @('flake.nix', '.gitignore')) {
         $dst = Join-Path $root $name
         if ((Test-Path $dst) -and -not $Force) { Warn "keeping existing $name (use -Force to overwrite)"; continue }
-        if ($name -eq 'flake.nix' -and $flakeText) { $text = $flakeText }
-        elseif ($name -eq 'flake.nix') {
+        if ($name -eq 'flake.nix') {
             # Substitute the flakelab URL keyed on the `flakelab-url:` marker, not the URL; line-wise so a '$' is literal.
             # The marker must occur exactly once: an unsubstituted overlay is worse than none.
             $lines = @(Get-Content -Path (Join-Path $TemplateWin $name))
@@ -1479,12 +1178,12 @@ function New-OverlaySkeleton([string]$root, [string]$flakeText, [string]$overlay
         else { $text = Get-Content -Raw -Path (Join-Path $TemplateWin $name) }
         Do-Step "write $name" { Write-LfFile $dst ($text -split "`r?`n") }
     }
-    Initialize-OverlayRepository $root $overlayUrl
+    Initialize-OverlayRepository $root
 }
 
 function Invoke-Init {
     Say "init overlay skeleton: $OverlayWin"
-    New-OverlaySkeleton $OverlayWin $null
+    New-OverlaySkeleton $OverlayWin
     Say 'Next:' 'Yellow'
     Write-Host ("  1. edit {0} - username, git identity, gitlabGroups, profiles, sessionVariables" -f $OverlayFlakeWin) -ForegroundColor DarkGray
     Write-Host  "     (or skip steps 1-3 entirely: 'provision -Config <user_data.yaml>' generates all of it)" -ForegroundColor DarkGray
@@ -1494,26 +1193,72 @@ function Invoke-Init {
     Write-Host ("  4. .\setup-wsl-nix.ps1 provision -FlakeRef {0}" -f $OverlayWin) -ForegroundColor DarkGray
 }
 
-function Set-OverlayFromConfig([string]$udPath) {
-    Say "overlay flake from config: $udPath"
-    $ud = Read-UserDataYaml $udPath
-    Remove-UnmappedConfig $ud
-    $flakeExisted = Test-Path $OverlayFlakeWin
-    New-OverlaySkeleton $OverlayWin ((New-OverlayFlakeText $ud $udPath) -join "`n") ([string](Get-UserDataValue $ud 'overlay_url'))
-    if ($flakeExisted -and -not $Force) {
-        if ((Get-Content -Raw -Path $OverlayFlakeWin) -match 'CHANGEME') {
-            Warn "the kept flake.nix still has the template's CHANGEME placeholders - regenerate it from the config with -Force"
-        }
+function Assert-WslAvailable {
+    $wslVer = @(Invoke-NativeQuiet 'wsl.exe' @('--version')) -replace "`0", ''
+    if (-not $wslVer) { throw "WSL not available. Run once: wsl --install --no-distribution" }
+}
+
+# Shared by `bootstrap`, `provision` and `generate`: the overlay generator runs inside the distro.
+function Import-BaseDistro {
+    if (Test-Distro $DistroName) {
+        Warn "distro '$DistroName' already exists - skipping import"
         return
     }
-    # Later copies run as the flake's user; the flag says the flake already carries the non-secret env vars.
-    $script:User = [string](Get-UserDataValue $ud 'user')
-    $script:FlakeFromConfig = $true
+    $tb = $Tarball
+    if (-not $tb) {
+        $url = if ($ImageUrl) { $ImageUrl } else { $NixosWslRelease }
+        $tb = Join-Path $env:TEMP 'nixos.wsl'
+        Do-Step "download base image: $url" { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tb }
+    }
+    Do-Step "mkdir $InstallDir" { New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null }
+    Do-Step "wsl --import $DistroName" {
+        & wsl.exe --import $DistroName $InstallDir $tb --version 2
+        if ($LASTEXITCODE -ne 0) { throw "import failed (exit $LASTEXITCODE)" }
+    }
+}
+
+# The overlay flake is written by files/scripts/nix-overlay-generate, this checkout's copy,
+# run inside the distro: one generator, under test-nix-overlay-generate, where a PowerShell
+# twin used to drift from it. The base image has neither zsh nor git, so `nix shell` brings
+# both, as it brings switch 1 its git. It runs as uid 1000 - the base image's `nixos`, the
+# flakelab user once switch 1 ran - because root's files on /mnt/c keep uid 0 in the drvfs
+# metadata (the hazard Invoke-NixosRebuild removes its flake.lock for). secrets.env stays
+# Set-OverlaySecrets' to write, so the generator leaves no stub that would read as seeded.
+function Invoke-OverlayGenerator {
+    Say "overlay flake from config: $ConfigPath (files/scripts/nix-overlay-generate, in '$DistroName')"
+    $asUser = '<uid-1000 user>'
+    if (-not $DryRun) {
+        $pw = @(Invoke-NativeQuiet 'wsl.exe' @('-d', $DistroName, '-u', 'root', '--', 'getent', 'passwd', '1000')) -replace "`0", ''
+        $asUser = [string](@($pw -match '^[^:]+:') | Select-Object -First 1) -replace ':.*$', ''
+        if (-not $asUser) { throw "no uid 1000 user in '$DistroName' to run the overlay generator as - as root it would leave root-owned files on the Windows mount" }
+    }
+    $argv = @('env', 'NIX_CONFIG=experimental-features = nix-command flakes',
+        'nix', 'shell', 'nixpkgs#zsh', 'nixpkgs#git', '-c',
+        'zsh', "$RepoWsl/files/scripts/nix-overlay-generate",
+        '--out', $OverlayWsl, '--config', $ConfigWsl, '--no-secrets-stub')
+    if ($GenWindowsUser) { $argv += @('--windows-username', $GenWindowsUser) }
+    if ($Force) { $argv += '--force' }
+    # Its closing Next: steps are for a standalone run; this run is about to take them.
+    $next = $false
+    Invoke-Wsl $DistroName $asUser $argv -AllowExit (1..255) | ForEach-Object {
+        if ("$_" -match '^> Next:') { $next = $true }
+        if (-not $next) { $_ }
+    } | Out-Host
+    if ($DryRun) { return }
+    if ($LASTEXITCODE -ne 0) {
+        throw "the overlay generator stopped (exit $LASTEXITCODE; its reason is printed above). Fix $ConfigPath and re-run: the import is skipped next time."
+    }
+    $script:User = Get-OverlayUser
+    if (-not $User) { throw "the overlay generator left no flake.nix naming a username in $OverlayWin" }
 }
 
 function Invoke-Generate {
     if (-not $ConfigPath) { throw "nothing to generate from - pass -Config <path to a user_data.yaml> (see files\config\user_data.example.yaml)" }
-    Set-OverlayFromConfig $ConfigPath
+    Confirm-ConfigBeforeImport $ConfigPath
+    # The generator needs the distro, so the base image is imported first; `provision` finds it and skips that.
+    Assert-WslAvailable
+    Import-BaseDistro
+    Invoke-OverlayGenerator
     Say ("Overlay written: {0}" -f $OverlayWin) 'Green'
     Say ("Check it before applying:  nix eval path:{0}#nixosConfigurations.default.config.system.build.toplevel.drvPath" -f (ConvertTo-PathUrl $OverlayWsl)) 'Yellow'
     Say ("Then apply with:  .\setup-wsl-nix.ps1 provision -FlakeRef {0}" -f $OverlayWin) 'Yellow'
@@ -1521,28 +1266,17 @@ function Invoke-Generate {
 
 function Invoke-Bootstrap {
     Say "Bootstrap '$DistroName' from overlay: $OverlayWin (user: $User)"
-    $wslVer = @(Invoke-NativeQuiet 'wsl.exe' @('--version')) -replace "`0", ''
-    if (-not $wslVer) { throw "WSL not available. Run once: wsl --install --no-distribution" }
+    Assert-WslAvailable
     # Baseline, so a wipe that was already there is not blamed on this run - and so
     # an operator who sees .exe failures mid-run knows which switch caused them.
     Show-InteropState 'before start' $true $true | Out-Null
-    Resolve-SshPassphrase
-
-    if (Test-Distro $DistroName) {
-        Warn "distro '$DistroName' already exists - skipping import"
-    }
-    else {
-        $tb = $Tarball
-        if (-not $tb) {
-            $url = if ($ImageUrl) { $ImageUrl } else { $NixosWslRelease }
-            $tb = Join-Path $env:TEMP 'nixos.wsl'
-            Do-Step "download base image: $url" { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tb }
-        }
-        Do-Step "mkdir $InstallDir" { New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null }
-        Do-Step "wsl --import $DistroName" {
-            & wsl.exe --import $DistroName $InstallDir $tb --version 2
-            if ($LASTEXITCODE -ne 0) { throw "import failed (exit $LASTEXITCODE)" }
-        }
+    # Asked before the download, unless the flake whose sshKeys name the keys is yet to be generated.
+    if (-not $FlakeFromConfig) { Resolve-SshPassphrase }
+    Import-BaseDistro
+    # `provision` generates the flake here, in the imported distro: switch 1 is what reads it.
+    if ($InProvision -and $ConfigPath) {
+        Invoke-OverlayGenerator
+        Resolve-SshPassphrase
     }
 
     # TWO switches: SSH-dependent activation steps defer until the key exists, which needs the user switch 1 creates.
@@ -1838,11 +1572,12 @@ function Set-OverlaySecrets([string]$udPath) {
 }
 
 function Invoke-Provision {
-    Say "PROVISION: overlay flake from config -> seed prep -> switch 1 -> key/secrets + ssh-agent -> switch 2 -> restore -> clone" 'Green'
+    Say "PROVISION: config check -> seed prep -> import -> overlay flake from config -> switch 1 -> key/secrets + ssh-agent -> switch 2 -> restore -> clone" 'Green'
     $script:InProvision = $true
     if ($ConfigPath) {
-        # One command: the flake is generated from the config; the credential copy is still consented.
-        Set-OverlayFromConfig $ConfigPath
+        # One command: the flake is generated from the config once the distro is imported (Invoke-Bootstrap);
+        # the credential copy is still consented, and asked before the download.
+        Confirm-ConfigBeforeImport $ConfigPath
         Set-OverlaySecrets $ConfigPath
     }
     if ((-not (Test-Path $KeyWin)) -or (Test-SecretsSeedNeeded)) {

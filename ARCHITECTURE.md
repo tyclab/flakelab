@@ -124,7 +124,7 @@ flowchart TB
     HOME --> TOP
 ```
 
-Generating the overlay from a `user_data.yaml` is one script with two call
+Generating the overlay from a `user_data.yaml` is one script with three call
 sites, because it reads `templates/overlay/` and `profiles/` relative to itself:
 
 - `./files/scripts/nix-overlay-generate` from a **checkout** reads that checkout
@@ -135,6 +135,12 @@ sites, because it reads `templates/overlay/` and `profiles/` relative to itself:
   `profiles/`. There `--flakelab-ref` is **required**: the only value it could
   default to is a frozen, garbage-collectable store path, and writing that into
   an overlay would pin it to something the next GC removes.
+- `setup-wsl-nix.ps1` (`generate`, `provision`) runs the **checkout** copy
+  inside the freshly imported distro, before the first switch: the base image
+  has no `flakelab` yet, and switch 1 is what reads the overlay. It runs as
+  uid 1000, since root's files on `/mnt/c` keep uid 0 in the drvfs metadata,
+  and passes `--no-secrets-stub`, since it harvests `secrets.env` itself. There
+  is no PowerShell twin of the generator to keep in step.
 
 Both rewrite one anchored line in `templates/overlay/flake.nix` (keyed on a
 `# flakelab-url:` marker comment, not on the URL) and abort if that marker is

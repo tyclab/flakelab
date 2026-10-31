@@ -13,14 +13,19 @@ Read for this topic; paths below are relative to the repository root unless stat
     it reads the installed flake generation and `--flakelab-ref` is
     **required**, because the only value it could default to is a frozen,
     GC-able `/nix/store` path; it refuses rather than write that into an
-    overlay you would then be pinned to.
+    overlay you would then be pinned to. It is also the ONLY writer of a flake
+    generated from a config: `setup-wsl-nix.ps1` runs the checkout copy inside the freshly
+    imported distro (as uid 1000, with `--no-secrets-stub`), so a generator
+    fix lands once, under `test-nix-overlay-generate`.
   - `flakelab update`: update THIS distro to the current flake + overlay.
     `sudo nixos-rebuild switch` under a pre-flight. Older WSL releases could
     wipe interop during a switch (`known-issues.md`); `wsl --shutdown` from
     Windows recovers it.
   - `setup-wsl-nix.cmd` / `setup-wsl-nix.ps1` (Windows): provision a distro on
     a machine — the fresh-PC path. Runs from a real Windows console because a
-    provision restarts distros; old WSL versions could also wipe interop mid-run. Its in-distro
+    provision restarts distros; old WSL versions could also wipe interop mid-run.
+    Its `generate` imports the base image too, since the generator runs in it;
+    `init` alone never touches WSL, and `-DryRun` generates nothing. Its in-distro
     calls feature-detect `flakelab` and fall back to the old names, so it also
     drives a box provisioned before the CLI landed.
   - `flakelab build-distro` / `flakelab test-provision`: stand up a THROWAWAY

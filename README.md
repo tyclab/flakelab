@@ -88,7 +88,7 @@ base image, imports the `flakelab` distro, applies the overlay twice and prints
 one defer and say so. `-Shutdown` pre-answers the `wsl --shutdown` the run
 offers if its interop check fails after a rebuild. A shutdown kills every WSL
 session on the machine; leave the flag off to be asked instead. The answers land in
-`..\flakelab-config\files\config\user_data.yaml` — the same schema as
+`..\flakelab-config-payload\user_data.yaml` — the same schema as
 [`files/config/user_data.example.yaml`](files/config/user_data.example.yaml),
 so everything optional (locale, aliases, env vars, MCP servers, plugins, extra
 repos) is added there, then `provision -Force` regenerates the flake from it.
@@ -105,7 +105,7 @@ repos) is added there, then `provision -Force` regenerates the flake from it.
 | `-RestoreInstance <name>`                  | Restore a `flakelab backup` payload written under another distro's name (migrating a box called `NixOS` into `flakelab`).                                      |
 | `-SkipCloneRepos` / `-SkipSecondSwitch`    | Faster iteration when debugging provisioning; both steps are idempotent and run later anyway.                                                                  |
 | `-Force`                                   | Regenerate the overlay flake from the config (a hand-edited flake is otherwise kept).                                                                          |
-| `-DryRun`                                  | Print every step, touch nothing.                                                                                                                               |
+| `-DryRun`                                  | Print every step, touch nothing. The overlay flake is not generated (that needs the imported distro), so the config gets only the early check.                 |
 
 `setup-wsl-nix.cmd` is the entry point: it supplies the execution-policy
 boilerplate a bare `.\setup-wsl-nix.ps1` call trips over, passes arguments
@@ -118,7 +118,18 @@ status / dry-run / provision menu with a warning gate before the real run.
 refused, because it would build green and leave the box with no profile
 packages and an empty `~/git`. A GitHub-only adopter names their clones under
 `repos:` and needs neither of the other two — the questions cover that with
-their last, optional prompt.
+their last, optional prompt. Keys are lowercase, as YAML reads them: `User:`
+is not `user:`, and the run names such a key with the one it should be.
+
+**The overlay flake is written inside the distro.** `provision` checks the
+config on Windows first (it exists on a Windows drive, names `user`,
+`gitfullname` and `gitmail`, and no `target:` but `wsl`), harvests
+`secrets.env`, downloads and imports the base image, and only then runs this
+checkout's [`files/scripts/nix-overlay-generate`](#no-windows-generate-the-overlay-on-linux-or-macos)
+inside it, as the image's uid-1000 user, before the first switch. There is no
+PowerShell copy of the generator. So a config the generator refuses — an
+unknown profile, say — stops the run after the import, not before the
+download; fix it and re-run, and the import is skipped.
 
 Without a console, `-Config` or an existing `..\flakelab-config` — `provision`,
 `bootstrap` and `generate` **refuse**: this repo's own values are placeholders
@@ -132,14 +143,16 @@ skipped.
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `status`    | **default** — overlay / config / key / secrets / distro / interop                                                                                          |
 | `provision` | the fresh-PC run: generate the overlay, `bootstrap`, restore (`-RestoreInstance <name>` restores a backup instance saved under another distro name), clone |
-| `generate`  | write the overlay flake from the config and STOP (inspect / `nix eval`)                                                                                    |
+| `generate`  | import the base image if needed, write the overlay flake from the config inside it, and STOP (inspect / `nix eval`)                                        |
 | `init`      | overlay skeleton with PLACEHOLDERS, for writing the flake by hand                                                                                          |
 | `bootstrap` | base image, import, and the two `nixos-rebuild switch` runs                                                                                                |
 
 The generated overlay flake is the profile from then on: `provision` never
 overwrites an existing one, so hand-edits survive. `-Force` regenerates it from
 the config; `generate` writes it and stops, for a look (or a `nix eval`) before
-anything is imported. Either leaves the overlay as a git repository — one
+anything is applied. It does import the base image (under `-DistroName`) to run
+the generator in, so unlike `init` it touches WSL; the `provision` after it
+finds that distro and skips the import. Either leaves the overlay as a git repository — one
 commit, no remote — so hand-edits and `-Force` regenerations are diffs to
 review, never commits made for you. An overlay from before that, a plain
 directory, gets the same one commit from the next `flakelab update`. Every
@@ -221,9 +234,10 @@ cp files/config/user_data.example.yaml ~/my-user_data.yaml   # then fill it in
 nix flake metadata ~/git/flakelab-config                     # it locks as written
 ```
 
-It reads the schema `provision -Config` reads and refuses what it refuses,
-with one exception: `provision -Config` writes `wsl` overlays only and refuses
-any other `target:`, where this also writes a `proxmox-vm` one. It splits
+It is the generator `provision -Config` runs inside the new distro, so the two
+refuse the same configs, with one exception: `provision -Config` writes `wsl`
+overlays only and refuses any other `target:`, where this also writes a
+`proxmox-vm` one. It splits
 secrets the same way (the tokens are dropped, not written; only an empty
 mode-600 git-ignored `secrets.env` stub is created) and warns about the same
 things the overlay has no field for: an unmapped key that holds a value or an

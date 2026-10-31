@@ -16,7 +16,8 @@ only**, so that is where the gates run. The one part that runs elsewhere is
 `files/scripts/nix-overlay-generate` (`flakelab overlay-gen`): a **zsh** script
 with no PowerShell and no WSL, so a Linux or macOS host can write an overlay —
 and only write one, since applying it needs an `x86_64-linux` NixOS box, WSL2
-or a Proxmox guest.
+or a Proxmox guest. `setup-wsl-nix.ps1` runs the same script inside the new
+distro, so a change to what the overlay contains is made there once.
 
 A clone made with `--filter=blob:none` cannot be evaluated in place: nix's
 libgit2 rejects `extensions.partialclone`, so `nix flake check` and `nix fmt`
