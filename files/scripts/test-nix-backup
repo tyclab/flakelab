@@ -31,6 +31,8 @@ same()     { cmp -s "$2" "$3" && ok "$1" || bad "$1" }
 has_match() { local -a m=("$2"/${~3}(N)); (( ${#m} > 0 )) && ok "$1" || bad "$1" }
 no_match()  { local -a m=("$2"/${~3}(N)); (( ${#m} == 0 )) && ok "$1" || bad "$1" }
 no_scratch() { [[ -z "$(cd "$2" && find . -name '*.flakelab-tmp.*')" ]] && ok "$1" || bad "$1" }
+# A file's mtime as epoch seconds with nanoseconds; C locale, or the separator is a comma.
+mtime_ns() { LC_ALL=C stat -c %.9Y "$1" }
 
 BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
@@ -550,6 +552,97 @@ excludes "nothing is reported missing"     "${OUT}" "Verify missing"
 excludes "and nothing mismatched"          "${OUT}" "Verify mismatch"
 is_link  "the symlink arrived as a symlink" "${FIX_HOME}/.config/k9s/alias.yaml"
 
+# k9s rewrites its trees: a view kept as a directory on one box is one file on
+# the other. Whichever side the copy comes from, its type wins.
+print -r -- "a restore replaces an entry whose type changed, either way"
+fixture type-change-restore
+K9S_BAK="${FIX_ROOT}/instances/TestDistro/k9s/config"
+mkdir -p "${K9S_BAK}/skins" "${FIX_HOME}/.config/k9s/views"
+print -r -- "a file in the backup"      > "${K9S_BAK}/views"
+print -r -- "skin: dracula"             > "${K9S_BAK}/skins/dracula.yaml"
+print -r -- "inside the local directory" > "${FIX_HOME}/.config/k9s/views/old.yaml"
+print -r -- "a local file"              > "${FIX_HOME}/.config/k9s/skins"
+
+run_restore
+check    "the restore exits clean"                       "${RC}" "0"
+check    "a local directory becomes the backup's file"   "$(< "${FIX_HOME}/.config/k9s/views")" "a file in the backup"
+check    "a local file becomes the backup's directory"   "$(< "${FIX_HOME}/.config/k9s/skins/dracula.yaml")" "skin: dracula"
+excludes "and nothing is reported as a mismatch"         "${OUT}" "Verify mismatch"
+
+# The backup records whether a file is executable (backup_dir's chmod pass); a
+# restore over an existing copy brings that bit back, and nothing else of the mode.
+print -r -- "a restore over an existing file takes the backup's executable bit"
+fixture restore-exec-bit
+K9S_BAK="${FIX_ROOT}/instances/TestDistro/k9s/config"
+mkdir -p "${K9S_BAK}/plugins" "${FIX_HOME}/.config/k9s/plugins"
+print -r -- "#!/bin/sh" > "${K9S_BAK}/plugins/run.sh"
+chmod 755 "${K9S_BAK}/plugins/run.sh"
+print -r -- "old"       > "${FIX_HOME}/.config/k9s/plugins/run.sh"
+chmod 640 "${FIX_HOME}/.config/k9s/plugins/run.sh"
+
+run_restore
+check "the restore exits clean"                 "${RC}" "0"
+check "the script came back executable, group-readable only" \
+  "$(stat -c '%a' "${FIX_HOME}/.config/k9s/plugins/run.sh")" "750"
+
+print -r -- "a backup replaces an entry whose type changed, either way"
+fixture type-change-backup
+K9S_BAK="${FIX_ROOT}/instances/TestDistro/k9s/config"
+mkdir -p "${K9S_BAK}/views" "${FIX_HOME}/.config/k9s/skins"
+print -r -- "a file at home"             > "${FIX_HOME}/.config/k9s/views"
+print -r -- "skin: dracula"              > "${FIX_HOME}/.config/k9s/skins/dracula.yaml"
+print -r -- "inside the backup directory" > "${K9S_BAK}/views/old.yaml"
+print -r -- "a backup file"              > "${K9S_BAK}/skins"
+
+run_backup --force
+check    "the backup exits clean"                        "${RC}" "0"
+check    "a backup directory becomes the home's file"    "$(< "${K9S_BAK}/views")" "a file at home"
+check    "a backup file becomes the home's directory"    "$(< "${K9S_BAK}/skins/dracula.yaml")" "skin: dracula"
+
+# A running k9s replaces its files while they are read: a file listed and gone
+# before it was read is reported, not a failure. rsync exits 24 for exactly that;
+# the double runs the real copy and then reports what rsync reports.
+print -r -- "a source file that vanished mid-copy is a warning, not a failure"
+fixture vanish-mid-copy
+mkdir -p "${FIX_HOME}/.config/k9s"
+print -r -- "skin: dracula" > "${FIX_HOME}/.config/k9s/config.yaml"
+REAL_RSYNC="$(whence -p rsync)"
+cat > "${BASE}/bin/rsync" <<STUB
+#!/usr/bin/env zsh
+${REAL_RSYNC} "\$@" || exit
+if [[ -n "\${VANISH_DST:-}" && ! -e "\${VANISH_MARK}" && "\${@[-1]}" == *"\${VANISH_DST}"* ]]; then
+  : > "\${VANISH_MARK}"
+  print -r -u2 -- 'file has vanished: "/home/someone/.config/k9s/gone.yaml"'
+  print -r -u2 -- 'rsync warning: some files vanished before they could be transferred (code 24)'
+  exit 24
+fi
+STUB
+chmod +x "${BASE}/bin/rsync"
+export VANISH_DST="/k9s/config"
+export VANISH_MARK="${BASE}/vanish-mark"
+run_backup --force
+unset VANISH_DST VANISH_MARK
+rm -f "${BASE}/bin/rsync" "${BASE}/vanish-mark"
+check    "the run exits clean"            "${RC}"  "0"
+contains "the vanished file is reported"  "${OUT}" "vanished or changed mid-read"
+excludes "and nothing calls it partial"   "${OUT}" "Partial copy"
+check    "the rest of the tree arrived"   "$(< "${FIX_ROOT}/instances/TestDistro/k9s/config/config.yaml")" "skin: dracula"
+
+# root reads a mode-000 file anyway, so the case needs an unprivileged run.
+if (( EUID != 0 )); then
+  print -r -- "a source file that cannot be read fails the run, and the rest still arrives"
+  fixture unreadable
+  mkdir -p "${FIX_HOME}/.config/k9s"
+  print -r -- "skin: dracula" > "${FIX_HOME}/.config/k9s/config.yaml"
+  print -r -- "locked"        > "${FIX_HOME}/.config/k9s/locked.yaml"
+  chmod 000 "${FIX_HOME}/.config/k9s/locked.yaml"
+  run_backup --force
+  chmod 644 "${FIX_HOME}/.config/k9s/locked.yaml"
+  check    "the run reports failure"         "${RC}"  "1"
+  contains "and names the partial copy"      "${OUT}" "Partial copy"
+  check    "the readable file still arrived" "$(< "${FIX_ROOT}/instances/TestDistro/k9s/config/config.yaml")" "skin: dracula"
+fi
+
 print -r -- "a restore never deletes local files the backup lacks"
 fixture additive-dirs
 mkdir -p "${FIX_ROOT}/instances/TestDistro/claude/projects/some-slug/memory" \
@@ -650,7 +743,7 @@ print -r -- "a source written during the backup is re-read, not called a mismatc
 fixture verify-source-grows
 mkdir -p "${FIX_HOME}/.config/k9s"
 print -r -- "seed" > "${FIX_HOME}/.config/k9s/config.yaml"
-# backup_dir copies with tar (mtimes preserved), chmods the copy, then verifies
+# backup_dir copies with rsync, chmods the copy, then verifies
 # it. The shim appends to the source inside that window — what a live shell
 # history or transcript does on a real box — so the copy is complete but stale.
 REAL_CHMOD="$(whence -p chmod)"
@@ -674,6 +767,35 @@ rm -f "${BASE}/bin/chmod" "${BASE}/grown"
 check    "the run exits clean"                "${RC}"  "0"
 excludes "the growing file is no mismatch"    "${OUT}" "Verify mismatch"
 contains "and the re-read is logged"          "${OUT}" "written during the backup"
+
+# drvfs stores a copy's mtime in whole seconds, so there every source reads as
+# newer than its copy. A short copy of a source nobody touched during the run is
+# still a finding: the shim cuts the copy short in the same window and stamps it
+# as the mount does.
+print -r -- "a short copy of a source not written during the backup is a mismatch"
+fixture verify-short-copy
+mkdir -p "${FIX_HOME}/.config/k9s"
+print -r -- "skin: dracula" > "${FIX_HOME}/.config/k9s/config.yaml"
+touch -d @1767261600.123456789 "${FIX_HOME}/.config/k9s/config.yaml"
+cat > "${BASE}/bin/chmod" <<STUB
+#!/usr/bin/env zsh
+if [[ -n "\${SHORT_DST:-}" && ! -e "\${SHORT_MARK}" && "\$*" == *"\${SHORT_DST}"* ]]; then
+  print -rn -- "skin" > "\${SHORT_COPY}"
+  touch -d @1767261600 "\${SHORT_COPY}"
+  : > "\${SHORT_MARK}"
+fi
+exec ${REAL_CHMOD} "\$@"
+STUB
+chmod +x "${BASE}/bin/chmod"
+export SHORT_DST="/k9s/config/config.yaml"
+export SHORT_COPY="${FIX_ROOT}/instances/TestDistro/k9s/config/config.yaml"
+export SHORT_MARK="${BASE}/short-mark"
+run_backup --force
+unset SHORT_DST SHORT_COPY SHORT_MARK
+rm -f "${BASE}/bin/chmod" "${BASE}/short-mark"
+check    "the run reports failure"            "${RC}"  "1"
+contains "and names the mismatch"             "${OUT}" "Verify mismatch: ${FIX_ROOT}/instances/TestDistro/k9s/config/config.yaml"
+excludes "it is not taken for a growing file" "${OUT}" "written during the backup"
 
 # ===========================================================================
 # Shared state root (FLAKELAB_STATE_ROOT)
@@ -1206,6 +1328,44 @@ run_backup --force
 check    "the run exits clean"                   "${RC}" "0"
 check    "the state root keeps its newer copy"   "$(< "${MEM_STATE}/notes.md")" "fresher there"
 excludes "and nothing is reported as a mismatch" "${OUT}" "Verify mismatch"
+
+# A copy keeps its source's mtime to the precision the destination stores: drvfs
+# keeps 100 ns, so a source stamped .123456789 reads .123456700 there. A mirror
+# that compares nanoseconds takes every such copy for older than its source and
+# writes it again on every sync, and the sync client replicates it again.
+print -r -- "a memory backup with sub-second mtimes writes nothing on the second pass"
+memory_fixture state-memory-subsecond
+print -r -- "alpha"         > "${MEM_HOME}/a.md"
+touch -d @1767261600.123456789 "${MEM_HOME}/a.md"
+print -r -- "stale here"    > "${MEM_HOME}/notes.md"
+touch -d '2026-01-01 00:00:00' "${MEM_HOME}/notes.md"
+print -r -- "fresher there" > "${MEM_STATE}/notes.md"
+
+run_backup --force
+check    "the first pass exits clean"                     "${RC}" "0"
+check    "the copy carries the source's sub-second mtime" "$(mtime_ns "${MEM_STATE}/a.md")" "1767261600.123456789"
+contains "only the newer copy is counted as kept"         "${OUT}" "Kept 1 newer file(s) untouched: ${MEM_STATE}"
+
+touch -d @1767261600.1234567 "${MEM_STATE}/a.md"
+run_backup --force
+check    "the second pass exits clean"                    "${RC}" "0"
+check    "a copy that matches to the second is not written again" \
+  "$(mtime_ns "${MEM_STATE}/a.md")" "1767261600.123456700"
+contains "and the kept count is the same"                 "${OUT}" "Kept 1 newer file(s) untouched: ${MEM_STATE}"
+excludes "nothing is reported as a mismatch"              "${OUT}" "Verify mismatch"
+
+print -r -- "a memory restore with sub-second mtimes writes nothing on the second pass"
+memory_fixture state-memory-restore-subsecond
+print -r -- "alpha" > "${MEM_STATE}/a.md"
+touch -d @1767261600.123456789 "${MEM_STATE}/a.md"
+
+run_restore
+check "the first pass exits clean"                     "${RC}" "0"
+check "the copy carries the source's sub-second mtime" "$(mtime_ns "${MEM_HOME}/a.md")" "1767261600.123456789"
+changed="$(LC_ALL=C stat -c %.9Z "${MEM_HOME}/a.md")"
+run_restore
+check "the second pass exits clean"                    "${RC}" "0"
+check "and leaves the copy alone"                      "$(LC_ALL=C stat -c %.9Z "${MEM_HOME}/a.md")" "${changed}"
 
 print -r -- "a restore keeps this box's hook for a memory file it kept"
 memory_fixture state-memory-restore-kept-hook
