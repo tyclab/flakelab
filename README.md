@@ -382,6 +382,7 @@ aborts evaluation instead of being dropped.
 | `nix/users/default.nix`                   | per-user values (placeholders here; real ones in the overlay)                                     |
 | `nix/scripts.nix`                         | the per-command wrappers (pinned PATH + exported env) each subcommand runs                        |
 | `nix/cli.nix`                             | assembles those wrappers into the `flakelab` CLI                                                  |
+| `nix/checks.nix`                          | the flake's checks: the suite wrappers, the nix linters, the eval-time assertions                 |
 | `files/scripts/flakelab`                  | the router: subcommand table, `--help`, did-you-mean                                              |
 | `profiles/`                               | profile registry + merge (`example`)                                                              |
 | `templates/overlay/`                      | scaffold for the private overlay flake (`init`, `flake new`, `overlay-gen`)                       |

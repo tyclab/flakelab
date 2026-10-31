@@ -27,7 +27,7 @@ overlay interface; personal values belong in a private overlay, while
 - Validate the affected offline suite after script changes; `make test` runs all
   offline suites. `nix flake check` is the full gate. Run `make lint` and `nix fmt`
   before publishing; CI also scans for secrets. Keep tests registered in both
-  Makefile and `flake.nix`; outputs/checks support x86_64-linux.
+  Makefile and `nix/checks.nix`; outputs/checks support x86_64-linux.
 
 ## Read before the task
 
