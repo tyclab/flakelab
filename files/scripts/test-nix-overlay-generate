@@ -179,8 +179,6 @@ contains "cloneExclude keeps the overlay out too" "${f}" '"fromexample"'
 
 print -r -- "lists and maps come across"
 contains "the profile"    "${f}" 'profiles = [ "example" ];'
-# setup-wsl-nix.ps1 emits the same two lines by hand, and nothing drives PowerShell
-# here, so that writer stays a manual match.
 contains "and the comment states the mechanism" "${f}" \
   'Selecting a profile is the only thing that'
 contains "naming what it installs" "${f}" 'installs its gitlabGroups and profileCliTools.'
@@ -238,6 +236,28 @@ print -r -- 'GITLAB_TOKEN="already-here"' > "${o}-payload/shared/secrets/secrets
 run_gen --out "${o}" --config "${EXAMPLE}" --force
 check "the operator's file survives" \
   "$(< "${o}-payload/shared/secrets/secrets.env")" 'GITLAB_TOKEN="already-here"'
+
+# setup-wsl-nix.ps1 runs this generator and harvests secrets.env itself, and it
+# reads the file's presence as "seeded": an empty stub there would skip the
+# seeding instructions and copy an empty secrets.env into the distro.
+print -r -- "--no-secrets-stub leaves secrets.env to the caller"
+o="$(out nostub)"
+run_gen --out "${o}" --config "${EXAMPLE}" --no-secrets-stub
+check    "it generates"                     "${RC}" "0"
+exists   "the flake is written"             "${o}/flake.nix"
+exists   "the key directory is still made"  "${o}-payload/shared/ssh/keys"
+[[ -e "${o}-payload/shared/secrets/secrets.env" ]] \
+  && bad "no secrets.env is created" || ok "no secrets.env is created"
+excludes "nor reported as written"          "${OUT}" "wrote ${o}-payload/shared/secrets/secrets.env"
+excludes "nor offered to fill"              "${OUT}" "fill ${o}-payload"
+print -r -- 'GITLAB_TOKEN="caller-wrote-this"' > "${o}-payload/shared/secrets/secrets.env"
+run_gen --out "${o}" --config "${EXAMPLE}" --no-secrets-stub --force
+check    "a file the caller wrote is left as it is" \
+  "$(< "${o}-payload/shared/secrets/secrets.env")" 'GITLAB_TOKEN="caller-wrote-this"'
+excludes "and not listed as kept either"    "${OUT}" "kept  ${o}-payload/shared/secrets/secrets.env"
+o="$(out nostubdry)"
+run_gen --out "${o}" --config "${EXAMPLE}" --no-secrets-stub --dry-run
+excludes "a dry run does not list it"       "${OUT}" "wrote ${o}-payload/shared/secrets/secrets.env"
 
 print -r -- "--dry-run writes nothing"
 o="$(out dry)"
@@ -966,6 +986,23 @@ contains "a line under a key by count"         "${OUT}" "${BASE}/unread.yaml: 1 
 excludes "no value is printed"                 "${OUT}" "unread-value"
 contains "the readable entry is kept"          "${f}" 'GOOD_VAR = "kept";'
 
+# Notepad and PowerShell 5.1's `Set-Content -Encoding UTF8` write a byte-order
+# mark. Glued to the first key it made `user:` an unread line, and the run stopped
+# on "no Linux username" for a config setup-wsl-nix.ps1 had always read.
+print -r -- "a UTF-8 byte-order mark and CRLF line ends read like a plain file"
+printf '\xef\xbb\xbfuser: bom\r\ngitfullname: Bom Person\r\ngitmail: bom@example.com\r\nprofiles:\r\n  - example\r\n' > "${BASE}/bom.yaml"
+o="$(out bom)"
+run_gen --out "${o}" --config "${BASE}/bom.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "the first key is read"               "$(flake_of "${o}")" 'username = "bom";'
+contains "and the CRLF list under the last"    "$(flake_of "${o}")" 'profiles = [ "example" ];'
+excludes "no line is reported unread"          "${OUT}" "not read"
+# Only the file's first three bytes are a mark; the same bytes inside a value are data.
+printf 'user: mid\ngitfullname: Mid\xef\xbb\xbfPerson\ngitmail: mid@example.com\nprofiles: [example]\n' > "${BASE}/midbom.yaml"
+o="$(out midbom)"
+run_gen --out "${o}" --config "${BASE}/midbom.yaml"
+contains "a mark inside a value is kept"       "$(flake_of "${o}")" $'gitName = "Mid\xef\xbb\xbfPerson";'
+
 print -r -- "a profiles alias shadowed by another is named"
 bare_cfg alias <<'YAML'
 profiles: [example]
@@ -1000,6 +1037,41 @@ contains "by name"                             "${OUT}" "  GITLAB_TOKEN"
 excludes "not as an unmapped key"              "${OUT}" "'GITLAB_TOKEN' in the config"
 excludes "the value is never printed"          "${OUT}" "not-a-real-token-4"
 excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-4"
+
+# YAML keys are case-sensitive and the schema's are lowercase. setup-wsl-nix.ps1's
+# own reader used to take `User:` for `user:` without a word; this one does not, so
+# a schema key in another case is named with the key it should be.
+print -r -- "a schema key in another case is named, with the lowercase key"
+cat > "${BASE}/case.yaml" <<'YAML'
+User: cased
+gitfullname: Case Person
+gitmail: case@example.com
+Profiles:
+  - example
+YAML
+o="$(out case)"
+run_gen --out "${o}" --config "${BASE}/case.yaml"
+check    "it fails: there is no user:"        "${RC}" "1"
+contains "naming the key it did not read"     "${OUT}" "'User' in the config is not read: keys are lowercase - write it as 'user'"
+contains "every such key"                     "${OUT}" "'Profiles' in the config is not read: keys are lowercase - write it as 'profiles'"
+excludes "not as a key with no overlay field" "${OUT}" "'User' in the config maps to nothing"
+contains "and the stop names the key"         "${OUT}" "set 'user:' in the config"
+[[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
+
+# setup-wsl-nix.ps1 harvests a top-level token into secrets.env whatever its case,
+# so calling it a key with no overlay field would contradict the same run.
+print -r -- "a top-level secret in lowercase is reported as a secret"
+bare_cfg lowsecret <<'YAML'
+profiles: [example]
+gitlab_token: 'not-a-real-token-5'
+YAML
+o="$(out lowsecret)"
+run_gen --out "${o}" --config "${BASE}/lowsecret.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "it is in the secrets summary"        "${OUT}" "  gitlab_token"
+excludes "not as an unmapped key"              "${OUT}" "'gitlab_token' in the config"
+excludes "the value is never printed"          "${OUT}" "not-a-real-token-5"
+excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-5"
 
 print -r -- "an empty unmapped key is not named: it carries nothing"
 bare_cfg empty-unmapped <<'YAML'
@@ -1086,8 +1158,10 @@ for k in "${_kept[@]}"; do
 done
 check "the stub is still empty" "$(wc -c < "${o}-payload/shared/secrets/secrets.env")" "0"
 
-# Nothing drives PowerShell here, so the twin writer is pinned by its source.
-print -r -- "setup-wsl-nix.ps1 classifies custom_env_vars the same way"
+# Nothing drives PowerShell here, so setup-wsl-nix.ps1 is pinned by its source. Its
+# secrets.env harvest must split custom_env_vars as the flake split here does, or a
+# token lands in neither file.
+print -r -- "setup-wsl-nix.ps1's secrets.env harvest classifies custom_env_vars the same way"
 PS1_SRC="${REPO_ROOT}/setup-wsl-nix.ps1"
 ps1_src="$(< "${PS1_SRC}")"
 zsh_shape="$(sed -n "s/^_secret_shape='\(.*\)'\$/\1/p" "${GEN}")"
@@ -1095,20 +1169,39 @@ ps1_shape="$(sed -n "s/^\$SecretNamePattern = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
 zsh_exempt="$(sed -n "s/^_secret_exempt='\(.*\)'\$/\1/p" "${GEN}")"
 ps1_exempt="$(sed -n "s/^\$SecretNameExempt = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
 check "the zsh pattern is the word rule" "${zsh_shape}" '(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
-check "both writers withhold the same shapes"     "${ps1_shape}" "${zsh_shape}"
+check "the harvest withholds the same shapes"     "${ps1_shape}" "${zsh_shape}"
 check "the zsh exemption names the locations"     "${zsh_exempt}" '_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
-check "both writers exempt the same locations"    "${ps1_exempt}" "${zsh_exempt}"
+check "the harvest exempts the same locations"    "${ps1_exempt}" "${zsh_exempt}"
 zsh_always="$(sed -n "s/^_secret_always='\(.*\)'\$/\1/p" "${GEN}")"
 ps1_always="$(sed -n "s/^\$SecretNameAlways = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
 check "the zsh writer withholds a webhook first"  "${zsh_always}" '(^|_)WEBHOOK(_|$)'
-check "and so does the twin"                      "${ps1_always}" "${zsh_always}"
+check "and so does the harvest"                   "${ps1_always}" "${zsh_always}"
 contains "the zsh split goes through the classifier" "$(< "${GEN}")" 'if _is_secret_name "${_k}"; then'
-contains "the twin has one classifier"               "${ps1_src}" 'function Test-SecretName'
-contains "which its flake emitter calls"             "${ps1_src}" 'if (Test-SecretName $k) {'
-contains "and its secrets.env harvester too"         "${ps1_src}" '(Test-SecretName $_) -and'
-# The whatsapp_mcp_dir warning takes a qualified mcp-whatsapp in both writers.
-contains "the zsh writer matches mcp-whatsapp bare or qualified" "$(< "${GEN}")" '${_claude_plugins[(I)mcp-whatsapp(|@*)]}'
-contains "and the twin matches the same names"     "${ps1_src}" "\$claudePlugins -match '^mcp-whatsapp(@|\$)'"
+contains "the harvest has one classifier"            "${ps1_src}" 'function Test-SecretName'
+contains "which it asks about each custom_env_vars entry" "${ps1_src}" '(Test-SecretName $_) -and'
+
+# A second, PowerShell flake writer drifted from this one while no test ran it; these
+# pin that it stays gone and that the call into this script stays one it accepts.
+print -r -- "setup-wsl-nix.ps1 writes the overlay flake with this script, in the distro"
+excludes "it carries no flake writer of its own"  "${ps1_src}" 'flakelab.lib.mkSystem {'
+excludes "nor a reader of the profile schema"     "${ps1_src}" '$ConfigShape'
+contains "it runs the checkout's copy"            "${ps1_src}" "'zsh', \"\$RepoWsl/files/scripts/nix-overlay-generate\""
+contains "with zsh and git from nix shell: the base image has neither" \
+  "${ps1_src}" "'nix', 'shell', 'nixpkgs#zsh', 'nixpkgs#git', '-c'"
+contains "as the uid 1000 user: root leaves root-owned files on /mnt/c" \
+  "${ps1_src}" "'getent', 'passwd', '1000'"
+# A flag this script does not parse is a usage error, after the download and the import.
+ps1_gen="$(sed -n '/^function Invoke-OverlayGenerator {$/,/^}$/p' "${PS1_SRC}")"
+typeset -a ps1_flags=(${(f)"$(print -r -- "${ps1_gen}" | grep -o "'--[a-z][a-z-]*'" | tr -d "'" | sort -u)"})
+check "it passes these flags" "${(j: :)ps1_flags}" "--config --force --no-secrets-stub --out --windows-username"
+for fl in "${ps1_flags[@]}"; do
+  contains "and this script parses ${fl}" "$(< "${GEN}")" $'\n'"    ${fl})"
+done
+# The Next: steps are a standalone run's; inside provision they would say
+# "nixos-rebuild switch" while the provisioner is about to do just that.
+run_gen --out "$(out nextblock)" --config "${EXAMPLE}"
+contains "this script's summary ends in a Next: block" "${OUT}" $'\n> Next:\n'
+contains "where setup-wsl-nix.ps1 stops echoing it"   "${ps1_gen}" "-match '^> Next:'"
 
 # ---------------------------------------------------------------------------
 print -r -- ""

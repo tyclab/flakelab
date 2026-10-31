@@ -1,17 +1,20 @@
 #!/usr/bin/env zsh
 # Scaffold a private flakelab overlay from a flakelab checkout - on Linux or macOS.
-# Reads the same user_data.yaml setup-wsl-nix.ps1 does
-# (files/config/user_data.example.yaml is the schema) and writes the overlay
-# directory; it never provisions, imports or rebuilds anything.
+# Reads a user_data.yaml (files/config/user_data.example.yaml is the schema) and
+# writes the overlay directory; it never provisions, imports or rebuilds anything.
+# It is the one writer of a flake generated from a config: setup-wsl-nix.ps1 runs this
+# checkout copy inside the freshly imported distro, and its own YAML reader only
+# harvests secrets.env.
 #
-# The YAML is parsed by hand in zsh, mirroring setup-wsl-nix.ps1's reader so the two
-# cannot disagree: the schema is flat by construction, and neither PyYAML nor python3
-# is available in `nix develop` or the flake-check sandbox this script's suite runs in.
+# The YAML is parsed by hand in zsh: the schema is flat by construction, and neither
+# PyYAML nor python3 is available in `nix develop` or the flake-check sandbox this
+# script's suite runs in.
 # Anything outside that subset (nested maps, block scalars, anchors) is not read, and
 # each such line is named by number; so is every key the overlay has no field for.
 #
 # No secrets are written: the secret half of custom_env_vars is dropped, and the only
-# secret artefact is an empty mode-600 secrets.env stub.
+# secret artefact is an empty mode-600 secrets.env stub - none with --no-secrets-stub,
+# which setup-wsl-nix.ps1 passes because it harvests that file itself.
 #
 # It needs its checkout's `templates/overlay/` and `profiles/` beside it, which is why
 # `flakelab overlay-gen` execs it out of the whole flake source. In that store mode the
@@ -70,6 +73,9 @@ Options:
                          would be frozen and garbage-collectable.
   --force                overwrite an existing flake.nix / .gitignore.
                          secrets.env is NEVER overwritten - it may hold tokens.
+  --no-secrets-stub      create no secrets.env stub: the caller writes that
+                         file itself (setup-wsl-nix.ps1 does, and reads its
+                         absence as "not seeded yet")
   --dry-run              say what would be written, write nothing
   -h, --help             this text
 
@@ -118,6 +124,7 @@ _config=""
 _flakelab_ref=""
 _force=false
 _dry_run=false
+_secrets_stub=true
 _have_values=false
 
 # Empty means "not given"; the config or a default fills it in below.
@@ -150,6 +157,7 @@ while (( $# )); do
     --flakelab-ref)        shift; _need --flakelab-ref "${1:-}"; _flakelab_ref="$1" ;;
     --force)             _force=true ;;
     --dry-run)           _dry_run=true ;;
+    --no-secrets-stub)   _secrets_stub=false ;;
     --user)              shift; _need --user "${1:-}"; _user="$1"; _have_values=true ;;
     --target)            shift; _need --target "${1:-}"; _target="$1"; _have_values=true ;;
     --git-name)          shift; _need --git-name "${1:-}"; _git_name="$1"; _have_values=true ;;
@@ -345,6 +353,8 @@ _yaml_load() {
   # The `|| [[ -n ... ]]` reads a final line with no trailing newline.
   while IFS= read -r line || [[ -n "$line" ]]; do
     (( ++n ))
+    # A byte-order mark (Notepad, PowerShell 5.1's UTF8) is no part of the first key.
+    (( n == 1 )) && line="${line#$'\xef\xbb\xbf'}"
     _trim "$line"
     [[ -z "$REPLY" ]] && continue
     [[ "$REPLY" == '#'* ]] && continue
@@ -444,7 +454,8 @@ typeset -a _claude_plugins=() _clone_exclude_extra=()
 _mkt_name="" _mkt_url="" _whatsapp_dir=""
 
 # Names only: a custom_env_vars entry named here is dropped rather than written to the
-# world-readable store. Keep in step with setup-wsl-nix.ps1's $SecretKeyNames.
+# world-readable store. Keep in step with setup-wsl-nix.ps1's $SecretKeyNames and
+# $RetiredSecretKeyNames, which its secrets.env harvest reads.
 typeset -a _secret_names=(
   GITLAB_TOKEN GH_TOKEN HASS_TOKEN
   PROXMOX_TOKEN_ID PROXMOX_TOKEN_SECRET
@@ -460,7 +471,7 @@ _secret_exempt='_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
 # A webhook's URL is its credential, so that word wins over the location suffix.
 _secret_always='(^|_)WEBHOOK(_|$)'
 
-# Case-insensitive, like PowerShell's -contains and -match in the twin; the named
+# Case-insensitive, like Test-SecretName in setup-wsl-nix.ps1's harvest; the named
 # secrets first, since NTFY_URL is one.
 _is_secret_name() {
   local n="${1:u}"
@@ -547,8 +558,7 @@ if [[ -n "${_config}" ]]; then
 
   # Every top-level key is read above, reported as a secret or named here. The
   # letter is the shape it is read in: s a scalar, l a list (a scalar is one
-  # entry), m a map, i a list of maps. Keep in step with setup-wsl-nix.ps1's
-  # $ConfigShape and $ConfigFields.
+  # entry), m a map, i a list of maps.
   typeset -A _shape=(
     user s target s gitfullname s gitmail s userlocale s windows_username s
     backupautostart s state_root s state_transcripts s giteditor s
@@ -563,8 +573,11 @@ if [[ -n "${_config}" ]]; then
   for _k in "${YK[@]}"; do
     _want="${_shape[$_k]:-}"
     if [[ -z "${_want}" ]]; then
-      # An empty key carries nothing to drop.
-      if (( ${_secret_names[(Ie)$_k]} )); then _skipped_secrets+=("${_k}")
+      # Secret names match in any case, as setup-wsl-nix.ps1's harvest reads them;
+      # schema keys only in lowercase, as YAML does. An empty key carries nothing to drop.
+      if (( ${_secret_names[(Ie)${_k:u}]} )); then _skipped_secrets+=("${_k}")
+      elif [[ -n "${_shape[${_k:l}]:-}" ]]; then
+        warn "'${_k}' in the config is not read: keys are lowercase - write it as '${_k:l}'"
       elif [[ -n "${YS[$_k]:-}${YL[$_k]:-}${YMK[$_k]:-}${${YIC[$_k]:-}:#0}" ]]; then _dropped "${_k}"
       fi
       continue
@@ -952,9 +965,11 @@ _place flake.nix 644 "${_flake_text}"
 _place .gitignore 644 "$(< "${_template}/.gitignore")"
 
 # Empty and never overwritten, --force included: it is the one file that may already
-# hold real tokens.
+# hold real tokens. With --no-secrets-stub it is the caller's, present or not.
 _secrets="${_payload}/shared/secrets/secrets.env"
-if [[ -e "${_secrets}" ]]; then
+if ! ${_secrets_stub}; then
+  :
+elif [[ -e "${_secrets}" ]]; then
   _kept+=("${_secrets}")
 elif ${_dry_run}; then
   _wrote+=("${_secrets}")
@@ -1044,7 +1059,11 @@ if ! ${_have_values}; then
 else
   say "  1. read ${_out}/flake.nix - it is the profile from here on"
 fi
-say "  2. fill ${_secrets} (names: flakelab files/config/secrets.env.example)"
+if ${_secrets_stub}; then
+  say "  2. fill ${_secrets} (names: flakelab files/config/secrets.env.example)"
+else
+  say "  2. put the tokens in ${_secrets} (names: flakelab files/config/secrets.env.example)"
+fi
 say "  3. drop the private key(s) named in sshKeys into ${_payload}/shared/ssh/keys/ (LF only)"
 # `path:`, spelled out, as `flakelab update` does: a bare path to a directory that
 # is a repository means git+file:, which sees tracked files only - not the

@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- `setup-wsl-nix.ps1` writes the overlay flake with `files/scripts/nix-overlay-generate`, the checkout's copy, run inside the freshly imported distro before the first switch, instead of with its own PowerShell copy of the reader and generator. It runs as the image's uid-1000 user, not root, so no root-owned files land on the Windows mount. `generate` therefore imports the base image first (under `-DistroName`; a distro already there is reused, and so is this one by the `provision` that follows), so it now touches WSL; `init` still does not. `-DryRun` no longer generates the flake text: it prints the generator command, and the config gets only the early check. That check runs on Windows before anything is downloaded and refuses a config off the Windows drives, one missing `user`, `gitfullname` or `gitmail`, or one with a `target:` other than `wsl`. Everything else the generator refuses, such as an unknown profile, now stops the run after the download and import instead of before; re-running skips the import. The passphrase for the overlay's SSH key is asked after the flake is generated when the run generates it, since its `sshKeys` name the keys. This change has not yet run on a Windows host: a host-side `provision` against a throwaway distro, from an expendable Windows session, is required before it merges, and the lane that built it could not run one.
+- Config keys are case-sensitive on Windows as well. The PowerShell reader took `User:` for `user:`; the generator reads keys as YAML does, and names a key in another case together with the lowercase key it should be. A top-level secret name still matches in any case, as the `secrets.env` harvest reads it.
+
 - The managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` blocks tell an agent never to ask for a secret's value, and to name the key instead.
 - Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.
 - `flakelab doctor` no longer warns on every local flakelab override. A `path:` or `git+file:` input is a finding only when its checkout has uncommitted changes to tracked files, is behind its tracking ref as last fetched (the doctor fetches nothing and takes no index lock), or is missing. An overlay with no `flake.lock` and a `path:` input in `flake.nix`, the state `setup-wsl-nix.ps1` leaves on purpose, is read from `flake.nix` instead of being reported as unknown.
@@ -38,6 +41,9 @@ The format is based on [Keep a Changelog], and this project adheres to
 - A selected profile with a key `profiles/merge.nix` does not read aborts evaluation, naming the profile (its registry name, or `<inline>` for an attrset), the unknown keys and the keys it reads. A misspelt `gitlabGroup` used to be dropped without a word, leaving the box short of that profile's groups. The keys read are one list, `profileKeys`, so a flake that collects another field adds it there in one line.
 
 ### Fixed
+
+- `flakelab overlay-gen` reads a config saved with a UTF-8 byte-order mark, as Notepad and Windows PowerShell's `Set-Content -Encoding UTF8` write it. The mark, glued to the first key, turned `user:` into an unread line and the run stopped on "no Linux username".
+- `flakelab overlay-gen` reports a top-level secret written in lowercase, such as `gitlab_token:`, with the withheld secrets instead of as a key with no overlay field.
 
 - `test-nix-doctor` creates its bare fixture remote on `main` (`git init -b main`). Without `init.defaultBranch` the remote's HEAD named `master`, the clone had no `main`, and the "behind its tracking ref" case failed twice on a box outside the flake-managed git config; CI, which sets the default, never saw it.
 - Update tycswap to v0.7.26 so backspace in its terminal account form removes a complete Unicode character.
@@ -57,6 +63,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 - The activation's npm pin bounds its own fetches (`--fetch-timeout=60000`, one retry); other npm installs keep npm's defaults. npm's default five-minute timeout with two retries outlasts the five minutes systemd gives `home-manager-<user>.service`, so a registry that stalled during the pin got the whole activation killed before the pin could defer, and the switch failed instead of finishing with a deferred step.
 
 ### Removed
+
+- The PowerShell overlay generator in `setup-wsl-nix.ps1` (the config shape check, the profile maps, the nix emitters and `New-OverlayFlakeText`), 352 lines that duplicated `nix-overlay-generate`; the script is 265 lines shorter. 19 of the 27 commits to the zsh generator also touched it, about ten of them making the same fix twice, and no test ran it. Its YAML reader stays for the `secrets.env` harvest and the early config check.
 
 - The Synology MCP: `SYNOLOGY_PASSWORD` and `SYNOLOGY_DEVICE_ID` are no longer asked for or harvested (`setup-wsl-nix.ps1` lists them as retired, and the overlay generator still keeps them out of the store), and the examples drop every `SYNOLOGY_*` key.
 - The wslkube migration path: `setup-wsl-nix.ps1 migrate`, `-WslkubeDistro`, `-WslkubeInstance`, the sibling wslkube checkout as the default `-Config`, the private-key pull from a running wslkube distro, and the `.migrated-from-wslkube` marker; `flakelab overlay-gen --wslkube` and its `variables.yaml` layering; `flakelab backup --restore --from` reading a `files/config/` layout (a payload root with `shared/` or `instances/` still works). `-Config` now defaults to `<overlay>-payload\user_data.yaml` only. The v0.4.0 tag keeps the old path for a box that still needs it.
