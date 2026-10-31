@@ -104,7 +104,7 @@ in
   gitchecker = suiteCheck "gitchecker";
   gitcleaner = suiteCheck "gitcleaner";
   gitpublisher = suiteCheck "gitpublisher";
-  nix-backup = suiteCheck "nix-backup";
+  nix-backup = suiteCheckWith [ pkgs.rsync ] "nix-backup";
   nix-overlay-generate = suiteCheck "nix-overlay-generate";
   # The --help sweep runs `mcp`, a python3 program.
   flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";

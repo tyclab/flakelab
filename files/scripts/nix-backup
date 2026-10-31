@@ -439,49 +439,48 @@ verify_copy() {
   cmp -s "${src}" "${dst}"
 }
 
-# $3 = keep_newer; true = the files the last mirror kept (MIRROR_KEPT_RELS) are
-# the destination's own and are not compared.
+# One rsync over both trees that reads every byte (-c) and writes nothing (-n):
+# each file or link it would still transfer is a finding, `+++` a missing copy and
+# anything else one that differs, a copy the mirror skipped for a matching size
+# and second included. $3 = keep_newer: -u skips what the mirror kept.
 verify_tree() {
   local src="$1"
   local dst="$2"
   local keep_newer="${3:-false}"
-  local mismatches=0
-  local rel
-  local -A kept=()
-  if ${keep_newer}; then
-    for rel in "${MIRROR_KEPT_RELS[@]}"; do kept[${rel}]=1; done
-  fi
+  local -a opts=(-rlcn -8 --out-format='%i %n' "--exclude=${^SYNC_ARTIFACT_GLOBS[@]}")
+  ${keep_newer} && opts+=(--update)
 
-  # Files AND symlinks: a `-type f` walk never sees a link that did not survive
-  # the copy. A missing entry is its own finding. The link itself is not compared:
-  # cmp follows it, so a link and its target are the same bytes whatever it points at.
-  while IFS= read -r rel; do
-    if [[ ! -e "${dst}/${rel}" && ! -L "${dst}/${rel}" ]]; then
-      mismatches=$(( mismatches + 1 ))
+  local -i mismatches=0
+  rsync_tree "${opts[@]}" "${src}/" "${dst}/" || mismatches=1
+  local line flags rel mtime
+  for line in "${(@f)REPLY}"; do
+    flags="${line%% *}"
+    rel="${line#* }"
+    # Files and links; directories and attribute-only lines are not findings.
+    [[ "${flags}" == [\>c][fL]* ]] || continue
+    if [[ "${flags}" == *+++* ]]; then
+      mismatches+=1
       log_warn "Verify missing: ${dst}/${rel}"
       continue
     fi
-    [[ -L "${src}/${rel}" ]] && continue
-    (( ${+kept[${rel}]} )) && continue
-    if ! cmp -s "${src}/${rel}" "${dst}/${rel}"; then
-      # A source still being written — a shell history, a live transcript — grows
-      # between the copy and this read, and then differs from a copy that was
-      # complete when it was taken. That is not the short write this check exists
-      # for, and the mirror preserves mtimes, so a source NEWER than its copy is
-      # copied once more and compared again; a copy that still differs is the
-      # finding. A short write leaves both sides at the same mtime and is reported
-      # as before.
-      if [[ "${src}/${rel}" -nt "${dst}/${rel}" ]] \
-        && cp -p "${src}/${rel}" "${dst}/${rel}" 2> /dev/null \
-        && cmp -s "${src}/${rel}" "${dst}/${rel}"; then
-        log_info "Verify re-copied a source written during the backup: ${rel}"
-        continue
-      fi
-      mismatches=$(( mismatches + 1 ))
-      log_warn "Verify mismatch: ${dst}/${rel}"
+    # A source still being written — a shell history, a live transcript — grows
+    # between the copy and this read, and then differs from a copy that was
+    # complete when it was taken. That is not the short write this check exists
+    # for, so a source written since the mirror started is copied once more and
+    # compared again; a copy that still differs is the finding. Not "newer than
+    # its copy": drvfs stores a copy's mtime in whole seconds, so there every
+    # source is newer than its copy, short write or not.
+    if [[ "${flags}" == ?f* ]] \
+      && mtime="$(stat -c %Y "${src}/${rel}" 2> /dev/null)" \
+      && (( mtime >= MIRROR_STARTED )) \
+      && cp -p "${src}/${rel}" "${dst}/${rel}" 2> /dev/null \
+      && cmp -s "${src}/${rel}" "${dst}/${rel}"; then
+      log_info "Verify re-copied a source written during the backup: ${rel}"
+      continue
     fi
-  done < <(cd "${src}" && sync_artifact_find_args && \
-    find . \( "${reply[@]}" \) -prune -o \( -type f -o -type l \) -printf '%P\n' 2> /dev/null)
+    mismatches+=1
+    log_warn "Verify mismatch: ${dst}/${rel}"
+  done
 
   (( mismatches == 0 ))
 }
@@ -712,79 +711,66 @@ is_nix_managed() {
   [[ "${resolved}" == /nix/store/* ]]
 }
 
-# What the last mirror left alone under keep_newer, for the caller's log and
-# for verify_tree, which must not read a kept file as a mismatch.
+# What the last mirror left alone under keep_newer, for the caller's log and for
+# the memory-index merge, which keeps a kept file's own line; and the second it
+# started, less one for the filesystem's coarse clock, which verify_tree reads.
 typeset -gi MIRROR_KEPT=0
 typeset -ga MIRROR_KEPT_RELS=()
+typeset -gi MIRROR_STARTED=0
 
-# tar, not `cp -r`: cp cannot replace an entry whose TYPE changed and aborts the
-# run. Only vanish-class tar diagnostics are tolerated (a running k9s rewrites
-# its trees mid-read); anything else fails the mirror. $3 = purge: a restore
-# must never delete a live home's files because the backup lacks them.
-# $4 = keep_newer; true = a destination file newer than (or as old as) its source
-# is left alone instead of overwritten. tar's own --keep-newer-files refuses
-# --overwrite and fails on the `.` member over an existing directory, so the
-# member list is built here: every file and link whose copy is missing or older.
+# rsync with its output in REPLY and its errors held back. Exit 24 is a source
+# file listed and gone before it was read (a running k9s rewrites its trees
+# mid-read): a warning. Any other failure, 23 for a file that could not be read
+# or written included, prints rsync's own messages and returns non-zero.
+rsync_tree() {
+  local err
+  local -i rc=0
+  err="$(mktemp)" || return 1
+  REPLY="$(rsync "$@" 2> "${err}")" || rc=$?
+  if (( rc == 24 )); then
+    log_warn "Source mutated while reading ${@[-2]%/}: $(grep -c '^file has vanished' "${err}") entr(ies) vanished or changed mid-read, skipped."
+    rc=0
+  elif (( rc != 0 )); then
+    cat "${err}" >&2
+  fi
+  rm -f "${err}"
+  return ${rc}
+}
+
+# rsync -rlt: recursive, links as links, mtimes kept. Not -a: owner and group are
+# the running user's. Modes: a new file gets its source's, less the umask; a copy
+# that is updated keeps its own and takes only the source's executable bit (-E),
+# so a restore never widens a file this box narrowed. A copy whose size and mtime
+# (to the second) match its source is not written again.
+# --force replaces an entry whose TYPE changed, a directory by a file included.
+# $3 = purge: --delete --delete-excluded drops what the source no longer has,
+# artifacts included. A restore passes false: it must never delete a live home's
+# files because the backup lacks them.
+# $4 = keep_newer; true = --update leaves a copy newer than its source alone.
+# It compares whole seconds, which is all a copy on drvfs keeps, so a second pass
+# writes nothing. Same second is not newer: such a copy is overwritten when its
+# size differs (else the size-and-second check above leaves it), and links are
+# always updated. --info=skip1 names each kept file ("<rel> is newer"); -8 prints
+# a non-ASCII name as it is, so the name matches the file.
 mirror_tree() {
   local src="$1"
   local dst="$2"
   local purge="${3:-true}"
   local keep_newer="${4:-false}"
 
-  local -a xopts=(--overwrite)
-  ${purge} && xopts+=(--recursive-unlink)
-  local -a excl=() g
-  for g in "${SYNC_ARTIFACT_GLOBS[@]}"; do excl+=(--exclude="${g}"); done
+  local -a opts=(-rltE -8 --force "--exclude=${^SYNC_ARTIFACT_GLOBS[@]}")
+  ${purge} && opts+=(--delete --delete-excluded)
+  ${keep_newer} && opts+=(--update --info=skip1)
 
-  MIRROR_KEPT=0
   MIRROR_KEPT_RELS=()
-  local -a copts=(-cf - .)
-  local members=""
-  if ${keep_newer}; then
-    members="$(mktemp)" || return 1
-    local rel
-    while IFS= read -r rel; do
-      # Same second counts as kept: after a mirror both sides carry the source's
-      # mtime, and a second pass must rewrite nothing.
-      if [[ -e "${dst}/${rel}" && ! "${src}/${rel}" -nt "${dst}/${rel}" ]]; then
-        MIRROR_KEPT_RELS+=("${rel}")
-        continue
-      fi
-      print -r -- "${rel}" >> "${members}"
-    done < <(cd "${src}" && sync_artifact_find_args && \
-      find . \( "${reply[@]}" \) -prune -o \( -type f -o -type l \) -printf '%P\n' 2> /dev/null)
-    MIRROR_KEPT=${#MIRROR_KEPT_RELS}
-    if [[ ! -s "${members}" ]]; then
-      rm -f "${members}"
-      return 0
-    fi
-    copts=(--verbatim-files-from --no-recursion -T "${members}" -cf -)
-  fi
-
-  local err
-  err="$(mktemp)"
-  # LC_ALL=C: the classification below matches tar's diagnostics as text.
-  LC_ALL=C tar -C "${src}" "${excl[@]}" "${copts[@]}" 2>"${err}" \
-    | tar -C "${dst}" -xf - "${xopts[@]}"
-  # Declared and assigned in one statement: `local` is itself a command and
-  # resets pipestatus before it could be read.
-  local -a st=("${pipestatus[@]}")
-  [[ -n "${members}" ]] && rm -f "${members}"
-
-  local vanish='Cannot stat: No such file or directory|File removed before we read it|file changed as we read it|Directory renamed before its status could be extracted'
-  local raced other
-  raced="$(grep -cE "${vanish}" "${err}" || true)"
-  other="$(grep -vE "${vanish}|Exiting with failure status" "${err}" | grep -c . || true)"
-
-  if (( other > 0 )); then
-    cat "${err}" >&2
-  elif (( st[1] != 0 )); then
-    log_warn "Source mutated while reading ${src}: ${raced} entr(ies) vanished or changed mid-read, skipped."
-    st[1]=0
-  fi
-  rm -f "${err}"
-
-  (( st[1] == 0 && st[2] == 0 ))
+  MIRROR_STARTED=$(( $(date +%s) - 1 ))
+  local ok=true line
+  rsync_tree "${opts[@]}" "${src}/" "${dst}/" || ok=false
+  for line in "${(@f)REPLY}"; do
+    [[ "${line}" == *' is newer' ]] && MIRROR_KEPT_RELS+=("${line% is newer}")
+  done
+  MIRROR_KEPT=${#MIRROR_KEPT_RELS}
+  ${ok}
 }
 
 # $3 = purge; false = additive, for a destination several machines write into.
@@ -822,7 +808,7 @@ backup_dir() {
       chmod 644 "${file}" 2> /dev/null || true
     fi
   done
-  # A tar that exited 0 can still have written short files onto the 9p mount.
+  # An rsync that exited 0 can still have written short files onto the 9p mount.
   if ! verify_tree "${src}" "${dst}" "${keep_newer}"; then
     record_failure "Verification failed, backup tree differs from source: ${dst}"
     return 0
@@ -957,7 +943,7 @@ restore_dir() {
   fi
 
   mkdir -p "${dst}"
-  # No -p/--same-owner: extracted files belong to the current user.
+  # Not purged, and no -o/-g: the copies belong to the current user.
   local mirror_ok=true
   if ! mirror_tree "${src}" "${dst}" false "${keep_newer}"; then
     record_failure "Partial restore, continuing: ${src} -> ${dst}"
