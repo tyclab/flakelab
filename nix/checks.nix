@@ -594,6 +594,7 @@ in
         fresh no-record
         echo '{"env":{"WHATSAPP_MCP_DIR":"/earlier","MY_VAR":"mine"}}' > "$settings"
         bash -euo pipefail ${entryLater}
+        jq -e '.cleanupPeriodDays == 30' "$settings" > /dev/null
         jq -e '.env | .WHATSAPP_MCP_DIR == "/earlier" and .MY_VAR == "mine"' "$settings" > /dev/null
         jq -e --argjson b "$base" '. == $b' "$record" > /dev/null
 
