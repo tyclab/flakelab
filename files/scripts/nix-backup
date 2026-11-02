@@ -213,6 +213,8 @@ while (( $# > 0 )); do
       echo "  FLAKELAB_STATE_TRANSCRIPT_SECRETS  review (default): hold each transcript secret for --review-secrets;"
       echo "                       redact: the redacted synced copy is the ruling, nothing is held or asked"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
+      echo "  FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS  days a copy of a file --review-secrets rewrote is kept (default 7);"
+      echo "                       every run but --dry-run removes older ones"
       echo "  FLAKELAB_SOPS_RENDER        1 when sops-nix renders the secrets (set by the nix wrapper): the legacy"
       echo "                       ~/.config/flakelab/secrets.env is neither archived nor restored"
       echo ""
@@ -1605,6 +1607,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 acquire_lock
+
+# Every mode, the review that writes pre-scrub copies and the timers' backup and
+# state sync included: the copies hold what the review scrubbed.
+gate_prune_pre_scrub
 
 if ${REVIEW_SECRETS}; then
   # Under the backup's lock: it rewrites the payload's history copy.

@@ -400,6 +400,36 @@ so a key's first use loads it into the agent, which travels wherever
 `ForwardAgent` is on; a key that must stay out needs an earlier `Host` block
 with `AddKeysToAgent no`, or `-o AddKeysToAgent=no` per call.
 
+## A box without transcripts still holds the ones Syncthing gave it
+
+Under `stateSyncthing`, a box with `stateTranscripts` off ignores the
+transcript trees in the state-root folder (`<stateRoot>/.stignore`, written by
+syncthing-init). Syncthing 2.1.3 only marks a file it already holds as ignored
+and leaves it on disk, so a box that synced the folder before the ignore came in
+keeps every transcript it took until then. The `(?d)` on each pattern does not
+clean them up: it only lets Syncthing delete an ignored leftover when another
+box deleted the folder holding it.
+
+Delete them once by hand, and only after the switch put the patterns in place.
+A file deleted while it is not yet ignored counts as a deletion, and Syncthing
+sends that deletion to every box. A deleted ignored file sends nothing.
+
+```sh
+grep -c '^(?d)/' ~/flakelab-state/.stignore  # must print 5; otherwise stop
+du -sh ~/flakelab-state/claude/projects ~/flakelab-state/codex/sessions
+find ~/flakelab-state/claude/projects -mindepth 2 -maxdepth 2 \
+  \( -name '*.jsonl' -o -name '????????-????-????-????-????????????' \) \
+  -exec rm -rf -- {} +
+rm -rf ~/flakelab-state/claude/diverged ~/flakelab-state/codex/sessions \
+  ~/flakelab-state/codex/diverged
+```
+
+Replace `~/flakelab-state` with the box's `stateRoot`. The `find` names exactly
+what the first two patterns match; `memory/` and `memory-tombstones/` in the
+same folders stay. To confirm that no deletion went out, count
+`<stateRoot>/claude/projects/*/*.jsonl` on a box that keeps transcripts before
+and after: the number does not drop.
+
 ## Known limitations
 
 Not bugs — things the flake does not do yet:
