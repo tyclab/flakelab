@@ -1,10 +1,11 @@
 #!/usr/bin/env zsh
 # The Windows tray for tycswap's dashboard, owned by the flake: installs the pinned
-# tycswap.exe, registers an at-logon task driving `tycswap app --remote` against the
-# `flakelab-tycswap-app` service, and starts it. `flakelab update` runs `sync` after
-# every switch; `flakelab doctor` reads `status`. This side only gathers the facts
-# (exe, version, port, remote.token, distro) and hands them, as Windows paths, to
-# files/scripts/tycswap-tray.ps1, which PowerShell runs from the store over \\wsl.localhost.
+# tycswap.exe under %LOCALAPPDATA%\Programs\tycswap, registers an at-logon task that
+# starts the distro and then `tycswap app --remote` against `flakelab-tycswap-app`,
+# and starts the tray only when it is not running. `flakelab update` runs `sync`
+# after every switch; `flakelab doctor` reads `status`. This side only gathers the
+# facts (exe, version, port, remote.token, distro) as Windows paths and hands them
+# to files/scripts/tycswap-tray.ps1, which PowerShell runs from the store.
 set -uo pipefail
 _self="flakelab tray"
 die() { print -ru2 -- "${_self}: $*"; exit 1 }
@@ -50,7 +51,8 @@ _version="${FLAKELAB_TYCSWAP_VERSION:-}"
 [[ -f "${_exe}" ]] || die "the pinned tycswap.exe is not on disk: ${_exe}"
 [[ -f "${_ps1}" ]] || die "the tray script is not on disk: ${_ps1}"
 
-# wsl.exe -d's name: the shell's variable, else the zsh init's record (as `flakelab distro-name`).
+# wsl.exe -d's name: WSL_DISTRO_NAME, else the record the zsh init leaves for contexts
+# without it (`flakelab distro-name` reads the same file).
 _distro="${WSL_DISTRO_NAME:-}"
 if [[ -z "${_distro}" ]]; then
   _record="${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name"
@@ -58,9 +60,8 @@ if [[ -z "${_distro}" ]]; then
 fi
 [[ -n "${_distro}" ]] || die "distro name unknown: neither WSL_DISTRO_NAME nor ${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name; open a WSL shell once, or run this from one"
 
-# The token the app writes at every start; the tray re-reads it by itself. Its
-# Windows spelling is derived, not resolved: wslpath -w refuses a path that does
-# not exist yet, and the token is absent until the service's first start.
+# The token the app writes at every start; the tray re-reads it. Its Windows spelling
+# is derived, not resolved: wslpath -w refuses a path absent until the first start.
 _token="${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap/remote.token"
 _win_token="\\\\wsl.localhost\\${_distro}${_token//\//\\}"
 
@@ -72,9 +73,8 @@ if [[ ! -e "${_binfmt}/WSLInterop" && ! -e "${_binfmt}/WSLInterop-late" ]]; then
   Heal it from a Windows terminal:  wsl --shutdown
   then re-enter this distro and retry."
 fi
-# The absolute path covers a PATH without the Windows directories, and
-# FLAKELAB_POWERSHELL_EXE names one outright (the suite's hook). cwd /mnt/c: from
-# ext4 PowerShell inherits a \\wsl.localhost cwd it cannot use.
+# Absolute path: PATH may lack the Windows directories; FLAKELAB_POWERSHELL_EXE names
+# one outright (the suite's hook). cwd /mnt/c: from ext4 PowerShell gets an unusable cwd.
 _ps="${FLAKELAB_POWERSHELL_EXE:-$(command -v powershell.exe 2> /dev/null || print -- /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)}"
 [[ -x "${_ps}" ]] || die "powershell.exe not found - is /mnt/c mounted?"
 command -v wslpath > /dev/null 2>&1 || die "wslpath not found - not a WSL distro?"
@@ -90,9 +90,8 @@ _args=(
   -Token "${_win_token}" -Distro "${_distro}" -Mode "${_mode}"
 )
 ${_dry} && _args+=(-DryRun)
-# Bounded: an interop call that hangs (a distro mid-shutdown, a stuck 9P share)
-# must not hang `flakelab update`. PowerShell ends every line with CR LF; the CR
-# goes, the exit status stays PowerShell's.
+# Bounded: an interop call that hangs (a distro mid-shutdown, a stuck 9P share) must
+# not hang `flakelab update`. PowerShell ends lines with CR LF: the CR goes, rc stays.
 _limit="${FLAKELAB_TRAY_TIMEOUT:-120}"
 timeout "${_limit}" "${_ps}" "${_args[@]}" < /dev/null 2>&1 | tr -d '\r'
 _rc="${pipestatus[1]}"
