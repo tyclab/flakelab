@@ -714,13 +714,13 @@ claude_session_present() {
 transcript_age_skip() {
   local rel="$1" now="$2" window="$3"
   [[ "${TX_KIND}" == claude ]] || return 1
+  [[ -f "${TX_HOME}/${rel}" ]] && return 1
   local -a segs=("${(@s:/:)rel}")
   if (( ${#segs} > 2 )); then
-    # Subagents follow their parent, including old context of a resumed session.
+    # Missing subagents follow their parent, including old resumed-session context.
     claude_session_present "${TX_HOME}/${segs[1]}/${segs[2]}.jsonl" && return 1
     return 0
   fi
-  [[ -f "${TX_HOME}/${rel}" ]] && return 1
   transcript_epoch "${TX_STATE}/${rel}" || return 1
   (( now - REPLY > window ))
 }
