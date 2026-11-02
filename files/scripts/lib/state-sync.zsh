@@ -669,6 +669,62 @@ tx_pull_skip() {
   [[ -n "${TX_SKIP[${rel:t}]:-}" || -e "${TX_HOME}/${rel}.zst" ]]
 }
 
+# Unknown age stays eligible: trailing metadata or an incomplete append need not
+# carry a timestamp. Read only the tail, never a full multi-megabyte transcript.
+transcript_epoch() {
+  local stamp
+  stamp="$(tail -n 64 -- "$1" 2> /dev/null | jq -Rr '
+    fromjson? | objects | .timestamp? | strings | select(length > 0)
+  ' 2> /dev/null | tail -n 1)" || return 1
+  [[ "${stamp}" =~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' ]] || return 1
+  REPLY="$(date -d "${stamp}" +%s 2> /dev/null)" || return 1
+}
+
+transcript_window() {
+  local days
+  days="$(jq -er '.cleanupPeriodDays | select(type == "number" and . > 0 and . == floor)' \
+    "${HOME_DIR}/.claude/settings.json" 2> /dev/null)" || days=30
+  REPLY=$(( days * 86400 ))
+}
+
+# Use the local bytes, including when grow-only kept a longer or unredacted copy.
+# A writer that appended while the timestamp was read must retain its fresh age.
+transcript_set_age() {
+  [[ "${TX_KIND}" == claude && -f "$1" ]] || return 0
+  ${DRY_RUN} && return 0
+  local before after epoch
+  before="$(stat -c '%d:%i:%s %y' -- "$1" 2> /dev/null)" || return 0
+  transcript_epoch "$1" || return 0
+  epoch="${REPLY}"
+  after="$(stat -c '%d:%i:%s %y' -- "$1" 2> /dev/null)" || return 0
+  [[ "${before}" == "${after}" ]] || return 0
+  touch -c -d "@${epoch}" -- "$1" || record_failure "Cannot set transcript age: $1"
+  after="$(stat -c '%d:%i:%s' -- "$1" 2> /dev/null)" || return 0
+  if [[ "${before%% *}" != "${after}" ]]; then
+    touch -c -- "$1" || record_failure "Cannot preserve resumed transcript age: $1"
+  fi
+  return 0
+}
+
+typeset -gA CLAUDE_PULL_PLANNED=()
+claude_session_present() {
+  [[ -f "$1" ]] || { ${DRY_RUN} && [[ -n "${CLAUDE_PULL_PLANNED[$1]:-}" ]] }
+}
+
+transcript_age_skip() {
+  local rel="$1" now="$2" window="$3"
+  [[ "${TX_KIND}" == claude ]] || return 1
+  local -a segs=("${(@s:/:)rel}")
+  if (( ${#segs} > 2 )); then
+    # Subagents follow their parent, including old context of a resumed session.
+    claude_session_present "${TX_HOME}/${segs[1]}/${segs[2]}.jsonl" && return 1
+    return 0
+  fi
+  [[ -f "${TX_HOME}/${rel}" ]] && return 1
+  transcript_epoch "${TX_STATE}/${rel}" || return 1
+  (( now - REPLY > window ))
+}
+
 # Whether the last sync_transcript placed bytes; the gate's redaction warn reads it.
 SYNC_TRANSCRIPT_WROTE=false
 
@@ -944,21 +1000,38 @@ fold_transcript_conflicts() {
 # skips it; the next run picks it up once the session has gone quiet. The
 # grow-only line rule inside sync_transcript still applies on top.
 PULL_FRESH_SECONDS=600
-pull_transcripts() {
-  local transcript rel dst mtime
-  local now
+pull_transcripts() { pull_transcript_tree false }
+
+# Restore has no live-session freshness guard, but uses the same age policy.
+restore_transcripts() { pull_transcript_tree true }
+
+pull_transcript_tree() {
+  local restore="$1" transcript rel dst mtime now window
+  local -i skipped=0 failures_before
+  CLAUDE_PULL_PLANNED=()
   if ! now="$(date +%s)"; then
     record_failure "Could not read the clock; transcripts not pulled this run"
     return 0
   fi
-  # `**`: subagent transcripts live below the session file
-  # (<slug>/<session>/subagents/*.jsonl), so one level misses them.
-  for transcript in "${TX_STATE}"/**/*.jsonl(N.); do
+  transcript_window
+  window="${REPLY}"
+  local -a files=()
+  if [[ "${TX_KIND}" == claude ]]; then
+    # Parents first: only sessions present locally may acquire a subtree.
+    files=("${TX_STATE}"/*/*.jsonl(N.) "${TX_STATE}"/*/*/**/*.jsonl(N.))
+  else
+    files=("${TX_STATE}"/**/*.jsonl(N.))
+  fi
+  for transcript in "${files[@]}"; do
     rel="${transcript#${TX_STATE}/}"
     rel_path_is_sync_artifact "${rel}" && continue
     tx_pull_skip "${rel}" && continue
+    if transcript_age_skip "${rel}" "${now}" "${window}"; then
+      skipped=$(( skipped + 1 ))
+      continue
+    fi
     dst="${TX_HOME}/${rel}"
-    if [[ -f "${dst}" ]]; then
+    if ! ${restore} && [[ -f "${dst}" ]]; then
       if ! mtime="$(stat -c %Y "${dst}" 2> /dev/null)"; then
         record_failure "Could not stat transcript: ${dst}"
         continue
@@ -968,22 +1041,16 @@ pull_transcripts() {
         continue
       fi
     fi
+    failures_before=${FAILURES}
     sync_transcript "${transcript}" "${dst}"
+    if (( FAILURES == failures_before )); then
+      if ${DRY_RUN} && [[ "${TX_KIND}" == claude && "${rel#*/}" != */* ]]; then
+        CLAUDE_PULL_PLANNED[${dst}]=1
+      fi
+      transcript_set_age "${dst}"
+    fi
   done
-  transcript_lines_save
-  return 0
-}
-
-# Restore leg: the pull without the freshness skip — a restore runs before any
-# session is open on this box.
-restore_transcripts() {
-  local transcript rel
-  for transcript in "${TX_STATE}"/**/*.jsonl(N.); do
-    rel="${transcript#${TX_STATE}/}"
-    rel_path_is_sync_artifact "${rel}" && continue
-    tx_pull_skip "${rel}" && continue
-    sync_transcript "${transcript}" "${TX_HOME}/${rel}"
-  done
+  (( skipped > 0 )) && log_info "Transcripts: ${skipped} skipped by age or absent parent"
   transcript_lines_save
   return 0
 }
@@ -1259,6 +1326,8 @@ pull_side_files() {
   for f in "${STATE_ROOT}"/claude/projects/*/*/**/*(N.); do
     rel="${f#${STATE_ROOT}/claude/projects/}"
     side_file_rel "${rel}" || continue
+    local -a segs=("${(@s:/:)rel}")
+    claude_session_present "${HOME_DIR}/.claude/projects/${segs[1]}/${segs[2]}.jsonl" || continue
     dst="${HOME_DIR}/.claude/projects/${rel}"
     [[ -e "${dst}" ]] && continue
     if ${DRY_RUN}; then
@@ -1271,6 +1340,7 @@ pull_side_files() {
       continue
     fi
     chmod 600 "${dst}" 2> /dev/null || record_failure "Cannot set mode 600 on ${dst}"
+    touch -r "${f}" "${dst}" || record_failure "Cannot set session side file age: ${dst}"
     pulled=$(( pulled + 1 ))
   done
   (( pulled > 0 )) && log_ok "Pulled ${pulled} session side file(s)"

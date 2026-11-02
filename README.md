@@ -503,6 +503,17 @@ timer. It needs `stateRoot` but not `backupAutostart`, so a box that should not
 run the daily payload pass still converges its state, and while it is scheduled
 a closing Claude Code session is pushed at once.
 
+Claude's local transcript cleanup window is pinned to 30 days. Automatic pulls
+and restores leave absent sessions older than that window in the archive;
+the archive retains their contents. To bring one back, including its subagents
+and tool-result files, run `flakelab backup --fetch-session <session-uuid>`, then
+`claude --resume <session-uuid>`. Fetch requires `stateRoot` and
+`stateTranscripts`, preserves active local transcripts, and supports `--dry-run`.
+Fetched transcripts keep their last-entry age, so resume promptly before the
+next Claude cleanup; fetch again if that sweep removes them. Always resume the
+local copy; resuming a path inside the state root would send raw appends past
+the secret gate.
+
 `stateSyncthing = { hubDeviceId = "…"; hubName = "hub"; passwordEnvKey = "STATE_PASSWORD"; };`
 makes the box its own sync client: Syncthing with one folder, the state root,
 shared with an untrusted hub that holds it Receive Encrypted under a password

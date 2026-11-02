@@ -60,6 +60,7 @@ state_unavailable() { ${STATE_CONFIGURED} && ! ${STATE_USABLE} }
 STATE_WROTE=false
 
 source "${0:A:h}/lib/state-sync.zsh" || exit 1
+source "${0:A:h}/lib/transcript-fetch.zsh" || exit 1
 source "${0:A:h}/lib/state-gate.zsh" || exit 1
 # The y/N questions, asked the one way every flakelab command asks them.
 source "${0:A:h}/lib/prompt.zsh" || exit 1
@@ -140,6 +141,7 @@ FORCE=false
 DRY_RUN=false
 RESTORE=false
 STATE_ONLY=false
+FETCH_SESSION=""
 REVIEW_SECRETS=false
 # Re-hold findings settled as `keep` so the next --review-secrets can re-decide
 # them; without this a keep is a one-way door. They stay excluded from the sync.
@@ -167,6 +169,12 @@ while (( $# > 0 )); do
     --dry-run) DRY_RUN=true ;;
     --restore) RESTORE=true ;;
     --state-only) STATE_ONLY=true ;;
+    --fetch-session) _need "$@"; FETCH_SESSION="$2"; shift
+      if [[ ! "${FETCH_SESSION}" =~ ${SIDE_UUID_RE} ]]; then
+        print -r -u2 -- "--fetch-session needs a full Claude session UUID"
+        exit 2
+      fi
+      ;;
     --review-secrets) REVIEW_SECRETS=true ;;
     --revisit-keeps) REVISIT_KEEPS=true ;;
     --state-gc) STATE_GC=true ;;
@@ -191,6 +199,8 @@ while (( $# > 0 )); do
       echo "  --state-only         sync ONLY the state-root categories, both directions (merged"
       echo "                       history, Claude and Codex memory, transcripts); never touches the payload,"
       echo "                       takes no snapshot. Needs FLAKELAB_STATE_ROOT / flakelab.stateRoot"
+      echo "  --fetch-session <id> fetch one archived Claude session and its side files locally,"
+      echo "                       even beyond cleanupPeriodDays; needs stateRoot and stateTranscripts"
       echo "  --review-secrets     decide per finding the secret gate held back: delete, keep local, allow (needs a terminal)"
       echo "  --revisit-keeps      on a backup/--state-only run, re-hold findings settled as 'keep'"
       echo "                       so the next --review-secrets offers them again (they stay unsynced)"
@@ -1540,6 +1550,17 @@ do_state_only() {
 
 # Before the lock: a refused state root is a configuration error and should not
 # wait 300s on another run to say so.
+if [[ -n "${FETCH_SESSION}" ]]; then
+  if ${RESTORE} || ${STATE_ONLY} || ${STATE_GC} || ${REVIEW_SECRETS} || ${REVISIT_KEEPS} || ${SKIP_CONFLICTS} \
+    || [[ -n "${SRC_FROM}" || -n "${SRC_INSTANCE}" ]]; then
+    log_error "--fetch-session is its own mode; drop the other mode flags"
+    exit 2
+  fi
+  if ! ${STATE_CONFIGURED} || ! ${STATE_TRANSCRIPTS} || [[ ! -d "${STATE_ROOT}" ]]; then
+    log_error "--fetch-session needs an existing stateRoot and stateTranscripts enabled"
+    exit 1
+  fi
+fi
 check_state_root
 
 # --review-secrets rewrites local files, so a preview of it is a contradiction —
@@ -1605,6 +1626,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 acquire_lock
+
+if [[ -n "${FETCH_SESSION}" ]]; then
+  fetch_claude_session "${FETCH_SESSION}"
+  if (( FAILURES > 0 )); then exit 1; fi
+  exit 0
+fi
 
 # Every mode, the review that writes pre-scrub copies and the timers' backup and
 # state sync included: the copies hold what the review scrubbed.

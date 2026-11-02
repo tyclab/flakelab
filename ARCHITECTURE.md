@@ -623,6 +623,13 @@ the state root has to converge on its own:
   `~/.local/state/flakelab/state-sync/transcript-lines` and reused while the
   file's size, mtime and inode stand — append-only files placed by rename
   cannot change count otherwise. Deleting the index only costs one full count.
+  Claude's missing local sessions are pulled only within `cleanupPeriodDays`
+  (managed at 30 days), measured from the last timestamp in the transcript tail;
+  unknown ages stay eligible. Idle local copies get their own content timestamp
+  as mtime, so Claude's cleanup can expire them. Subagents and side files follow
+  the parent session. `flakelab backup --fetch-session <uuid>` explicitly recovers
+  an older session. Automatic sync retains the archive; explicit `--state-gc`
+  can still remove a slug no machine claims after local cleanup.
 - **Session side files** — the tool outputs Claude Code spills to
   `<slug>/<session>/tool-results/`, a subagent's `.meta.json` — travel with the
   transcripts. Write-once, so each is copied only to a side that lacks it,

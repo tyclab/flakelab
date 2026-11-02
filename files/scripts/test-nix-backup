@@ -3115,6 +3115,209 @@ run_backup --state-only --force
 check "the run exits clean"                        "${RC}" "0"
 check "the grown state-root copy replaced the local one" "$(wc -l < "${SLUG_HOME}/quiet.jsonl")" "2"
 
+print -r -- "old missing Claude sessions stay archived until they continue elsewhere"
+transcript_fixture transcript-age-missing
+mkdir -p "${SLUG_STATE}"
+old_stamp="$(date -u -d '60 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+fresh_stamp="$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)"
+old_epoch="$(date -d "${old_stamp}" +%s)"
+fresh_epoch="$(date -d "${fresh_stamp}" +%s)"
+jq -cn --arg ts "${old_stamp}" '{uuid:"age-1",timestamp:$ts}' > "${SLUG_STATE}/old.jsonl"
+run_backup --state-only --force
+check    "the age-gated sync exits clean" "${RC}" "0"
+absent   "a fresh archive mtime cannot revive an old session" "${SLUG_HOME}/old.jsonl"
+is_file  "the complete archive remains available" "${SLUG_STATE}/old.jsonl"
+contains "age skips are reported" "${OUT}" "age"
+jq -cn --arg ts "${fresh_stamp}" '{uuid:"age-2",timestamp:$ts}' >> "${SLUG_STATE}/old.jsonl"
+touch -d '90 days ago' "${SLUG_STATE}/old.jsonl"
+run_backup --state-only --force
+check    "continuing the archived session exits clean" "${RC}" "0"
+is_file  "a fresh entry revives the session despite old archive mtime" "${SLUG_HOME}/old.jsonl"
+check    "the pulled transcript keeps its entry age" "$(stat -c %Y "${SLUG_HOME}/old.jsonl")" "${fresh_epoch}"
+
+print -r -- "the age gate follows cleanupPeriodDays and tolerates missing timestamps"
+transcript_fixture transcript-age-settings
+mkdir -p "${SLUG_STATE}"
+print -r -- '{"cleanupPeriodDays":7}' > "${FIX_HOME}/.claude/settings.json"
+middle_stamp="$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+jq -cn --arg ts "${middle_stamp}" '{uuid:"middle",timestamp:$ts}' > "${SLUG_STATE}/middle.jsonl"
+print -r -- '{"uuid":"unknown"}' > "${SLUG_STATE}/unknown.jsonl"
+print -r -- '{"uuid":"invalid","timestamp":"not-a-date"}' > "${SLUG_STATE}/invalid.jsonl"
+{ jq -cn --arg ts "${old_stamp}" '{uuid:"tail",timestamp:$ts}'; print -r -- '{"type":"metadata"}'; } > "${SLUG_STATE}/metadata.jsonl"
+run_backup --state-only --force
+check    "the custom-window sync exits clean" "${RC}" "0"
+absent   "the configured seven-day window is used" "${SLUG_HOME}/middle.jsonl"
+is_file  "a timestamp-less transcript is kept conservatively" "${SLUG_HOME}/unknown.jsonl"
+is_file  "an invalid timestamp is kept conservatively" "${SLUG_HOME}/invalid.jsonl"
+absent   "metadata after the last timestamp does not reset its age" "${SLUG_HOME}/metadata.jsonl"
+print -r -- '{"cleanupPeriodDays":0}' > "${FIX_HOME}/.claude/settings.json"
+run_backup --state-only --force
+check    "a zero cleanup setting falls back without failing" "${RC}" "0"
+is_file  "zero uses the default thirty-day window" "${SLUG_HOME}/middle.jsonl"
+
+print -r -- "existing old transcripts still grow and idle copies regain their true age"
+transcript_fixture transcript-age-existing
+mkdir -p "${SLUG_STATE}"
+jq -cn --arg ts "${old_stamp}" '{uuid:"existing-1",timestamp:$ts}' > "${SLUG_HOME}/grow.jsonl"
+cp "${SLUG_HOME}/grow.jsonl" "${SLUG_STATE}/grow.jsonl"
+jq -cn --arg ts "${old_stamp}" '{uuid:"existing-2",timestamp:$ts}' >> "${SLUG_STATE}/grow.jsonl"
+cp "${SLUG_HOME}/grow.jsonl" "${SLUG_HOME}/equal.jsonl"
+cp "${SLUG_HOME}/grow.jsonl" "${SLUG_STATE}/equal.jsonl"
+cp "${SLUG_HOME}/grow.jsonl" "${SLUG_HOME}/active.jsonl"
+cp "${SLUG_STATE}/grow.jsonl" "${SLUG_STATE}/active.jsonl"
+active_mtime="$(mtime_ns "${SLUG_HOME}/active.jsonl")"
+touch -d '1 hour ago' "${SLUG_HOME}/grow.jsonl" "${SLUG_HOME}/equal.jsonl"
+equal_mtime="$(mtime_ns "${SLUG_HOME}/equal.jsonl")"
+run_backup --state-only --dry-run
+check    "the retention preview exits clean" "${RC}" "0"
+check    "a preview does not backdate unchanged transcripts" "$(mtime_ns "${SLUG_HOME}/equal.jsonl")" "${equal_mtime}"
+check    "a preview does not refresh old local transcripts" "$(wc -l < "${SLUG_HOME}/grow.jsonl")" "1"
+run_backup --state-only --force
+check    "the existing-session sync exits clean" "${RC}" "0"
+check    "an existing old local transcript still refreshes" "$(wc -l < "${SLUG_HOME}/grow.jsonl")" "2"
+check    "the refreshed old transcript receives its entry age" "$(stat -c %Y "${SLUG_HOME}/grow.jsonl")" "${old_epoch}"
+check    "an unchanged idle copy loses its misleading copy-time mtime" "$(stat -c %Y "${SLUG_HOME}/equal.jsonl")" "${old_epoch}"
+check    "a fresh local copy remains protected from replacement" "$(wc -l < "${SLUG_HOME}/active.jsonl")" "1"
+check    "its freshness mtime is not backdated" "$(mtime_ns "${SLUG_HOME}/active.jsonl")" "${active_mtime}"
+cp "${SLUG_STATE}/equal.jsonl" "${SLUG_HOME}/longer.jsonl"
+cp "${SLUG_STATE}/equal.jsonl" "${SLUG_STATE}/longer.jsonl"
+jq -cn --arg ts "${middle_stamp}" '{uuid:"local-later",timestamp:$ts}' >> "${SLUG_HOME}/longer.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/longer.jsonl"
+run_restore
+check    "restoring over a longer local copy exits clean" "${RC}" "0"
+check    "the longer local copy survives" "$(wc -l < "${SLUG_HOME}/longer.jsonl")" "2"
+check    "its own newest entry determines its age" "$(stat -c %Y "${SLUG_HOME}/longer.jsonl")" "$(date -d "${middle_stamp}" +%s)"
+
+print -r -- "a session that resumes during age normalization retains a fresh mtime"
+export FAKE_TOUCH_REAL="$(command -v touch)"
+cat > "${BASE}/bin/touch" <<'FAKE_TOUCH'
+#!/usr/bin/env zsh
+set -eu
+args=("$@")
+if [[ "${args[-1]}" == "${FAKE_TOUCH_TARGET}" && " $* " == *' -d '* ]]; then
+  if [[ "${FAKE_TOUCH_MODE}" == append ]]; then
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{uuid:"resumed",timestamp:$ts}' >> "${FAKE_TOUCH_TARGET}"
+  else
+    tmp="$(mktemp "${FAKE_TOUCH_TARGET}.race.XXXXXX")"
+    cp "${FAKE_TOUCH_TARGET}" "${tmp}"
+    mv "${tmp}" "${FAKE_TOUCH_TARGET}"
+  fi
+fi
+exec "${FAKE_TOUCH_REAL}" "$@"
+FAKE_TOUCH
+chmod +x "${BASE}/bin/touch"
+for race_mode in append replace; do
+  transcript_fixture "transcript-age-race-${race_mode}"
+  mkdir -p "${SLUG_STATE}"
+  export FAKE_TOUCH_TARGET="${SLUG_HOME}/race.jsonl" FAKE_TOUCH_MODE="${race_mode}"
+  jq -cn --arg ts "${old_stamp}" '{uuid:"race",timestamp:$ts}' > "${FAKE_TOUCH_TARGET}"
+  cp "${FAKE_TOUCH_TARGET}" "${SLUG_STATE}/race.jsonl"
+  "${FAKE_TOUCH_REAL}" -d '1 hour ago' "${FAKE_TOUCH_TARGET}"
+  race_inode="$(stat -c %i "${FAKE_TOUCH_TARGET}")"
+  race_started="$(date +%s)"
+  run_backup --state-only --force
+  check "normalizing with concurrent ${race_mode} exits clean" "${RC}" "0"
+  if [[ "${race_mode}" == append ]]; then
+    check "the concurrent append survives" "$(wc -l < "${FAKE_TOUCH_TARGET}")" "2"
+  else
+    [[ "$(stat -c %i "${FAKE_TOUCH_TARGET}")" != "${race_inode}" ]] \
+      && ok "the replacement inode survives" || bad "the replacement inode survives"
+  fi
+  (( $(stat -c %Y "${FAKE_TOUCH_TARGET}") >= race_started )) \
+    && ok "concurrent ${race_mode} does not acquire an expired age" || bad "concurrent ${race_mode} does not acquire an expired age"
+done
+rm "${BASE}/bin/touch"
+unset FAKE_TOUCH_REAL FAKE_TOUCH_TARGET FAKE_TOUCH_MODE
+
+print -r -- "restore respects the session age gate and side files follow present parents"
+transcript_fixture transcript-age-restore
+SID=11111111-2222-3333-4444-555555555555
+OTHER=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+mkdir -p "${SLUG_STATE}/${SID}/subagents" "${SLUG_STATE}/${SID}/tool-results" \
+  "${SLUG_STATE}/${OTHER}/subagents" "${SLUG_STATE}/${OTHER}/tool-results"
+jq -cn --arg ts "${old_stamp}" '{uuid:"old-parent",timestamp:$ts}' > "${SLUG_STATE}/${SID}.jsonl"
+jq -cn --arg ts "${fresh_stamp}" '{uuid:"fresh-child",timestamp:$ts}' > "${SLUG_STATE}/${SID}/subagents/agent-old.jsonl"
+jq -cn --arg ts "${fresh_stamp}" '{uuid:"fresh-parent",timestamp:$ts}' > "${SLUG_STATE}/${OTHER}.jsonl"
+jq -cn --arg ts "${old_stamp}" '{uuid:"old-child",timestamp:$ts}' > "${SLUG_STATE}/${OTHER}/subagents/agent-new.jsonl"
+print -r -- old-output > "${SLUG_STATE}/${SID}/tool-results/old.txt"
+print -r -- fresh-output > "${SLUG_STATE}/${OTHER}/tool-results/new.txt"
+UNKNOWN=bbbbbbbb-cccc-dddd-eeee-ffffffffffff
+mkdir -p "${SLUG_STATE}/${UNKNOWN}/subagents" "${SLUG_STATE}/${UNKNOWN}/tool-results"
+print -r -- '{"uuid":"unknown-parent"}' > "${SLUG_STATE}/${UNKNOWN}.jsonl"
+print -r -- '{"uuid":"unknown-child"}' > "${SLUG_STATE}/${UNKNOWN}/subagents/agent-unknown.jsonl"
+print -r -- unknown-output > "${SLUG_STATE}/${UNKNOWN}/tool-results/unknown.txt"
+for dry_mode in --state-only --restore; do
+  run_backup "${dry_mode}" --dry-run
+  check    "${dry_mode} previews complete session trees" "${RC}" "0"
+  contains "a planned recent parent's subagent is previewed" "${OUT}" "${SLUG_HOME}/${OTHER}/subagents/agent-new.jsonl"
+  contains "a planned recent parent's side file is previewed" "${OUT}" "${SLUG_HOME}/${OTHER}/tool-results/new.txt"
+  contains "a planned unknown-age parent's subagent is previewed" "${OUT}" "${SLUG_HOME}/${UNKNOWN}/subagents/agent-unknown.jsonl"
+  contains "a planned unknown-age parent's side file is previewed" "${OUT}" "${SLUG_HOME}/${UNKNOWN}/tool-results/unknown.txt"
+  excludes "an expired parent's subagent is not previewed" "${OUT}" "${SLUG_HOME}/${SID}/subagents/agent-old.jsonl"
+  excludes "an expired parent's side file is not previewed" "${OUT}" "${SLUG_HOME}/${SID}/tool-results/old.txt"
+  absent   "the preview creates no recent parent" "${SLUG_HOME}/${OTHER}.jsonl"
+  absent   "the preview creates no subtree" "${SLUG_HOME}/${OTHER}"
+done
+run_restore
+check    "the age-gated restore exits clean" "${RC}" "0"
+absent   "restore leaves the old parent archived" "${SLUG_HOME}/${SID}.jsonl"
+absent   "a fresh subagent cannot restore an absent old parent tree" "${SLUG_HOME}/${SID}/subagents/agent-old.jsonl"
+absent   "side files do not recreate the absent old session" "${SLUG_HOME}/${SID}/tool-results/old.txt"
+is_file  "restore brings back the recent parent" "${SLUG_HOME}/${OTHER}.jsonl"
+is_file  "its old subagent comes with it for resume context" "${SLUG_HOME}/${OTHER}/subagents/agent-new.jsonl"
+is_file  "its side file comes with it" "${SLUG_HOME}/${OTHER}/tool-results/new.txt"
+check    "restore preserves transcript age" "$(stat -c %Y "${SLUG_HOME}/${OTHER}.jsonl")" "${fresh_epoch}"
+
+print -r -- "fetch restores only the requested archived session and its attachments"
+transcript_fixture transcript-fetch
+SID=11111111-2222-3333-4444-555555555555
+OTHER=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+mkdir -p "${SLUG_STATE}/${SID}/subagents" "${SLUG_STATE}/${SID}/tool-results" \
+  "${FIX_STATE}/shell"
+jq -cn --arg ts "${old_stamp}" '{uuid:"fetch-parent",timestamp:$ts}' > "${SLUG_STATE}/${SID}.jsonl"
+jq -cn --arg ts "${old_stamp}" '{uuid:"fetch-child",timestamp:$ts}' > "${SLUG_STATE}/${SID}/subagents/agent-a.jsonl"
+cp "${SLUG_STATE}/${SID}.jsonl" "${SLUG_STATE}/${OTHER}.jsonl"
+print -r -- archived-output > "${SLUG_STATE}/${SID}/tool-results/output.txt"
+touch -d "${old_stamp}" "${SLUG_STATE}/${SID}/tool-results/output.txt"
+print -r -- '{"agentType":"test"}' > "${SLUG_STATE}/${SID}/subagents/agent-a.meta.json"
+rec 1000 0 "archive-history" > "${FIX_STATE}/shell/.zsh_history_merged"
+rec 2000 0 "local-history" > "${FIX_HOME}/.zsh_history"
+run_backup --fetch-session "${SID}" --dry-run
+check    "fetch supports a dry run" "${RC}" "0"
+absent   "a preview does not restore the parent" "${SLUG_HOME}/${SID}.jsonl"
+run_backup --fetch-session "${SID}"
+check    "fetch exits clean" "${RC}" "0"
+same     "the requested old parent is restored" "${SLUG_STATE}/${SID}.jsonl" "${SLUG_HOME}/${SID}.jsonl"
+same     "its old subagent bypasses the automatic gate too" "${SLUG_STATE}/${SID}/subagents/agent-a.jsonl" "${SLUG_HOME}/${SID}/subagents/agent-a.jsonl"
+same     "the requested tool output is restored" "${SLUG_STATE}/${SID}/tool-results/output.txt" "${SLUG_HOME}/${SID}/tool-results/output.txt"
+check    "the fetched side file keeps its source age" "$(stat -c %Y "${SLUG_HOME}/${SID}/tool-results/output.txt")" "${old_epoch}"
+is_file  "the subagent metadata is restored" "${SLUG_HOME}/${SID}/subagents/agent-a.meta.json"
+check    "the fetched parent keeps its entry timestamp" "$(stat -c %Y "${SLUG_HOME}/${SID}.jsonl")" "${old_epoch}"
+check    "the fetched child keeps its entry timestamp" "$(stat -c %Y "${SLUG_HOME}/${SID}/subagents/agent-a.jsonl")" "${old_epoch}"
+check    "the fetched file is private" "$(stat -c %a "${SLUG_HOME}/${SID}.jsonl")" "600"
+absent   "the other archived session is not fetched" "${SLUG_HOME}/${OTHER}.jsonl"
+excludes "fetch does not pull unrelated shell history" "$(< "${FIX_HOME}/.zsh_history")" "archive-history"
+excludes "fetch does not push unrelated shell history" "$(< "${FIX_STATE}/shell/.zsh_history_merged")" "local-history"
+absent   "fetch does not write a payload snapshot" "${FIX_ROOT}/snapshots"
+print -r -- '{"uuid":"fetch-new","text":"continued locally"}' >> "${SLUG_HOME}/${SID}.jsonl"
+fetch_live_mtime="$(mtime_ns "${SLUG_HOME}/${SID}.jsonl")"
+run_backup --fetch-session "${SID}"
+check    "fetch with a live local session exits clean" "${RC}" "0"
+contains "fetch keeps the local session's continuation" "$(< "${SLUG_HOME}/${SID}.jsonl")" "continued locally"
+check    "fetch leaves a live session's mtime alone" "$(mtime_ns "${SLUG_HOME}/${SID}.jsonl")" "${fetch_live_mtime}"
+
+print -r -- "fetch rejects ambiguous and invalid session ids before placement"
+transcript_fixture transcript-fetch-invalid
+mkdir -p "${SLUG_STATE}" "${FIX_STATE}/claude/projects/other-slug"
+jq -cn --arg ts "${old_stamp}" '{uuid:"ambiguous",timestamp:$ts}' > "${SLUG_STATE}/${SID}.jsonl"
+cp "${SLUG_STATE}/${SID}.jsonl" "${FIX_STATE}/claude/projects/other-slug/${SID}.jsonl"
+run_backup --fetch-session "${SID}"
+[[ "${RC}" != 0 ]] && ok "an ambiguous session id fails" || bad "an ambiguous session id fails"
+absent   "ambiguity leaves the first match untouched" "${SLUG_HOME}/${SID}.jsonl"
+absent   "ambiguity leaves the second match untouched" "${FIX_HOME}/.claude/projects/other-slug/${SID}.jsonl"
+run_backup --fetch-session '../outside'
+check    "a path is a usage error" "${RC}" "2"
+
 print -r -- "a second run with nothing changed stages and scans no transcript"
 transcript_fixture state-only-incremental-quiet
 mkdir -p "${SLUG_STATE}"
@@ -3172,6 +3375,8 @@ transcript_fixture state-only-subagents
 mkdir -p "${SLUG_HOME}/sess-1/subagents" "${SLUG_STATE}/sess-2/subagents"
 print -r -- '{"n":"sub-local"}' > "${SLUG_HOME}/sess-1/subagents/agent-a.jsonl"
 print -r -- '{"n":"sub-other"}' > "${SLUG_STATE}/sess-2/subagents/agent-b.jsonl"
+print -r -- '{"n":"parent-local"}' > "${SLUG_HOME}/sess-1.jsonl"
+print -r -- '{"n":"parent-other"}' > "${SLUG_STATE}/sess-2.jsonl"
 rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
 
 run_backup --state-only --force
@@ -3410,6 +3615,7 @@ OTHER=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
 mkdir -p "${SLUG_HOME}/${SID}/tool-results" "${SLUG_HOME}/${SID}/subagents" \
          "${SLUG_STATE}/${OTHER}/tool-results"
 print -r -- '{"uuid":"u1"}'        > "${SLUG_HOME}/${SID}.jsonl"
+print -r -- '{"uuid":"u2"}'        > "${SLUG_STATE}/${OTHER}.jsonl"
 print -r -- "plain output"         > "${SLUG_HOME}/${SID}/tool-results/toolu_1.txt"
 { print -r -- "line one"; print -r -- "token hunter2-side here"; print -r -- "" } \
   > "${SLUG_HOME}/${SID}/tool-results/toolu_2.txt"
