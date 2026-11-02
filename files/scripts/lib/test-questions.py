@@ -176,6 +176,16 @@ class QuestionTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(self.transport.calls[-1]["op"], "cancel")
 
+    def test_a_removed_start_directory_still_asks(self):
+        self.init(elicitation=False)
+        with patch.object(questions.os, "getcwd", side_effect=FileNotFoundError(2, "No such file or directory")), \
+                patch.dict(questions.os.environ, {"PWD": "/gone/worktree"}):
+            thread = self.start()
+            self.transport.answer.set(); thread.join(1)
+        self.assertEqual(self.result()["answer"], "Use the blue one")
+        [create] = [c for c in self.transport.calls if c["op"] == "create"]
+        self.assertEqual(create["project"], "/gone/worktree")
+
     def test_invalid_arguments_do_not_post(self):
         self.server.ask(1, {"question": "", "options": [3]}, threading.Event())
         self.assertEqual(self.transport.calls, [])
