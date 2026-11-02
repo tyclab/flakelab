@@ -37,15 +37,14 @@ for f in ${^path}/*(N-*); do
 done
 mkdir -p "${BASE}/home" "${BASE}/overlay"
 
-# section <name> <VAR=value>...: the doctor's section <name>, colours stripped, from
-# a run with only that environment. NixOS's /etc/zshenv puts the system profile,
-# systemctl with it, on the PATH of every zsh it starts unless it has run already;
-# each run says it has.
+# section <name> <VAR=value>...: the doctor's section <name>, from a run with only
+# that environment; piped, so without colour. NixOS's /etc/zshenv puts the system
+# profile, systemctl with it, on the PATH of every zsh it starts unless it has run
+# already; each run says it has.
 section() {
   local name="$1" out
   shift
   out="$(env -i __ETC_ZSHENV_SOURCED=1 "$@" zsh "${SECTION_DOCTOR:-${DOCTOR}}" 2>&1 < /dev/null)"
-  out="${out//$'\e'\[[0-9;]#m/}"
   out="${out#*==> ${name}$'\n'}"
   print -r -- "${out%%$'\n'==> *}"
 }
@@ -512,12 +511,10 @@ stub systemctl 1
 contains "is a note" "$(section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other)" "[ OK ] note: no user manager, so no dashboard unit to check"
 
 # native_mcp <config JSON>: the whole doctor run with FLAKELAB_MCP_CONFIG naming that
-# configuration, colours stripped.
+# configuration.
 native_mcp() {
   print -r -- "$1" > "${BASE}/mcp-config.json"
-  local out
-  out="$(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_MCP_CONFIG="${BASE}/mcp-config.json" zsh "${DOCTOR}" 2>&1 < /dev/null)"
-  print -r -- "${out//$'\e'\[[0-9;]#m/}"
+  env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_MCP_CONFIG="${BASE}/mcp-config.json" zsh "${DOCTOR}" 2>&1 < /dev/null
 }
 
 print -r -- "native MCP: no native server declared"
@@ -641,6 +638,32 @@ lacks    "with no mv to fail on"      "${out}" "mv -n ~/.config/tyc"
 rm -rf "${BASE}/home/.config/tyc"
 lacks    "no old directory, no warning" "$(secrets)" "~/.config/tyc"
 rm -rf "${BASE}/home/.config"
+
+# on_tty <redirect> [<VAR=value>...]: a whole doctor run on a pseudo-terminal
+# (util-linux script) with TERM=xterm and that environment, <redirect> (`> file`,
+# `2> file` or empty) applied inside it; prints what reached the terminal.
+on_tty() {
+  local redirect="$1" out
+  shift
+  local -a cmd=(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other TERM=xterm "$@" zsh "${DOCTOR}")
+  out="$(script -qec "${(j: :)${(q)cmd[@]}} ${redirect}" /dev/null < /dev/null 2>&1)"
+  print -r -- "${out//$'\r'/}"
+}
+
+print -r -- "colour: only when stdout and stderr are both a terminal, and never with NO_COLOR or TERM=dumb"
+out="$(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other TERM=xterm zsh "${DOCTOR}" 2>&1 < /dev/null)"
+lacks    "a piped run writes no escape codes"            "${out}" $'\e'
+out="$(on_tty '')"
+contains "a terminal still gets the green OK tag"        "${out}" $'\e[32m[ OK ]'
+contains "and the yellow WARN tag on stderr"             "${out}" $'\e[33m[WARN]'
+lacks    "NO_COLOR=1 turns it off at a terminal"         "$(on_tty '' NO_COLOR=1)" $'\e'
+contains "an empty NO_COLOR does not"                    "$(on_tty '' NO_COLOR=)" $'\e[32m[ OK ]'
+lacks    "TERM=dumb turns it off"                        "$(on_tty '' TERM=dumb)" $'\e'
+on_tty "> ${(q)BASE}/tty-stdout" > /dev/null
+lacks    "stdout to a file gets none, stderr a terminal" "$(< "${BASE}/tty-stdout")" $'\e'
+on_tty "2> ${(q)BASE}/tty-stderr" > /dev/null
+lacks    "stderr to a file gets none, stdout a terminal" "$(< "${BASE}/tty-stderr")" $'\e'
+rm -f "${BASE}/tty-stdout" "${BASE}/tty-stderr"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

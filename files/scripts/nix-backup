@@ -368,11 +368,9 @@ check_state_root() {
   STATE_USABLE=true
 }
 
-GREEN="%F{green}"
-YELLOW="%F{yellow}"
-RED="%F{red}"
-CYAN="%F{cyan}"
-RESET="%f"
+# Colours (print -P): every log line goes to stdout, so only when it is a terminal.
+source "${0:A:h}/lib/color.zsh" || exit 1
+color_init 1
 
 log_info()  { print -rP -- "${CYAN}[INFO]${RESET}  ${1//\%/%%}" }
 log_ok()    { print -rP -- "${GREEN}[OK]${RESET}    ${1//\%/%%}" }
