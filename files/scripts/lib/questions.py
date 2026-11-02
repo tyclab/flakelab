@@ -93,6 +93,14 @@ def endpoint():
     return value + "-questions"
 
 
+def project():
+    """The directory the server was started in, by its last known path once it is gone (a removed worktree)."""
+    try:
+        return os.getcwd()
+    except OSError:
+        return os.environ.get("PWD", "")
+
+
 class ProtocolError(ValueError):
     """The inbox answered HTTP 400: it does not accept this request (old hatyc or bad input)."""
 
@@ -329,7 +337,7 @@ class Server:
             declined = False
             transport = self.transport()
             create = {**auth, "op": "create", **question, "agent": self.agent,
-                      "project": os.getcwd(), "host": socket.gethostname()}
+                      "project": project(), "host": socket.gethostname()}
             deadline = time.monotonic() + self.timeout
             created, failures, unavailable_since = False, 0, None
             inbox_unavailable = False
