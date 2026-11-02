@@ -474,7 +474,8 @@ $NonSecretKeyNames = @('HASS_URL', 'PROXMOX_API_URL', 'PROXMOX_VERIFY_SSL',
 # A credential-shaped name is withheld too, whatever the config calls it: the word, not a substring, so
 # MAX_OUTPUT_TOKENS stays; a location (_URL, _DIR, ...) names no secret. Kept identical to nix-overlay-generate's
 # _secret_shape and _secret_exempt (test-nix-overlay-generate pins both); the named secrets first, as NTFY_URL is one.
-$SecretNamePattern = '(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
+# Plural and run-together forms count too: DB_PASSWORDS, NPM_AUTHTOKEN, CREDENTIALS_JSON.
+$SecretNamePattern = '(^|_)(TOKEN|SECRETS?|PASSWORDS?|PASSWD|APIKEY|CREDENTIAL)(_|$)|(TOKEN|SECRETS?|PASSWORDS?|PASSWD)$|(^|_)CREDENTIALS_|API_KEY|PRIVATE_KEY'
 $SecretNameExempt = '_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
 # A webhook's URL is its credential, so that word wins over the location suffix.
 $SecretNameAlways = '(^|_)WEBHOOK(_|$)'
