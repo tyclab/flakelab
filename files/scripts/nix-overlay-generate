@@ -345,6 +345,8 @@ _yaml_load() {
   # The `|| [[ -n ... ]]` reads a final line with no trailing newline.
   while IFS= read -r line || [[ -n "$line" ]]; do
     (( ++n ))
+    # A byte-order mark (Notepad, PowerShell 5.1's UTF8) is no part of the first key.
+    (( n == 1 )) && line="${line#$'\xef\xbb\xbf'}"
     _trim "$line"
     [[ -z "$REPLY" ]] && continue
     [[ "$REPLY" == '#'* ]] && continue
@@ -564,8 +566,11 @@ if [[ -n "${_config}" ]]; then
   for _k in "${YK[@]}"; do
     _want="${_shape[$_k]:-}"
     if [[ -z "${_want}" ]]; then
-      # An empty key carries nothing to drop.
-      if (( ${_secret_names[(Ie)$_k]} )); then _skipped_secrets+=("${_k}")
+      # Secret names match in any case, as setup-wsl-nix.ps1's reader matches them;
+      # schema keys only in lowercase, as YAML does. An empty key carries nothing to drop.
+      if (( ${_secret_names[(Ie)${_k:u}]} )); then _skipped_secrets+=("${_k}")
+      elif [[ -n "${_shape[${_k:l}]:-}" ]]; then
+        warn "'${_k}' in the config is not read: keys are lowercase - write it as '${_k:l}'"
       elif [[ -n "${YS[$_k]:-}${YL[$_k]:-}${YMK[$_k]:-}${${YIC[$_k]:-}:#0}" ]]; then _dropped "${_k}"
       fi
       continue

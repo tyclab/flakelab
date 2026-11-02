@@ -971,6 +971,23 @@ contains "a line under a key by count"         "${OUT}" "${BASE}/unread.yaml: 1 
 excludes "no value is printed"                 "${OUT}" "unread-value"
 contains "the readable entry is kept"          "${f}" 'GOOD_VAR = "kept";'
 
+# Notepad and PowerShell 5.1's `Set-Content -Encoding UTF8` write a byte-order
+# mark. Glued to the first key it made `user:` an unread line, and the run stopped
+# on "no Linux username" for a config setup-wsl-nix.ps1 had always read.
+print -r -- "a UTF-8 byte-order mark and CRLF line ends read like a plain file"
+printf '\xef\xbb\xbfuser: bom\r\ngitfullname: Bom Person\r\ngitmail: bom@example.com\r\nprofiles:\r\n  - example\r\n' > "${BASE}/bom.yaml"
+o="$(out bom)"
+run_gen --out "${o}" --config "${BASE}/bom.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "the first key is read"               "$(flake_of "${o}")" 'username = "bom";'
+contains "and the CRLF list under the last"    "$(flake_of "${o}")" 'profiles = [ "example" ];'
+excludes "no line is reported unread"          "${OUT}" "not read"
+# Only the file's first three bytes are a mark; the same bytes inside a value are data.
+printf 'user: mid\ngitfullname: Mid\xef\xbb\xbfPerson\ngitmail: mid@example.com\nprofiles: [example]\n' > "${BASE}/midbom.yaml"
+o="$(out midbom)"
+run_gen --out "${o}" --config "${BASE}/midbom.yaml"
+contains "a mark inside a value is kept"       "$(flake_of "${o}")" $'gitName = "Mid\xef\xbb\xbfPerson";'
+
 print -r -- "a profiles alias shadowed by another is named"
 bare_cfg alias <<'YAML'
 profiles: [example]
@@ -1005,6 +1022,41 @@ contains "by name"                             "${OUT}" "  GITLAB_TOKEN"
 excludes "not as an unmapped key"              "${OUT}" "'GITLAB_TOKEN' in the config"
 excludes "the value is never printed"          "${OUT}" "not-a-real-token-4"
 excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-4"
+
+# YAML keys are case-sensitive and the schema's are lowercase. setup-wsl-nix.ps1's
+# own reader takes `User:` for `user:` without a word; this one does not, so
+# a schema key in another case is named with the key it should be.
+print -r -- "a schema key in another case is named, with the lowercase key"
+cat > "${BASE}/case.yaml" <<'YAML'
+User: cased
+gitfullname: Case Person
+gitmail: case@example.com
+Profiles:
+  - example
+YAML
+o="$(out case)"
+run_gen --out "${o}" --config "${BASE}/case.yaml"
+check    "it fails: there is no user:"        "${RC}" "1"
+contains "naming the key it did not read"     "${OUT}" "'User' in the config is not read: keys are lowercase - write it as 'user'"
+contains "every such key"                     "${OUT}" "'Profiles' in the config is not read: keys are lowercase - write it as 'profiles'"
+excludes "not as a key with no overlay field" "${OUT}" "'User' in the config maps to nothing"
+contains "and the stop names the key"         "${OUT}" "set 'user:' in the config"
+[[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
+
+# setup-wsl-nix.ps1 takes a top-level token as a secret whatever its case; named as
+# a key with no overlay field, it was pointed at a hand-written overlay entry.
+print -r -- "a top-level secret in lowercase is reported as a secret"
+bare_cfg lowsecret <<'YAML'
+profiles: [example]
+gitlab_token: 'not-a-real-token-5'
+YAML
+o="$(out lowsecret)"
+run_gen --out "${o}" --config "${BASE}/lowsecret.yaml"
+check    "it generates"                        "${RC}" "0"
+contains "it is in the secrets summary"        "${OUT}" "  gitlab_token"
+excludes "not as an unmapped key"              "${OUT}" "'gitlab_token' in the config"
+excludes "the value is never printed"          "${OUT}" "not-a-real-token-5"
+excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-5"
 
 print -r -- "an empty unmapped key is not named: it carries nothing"
 bare_cfg empty-unmapped <<'YAML'
