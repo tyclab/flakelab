@@ -1097,9 +1097,35 @@ in
       latestClaude =
         pkgs.writeText "installClaudeCode-latest-activation"
           latest.home-manager.users.${sys.flakelab.username}.home.activation.installClaudeCode.data;
+      packagesFor =
+        claude: codex:
+        let
+          inherit
+            (self.nixosConfigurations.default.extendModules {
+              modules = [
+                {
+                  flakelab.installClaude = claude;
+                  flakelab.installCodex = codex;
+                }
+              ];
+            })
+            config
+            ;
+        in
+        config.home-manager.users.${config.flakelab.username}.home.packages;
+      claudeOnly = packagesFor true false;
+      codexOnly = packagesFor false true;
+      neither = packagesFor false false;
     in
-    # Codex's sandbox takes bwrap from PATH, not the store path of a dependency.
+    # Sandbox executables must be on PATH even when only one client is installed.
     assert builtins.elem pkgs.bubblewrap hm.home.packages;
+    assert builtins.elem pkgs.socat hm.home.packages;
+    assert builtins.elem pkgs.bubblewrap claudeOnly;
+    assert builtins.elem pkgs.socat claudeOnly;
+    assert builtins.elem pkgs.bubblewrap codexOnly;
+    assert !(builtins.elem pkgs.socat codexOnly);
+    assert !(builtins.elem pkgs.bubblewrap neither);
+    assert !(builtins.elem pkgs.socat neither);
     pkgs.runCommandLocal "flakelab-check-cli-installers" { nativeBuildInputs = [ pkgs.bash ]; } ''
       set -u
       export DRY_RUN_CMD=
