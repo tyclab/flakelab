@@ -100,9 +100,9 @@ in
       scripts.gitcleaner
       scripts.gitpublisher
     ]
-    # Codex's Linux sandbox runs the first bwrap on PATH; without one it warns at
-    # every start and falls back to a bundled helper.
-    ++ lib.optional cfg.installCodex pkgs.bubblewrap
+    # Both Linux sandboxes need bwrap on PATH; Claude also uses socat for its proxy.
+    ++ lib.optional (cfg.installClaude || cfg.installCodex) pkgs.bubblewrap
+    ++ lib.optional cfg.installClaude pkgs.socat
     # The account switcher for Claude Code and Codex, pinned in flake.nix.
     ++ lib.optional cfg.installTycswap pkgs.tycswap
     ++ profilePkgs;
