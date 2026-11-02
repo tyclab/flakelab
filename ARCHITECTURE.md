@@ -505,6 +505,17 @@ box with the state root as its only folder, shared with one always-on hub that
 holds it Receive Encrypted. The folder password comes from the sops render, so
 the hub and its disk only ever see ciphertext.
 
+A box that leaves `stateTranscripts` off never reads the transcript trees, so it
+does not take them from the folder either: syncthing-init writes
+`<stateRoot>/.stignore` with `claude/projects/<slug>/*.jsonl`, the
+`<slug>/<session uuid>/` folders beside them, `claude/diverged/`,
+`codex/sessions/` and `codex/diverged/`, and leaves `memory/`,
+`memory-tombstones/` and everything else to sync. Syncthing never syncs the
+`.stignore` file itself. With transcripts on, syncthing-init posts an empty list,
+which deletes the file. Ignoring a path leaves on disk what an earlier sync put
+there, so a box that already held the trees deletes them once by hand
+(`known-issues.md`).
+
 ```text
 <stateRoot>/shell/.zsh_history_merged                 # union of every machine's history
 <stateRoot>/claude/projects/<slug>/memory/            # auto-memory, per checkout path

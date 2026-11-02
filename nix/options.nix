@@ -532,7 +532,7 @@ in
     stateTranscripts = mkOption {
       type = types.bool;
       default = false;
-      description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) and Codex sessions (~/.codex/sessions/**/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null.";
+      description = "Also keep Claude Code session transcripts (~/.claude/projects/<slug>/*.jsonl) and Codex sessions (~/.codex/sessions/**/*.jsonl) in stateRoot, grow-only in both directions. Off by default and separate from memory on purpose: a transcript is the verbatim text of every session — large, growing, and including anything ever pasted — so opting in means that folder, and whatever replicates it, holds that. Ignored when stateRoot is null. Under stateSyncthing, a box that leaves this off does not take the transcript trees from the folder either: syncthing-init writes them into <stateRoot>/.stignore with this off, and with it on posts an empty list, which deletes that file. Patterns of your own go in services.syncthing.settings.folders.<folderId>.ignorePatterns, which joins this list. Trees an earlier sync left on the box stay until deleted by hand (known-issues.md).";
     };
 
     stateTranscriptSecrets = mkOption {
