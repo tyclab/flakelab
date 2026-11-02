@@ -17,12 +17,9 @@ set -uo pipefail
 # Exit status: 0 all blocking checks passed, 1 at least one failed, 2 a usage error.
 #
 
-# Colors (print -P)
-GREEN="%F{green}"
-YELLOW="%F{yellow}"
-RED="%F{red}"
-CYAN="%F{cyan}"
-RESET="%f"
+# Colors (print -P): the doctor writes to stdout and stderr, so only when both are a terminal.
+source "${0:A:h}/lib/color.zsh" || exit 1
+color_init 1 2
 
 STRICT=false
 QUIET=false

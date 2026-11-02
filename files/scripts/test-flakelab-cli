@@ -330,6 +330,51 @@ for s v in "${(@kv)HELP_VERB}"; do
 done
 
 print -r -- ""
+print -r -- "a flag with no value exits 2"
+# Last on the line, a value flag read a "$2" that set -u refused ("2: parameter
+# not set", exit 1, read as failed work) or ran on with the value empty. Every
+# flag that takes a value, given none: the usage code, a first line naming the
+# flag, and nothing run. python3 is a stub here: web would start its server.
+typeset -A VALUE_FLAGS=(
+  activate-hooks       '--repos-dir'
+  build-dev-wsl-nix    '--name --flake --base'
+  claude-sessions      '--group'
+  clone-repos          '--key-file --max-jobs --repos-dir'
+  gh-repos             '--owner'
+  gitchecker           '--repos-dir --repo --max-jobs --max-depth'
+  gitcleaner           '--repos-dir --repo --max-depth --only'
+  gitpublisher         '--title --repo --branch --message-file --description-file --target-branch'
+  glab-group-projects  '--group --per-page'
+  nix-backup           '--keep --from --instance'
+  nix-overlay-generate '--out --config --flakelab-ref --user --target --git-name --git-email --locale --windows-username --git-editor --backup-autostart --state-root --state-transcripts --repo-path --overlay-url --profiles --gitlab-groups --ssh-keys'
+  nix-provision        '--repo'
+  notify               '--codex --title --message --priority --tags'
+  report-stale-repos   '--repos-dir --group'
+  switch-result        '--rc --carry'
+  test-provision-nix   '--tarball'
+  web                  '--bind --port --token-file --terminal-socket --logo'
+)
+VALBIN="${BASE}/valbin"
+mkdir -p "${VALBIN}"
+cp "${HELPBIN}"/*(.) "${VALBIN}/"
+print -rl -- '#!/usr/bin/env zsh' "print -r -- \"ran:python3 \$*\" >> ${(q)BASE}/help-ran.log; exit 1" > "${VALBIN}/python3"
+chmod +x "${VALBIN}/python3"
+for s in ${(ko)VALUE_FLAGS}; do
+  # switch-result's exit status is its verdict, 2 (activation-failed) included.
+  want=2; [[ "${s}" == switch-result ]] && want=64
+  for f in ${=VALUE_FLAGS[$s]}; do
+    rm -f "${BASE}/help-ran.log"
+    OUT="$(env -u USER -u SUDO_USER -u WSL_DISTRO_NAME -u NTFY_URL -u NTFY_TOKEN -u NOTIFY_WEBHOOK_URL \
+      HOME="${BASE}/helphome" FLAKELAB_SECRETS_ENV="" FLAKELAB_SECRETS_RENDER="${BASE}/none" PATH="${VALBIN}:${PATH}" \
+      timeout 20 zsh "${SCRIPT_DIR}/${s}" "${f}" </dev/null 2>&1)"; RC=$?
+    check "${s} ${f} with no value exits ${want}" "${RC}" "${want}"
+    check "${s} ${f}: the first line names the flag and what it needs" \
+      "$([[ "${OUT%%$'\n'*}" == *"${f} "(needs|requires)* ]] && print yes || print -r -- "${OUT%%$'\n'*}")" "yes"
+    check "${s} ${f}: nothing runs" "$([[ -e "${BASE}/help-ran.log" ]] && < "${BASE}/help-ran.log" || print none)" "none"
+  done
+done
+
+print -r -- ""
 print -r -- "no pipefail script decides on a pipe that ends in grep -q"
 # grep -q quits at its first match; whatever still writes into the pipe then
 # dies of SIGPIPE, and pipefail turns the match into a failure. The doctor's

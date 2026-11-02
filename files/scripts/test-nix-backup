@@ -2,9 +2,10 @@
 
 set -uo pipefail
 
-# The terminal cases need prompts, and this suite may itself run in an agent's
-# shell, where lib/prompt.zsh's prompt_tty says no to any terminal.
-unset CLAUDECODE CODEX_THREAD_ID
+# The terminal cases need prompts and colour, and this suite may itself run in an
+# agent's shell, where lib/prompt.zsh's prompt_tty says no to any terminal, or
+# under NO_COLOR.
+unset CLAUDECODE CODEX_THREAD_ID NO_COLOR
 
 # Offline suite for nix-backup: the real script against a throwaway backup root,
 # home and state root (FLAKELAB_BACKUP_ROOT / FLAKELAB_HOME_DIR / FLAKELAB_STATE_ROOT).
@@ -335,6 +336,14 @@ foreign_decision() {
 }
 
 print -r -- "test-nix-backup"
+
+print -r -- "usage errors exit 2, before anything is read"
+OUT="$("${BACKUP}" --keep abc < /dev/null 2>&1)"; RC=$?
+check    "a --keep that is no number exits 2" "${RC}" "2"
+contains "naming the flag"                     "${OUT}" "--keep requires a non-negative integer"
+OUT="$("${BACKUP}" --from < /dev/null 2>&1)"; RC=$?
+check    "--from with no value exits 2"        "${RC}" "2"
+contains "naming the flag"                     "${OUT}" "--from needs a value"
 
 # ---------------------------------------------------------------------------
 # Instance identity: WSL_DISTRO_NAME, then FLAKELAB_INSTANCE, then "unknown"
@@ -672,7 +681,7 @@ live="$(< "${FIX_HOME}/.claude/CLAUDE.md")"
 contains "the local copy is the one still there" "${live}" "rewritten here"
 
 # run_backup_tty <keys> <args...> — run_backup on a pseudo-terminal (util-linux
-# `script`), the keys typed ahead; the escape codes stripped from OUT.
+# `script`), the keys typed ahead; the escape codes stripped from OUT, kept in RAW.
 run_backup_tty() {
   local keys="$1"
   shift
@@ -687,7 +696,8 @@ run_backup_tty() {
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}"
     "${BACKUP}" "$@")
   OUT="$(printf "$keys" | TERM=xterm timeout 120 script -qec "${(j: :)${(q)cmd[@]}}" /dev/null 2>&1)"; RC=$?
-  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+  RAW="${OUT//$'\r'/}"
+  OUT="$(print -r -- "${RAW}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
 }
 print -r -- "a conflicting file at a terminal is asked about"
 run_backup_tty 'n' --restore
@@ -696,6 +706,15 @@ contains "a no skips it"                       "${OUT}" "Skipped: ${FIX_HOME}/.c
 contains "and keeps the local copy"            "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "rewritten here"
 run_backup_tty 'y' --restore
 contains "a yes overwrites it"                 "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "from the backup"
+
+print -r -- "colour: only at a terminal, and never with NO_COLOR"
+fixture colour
+run_backup
+excludes "a piped run writes no escape codes"         "${OUT}" $'\e'
+run_backup_tty ''
+contains "a terminal still gets the coloured tags"    "${RAW}" $'\e[32m[OK]'
+NO_COLOR=1 run_backup_tty ''
+excludes "NO_COLOR=1 keeps them out at a terminal too" "${RAW}" $'\e'
 
 print -r -- "an activation-owned file keeps the local copy on its own"
 fixture activation-owned
@@ -2239,6 +2258,147 @@ check    "the held list no longer carries it"      "$(grep -c . "${FIX_HELD}")" 
 decisions="$(< "${FIX_DECISIONS}")"
 contains "the decision is recorded"                "${decisions}" '"decision":"delete"'
 excludes "and never the secret"                    "${decisions}" "hunter2"
+
+# A pre-scrub copy is the undo for one rewrite, and it holds exactly what the
+# delete ruling took out of the live file: kept for good, the ruling never took
+# the secret off the box (22 transcript copies from 2026-09-01..06 on one). The
+# copies older than the window go on every run; nothing else in the folder, and
+# nothing beyond it, ever does.
+print -r -- "a backup prunes pre-scrub copies older than the window, and nothing else"
+fixture prescrub-prune
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+outside="${BASE}/prescrub-prune/outside"
+mkdir -p "${scrub}/nested" "${outside}"
+for f in transcript-abc.jsonl.1725148800 home-zsh_history.1725148801 \
+  payload-zsh_history_merged.1730000000 notes.txt nested/transcript-def.jsonl.1725148802; do
+  print -r -- copy > "${scrub}/${f}"
+done
+print -r -- copy > "${outside}/transcript-ghi.jsonl.1725148803"
+ln -s "${outside}/transcript-ghi.jsonl.1725148803" "${scrub}/transcript-ghi.jsonl.1725148803"
+touch -d '8 days ago' "${scrub}"/{transcript-abc.jsonl.1725148800,home-zsh_history.1725148801} \
+  "${scrub}"/{notes.txt,nested/transcript-def.jsonl.1725148802} "${outside}/transcript-ghi.jsonl.1725148803"
+touch -h -d '8 days ago' "${scrub}/transcript-ghi.jsonl.1725148803"
+touch -d '6 days ago' "${scrub}/payload-zsh_history_merged.1730000000"
+
+run_backup --force
+check    "the backup exits clean"                        "${RC}" "0"
+absent   "a transcript copy older than 7 days goes"      "${scrub}/transcript-abc.jsonl.1725148800"
+absent   "and so does a history copy"                    "${scrub}/home-zsh_history.1725148801"
+contains "the run says how many went"                    "${OUT}" "Pruned 2 pre-scrub copies older than 7 day(s)"
+is_file  "a copy younger than 7 days stays"              "${scrub}/payload-zsh_history_merged.1730000000"
+is_file  "a file not named like a copy stays"            "${scrub}/notes.txt"
+is_file  "nothing below a subfolder is touched"          "${scrub}/nested/transcript-def.jsonl.1725148802"
+is_link  "a symlink is neither followed nor removed"     "${scrub}/transcript-ghi.jsonl.1725148803"
+is_file  "and its old target outside the folder stays"   "${outside}/transcript-ghi.jsonl.1725148803"
+
+run_backup --force
+check    "a second backup exits clean"                   "${RC}" "0"
+excludes "and, with nothing left to prune, says nothing" "${OUT}" "pre-scrub cop"
+
+print -r -- "an empty pre-scrub folder is fine, and so is none"
+fixture prescrub-empty
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+run_backup --force
+check    "a backup without the folder exits clean"       "${RC}" "0"
+absent   "and does not create it"                        "${scrub}"
+mkdir -p "${scrub}"
+run_backup --force
+check    "a backup with an empty one exits clean"        "${RC}" "0"
+excludes "and says nothing about it"                     "${OUT}" "pre-scrub cop"
+
+print -r -- "a state sync prunes them too"
+state_fixture prescrub-state-only
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+mkdir -p "${scrub}"
+print -r -- copy > "${scrub}/transcript-abc.jsonl.1725148800"
+touch -d '8 days ago' "${scrub}/transcript-abc.jsonl.1725148800"
+run_backup --state-only
+check    "the state sync exits clean"                    "${RC}" "0"
+absent   "and the old copy is gone"                      "${scrub}/transcript-abc.jsonl.1725148800"
+contains "one copy, counted as one"                      "${OUT}" "Pruned 1 pre-scrub copy older than 7 day(s)"
+
+print -r -- "a review prunes the old copies and keeps the one it writes"
+transcript_fixture prescrub-review
+secret_transcript
+run_backup --force
+check    "the backup exits clean"                        "${RC}" "0"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+mkdir -p "${scrub}"
+print -r -- copy > "${scrub}/transcript-old.jsonl.1725148800"
+touch -d '8 days ago' "${scrub}/transcript-old.jsonl.1725148800"
+ANSWERS="d"
+run_backup --review-secrets
+check    "the review exits clean"                        "${RC}" "0"
+excludes "the live transcript lost the secret"           "$(< "${LIVE}")" "hunter2-secret"
+absent   "the old copy is gone"                          "${scrub}/transcript-old.jsonl.1725148800"
+pre=("${scrub}"/transcript-abc.jsonl.*(N.))
+check    "the copy this review wrote stays"              "${#pre}" "1"
+
+print -r -- "FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS sets the window; anything but a number of days prunes nothing"
+fixture prescrub-window
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+mkdir -p "${scrub}"
+print -r -- copy > "${scrub}/transcript-abc.jsonl.1725148800"
+touch -d '8 days ago' "${scrub}/transcript-abc.jsonl.1725148800"
+FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS=30 run_backup --force
+check    "a 30-day window exits clean"                   "${RC}" "0"
+is_file  "and keeps an 8-day-old copy"                   "${scrub}/transcript-abc.jsonl.1725148800"
+# More than a century (36500) is a typo, and a big enough one overflows the
+# window in seconds into a negative age that every copy is older than.
+for days in 7d -1 1.5 36501 999999999999999; do
+  FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS="${days}" run_backup --force
+  check    "a window of '${days}' fails the run"         "${RC}" "1"
+  contains "naming the variable"                         "${OUT}" "FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS"
+  is_file  "and prunes nothing"                          "${scrub}/transcript-abc.jsonl.1725148800"
+done
+run_backup --dry-run
+check    "a dry run exits clean"                         "${RC}" "0"
+contains "and names what it would prune"                 "${OUT}" "Would prune 1 pre-scrub copy older than 7 day(s)"
+is_file  "without pruning it"                            "${scrub}/transcript-abc.jsonl.1725148800"
+run_backup --force
+check    "the default window exits clean"                "${RC}" "0"
+absent   "and takes the copy"                            "${scrub}/transcript-abc.jsonl.1725148800"
+
+print -r -- "a pre-scrub folder that is a symlink is refused, not pruned through"
+fixture prescrub-linked
+rec 1000 0 "ls" > "${FIX_HOME}/.zsh_history"
+scrub="${FIX_HOME}/.local/state/flakelab/state-gate/pre-scrub"
+outside="${BASE}/prescrub-linked/outside"
+mkdir -p "${scrub:h}" "${outside}"
+print -r -- copy > "${outside}/transcript-abc.jsonl.1725148800"
+touch -d '8 days ago' "${outside}/transcript-abc.jsonl.1725148800"
+ln -s "${outside}" "${scrub}"
+run_backup --force
+check    "the run fails"                                 "${RC}" "1"
+contains "naming the link"                               "${OUT}" "Refusing to prune pre-scrub copies through a symlink"
+is_file  "and nothing beyond it is pruned"               "${outside}/transcript-abc.jsonl.1725148800"
+
+# The folder comes from HOME_DIR and cannot be empty or / from outside, so the
+# guard is driven directly, with rm stubbed: a broken guard removes nothing here.
+print -r -- "the prune refuses a folder that is unset, relative or the root"
+fixture prescrub-guard
+for dir in "" / // /tmp/.. relative/pre-scrub; do
+  said="$(HOME_DIR="${FIX_HOME}" GUARD_DIR="${dir}" zsh -fc '
+    set -euo pipefail
+    FAILURES=0
+    DRY_RUN=false
+    record_failure() { FAILURES=$(( FAILURES + 1 )); print -r -- "FAILURE $1" }
+    log_ok() { print -r -- "OK $1" }
+    log_dry() { print -r -- "DRY $1" }
+    log_info() { : }
+    log_warn() { : }
+    rm() { print -r -- "RM $*" }
+    source "$1"
+    GATE_PRE_SCRUB_DIR="${GUARD_DIR}"
+    gate_prune_pre_scrub
+    print -r -- "failures=${FAILURES}"' guard "${SCRIPT_DIR}/lib/state-gate.zsh" 2>&1)"
+  contains "'${dir}' is refused as a failure"            "${said}" "failures=1"
+  excludes "and nothing is removed"                      "${said}" "RM "
+done
 
 print -r -- "--review-secrets scrubs a secret the scanner reported one line early"
 transcript_fixture gate-review-transcript-line-off

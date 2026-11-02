@@ -61,6 +61,13 @@ run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus
 check "an unknown option exits 2" "${RC}" "2"
+# --print-token, so a regression prints instead of starting the server.
+run --print-token --logo
+check "--logo with no value exits 2" "${RC}" "2"
+contains "naming the flag" "${ERR}" "--logo needs a value"
+run --print-token --token-file ''
+check "an empty --token-file exits 2" "${RC}" "2"
+contains "naming the flag" "${ERR}" "--token-file needs a value"
 run --port 0
 check "a port outside 1-65535 is refused" "${RC}" "2"
 run --bind 0.0.0.0

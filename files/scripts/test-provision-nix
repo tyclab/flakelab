@@ -12,10 +12,12 @@ DISTRO_NAME="FlakeLabTest"
 KEEP=false
 TARBALL=""
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { _say red "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
     --keep)    KEEP=true ;;
-    --tarball) TARBALL="$2"; shift ;;
+    --tarball) _need "$@"; TARBALL="$2"; shift ;;
     --help|-h) print "Usage: flakelab test-provision [--tarball nixos.wsl] [--keep]"; exit 0 ;;
     *) _say red "Unknown option: $1" >&2; exit 2 ;;
   esac

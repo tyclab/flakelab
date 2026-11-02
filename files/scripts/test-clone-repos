@@ -203,6 +203,11 @@ run_sweep "$(spec conflict)"
 contains "the conflict is counted"          "${OUT}" "1 rebase-conflict"
 contains "and git's text survives the \\c"  "${OUT}" 'local \c tail-marker'
 
+print -r -- "a flag with no value is a usage error"
+OUT="$("${SWEEP}" --key-file "${KEY}" --repos-dir < /dev/null 2>&1)"; RC=$?
+check    "it exits 2"                       "${RC}" "2"
+contains "naming the flag"                  "${OUT}" "--repos-dir needs a value"
+
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

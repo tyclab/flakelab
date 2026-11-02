@@ -55,15 +55,17 @@ EOF
 }
 
 die() { gitscan_die "$@" }
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { print -r -u2 -- "$1 needs a value"; usage >&2; exit 2 } }
 
 while (( $# > 0 )); do
   case $1 in
-    --title)            TITLE="$2"; shift ;;
-    --repo)             REPO="$2"; shift ;;
-    --branch)           BRANCH="$2"; shift ;;
-    --message-file)     MSG_FILE="$2"; shift ;;
-    --description-file) DESC_FILE="$2"; shift ;;
-    --target-branch)    TARGET="$2"; shift ;;
+    --title)            _need "$@"; TITLE="$2"; shift ;;
+    --repo)             _need "$@"; REPO="$2"; shift ;;
+    --branch)           _need "$@"; BRANCH="$2"; shift ;;
+    --message-file)     _need "$@"; MSG_FILE="$2"; shift ;;
+    --description-file) _need "$@"; DESC_FILE="$2"; shift ;;
+    --target-branch)    _need "$@"; TARGET="$2"; shift ;;
     --draft)            DRAFT=1 ;;
     --json)             JSON=1 ;;
     -h|--help)          usage; exit 0 ;;
