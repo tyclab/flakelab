@@ -1060,7 +1060,8 @@ contains "a field after the map is still read" "${f}" 'tools/alpha'
 print -r -- "a credential-shaped custom_env_var is withheld whatever the config calls it"
 typeset -a _shaped=(SERVICE_API_TOKEN APP_CLIENT_SECRET DB_PASSWORD LDAP_PASSWD ANY_API_KEY
   OTHER_APIKEY SIGNING_PRIVATE_KEY SOME_CREDENTIAL app_token AWS_SECRET_ACCESS_KEY SECRET_KEY
-  GITHUB_TOKEN SLACK_WEBHOOK_URL)
+  GITHUB_TOKEN SLACK_WEBHOOK_URL
+  DB_PASSWORDS AZURE_CLIENT_SECRETS NPM_AUTHTOKEN GITEA_APITOKEN CLIENTSECRET DBPASSWORD CREDENTIALS_JSON)
 # The word, not a substring, and a location is no secret: these stay session variables.
 typeset -a _kept=(CLAUDE_CODE_MAX_OUTPUT_TOKENS MAX_THINKING_TOKENS TOKENIZERS_PARALLELISM
   GOOGLE_APPLICATION_CREDENTIALS AWS_SHARED_CREDENTIALS_FILE PASSWORD_STORE_DIR OAUTH_TOKEN_URL
@@ -1094,7 +1095,7 @@ zsh_shape="$(sed -n "s/^_secret_shape='\(.*\)'\$/\1/p" "${GEN}")"
 ps1_shape="$(sed -n "s/^\$SecretNamePattern = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
 zsh_exempt="$(sed -n "s/^_secret_exempt='\(.*\)'\$/\1/p" "${GEN}")"
 ps1_exempt="$(sed -n "s/^\$SecretNameExempt = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
-check "the zsh pattern is the word rule" "${zsh_shape}" '(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
+check "the zsh pattern is the word rule" "${zsh_shape}" '(^|_)(TOKEN|SECRETS?|PASSWORDS?|PASSWD|APIKEY|CREDENTIAL)(_|$)|(TOKEN|SECRETS?|PASSWORDS?|PASSWD)$|(^|_)CREDENTIALS_|API_KEY|PRIVATE_KEY'
 check "both writers withhold the same shapes"     "${ps1_shape}" "${zsh_shape}"
 check "the zsh exemption names the locations"     "${zsh_exempt}" '_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
 check "both writers exempt the same locations"    "${ps1_exempt}" "${zsh_exempt}"
