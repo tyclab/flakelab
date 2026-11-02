@@ -2,9 +2,10 @@
 
 set -uo pipefail
 
-# The terminal cases need prompts, and this suite may itself run in an agent's
-# shell, where lib/prompt.zsh's prompt_tty says no to any terminal.
-unset CLAUDECODE CODEX_THREAD_ID
+# The terminal cases need prompts and colour, and this suite may itself run in an
+# agent's shell, where lib/prompt.zsh's prompt_tty says no to any terminal, or
+# under NO_COLOR.
+unset CLAUDECODE CODEX_THREAD_ID NO_COLOR
 
 # Offline suite for nix-backup: the real script against a throwaway backup root,
 # home and state root (FLAKELAB_BACKUP_ROOT / FLAKELAB_HOME_DIR / FLAKELAB_STATE_ROOT).
@@ -672,7 +673,7 @@ live="$(< "${FIX_HOME}/.claude/CLAUDE.md")"
 contains "the local copy is the one still there" "${live}" "rewritten here"
 
 # run_backup_tty <keys> <args...> — run_backup on a pseudo-terminal (util-linux
-# `script`), the keys typed ahead; the escape codes stripped from OUT.
+# `script`), the keys typed ahead; the escape codes stripped from OUT, kept in RAW.
 run_backup_tty() {
   local keys="$1"
   shift
@@ -687,7 +688,8 @@ run_backup_tty() {
     WSL_DISTRO_NAME="${RUN_WSL_NAME}" FLAKELAB_INSTANCE="${RUN_INSTANCE}"
     "${BACKUP}" "$@")
   OUT="$(printf "$keys" | TERM=xterm timeout 120 script -qec "${(j: :)${(q)cmd[@]}}" /dev/null 2>&1)"; RC=$?
-  OUT="$(print -r -- "${OUT//$'\r'/}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
+  RAW="${OUT//$'\r'/}"
+  OUT="$(print -r -- "${RAW}" | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g')"
 }
 print -r -- "a conflicting file at a terminal is asked about"
 run_backup_tty 'n' --restore
@@ -696,6 +698,15 @@ contains "a no skips it"                       "${OUT}" "Skipped: ${FIX_HOME}/.c
 contains "and keeps the local copy"            "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "rewritten here"
 run_backup_tty 'y' --restore
 contains "a yes overwrites it"                 "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "from the backup"
+
+print -r -- "colour: only at a terminal, and never with NO_COLOR"
+fixture colour
+run_backup
+excludes "a piped run writes no escape codes"         "${OUT}" $'\e'
+run_backup_tty ''
+contains "a terminal still gets the coloured tags"    "${RAW}" $'\e[32m[OK]'
+NO_COLOR=1 run_backup_tty ''
+excludes "NO_COLOR=1 keeps them out at a terminal too" "${RAW}" $'\e'
 
 print -r -- "an activation-owned file keeps the local copy on its own"
 fixture activation-owned
