@@ -121,7 +121,7 @@ in
   nix.gc = {
     automatic = true;
     dates = "daily";
-    options = "--delete-older-than 30d";
+    options = "--delete-older-than 2d";
   };
   nix.optimise = {
     automatic = true;

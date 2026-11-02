@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- Nix garbage collection keeps generations for two days instead of thirty (`nix.gc.options = "--delete-older-than 2d"`). Generations are not the rollback this repo relies on (that is `flakelab backup`'s payload snapshots), and on a WSL image the 30 days held 11.5 GB of old closures beside an 8.5 GB current system (58 generations, TycbookElite, 2026-11-02); the image only gives that back at the next compact.
 - The managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` blocks tell an agent never to ask for a secret's value, and to name the key instead.
 - Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.
 - `flakelab doctor` no longer warns on every local flakelab override. A `path:` or `git+file:` input is a finding only when its checkout has uncommitted changes to tracked files, is behind its tracking ref as last fetched (the doctor fetches nothing and takes no index lock), or is missing. An overlay with no `flake.lock` and a `path:` input in `flake.nix`, the state `setup-wsl-nix.ps1` leaves on purpose, is read from `flake.nix` instead of being reported as unknown.
