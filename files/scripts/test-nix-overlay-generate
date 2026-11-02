@@ -403,6 +403,11 @@ run_gen --out "$(out badflag)" --frobnicate
 check    "an unknown flag is a usage error, exit 2" "${RC}" "2"
 contains "naming it"               "${OUT}" "frobnicate"
 
+# '' is a value here (gitEditor = null); no word at all is a usage error.
+run_gen --git-editor
+check    "--git-editor with no value is a usage error, exit 2" "${RC}" "2"
+contains "naming it"               "${OUT}" "--git-editor needs a value"
+
 # With nothing selected the build still succeeds and the box gets nothing, so it is an
 # error; groups without a profile only warns, since the box does get clones.
 print -r -- "an overlay that would install nothing is refused"

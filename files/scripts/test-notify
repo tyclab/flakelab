@@ -261,6 +261,13 @@ run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus
 check "an unknown option exits 2" "${RC}" "2"
+run --title
+check "--title with no value exits 2" "${RC}" "2"
+contains "naming the flag" "${ERR}" "--title needs a value"
+# Empty, --message would turn the run into a hook run reading stdin.
+run --message ''
+check "an empty --message exits 2" "${RC}" "2"
+contains "naming the flag" "${ERR}" "--message needs a value"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

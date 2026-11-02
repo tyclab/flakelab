@@ -1278,10 +1278,15 @@ in
       offHome = box.extendModules {
         modules = [ { flakelab.stateSyncthing.configDir = "/var/lib/check-secrets/syncthing"; } ];
       };
+      # The fixture keeps no transcripts (the default); this one does.
+      transcripts = box.extendModules {
+        modules = [ { flakelab.stateTranscripts = true; } ];
+      };
       inherit (box.config.services) syncthing;
       folder = syncthing.settings.folders.flakelab-state;
       pw = box.config.systemd.services.flakelab-syncthing-password;
       plain = self.nixosConfigurations.default.config;
+      initScript = sys: "${sys.config.systemd.services.syncthing-init.serviceConfig.ExecStart}";
     in
     assert syncthing.enable;
     assert syncthing.user == plain.flakelab.username;
@@ -1305,12 +1310,23 @@ in
       offHome.config.systemd.tmpfiles.rules;
     assert builtins.elem "/var/lib/check-secrets/syncthing"
       offHome.config.systemd.services.syncthing.unitConfig.RequiresMountsFor;
+    assert !box.config.flakelab.stateTranscripts;
+    assert transcripts.config.services.syncthing.settings.folders.flakelab-state.ignorePatterns == [ ];
     # The reader the unit runs, against a render shaped like sops writes it:
     # CRLF endings, a key that is a prefix of the wanted one, two definitions.
+    # Then the ignore list each syncthing-init posts, through a real Syncthing
+    # over a state root laid out as the sync writes it.
     pkgs.runCommandLocal "flakelab-check-state-syncthing"
       {
         inherit (pw) script;
         passAsFile = [ "script" ];
+        nativeBuildInputs = [
+          pkgs.syncthing
+          pkgs.curl
+          pkgs.jq
+        ];
+        initOff = initScript box;
+        initOn = initScript transcripts;
       }
       ''
         reader="$(grep -o '/nix/store/[^ ]*-flakelab-syncthing-password-read' "$scriptPath" | head -n 1)"
@@ -1318,6 +1334,70 @@ in
         test "$("$reader" render)" = 'first=value'
         printf 'OTHER=x\n' > empty
         test -z "$("$reader" empty)"
+
+        posted() { sed -n "s|^curl -d '\(.*\)' -X POST .*/rest/db/ignores?folder=flakelab-state\$|\1|p" "$1"; }
+        off="$(posted "$initOff")"
+        on="$(posted "$initOn")"
+        test -n "$off"
+        test "$on" = '{"ignore":[]}'
+
+        root="$TMPDIR/root" slug=-home-check-git-x sid=0b5c2a4e-1d2f-4a3b-9c8d-7e6f5a4b3c2d
+        kept=(
+          shell/.zsh_history_merged
+          "claude/projects/$slug/memory/MEMORY.md"
+          "claude/projects/$slug/memory-tombstones/gone.md"
+          claude/sessions/check.json
+          codex/memories/MEMORY.md
+          .flakelab-state-gate/decisions.jsonl
+          .flakelab-state-manifests/check
+        )
+        dropped=(
+          "claude/projects/$slug/$sid.jsonl"
+          "claude/projects/$slug/$sid.sync-conflict-20261031-131000-ABCDEFG.jsonl"
+          "claude/projects/$slug/$sid/subagents/agent-a1.jsonl"
+          "claude/projects/$slug/$sid/subagents/agent-a1.meta.json"
+          "claude/projects/$slug/$sid/tool-results/toolu_01.txt"
+          "claude/diverged/$slug/$sid.jsonl"
+          "codex/sessions/2026/10/31/rollout-$sid.jsonl"
+          "codex/diverged/2026/10/31/rollout-$sid.jsonl"
+        )
+        for f in "''${kept[@]}" "''${dropped[@]}"; do
+          mkdir -p "$root/''${f%/*}"
+          echo x > "$root/$f"
+        done
+
+        export HOME="$TMPDIR/home" STNODEFAULTFOLDER=1 STNOUPGRADE=1
+        syncthing generate --home="$HOME" --no-port-probing > /dev/null
+        sed -i -e 's|<listenAddress>default</listenAddress>|<listenAddress>tcp://127.0.0.1:0</listenAddress>|' \
+          -e 's|Enabled>true</|Enabled>false</|' "$HOME/config.xml"
+        key="$(sed -n 's|.*<apikey>\(.*\)</apikey>.*|\1|p' "$HOME/config.xml")"
+        sock="$TMPDIR/gui.sock"
+        api() { curl -fsS --unix-socket "$sock" -H "X-API-Key: $key" "$@"; }
+        # The files in the folder's index against the expected list; a diff on a miss.
+        indexed() {
+          diff -u <(printf '%s\n' "$@" | sort) <(api "http://st/rest/db/browse?folder=s&levels=20" \
+            | jq -r 'def w(p): .[] | (p + .name) as $n | if .children then .children | w($n + "/") else $n end; w("")' \
+            | sort)
+        }
+        (
+          syncthing serve --home="$HOME" --no-browser --no-restart --gui-address="unix://$sock" > syncthing.log 2>&1 &
+          pid=$!
+          trap 'rc=$?; kill $pid; wait $pid || true; [ $rc = 0 ] || cat syncthing.log' EXIT
+          for _ in $(seq 300); do api http://st/rest/noauth/health > /dev/null 2>&1 && break; sleep 0.1; done
+          # Paused until its ignores are in, so the first scan already applies them.
+          api -X POST -d "{\"id\":\"s\",\"path\":\"$root\",\"paused\":true,\"fsWatcherEnabled\":false}" http://st/rest/config/folders
+          api -X POST -d "$off" "http://st/rest/db/ignores?folder=s" > /dev/null
+          api -X PATCH -d '{"paused":false}' http://st/rest/config/folders/s
+          for _ in $(seq 300); do api -X POST "http://st/rest/db/scan?folder=s" 2> /dev/null && break; sleep 0.1; done
+          # Transcripts off: the transcript trees are not in the index; memory,
+          # history, decisions and manifests are.
+          indexed "''${kept[@]}"
+          # Back on: the empty list deletes .stignore and the trees come back.
+          api -X POST -d "$on" "http://st/rest/db/ignores?folder=s" > /dev/null
+          test ! -e "$root/.stignore"
+          api -X POST "http://st/rest/db/scan?folder=s"
+          indexed "''${kept[@]}" "''${dropped[@]}"
+        )
         touch "$out"
       '';
 

@@ -25,11 +25,13 @@ BASE_TARBALL=""
 REINSTALL=false
 VERIFY=true
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { _say red "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
-    --name)      DISTRO_NAME="$2"; shift ;;
-    --flake)     FLAKE_REF="$2"; shift ;;
-    --base)      BASE_TARBALL="$2"; shift ;;
+    --name)      _need "$@"; DISTRO_NAME="$2"; shift ;;
+    --flake)     _need "$@"; FLAKE_REF="$2"; shift ;;
+    --base)      _need "$@"; BASE_TARBALL="$2"; shift ;;
     --reinstall) REINSTALL=true ;;
     --no-verify) VERIFY=false ;;
     -h|--help)   sed -n '/^# Usage:/,/^$/{s/^# \{0,1\}//;p}' "$0"; exit 0 ;;

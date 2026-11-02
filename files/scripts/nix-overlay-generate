@@ -157,7 +157,7 @@ while (( $# )); do
     --locale)            shift; _need --locale "${1:-}"; _locale="$1"; _have_values=true ;;
     --windows-username)  shift; _need --windows-username "${1:-}"; _windows_user="$1"; _have_values=true ;;
     # The one flag whose empty value is meaningful: `gitEditor = null;`.
-    --git-editor)        shift; _git_editor="${1:-}"; _git_editor_given=true; _have_values=true ;;
+    --git-editor)        shift; (( $# )) || usage_error "--git-editor needs a value"; _git_editor="$1"; _git_editor_given=true; _have_values=true ;;
     --backup-autostart)  shift; _need --backup-autostart "${1:-}"; _backup_autostart="$1"; _have_values=true ;;
     --state-root)        shift; _need --state-root "${1:-}"; _state_root="$1"; _have_values=true ;;
     --state-transcripts) shift; _need --state-transcripts "${1:-}"; _state_transcripts="$1"; _have_values=true ;;

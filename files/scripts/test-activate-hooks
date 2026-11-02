@@ -87,6 +87,9 @@ run
 check "no --repos-dir is a usage error" "${RC}" "2"
 run --repos-dir "${REPOS}" --bogus
 check "an unknown argument is a usage error" "${RC}" "2"
+run --repos-dir
+check "--repos-dir with no value is a usage error" "${RC}" "2"
+contains "naming the flag" "${OUT}" "--repos-dir needs a value"
 run --help
 check "--help exits 0" "${RC}" "0"
 contains "with the usage" "${OUT}" "Usage: flakelab activate-hooks --repos-dir <path>"

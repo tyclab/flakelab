@@ -148,6 +148,10 @@ write_stub glab 0
 run_gc --fetch "${TESTROOT}"
 assert_rc 2 "removed --fetch flag is rejected"
 
+run_gc --repo
+assert_rc 2 "--repo with no value exits 2"
+assert_has "--repo needs a value" "the flag is named"
+
 # ── Discovery and grouping ───────────────────────────────────────────
 print -r -- "discovery:"
 write_stub glab 0 /dev/null

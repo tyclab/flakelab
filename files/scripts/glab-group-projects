@@ -11,16 +11,18 @@ MEMBER=0
 NO_ARCHIVED=0
 PER_PAGE=100
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { print -r -- "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
     --group)
-      GROUP="$2"; shift ;;
+      _need "$@"; GROUP="$2"; shift ;;
     --member)
       MEMBER=1 ;;
     --no-archived)
       NO_ARCHIVED=1 ;;
     --per-page)
-      PER_PAGE="$2"; shift ;;
+      _need "$@"; PER_PAGE="$2"; shift ;;
     --help|-h)
       echo "Usage: flakelab glab-projects --group <path> [--member] [--no-archived] [--per-page N]"
       echo "Emits one project JSON object per line, across all pages."
