@@ -10,9 +10,11 @@ set -uo pipefail
 
 REPOS_DIR=""
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { print -r -- "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
-    --repos-dir) REPOS_DIR="$2"; shift ;;
+    --repos-dir) _need "$@"; REPOS_DIR="$2"; shift ;;
     --help|-h)
       echo "Usage: flakelab activate-hooks --repos-dir <path>"
       exit 0 ;;

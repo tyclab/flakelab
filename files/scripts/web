@@ -33,13 +33,16 @@ terminal session ends.
 USAGE
 }
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not an empty value.
+# An empty --token-file is one too: the server would read '' as the current directory.
+_need() { (( $# > 1 )) && [[ -n "$2" || "$1" != --token-file ]] || { print -ru2 -- "web: $1 needs a value"; usage >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
-    --bind) BIND="${2:-}"; shift ;;
-    --port) PORT="${2:-}"; shift ;;
-    --token-file) TOKEN_FILE="${2:-}"; shift ;;
-    --terminal-socket) TERMINAL_SOCKET="${2:-}"; shift ;;
-    --logo) LOGO="${2:-}"; shift ;;
+    --bind) _need "$@"; BIND="$2"; shift ;;
+    --port) _need "$@"; PORT="$2"; shift ;;
+    --token-file) _need "$@"; TOKEN_FILE="$2"; shift ;;
+    --terminal-socket) _need "$@"; TERMINAL_SOCKET="$2"; shift ;;
+    --logo) _need "$@"; LOGO="$2"; shift ;;
     --print-token) PRINT_TOKEN=true ;;
     --rotate-token) ROTATE_TOKEN=true ;;
     --help|-h) usage; exit 0 ;;
