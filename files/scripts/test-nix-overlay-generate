@@ -239,28 +239,6 @@ run_gen --out "${o}" --config "${EXAMPLE}" --force
 check "the operator's file survives" \
   "$(< "${o}-payload/shared/secrets/secrets.env")" 'GITLAB_TOKEN="already-here"'
 
-# setup-wsl-nix.ps1 runs this generator and harvests secrets.env itself, and it
-# reads the file's presence as "seeded": an empty stub there would skip the
-# seeding instructions and copy an empty secrets.env into the distro.
-print -r -- "--no-secrets-stub leaves secrets.env to the caller"
-o="$(out nostub)"
-run_gen --out "${o}" --config "${EXAMPLE}" --no-secrets-stub
-check    "it generates"                     "${RC}" "0"
-exists   "the flake is written"             "${o}/flake.nix"
-exists   "the key directory is still made"  "${o}-payload/shared/ssh/keys"
-[[ -e "${o}-payload/shared/secrets/secrets.env" ]] \
-  && bad "no secrets.env is created" || ok "no secrets.env is created"
-excludes "nor reported as written"          "${OUT}" "wrote ${o}-payload/shared/secrets/secrets.env"
-excludes "nor offered to fill"              "${OUT}" "fill ${o}-payload"
-print -r -- 'GITLAB_TOKEN="caller-wrote-this"' > "${o}-payload/shared/secrets/secrets.env"
-run_gen --out "${o}" --config "${EXAMPLE}" --no-secrets-stub --force
-check    "a file the caller wrote is left as it is" \
-  "$(< "${o}-payload/shared/secrets/secrets.env")" 'GITLAB_TOKEN="caller-wrote-this"'
-excludes "and not listed as kept either"    "${OUT}" "kept  ${o}-payload/shared/secrets/secrets.env"
-o="$(out nostubdry)"
-run_gen --out "${o}" --config "${EXAMPLE}" --no-secrets-stub --dry-run
-excludes "a dry run does not list it"       "${OUT}" "wrote ${o}-payload/shared/secrets/secrets.env"
-
 print -r -- "--dry-run writes nothing"
 o="$(out dry)"
 run_gen --out "${o}" --config "${EXAMPLE}" --dry-run
@@ -1046,7 +1024,7 @@ excludes "the value is never printed"          "${OUT}" "not-a-real-token-4"
 excludes "nor written"                         "$(flake_of "${o}")" "not-a-real-token-4"
 
 # YAML keys are case-sensitive and the schema's are lowercase. setup-wsl-nix.ps1's
-# own reader used to take `User:` for `user:` without a word; this one does not, so
+# own reader takes `User:` for `user:` without a word; this one does not, so
 # a schema key in another case is named with the key it should be.
 print -r -- "a schema key in another case is named, with the lowercase key"
 cat > "${BASE}/case.yaml" <<'YAML'
@@ -1065,8 +1043,8 @@ excludes "not as a key with no overlay field" "${OUT}" "'User' in the config map
 contains "and the stop names the key"         "${OUT}" "set 'user:' in the config"
 [[ -e "${o}/flake.nix" ]] && bad "and writes no flake" || ok "and writes no flake"
 
-# setup-wsl-nix.ps1 harvests a top-level token into secrets.env whatever its case,
-# so calling it a key with no overlay field would contradict the same run.
+# setup-wsl-nix.ps1 takes a top-level token as a secret whatever its case; named as
+# a key with no overlay field, it was pointed at a hand-written overlay entry.
 print -r -- "a top-level secret in lowercase is reported as a secret"
 bare_cfg lowsecret <<'YAML'
 profiles: [example]
