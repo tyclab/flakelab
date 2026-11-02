@@ -31,13 +31,16 @@ USAGE
 
 note() { print -ru2 -- "notify: $*" }
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not an empty value.
+# An empty --message is one too: without it the run would read stdin as a hook's.
+_need() { (( $# > 1 )) && [[ -n "$2" || "$1" != --message ]] || { print -ru2 -- "notify: $1 needs a value"; usage >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
-    --codex) MODE=codex; CODEX_JSON="${2:-}"; shift ;;
-    --title) TITLE="${2:-}"; shift ;;
-    --message) MESSAGE="${2:-}"; shift ;;
-    --priority) PRIORITY="${2:-}"; shift ;;
-    --tags) TAGS="${2:-}"; shift ;;
+    --codex) _need "$@"; MODE=codex; CODEX_JSON="$2"; shift ;;
+    --title) _need "$@"; TITLE="$2"; shift ;;
+    --message) _need "$@"; MESSAGE="$2"; shift ;;
+    --priority) _need "$@"; PRIORITY="$2"; shift ;;
+    --tags) _need "$@"; TAGS="$2"; shift ;;
     --dry-run) DRY_RUN=true ;;
     --help|-h) usage; exit 0 ;;
     *) print -ru2 -- "notify: unknown option: $1"; usage >&2; exit 2 ;;

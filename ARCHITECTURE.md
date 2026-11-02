@@ -505,6 +505,17 @@ box with the state root as its only folder, shared with one always-on hub that
 holds it Receive Encrypted. The folder password comes from the sops render, so
 the hub and its disk only ever see ciphertext.
 
+A box that leaves `stateTranscripts` off never reads the transcript trees, so it
+does not take them from the folder either: syncthing-init writes
+`<stateRoot>/.stignore` with `claude/projects/<slug>/*.jsonl`, the
+`<slug>/<session uuid>/` folders beside them, `claude/diverged/`,
+`codex/sessions/` and `codex/diverged/`, and leaves `memory/`,
+`memory-tombstones/` and everything else to sync. Syncthing never syncs the
+`.stignore` file itself. With transcripts on, syncthing-init posts an empty list,
+which deletes the file. Ignoring a path leaves on disk what an earlier sync put
+there, so a box that already held the trees deletes them once by hand
+(`known-issues.md`).
+
 ```text
 <stateRoot>/shell/.zsh_history_merged                 # union of every machine's history
 <stateRoot>/claude/projects/<slug>/memory/            # auto-memory, per checkout path
@@ -655,13 +666,26 @@ holds findings back:
 
 Held findings are listed in the run summary; a run with them warns rather than
 fails. `flakelab backup --review-secrets` walks them one at a time: **delete**
-from every local source (a pre-scrub copy is kept), **keep** it local and never
-sync it, or **allow** it. Decisions are stored in the state root as
+from every local source (a pre-scrub copy is kept for a week), **keep** it local
+and never sync it, or **allow** it. Decisions are stored in the state root as
 fingerprints, never secrets, so one triage settles a secret for every machine's
 _syncing_ — but a **delete** rewrites local files, and only the box you are
 sitting at may do that, so it stays pending elsewhere until that box runs its
 own review. `--review-secrets` needs a terminal (exit 1 without one) and refuses
 `--dry-run`, because it is the one mode that rewrites local files.
+
+Before a delete rewrites a file, the review copies it to
+`~/.local/state/flakelab/state-gate/pre-scrub/<role>.<epoch>`, and a copy that
+cannot be made refuses the rewrite. The copy is the undo for a rewrite gone
+wrong and holds exactly what the delete removed, so it does not stay: every run
+but `--dry-run` (backup, `--state-only`, the review itself) removes the copies
+older than `FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS`, 7 by default. A bad rewrite
+shows the next time the file is used, so a week covers it; the ruling reaching
+the other boxes is no anchor, since each box rewrites its own files under its
+own copy. Only regular files named as the review names them, directly in that
+folder, go, by mtime. A symlink is neither followed nor removed; a folder that
+is itself a symlink, or a window that is not a whole number of days up to
+36500, fails the run and prunes nothing.
 
 A fingerprint is a plain `sha256`, not an HMAC, and it lives in a folder
 something replicates: a low-entropy secret — a short password, a PIN, a token

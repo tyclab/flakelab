@@ -159,6 +159,8 @@ KEEP=5
 # Copies that did not happen or landed corrupt; skips and declines are not failures.
 FAILURES=0
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { print -r -- "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
     --force)   FORCE=true ;;
@@ -172,13 +174,13 @@ while (( $# > 0 )); do
     --keep)
       if [[ "${2:-}" != <-> ]]; then
         echo "Error: --keep requires a non-negative integer" >&2
-        exit 1
+        exit 2
       fi
       KEEP="$2"
       shift
       ;;
-    --from)    SRC_FROM="$2"; shift ;;
-    --instance) SRC_INSTANCE="$2"; shift ;;
+    --from)    _need "$@"; SRC_FROM="$2"; shift ;;
+    --instance) _need "$@"; SRC_INSTANCE="$2"; shift ;;
     --help|-h)
       echo "Usage: flakelab backup [options]"
       echo ""
@@ -211,6 +213,8 @@ while (( $# > 0 )); do
       echo "  FLAKELAB_STATE_TRANSCRIPT_SECRETS  review (default): hold each transcript secret for --review-secrets;"
       echo "                       redact: the redacted synced copy is the ruling, nothing is held or asked"
       echo "  FLAKELAB_STATE_GATE_CONFIG  gitleaks config for the secret gate (set by the nix wrapper)"
+      echo "  FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS  days a copy of a file --review-secrets rewrote is kept (default 7);"
+      echo "                       every run but --dry-run removes older ones"
       echo "  FLAKELAB_SOPS_RENDER        1 when sops-nix renders the secrets (set by the nix wrapper): the legacy"
       echo "                       ~/.config/flakelab/secrets.env is neither archived nor restored"
       echo ""
@@ -1601,6 +1605,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 acquire_lock
+
+# Every mode, the review that writes pre-scrub copies and the timers' backup and
+# state sync included: the copies hold what the review scrubbed.
+gate_prune_pre_scrub
 
 if ${REVIEW_SECRETS}; then
   # Under the backup's lock: it rewrites the payload's history copy.

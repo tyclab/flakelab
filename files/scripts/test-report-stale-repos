@@ -162,6 +162,9 @@ run --group acme
 check    "no --repos-dir is a usage error" "${RC}" "2"
 run --repos-dir "${REPOS}" --bogus
 check    "an unknown option is a usage error" "${RC}" "2"
+run --repos-dir "${REPOS}" --group
+check    "--group with no value is a usage error" "${RC}" "2"
+contains "naming the flag" "${ERR}" "--group needs a value"
 run --help
 check    "--help exits 0" "${RC}" "0"
 
@@ -197,6 +200,9 @@ list --group acme --per-page 101
 check    "a per-page above GitLab's cap is a usage error" "${RC}" "2"
 list --group acme --bogus
 check    "an unknown option is a usage error" "${RC}" "2"
+list --group acme --per-page
+check    "--per-page with no value is a usage error" "${RC}" "2"
+contains "naming the flag" "${ERR}" "--per-page needs a value"
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"

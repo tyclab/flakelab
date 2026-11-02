@@ -18,12 +18,14 @@ REPOS_DIR=""
 MEMBER=0
 typeset -a GROUPS=()
 
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { print -r -- "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
     --repos-dir)
-      REPOS_DIR="$2"; shift ;;
+      _need "$@"; REPOS_DIR="$2"; shift ;;
     --group)
-      GROUPS+=("$2"); shift ;;
+      _need "$@"; GROUPS+=("$2"); shift ;;
     --member)
       MEMBER=1 ;;
     --help|-h)
