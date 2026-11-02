@@ -693,12 +693,16 @@ transcript_set_age() {
   [[ "${TX_KIND}" == claude && -f "$1" ]] || return 0
   ${DRY_RUN} && return 0
   local before after epoch
-  before="$(stat -c '%d:%i:%s:%y' -- "$1" 2> /dev/null)" || return 0
+  before="$(stat -c '%d:%i:%s %y' -- "$1" 2> /dev/null)" || return 0
   transcript_epoch "$1" || return 0
   epoch="${REPLY}"
-  after="$(stat -c '%d:%i:%s:%y' -- "$1" 2> /dev/null)" || return 0
+  after="$(stat -c '%d:%i:%s %y' -- "$1" 2> /dev/null)" || return 0
   [[ "${before}" == "${after}" ]] || return 0
   touch -c -d "@${epoch}" -- "$1" || record_failure "Cannot set transcript age: $1"
+  after="$(stat -c '%d:%i:%s' -- "$1" 2> /dev/null)" || return 0
+  if [[ "${before%% *}" != "${after}" ]]; then
+    touch -c -- "$1" || record_failure "Cannot preserve resumed transcript age: $1"
+  fi
   return 0
 }
 

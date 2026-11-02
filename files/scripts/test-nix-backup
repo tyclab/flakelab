@@ -3188,6 +3188,47 @@ check    "restoring over a longer local copy exits clean" "${RC}" "0"
 check    "the longer local copy survives" "$(wc -l < "${SLUG_HOME}/longer.jsonl")" "2"
 check    "its own newest entry determines its age" "$(stat -c %Y "${SLUG_HOME}/longer.jsonl")" "$(date -d "${middle_stamp}" +%s)"
 
+print -r -- "a session that resumes during age normalization retains a fresh mtime"
+export FAKE_TOUCH_REAL="$(command -v touch)"
+cat > "${BASE}/bin/touch" <<'FAKE_TOUCH'
+#!/usr/bin/env zsh
+set -eu
+args=("$@")
+if [[ "${args[-1]}" == "${FAKE_TOUCH_TARGET}" && " $* " == *' -d '* ]]; then
+  if [[ "${FAKE_TOUCH_MODE}" == append ]]; then
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{uuid:"resumed",timestamp:$ts}' >> "${FAKE_TOUCH_TARGET}"
+  else
+    tmp="$(mktemp "${FAKE_TOUCH_TARGET}.race.XXXXXX")"
+    cp "${FAKE_TOUCH_TARGET}" "${tmp}"
+    mv "${tmp}" "${FAKE_TOUCH_TARGET}"
+  fi
+fi
+exec "${FAKE_TOUCH_REAL}" "$@"
+FAKE_TOUCH
+chmod +x "${BASE}/bin/touch"
+for race_mode in append replace; do
+  transcript_fixture "transcript-age-race-${race_mode}"
+  mkdir -p "${SLUG_STATE}"
+  export FAKE_TOUCH_TARGET="${SLUG_HOME}/race.jsonl" FAKE_TOUCH_MODE="${race_mode}"
+  jq -cn --arg ts "${old_stamp}" '{uuid:"race",timestamp:$ts}' > "${FAKE_TOUCH_TARGET}"
+  cp "${FAKE_TOUCH_TARGET}" "${SLUG_STATE}/race.jsonl"
+  "${FAKE_TOUCH_REAL}" -d '1 hour ago' "${FAKE_TOUCH_TARGET}"
+  race_inode="$(stat -c %i "${FAKE_TOUCH_TARGET}")"
+  race_started="$(date +%s)"
+  run_backup --state-only --force
+  check "normalizing with concurrent ${race_mode} exits clean" "${RC}" "0"
+  if [[ "${race_mode}" == append ]]; then
+    check "the concurrent append survives" "$(wc -l < "${FAKE_TOUCH_TARGET}")" "2"
+  else
+    [[ "$(stat -c %i "${FAKE_TOUCH_TARGET}")" != "${race_inode}" ]] \
+      && ok "the replacement inode survives" || bad "the replacement inode survives"
+  fi
+  (( $(stat -c %Y "${FAKE_TOUCH_TARGET}") >= race_started )) \
+    && ok "concurrent ${race_mode} does not acquire an expired age" || bad "concurrent ${race_mode} does not acquire an expired age"
+done
+rm "${BASE}/bin/touch"
+unset FAKE_TOUCH_REAL FAKE_TOUCH_TARGET FAKE_TOUCH_MODE
+
 print -r -- "restore respects the session age gate and side files follow present parents"
 transcript_fixture transcript-age-restore
 SID=11111111-2222-3333-4444-555555555555
