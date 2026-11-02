@@ -454,8 +454,9 @@ typeset -a _secret_names=(
 )
 # A credential-shaped name is withheld too, whatever the config calls it: the word, not a
 # substring, so MAX_OUTPUT_TOKENS stays; a location (_URL, _DIR, ...) names no secret.
+# Plural and run-together forms count too: DB_PASSWORDS, NPM_AUTHTOKEN, CREDENTIALS_JSON.
 # Both kept identical to $SecretNamePattern and $SecretNameExempt in setup-wsl-nix.ps1.
-_secret_shape='(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|CREDENTIAL)(_|$)|API_KEY|PRIVATE_KEY'
+_secret_shape='(^|_)(TOKEN|SECRETS?|PASSWORDS?|PASSWD|APIKEY|CREDENTIAL)(_|$)|(TOKEN|SECRETS?|PASSWORDS?|PASSWD)$|(^|_)CREDENTIALS_|API_KEY|PRIVATE_KEY'
 _secret_exempt='_(URL|DIR|FILE|PATH|HOST|NAMESPACE)$'
 # A webhook's URL is its credential, so that word wins over the location suffix.
 _secret_always='(^|_)WEBHOOK(_|$)'
