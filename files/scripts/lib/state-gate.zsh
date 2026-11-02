@@ -17,6 +17,8 @@ GATE_LOCAL_DIR="${HOME_DIR}/.local/state/flakelab/state-gate"
 GATE_HELD_FILE="${GATE_LOCAL_DIR}/held.jsonl"
 GATE_DECISIONS_LOCAL="${GATE_LOCAL_DIR}/decisions.local.jsonl"
 GATE_PRE_SCRUB_DIR="${GATE_LOCAL_DIR}/pre-scrub"
+# Days a pre-scrub copy is kept; see gate_prune_pre_scrub.
+GATE_PRE_SCRUB_DAYS="${FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS:-7}"
 
 GATE_HELD_COUNT=0
 GATE_FILTER_HELD=0
@@ -1054,6 +1056,53 @@ gate_pre_scrub() {
   fi
   chmod 600 "${copy}" 2> /dev/null || true
   log_info "Pre-scrub copy: ${copy}"
+  return 0
+}
+
+# A pre-scrub copy is the undo for a rewrite gone wrong, and it holds exactly
+# what the delete took out of the live file: kept for good, a delete never takes
+# the secret off the box. A bad rewrite shows the next time the file is used, so
+# the copy only has to outlive that. The anchor is time, not the decision
+# reaching the other boxes: each box rewrites its own files under its own copy.
+# Every run (nix-backup, before its mode) drops the copies older than
+# GATE_PRE_SCRUB_DAYS, by mtime: regular files named <label>.<epoch> directly in
+# the folder. Never a symlink, a subfolder, or a folder that is a symlink itself.
+gate_prune_pre_scrub() {
+  local dir="${GATE_PRE_SCRUB_DIR}" days="${GATE_PRE_SCRUB_DAYS}"
+  # Whole days up to a century: beyond it is a typo, and a large enough one
+  # overflows the age in seconds.
+  if [[ "${days}" != <0-36500> ]]; then
+    record_failure "FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS must be a whole number of days up to 36500, not '${days}'; no pre-scrub copy pruned"
+    return 0
+  fi
+  if [[ "${dir}" != /?* || "${dir:a}" == / ]]; then
+    record_failure "Refusing to prune pre-scrub copies in '${dir}': not an absolute folder below /"
+    return 0
+  fi
+  if [[ -L "${dir}" ]]; then
+    record_failure "Refusing to prune pre-scrub copies through a symlink: ${dir}"
+    return 0
+  fi
+  [[ -d "${dir}" ]] || return 0
+  # (.) and (m) read the entry itself (lstat): a symlink is no regular file.
+  local -a old=("${dir}"/*.<->(N.ms+$(( days * 86400 ))))
+  (( ${#old} > 0 )) || return 0
+  local f noun=copies
+  local -i n=${#old} failed=0
+  if ! ${DRY_RUN}; then
+    for f in "${old[@]}"; do
+      rm -f -- "${f}" || failed=$(( failed + 1 ))
+    done
+    (( failed == 0 )) || record_failure "Could not prune ${failed} of ${n} old pre-scrub copies in ${dir}; they still hold what the review scrubbed"
+    n=$(( n - failed ))
+    (( n > 0 )) || return 0
+  fi
+  (( n == 1 )) && noun=copy
+  if ${DRY_RUN}; then
+    log_dry "Would prune ${n} pre-scrub ${noun} older than ${days} day(s) from ${dir}"
+  else
+    log_ok "Pruned ${n} pre-scrub ${noun} older than ${days} day(s) from ${dir}"
+  fi
   return 0
 }
 
