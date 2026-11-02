@@ -260,6 +260,10 @@ contains "and says what it is for" "${OUT}" "commit subject and the MR title"
 OUT="$(zsh "${PUBLISHER}" --nonsense 2>&1)"; RC=$?
 check "an unknown option exits 2" "${RC}" "2"
 
+OUT="$(zsh "${PUBLISHER}" --title 2>&1)"; RC=$?
+check "--title with no value exits 2" "${RC}" "2"
+contains "and names the flag" "${OUT}" "--title needs a value"
+
 build_fixture descfile
 print -r -- change > "${FIXTURE_REPO}/f"
 print -r -- "## Summary body from file" > "${BASE}/desc.md"

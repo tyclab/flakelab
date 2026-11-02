@@ -336,6 +336,14 @@ foreign_decision() {
 
 print -r -- "test-nix-backup"
 
+print -r -- "usage errors exit 2, before anything is read"
+OUT="$("${BACKUP}" --keep abc < /dev/null 2>&1)"; RC=$?
+check    "a --keep that is no number exits 2" "${RC}" "2"
+contains "naming the flag"                     "${OUT}" "--keep requires a non-negative integer"
+OUT="$("${BACKUP}" --from < /dev/null 2>&1)"; RC=$?
+check    "--from with no value exits 2"        "${RC}" "2"
+contains "naming the flag"                     "${OUT}" "--from needs a value"
+
 # ---------------------------------------------------------------------------
 # Instance identity: WSL_DISTRO_NAME, then FLAKELAB_INSTANCE, then "unknown"
 # ---------------------------------------------------------------------------

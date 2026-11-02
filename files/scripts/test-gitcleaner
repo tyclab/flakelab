@@ -311,6 +311,10 @@ OUT="$(zsh "${CLEANER}" --repo "${BASE}/nope" --json < /dev/null 2>&1)"; RC=$?
 check "--repo on a non-repo exits 2" "${RC}" "2"
 contains "and says which path" "${OUT}" "not a git repo"
 
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only < /dev/null 2>&1)"; RC=$?
+check "--only with no value exits 2" "${RC}" "2"
+contains "and names the flag" "${OUT}" "--only needs a value"
+
 print -r -- "── HEAD parked on an older branch ─────────────────────────────────"
 # -d would judge against this HEAD and refuse a branch provably in origin/main.
 build_fixture parked; ROOTS="${FIXTURE_ROOTS}"
