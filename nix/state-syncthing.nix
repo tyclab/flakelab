@@ -21,6 +21,20 @@ let
   readPassword = pkgs.writeShellScript "flakelab-syncthing-password-read" ''
     sed -n 's/^${st.passwordEnvKey}=//p' "$1" | tr -d '\r' | head -n 1
   '';
+  # What only the transcript sync writes (files/scripts/lib/state-sync.zsh): a
+  # session's transcript and its <session uuid>/ folder of subagent transcripts
+  # and tool results, both beside the memory/ and memory-tombstones/ the same
+  # project slug holds, plus the parked branches and the Codex sessions. (?d)
+  # lets Syncthing remove a leftover that alone keeps a folder another box
+  # deleted from going here too.
+  transcriptIgnores = [
+    "// flakelab: stateTranscripts is off on this box. syncthing-init rewrites this file."
+    "(?d)/claude/projects/*/*.jsonl"
+    "(?d)/claude/projects/*/????????-????-????-????-????????????"
+    "(?d)/claude/diverged"
+    "(?d)/codex/sessions"
+    "(?d)/codex/diverged"
+  ];
 in
 {
   config = lib.mkIf (st != null) {
@@ -64,6 +78,10 @@ in
               encryptionPasswordFile = passwordFile;
             }
           ];
+          # A box without stateTranscripts never reads the transcript trees, so they
+          # stay off its disk. Never null, which syncthing-init would skip: with
+          # transcripts on it posts an empty list, and Syncthing deletes .stignore.
+          ignorePatterns = lib.optionals (!cfg.stateTranscripts) transcriptIgnores;
         };
       };
     };
