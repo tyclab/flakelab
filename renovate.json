@@ -16,8 +16,9 @@
     "enabled": true
   },
   "lockFileMaintenance": {
-    "description": "`nix flake update` for flake.lock \u2014 the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh.",
-    "enabled": true
+    "description": "`nix flake update` for flake.lock \u2014 the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh. It merges itself like a minor update: the PR is nixpkgs moving within its branch, and `nix flake check` on the PR is the whole gate; nothing a human would read decides it.",
+    "enabled": true,
+    "automerge": true
   },
   "customManagers": [
     {
