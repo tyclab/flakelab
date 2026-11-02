@@ -15,11 +15,11 @@ unset CLAUDECODE CODEX_THREAD_ID
 # Nothing here is a terminal, so every case takes the non-interactive branch:
 # the one automation and agents hit.
 #
-# The PATH is rebuilt from symlinks with five names left out. `sudo`,
-# `nix-clone-repos` and `flakelab-switch-result` are shimmed below; `claude` and
-# `systemctl` are simply absent, so the marketplace refresh and the boot-settle
-# wait skip themselves instead of talking to the real ones. HOME is a fresh
-# directory for the same reason: no ~/.claude, no ~/.gitconfig.
+# The PATH is rebuilt from symlinks with six names left out. `sudo`,
+# `nix-clone-repos` and `flakelab-switch-result` are shimmed below; `claude`,
+# `systemctl` and `flakelab` are simply absent, so the marketplace refresh, the
+# boot-settle wait and the tray sync skip themselves instead of talking to the real
+# ones. HOME is a fresh directory for the same reason: no ~/.claude, no ~/.gitconfig.
 #
 # Usage: files/scripts/test-nix-update
 #
