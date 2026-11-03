@@ -80,6 +80,8 @@ in
   # a stale hash fails here, not on a box's `flakelab update`.
   inherit tycswap;
   tycswap-windows = tycswapWindows;
+  # Build the same sandbox runtime installed on boxes; patch failures gate CI.
+  inherit (pkgsDev) bubblewrap;
   # The distro's pre-commit gives a hook installer no GIT_* of the commit: npm's
   # clone of a node hook wrote its own index over the one being committed.
   pre-commit-installer-env =
@@ -1089,6 +1091,7 @@ in
     let
       sys = self.nixosConfigurations.default.config;
       hm = sys.home-manager.users.${sys.flakelab.username};
+      bwrap = self.nixosConfigurations.default.pkgs.bubblewrap;
       entry = name: pkgs.writeText "${name}-activation" hm.home.activation.${name}.data;
       latest =
         (self.nixosConfigurations.default.extendModules {
@@ -1118,13 +1121,14 @@ in
       neither = packagesFor false false;
     in
     # Sandbox executables must be on PATH even when only one client is installed.
-    assert builtins.elem pkgs.bubblewrap hm.home.packages;
+    assert bwrap == pkgsDev.bubblewrap;
+    assert builtins.elem bwrap hm.home.packages;
     assert builtins.elem pkgs.socat hm.home.packages;
-    assert builtins.elem pkgs.bubblewrap claudeOnly;
+    assert builtins.elem bwrap claudeOnly;
     assert builtins.elem pkgs.socat claudeOnly;
-    assert builtins.elem pkgs.bubblewrap codexOnly;
+    assert builtins.elem bwrap codexOnly;
     assert !(builtins.elem pkgs.socat codexOnly);
-    assert !(builtins.elem pkgs.bubblewrap neither);
+    assert !(builtins.elem bwrap neither);
     assert !(builtins.elem pkgs.socat neither);
     pkgs.runCommandLocal "flakelab-check-cli-installers" { nativeBuildInputs = [ pkgs.bash ]; } ''
       set -u

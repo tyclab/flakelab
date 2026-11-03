@@ -77,8 +77,26 @@
         });
       };
 
+      # 0.12.0 opens mount parents for reading, breaking traversable but unreadable
+      # directories (for example, versioned secrets and private temporary roots).
+      # Backport containers/bubblewrap#807 without changing the sandbox policy.
+      # Both pinned channels predate 0.13.1, which includes this fix.
+      bubblewrapOverlay = _final: prev: {
+        bubblewrap = prev.bubblewrap.overrideAttrs (old: {
+          patches =
+            (old.patches or [ ])
+            ++ nixpkgs.lib.optional (nixpkgs.lib.versionOlder old.version "0.13.1") ./nix/bubblewrap-parent-path.patch;
+        });
+      };
+
       # Used only by devShells, which must hand out the same pre-commit the distro runs.
-      pkgsDev = pkgs.extend (nixpkgs.lib.composeExtensions unstableOverlay preCommitOverlay);
+      pkgsDev = pkgs.extend (
+        nixpkgs.lib.composeManyExtensions [
+          unstableOverlay
+          preCommitOverlay
+          bubblewrapOverlay
+        ]
+      );
 
       # tycswap: the account switcher for Claude Code and Codex logins, one static
       # Go binary named `tycswap`. Pinned to a release tag: `version` is the one
@@ -251,6 +269,7 @@
                       nixpkgs.overlays = [
                         unstableOverlay
                         preCommitOverlay
+                        bubblewrapOverlay
                         tycswapOverlay
                       ];
                     }
