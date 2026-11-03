@@ -1,0 +1,20 @@
+From: Simon McVittie <smcv@collabora.com>
+Subject: Use O_PATH and O_CLOEXEC when opening parent directories
+
+Backport of containers/bubblewrap#807, merged upstream in 0f8073d:
+  2d81c15de37a21275c1a0912d0feab3c4842666d
+  e45ef35bdfbe6536fc40bbb937295bb02cdf3bb5
+https://github.com/containers/bubblewrap/pull/807
+
+Opening a parent for path traversal must not require read permission. Keep
+openat_in_root's RESOLVE_IN_ROOT and RESOLVE_NO_MAGICLINKS containment intact.
+
+diff --git a/bubblewrap.c b/bubblewrap.c
+--- a/bubblewrap.c
++++ b/bubblewrap.c
+@@ -1044 +1044 @@ ensure_newroot_parents_at (const char *path,
+-  cleanup_fd int parent_fd = openat_in_root ("/newroot", "/", O_DIRECTORY);
++  cleanup_fd int parent_fd = openat_in_root ("/newroot", "/", O_DIRECTORY | O_PATH | O_CLOEXEC);
+@@ -1074 +1074 @@ ensure_newroot_parents_at (const char *path,
+-      cleanup_fd int new_parent_fd = openat_in_root ("/newroot", fn, O_DIRECTORY);
++      cleanup_fd int new_parent_fd = openat_in_root ("/newroot", fn, O_DIRECTORY | O_PATH | O_CLOEXEC);
