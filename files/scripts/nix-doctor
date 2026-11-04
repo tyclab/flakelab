@@ -1017,7 +1017,7 @@ fi
 echo ""
 if ${STRICT} && (( WARN > 0 )); then
   FAIL=$(( FAIL + WARN ))
-  print -P "${YELLOW}--strict: ${WARN} warning(s) counted as failures${RESET}" >&2
+  print -P -- "${YELLOW}--strict: ${WARN} warning(s) counted as failures${RESET}" >&2
 fi
 if (( FAIL > 0 )); then
   print -P "${RED}flakelab doctor: ${FAIL} problem(s), ${WARN} warning(s).${RESET}" >&2
