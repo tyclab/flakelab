@@ -17,8 +17,11 @@ set -uo pipefail
 #              [--only BRANCH]... [--unpark] [--json] [--max-depth N] [DIR...]
 #
 # Exit status:
-#   0  nothing to clean
-#   1  stale items found — removed, reported, or kept at the prompt
+#   0  nothing left in the run's selection — none found, or every candidate found
+#      was removed; under --only the selection is the named branches (stale
+#      worktree entries are pruned regardless), so other candidates may remain
+#   1  stale items left in the selection — reported, kept at the prompt, or a
+#      checkout held back
 #   2  preflight failure, per-repo fetch/forge/parse failure, a refused delete,
 #      or a usage error
 #
@@ -95,7 +98,9 @@ Examples:
   gitcleaner --repo . --only old/feat --unpark --yes
                                          the same while it is checked out
 
-Exit: 0 nothing to clean, 1 items found (removed, reported or kept), 2 failure
+Exit: 0 nothing left in the selection (none found, or all removed; with --only
+the selection is the named branches), 1 items left (reported, kept or held
+back), 2 failure
 EOF
 }
 
@@ -673,11 +678,20 @@ render_json() {
     "${WORKDIR}"/json.*(N) < /dev/null
 }
 
+# What the run leaves behind, not what it found, sets the status: 1 is work
+# left, so a run that removed every candidate it found exits 0, and a caller
+# reading 1 as failed work does not retry a removal that went through. A quit
+# at the prompt always leaves the candidate it stopped at.
+work_left() {
+  (( QUIT_ALL )) && return 0
+  (( FOUND_BRANCHES - GONE_BRANCHES + FOUND_WORKTREES - GONE_WORKTREES + FOUND_PARKED - GONE_PARKED > 0 ))
+}
+
 if (( JSON )); then
   render_json
   (( rc == 2 || FAILED_BRANCHES > 0 )) && exit 2
-  (( FOUND_BRANCHES + FOUND_WORKTREES + FOUND_PARKED == 0 )) && exit 0
-  exit 1
+  work_left && exit 1
+  exit 0
 fi
 
 print -r -- ""
@@ -715,4 +729,5 @@ if (( FAILED_BRANCHES > 0 )); then
   rc=2
 fi
 (( rc == 2 )) && exit 2
-exit 1
+work_left && exit 1
+exit 0
