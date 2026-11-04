@@ -130,3 +130,9 @@ Read for this topic; paths below are relative to the repository root unless stat
   path, including its no-MR-pipeline fallback.
   `--title` is the MR title; pass `--message-file FILE` when the commit needs a
   body, because `--title` alone is the whole message.
+  Fetch/API attempts retain a 30-second timeout and one retry. A push runs once,
+  without a wall-clock timeout over its hooks: full-tree validation can take
+  900 seconds plus time queued on another run's lock. SSH connect/keepalive and
+  HTTP low-speed limits bound stalled transports instead. A failed push stops
+  at the push gate; inspect the remote branch before publishing again because
+  a network failure can leave its outcome unknown.

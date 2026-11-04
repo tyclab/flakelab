@@ -199,8 +199,10 @@ typeset -i ahead=0
 ahead="$(git -C "${REPO}" rev-list --count "refs/remotes/origin/${default_branch}..HEAD" 2>/dev/null || print -n 0)"
 (( ahead == 0 )) && die "nothing to publish: no commits on ${BRANCH} beyond origin/${default_branch}"
 
-gitnet_retry git -C "${REPO}" push -u origin HEAD \
-  || die "push failed for ${BRANCH} (after retry, ${GITNET_WHY}): ${GITNET_OUT}"
+if ! gitnet_push_once git -C "${REPO}" push -u origin HEAD; then
+  hook_found_secret "${GITNET_OUT}" && gate_stop secret "${GITNET_OUT}"
+  gate_stop push "Push stopped after one attempt (${GITNET_WHY}); inspect the remote branch before publishing again."$'\n'"${GITNET_OUT}"
+fi
 
 # The push already updated an existing MR; opening a second is a duplicate.
 ACTION=opened
