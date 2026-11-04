@@ -1,0 +1,223 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Offline suite for nix-access-tokens, which renders GH_TOKEN into the file nix.conf
+# includes: the real script against fixture secrets files that hold a fake token,
+# with every external command it runs shimmed to record its arguments, and the
+# real nix reading what it wrote through an `!include` under NIX_CONF_DIR. The fake
+# token has to reach the rendered file and nix's settings, and nothing else: not
+# the script's output (the unit's journal, flakelab update's output), not a
+# command line, not a temporary file left behind, not a store path.
+#
+# Usage: files/scripts/test-nix-access-tokens
+#
+
+SCRIPT_DIR="${0:A:h}"
+RENDER="${SCRIPT_DIR}/nix-access-tokens"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       want: $3"; print -r -u2 -- "       got:  $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in:      $2" } }
+# Never echoes what it looked for: the needle is a token, fake or not.
+lacks()    { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (the token is there)" }
+
+BASE="$(mktemp -d)"
+trap 'chmod -R u+w "${BASE}" 2> /dev/null; rm -rf "${BASE}"' EXIT
+
+# Shaped like a token, matched by no secret scanner.
+FAKE="flakelab_fake_token_${RANDOM}${RANDOM}_a1"
+FAKE2="flakelab_fake_token_${RANDOM}${RANDOM}_b2"
+
+# Every tool the script may run from PATH is a shim that appends its argv to
+# ARGV_LOG before running the real one; zsh comes along unshimmed.
+REAL="${BASE}/real"
+SHIMS="${BASE}/shims"
+mkdir -p "${REAL}" "${SHIMS}" "${BASE}/home" "${BASE}/tmp" "${BASE}/run"
+for t in tr mktemp chmod mv rm id cat stat; do
+  ln -s "${commands[$t]}" "${REAL}/${t}"
+  cat > "${SHIMS}/${t}" <<'SHIM'
+#!/usr/bin/env zsh
+print -r -- "${0:t} $*" >> "${ARGV_LOG}"
+exec "${REAL}/${0:t}" "$@"
+SHIM
+  chmod +x "${SHIMS}/${t}"
+done
+ln -s "${commands[zsh]}" "${SHIMS}/zsh"
+export ARGV_LOG="${BASE}/argv.log" REAL
+: > "${ARGV_LOG}"
+
+OUTF="${BASE}/run/access-tokens.conf"
+SRC="${BASE}/secrets.env"
+typeset -i RC=0
+OUT=""
+# render <args...>: the script with the fixture source and file, nothing of this
+# shell's environment, TMPDIR where the suite can look afterwards.
+render() {
+  OUT="$(env -i PATH="${SHIMS}" HOME="${BASE}/home" TMPDIR="${BASE}/tmp" ARGV_LOG="${ARGV_LOG}" REAL="${REAL}" \
+    ${SECRETS_NAME:+FLAKELAB_SECRETS_NAME="${SECRETS_NAME}"} \
+    zsh "${RENDER}" --source "${SRC}" --out "${OUTF}" "$@" 2>&1 < /dev/null)"
+  RC=$?
+}
+status() { render --status; print -r -- "${OUT}" }
+line() { [[ -r "${OUTF}" ]] && command grep -c -x -F -- "extra-access-tokens = github.com=$1" "${OUTF}" || print -r -- 0 }
+# Anywhere the token must never be: the outputs so far, every argv, any file left in TMPDIR.
+ALL_OUT=""
+render_logged() { render "$@"; ALL_OUT+="${OUT}"$'\n' }
+
+print -r -- "test-nix-access-tokens"
+
+print -r -- "a token in the secrets is rendered into the include, mode 600"
+print -rn -- $'GITLAB_TOKEN="gl-placeholder"\r\nGH_TOKEN="'"${FAKE}"$'"\r\nHASS_TOKEN=x\r\n' > "${SRC}"
+render_logged
+check    "it exits 0"                          "${RC}" "0"
+check    "the file holds the token once"       "$(line "${FAKE}")" "1"
+check    "with no carriage return"             "$(command grep -c $'\r' "${OUTF}")" "0"
+check    "mode 600"                            "$(stat -c %a "${OUTF}")" "600"
+contains "it says where the token came from"   "${OUT}" "✓ nix fetches GitHub with the GH_TOKEN from ${SRC}"
+lacks    "and never prints it"                 "${OUT}" "${FAKE}"
+check    "no temporary file is left beside it" "$(print -l -- "${BASE}/run"/.access-tokens.*(N) | command grep -c .)" "0"
+check    "the state is current"                "$(status)" "current"
+
+print -r -- "every spelling the shell sources renders the same token"
+for spelling in "GH_TOKEN=${FAKE}" "export GH_TOKEN='${FAKE}'" "  GH_TOKEN=\"${FAKE}\"  # a comment"; do
+  rm -f "${OUTF}"
+  print -r -- "${spelling}" > "${SRC}"
+  render_logged
+  check  "rendered: ${spelling%%=*}"           "$(line "${FAKE}")" "1"
+done
+
+print -r -- "GITHUB_TOKEN stands in when GH_TOKEN is unset, as for gh"
+rm -f "${OUTF}"
+print -r -- "GITHUB_TOKEN=${FAKE}" > "${SRC}"
+render_logged
+check    "rendered"                            "$(line "${FAKE}")" "1"
+
+print -r -- "a rotated token replaces the one rendered before"
+print -r -- "GH_TOKEN=${FAKE2}" > "${SRC}"
+check    "before the render the state is stale" "$(status)" "stale"
+render_logged
+check    "it exits 0"                          "${RC}" "0"
+check    "the new token is there"              "$(line "${FAKE2}")" "1"
+lacks    "the old one is gone"                 "$(< "${OUTF}")" "${FAKE}"
+check    "still mode 600"                      "$(stat -c %a "${OUTF}")" "600"
+check    "and current"                         "$(status)" "current"
+
+print -r -- "the secrets' own output and errors never pass through"
+print -r -- "echo \"sourced: \${GH_TOKEN}\"
+print -u2 -- \"\${GH_TOKEN}\"
+GH_TOKEN=${FAKE}
+no-such-command \"\${GH_TOKEN}\"
+VALUE=\"\${GH_TOKEN} with a space\" ; \${VALUE}" > "${SRC}"
+render_logged
+check    "it still renders"                    "$(line "${FAKE}")" "1"
+lacks    "and prints none of it"               "${OUT}" "${FAKE}"
+
+print -r -- "no GH_TOKEN: anonymous, a warning, and the earlier file removed"
+print -r -- "GITLAB_TOKEN=gl-placeholder" > "${SRC}"
+check    "before the render the state is withdrawn" "$(status)" "withdrawn"
+SECRETS_NAME="the overlay's sops secrets (sopsSecretsFile)" render_logged
+check    "it exits 0, a warning is no failure"  "${RC}" "0"
+check    "the file is gone"                    "$([[ -e "${OUTF}" ]] && print present || print gone)" "gone"
+contains "it names the file it read"           "${OUT}" "${SRC} sets no GH_TOKEN"
+contains "it says nix stays anonymous"         "${OUT}" "nix fetches GitHub anonymously"
+contains "what that costs"                     "${OUT}" "HTTP 403 and flakelab update keeps the old flakelab input"
+contains "that the old token went"             "${OUT}" "the token rendered earlier is removed"
+contains "and where to add one"                "${OUT}" "Add GH_TOKEN to the overlay's sops secrets (sopsSecretsFile), then: flakelab update"
+check    "the state is none"                   "$(status)" "none"
+
+print -r -- "an unreadable secrets file is the same warning, naming the file"
+rm -f "${SRC}"
+render_logged
+check    "it exits 0"                          "${RC}" "0"
+contains "it says the file is not readable"    "${OUT}" "no GitHub token for nix: ${SRC} is not readable"
+
+print -r -- "a value nix.conf cannot carry is refused, not rendered"
+print -r -- "GH_TOKEN=${FAKE}" > "${SRC}"
+render_logged
+print -r -- "GH_TOKEN=\"${FAKE} tail#x\"" > "${SRC}"
+check    "the state is invalid"                "$(status)" "invalid"
+render_logged
+check    "it exits 0"                          "${RC}" "0"
+check    "the earlier file is removed"         "$([[ -e "${OUTF}" ]] && print present || print gone)" "gone"
+contains "it says why"                         "${OUT}" "holds a character a nix.conf line cannot carry"
+lacks    "without the value"                   "${OUT}" "${FAKE}"
+lacks    "or any part of it"                   "${OUT}" "tail#x"
+
+print -r -- "a directory it cannot write is a failure, said"
+print -r -- "GH_TOKEN=${FAKE}" > "${SRC}"
+check    "the state is unrendered"             "$(status)" "unrendered"
+chmod 555 "${BASE}/run"
+if [[ -w "${BASE}/run" ]]; then
+  print -r -- "  skip (running as root: a read-only directory is still writable)"
+else
+  render_logged
+  check    "it exits 1"                        "${RC}" "1"
+  contains "naming the unit to look at"        "${OUT}" "is missing or not writable"
+  lacks    "without the value"                 "${OUT}" "${FAKE}"
+fi
+chmod 755 "${BASE}/run"
+
+print -r -- "usage"
+OUT="$(zsh "${RENDER}" 2>&1)"; RC=$?
+check    "no arguments exit 2"                 "${RC}" "2"
+OUT="$(zsh "${RENDER}" --source a --out b --bogus 2>&1)"; RC=$?
+check    "an unknown flag exits 2"             "${RC}" "2"
+OUT="$(zsh "${RENDER}" --help 2>&1)"; RC=$?
+check    "--help exits 0"                      "${RC}" "0"
+contains "and names the states"                "${OUT}" "unrendered"
+
+print -r -- "the token is in no command line and no file left in TMPDIR"
+lacks    "no argv the script ran"              "$(< "${ARGV_LOG}")" "${FAKE}"
+lacks    "nor the rotated one"                 "$(< "${ARGV_LOG}")" "${FAKE2}"
+contains "the shims did see the commands"      "$(< "${ARGV_LOG}")" "mv -f -- "
+check    "TMPDIR holds nothing"                "$(print -l -- "${BASE}/tmp"/*(DN) | command grep -c .)" "0"
+lacks    "no output of any run"                "${ALL_OUT}" "${FAKE}"
+
+# The include as nix reads it: NIX_CONF_DIR moves nix.conf, the user's files are
+# none, and nix is asked only for a count of what it reads.
+if (( ! $+commands[nix] )); then
+  print -r -- "  skip (no nix on PATH: the include is not read by nix)"
+else
+  CONF="${BASE}/conf"
+  mkdir -p "${CONF}"
+  print -r -- "experimental-features = nix-command flakes
+!include ${OUTF}" > "${CONF}/nix.conf"
+  nixc() { env -i PATH="${PATH}" HOME="${BASE}/home" NIX_CONF_DIR="${CONF}" NIX_USER_CONF_FILES="${BASE}/none.conf" nix "$@" }
+
+  print -r -- "nix reads the rendered token through the include"
+  render_logged
+  check  "one github.com token for nix"        "$(nixc config show access-tokens 2> /dev/null | command grep -c -F "github.com=${FAKE}")" "1"
+  # An access-tokens nix.conf already names for another host stays: the include adds.
+  print -r -- "experimental-features = nix-command flakes
+access-tokens = gitlab.example.invalid=PAT:other
+!include ${OUTF}" > "${CONF}/nix.conf"
+  check  "beside another host's token"         "$(nixc config show access-tokens 2> /dev/null | tr ' ' '\n' | command grep -c -E "^(github\.com=${FAKE}|gitlab\.example\.invalid=PAT:other)\$")" "2"
+
+  print -r -- "without the file nix runs as before, anonymously"
+  print -r -- "GITLAB_TOKEN=gl-placeholder" > "${SRC}"
+  render_logged
+  nixc config show access-tokens > /dev/null 2>&1
+  check  "nix config show still exits 0"       "$?" "0"
+  check  "and reads no github.com token"       "$(nixc config show access-tokens 2> /dev/null | command grep -c 'github\.com=')" "0"
+
+  print -r -- "a store written while nix holds the token gets none of it"
+  print -r -- "GH_TOKEN=${FAKE}" > "${SRC}"
+  render_logged
+  mkdir -p "${BASE}/flake"
+  print -r -- '{ outputs = _: { out = builtins.toFile "flakelab-probe" (builtins.readFile ./flake.nix); }; }' > "${BASE}/flake/flake.nix"
+  STORE="${BASE}/store"
+  nixc --store "${STORE}" flake metadata "path:${BASE}/flake" > /dev/null 2> "${BASE}/nix.err"
+  ALL_OUT+="$(< "${BASE}/nix.err")"
+  nixc --store "${STORE}" eval --raw "path:${BASE}/flake#out" > /dev/null 2>> "${BASE}/nix.err"
+  check  "the store was written"               "$(print -l -- "${STORE}"/nix/store/*flakelab-probe(N) | command grep -c .)" "1"
+  check  "and no file in it holds the token"   "$(command grep -rlF -- "${FAKE}" "${STORE}" 2> /dev/null | command grep -c .)" "0"
+  lacks  "nor does nix's own output"           "$(< "${BASE}/nix.err")" "${FAKE}"
+fi
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

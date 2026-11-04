@@ -29,7 +29,11 @@ in
         # Explicit, not sops-nix's default: the shell contract depends on it.
         mode = "0400";
         owner = cfg.username;
-        restartUnits = lib.optional (keyFiles != { }) "flakelab-sops-key-files.service";
+        # A rotated GH_TOKEN reaches nix.conf's include with the render that brought it.
+        restartUnits = [
+          "flakelab-nix-access-tokens.service"
+        ]
+        ++ lib.optional (keyFiles != { }) "flakelab-sops-key-files.service";
       };
     };
 

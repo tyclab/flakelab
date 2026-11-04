@@ -13,7 +13,10 @@ let
   };
 in
 {
-  imports = [ ./codex-config.nix ];
+  imports = [
+    ./codex-config.nix
+    ./nix-access-tokens.nix
+  ];
 
   networking.hostName = lib.mkDefault config.flakelab.hostName;
 

@@ -45,7 +45,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    sudo|nix-clone-repos|claude|systemctl|flakelab-switch-result|flakelab) continue ;;
+    sudo|nix-clone-repos|claude|systemctl|flakelab-switch-result|flakelab|flakelab-nix-access-tokens) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -995,6 +995,10 @@ export TOOLS
 cat > "${SHIM}/nix" <<'STUB'
 #!/usr/bin/env zsh
 if [[ "$1" == flake && "$2" == update ]]; then
+  if [[ -n "${TOKEN_ORDER:-}" ]]; then
+    [[ -f "${TOKEN_ORDER}" ]] || { print -ru2 -- 'token was not rendered before relock'; exit 1; }
+    print -r -- relocked > "${TOKEN_ORDER}.relocked"
+  fi
   [[ -n "${LOCK_AFTER:-}" ]] && cp "${LOCK_AFTER}" "${FLAKELAB_REPO_ROOT}/flake.lock"
   [[ -n "${NIX_WARN:-}" ]] && print -r -u2 -- "${NIX_WARN}"
   print -r -- "• Updated input 'flakelab'"
@@ -1078,10 +1082,44 @@ export LOCK_AFTER="${BASE}/lock.after"
 export NIX_WARN="warning: unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 403"
 run_update "${d}"
 unset NIX_WARN
-check    "it switches"                      "${RC}" "0"
-contains "it says the input was not checked" "${OUT}" "flakelab input not checked: Nix could not reach the repo and kept its last cached answer (${REV_NEW[1,7]})"
+check    "an unchecked input exits nonzero"  "${RC}" "1"
+check    "the cached input was still rebuilt" "$(switches)" "1"
+contains "it names the missing token render" "${OUT}" "GitHub refused nix's lookup without a flakelab token render (HTTP 403)"
+contains "it names the retained revision"    "${OUT}" "kept its last cached answer (${REV_NEW[1,7]})"
 contains "with Nix's reason"                "${OUT}" "unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 403"
 excludes "and never calls it unchanged"     "${OUT}" "input unchanged"
+check    "the final summary repeats the failure" "$(print -r -- "${OUT}" | grep -c 'flakelab input not checked:')" "2"
+
+print -r -- "an invalid token and an authenticated rate limit have distinct advice"
+NIX_WARN="warning: unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 401" run_update "${d}"
+check    "authentication failure exits nonzero" "${RC}" "1"
+contains "authentication advice names GH_TOKEN" "${OUT}" "GitHub rejected the token nix sent (HTTP 401)"
+print -r -- 'extra-access-tokens = github.com=fixture' > "${BASE}/nix-token.conf"
+FLAKELAB_NIX_TOKENS_FILE="${BASE}/nix-token.conf" NIX_WARN="warning: unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 429" run_update "${d}"
+check    "rate limit exits nonzero" "${RC}" "1"
+contains "rate limit advice names access and quota" "${OUT}" "check the token's access and its rate limit"
+NIX_WARN="warning: unable to download 'https://api.github.com/repos/tyclab/flakelab/commits/HEAD': HTTP error 403" SUDO_RC=4 run_update "${d}"
+check    "a degraded switch keeps its own status" "${RC}" "4"
+
+print -r -- "token rendering precedes the re-lock and a render failure stops the update"
+cat > "${SHIM}/flakelab-nix-access-tokens" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- rendered > "${TOKEN_ORDER}"
+exit "${TOKEN_RENDER_RC:-0}"
+STUB
+chmod +x "${SHIM}/flakelab-nix-access-tokens"
+export TOKEN_ORDER="${BASE}/token-order"
+run_update "${d}"
+check    "the renderer ran" "$(< "${TOKEN_ORDER}")" "rendered"
+check    "the re-lock observed the render" "$(< "${TOKEN_ORDER}.relocked")" "relocked"
+check    "a rendered token permits the switch" "${RC}" "0"
+rm -f "${TOKEN_ORDER}.relocked"
+TOKEN_RENDER_RC=1 run_update "${d}"
+check    "a failed render is a failure" "${RC}" "1"
+check    "a failed render prevents the re-lock" "$([[ -e "${TOKEN_ORDER}.relocked" ]] && print yes || print no)" "no"
+check    "a failed render prevents the switch" "$(switches)" "0"
+rm -f "${SHIM}/flakelab-nix-access-tokens"
+unset TOKEN_ORDER
 
 # The lock names a repo as `owner/repo` (a GitLab subgroup's owner keeps its `/`)
 # or, for a git input, as a whole URL; a clone's origin is any of the three URL

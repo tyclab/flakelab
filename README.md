@@ -455,17 +455,28 @@ and writes `<overlay>-payload\shared\secrets\secrets.env`. The in-distro
 `~/.config/flakelab/secrets.env` that the shell actually sources is restored from it
 by `flakelab backup --restore`, which `provision` runs for you.
 
-| Key                             | Needed by                                        |
-| ------------------------------- | ------------------------------------------------ |
-| `GITLAB_TOKEN`                  | `flakelab clone` (glab group discovery)          |
-| `GH_TOKEN`                      | `gh` CLI, `gitchecker` open-PR listing           |
-| `HASS_TOKEN`                    | homeassistant MCP (mapped to `HA_TOKEN`)         |
-| `PROXMOX_TOKEN_ID`              | proxmox MCP                                      |
-| `PROXMOX_TOKEN_SECRET`          | proxmox MCP                                      |
-| `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki) |
-| `NTFY_URL`                      | `flakelab notify` (the topic it posts to)        |
-| `NTFY_TOKEN`                    | `flakelab notify` (a protected topic)            |
-| `NOTIFY_WEBHOOK_URL`            | `flakelab notify` (a JSON webhook it posts to)   |
+| Key                             | Needed by                                          |
+| ------------------------------- | -------------------------------------------------- |
+| `GITLAB_TOKEN`                  | `flakelab clone` (glab group discovery)            |
+| `GH_TOKEN`                      | `gh` CLI, GitHub repository checks and Nix fetches |
+| `HASS_TOKEN`                    | homeassistant MCP (mapped to `HA_TOKEN`)           |
+| `PROXMOX_TOKEN_ID`              | proxmox MCP                                        |
+| `PROXMOX_TOKEN_SECRET`          | proxmox MCP                                        |
+| `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki)   |
+| `NTFY_URL`                      | `flakelab notify` (the topic it posts to)          |
+| `NTFY_TOKEN`                    | `flakelab notify` (a protected topic)              |
+| `NOTIFY_WEBHOOK_URL`            | `flakelab notify` (a JSON webhook it posts to)     |
+
+Nix reads `GH_TOKEN` (or `GITHUB_TOKEN`) from the same secrets source through
+`/run/flakelab-nix/access-tokens.conf`, a mode-600 runtime file owned by the login.
+Only its include path enters the Nix store. The service renders it at boot and
+after activation; `flakelab update` refreshes it before checking the flake input.
+Rotation replaces the file, and removing the token removes the file. Without a
+token, public GitHub fetches continue anonymously and share GitHub's anonymous
+rate limit. `flakelab doctor` reports missing, stale or incorrectly protected
+renders without printing the value. If Nix falls back to a cached input after a
+failed lookup, `flakelab update` reports that failure again at the end and exits
+nonzero even if rebuilding that cached input succeeded.
 
 The non-secret half of each pair (`HASS_URL`, `PROXMOX_API_URL`, …) lives in
 `sessionVariables`; the MCP servers inherit both halves from the shell, so a
