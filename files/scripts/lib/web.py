@@ -182,6 +182,8 @@ def run(argv, stdin_text=None):
             input=stdin_text,
             capture_output=True,
             text=True,
+            # Output that is not UTF-8 must not read as a call that never ran.
+            errors="replace",
             timeout=TIMEOUT,
             stdin=None if stdin_text is not None else subprocess.DEVNULL,
         )
@@ -287,26 +289,28 @@ class Handler(BaseHTTPRequestHandler):
         return morsel is not None and TOKEN.has_session(morsel.value)
 
     def body(self):
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
+        # Digits only: int() would also take "+1", "1_0" and non-ASCII digits.
+        cl = (self.headers.get("Content-Length") or "0").strip()
+        if not (cl.isascii() and cl.isdigit()):
             return None
-        if n <= 0:
+        n = int(cl)
+        if n == 0:
             return {}
         # rfile is unbuffered (rbufsize), so one read returns what one recv
-        # got: a body that arrives in pieces is read until it is whole.
-        want, raw = min(n, 65536), b""
+        # got: a body that arrives in pieces is read until it is whole, and
+        # one that ends short of it is refused.
+        raw, got = bytearray(min(n, 65536)), 0
         try:
-            while len(raw) < want:
-                chunk = self.rfile.read(want - len(raw))
-                if not chunk:
-                    break
-                raw += chunk
+            while got < len(raw):
+                k = self.rfile.readinto(memoryview(raw)[got:])
+                if not k:
+                    return None
+                got += k
         except OSError:
             return None
         try:
             doc = json.loads(raw.decode() or "{}")
-        except ValueError:
+        except (ValueError, RecursionError):  # nesting too deep for the parser
             return None
         return doc if isinstance(doc, dict) else None
 

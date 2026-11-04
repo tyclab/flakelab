@@ -35,7 +35,9 @@ print -r -- "tycswap $*" >> "${FAKE_LOG}"
 ROSTER='{"schemaVersion":1,"activeAccountNumber":2,"accounts":[{"number":1,"email":"a@example.com","alias":"home","active":false,"usageStatus":"ok","usage":{"fiveHour":{"pct":20,"resetsAt":"2026-10-01T12:00:00Z"},"sevenDay":{"pct":40}}},{"number":2,"email":"b@example.com","alias":"work","active":true,"usageStatus":"ok","usage":{"fiveHour":{"pct":96},"scoped":[{"name":"Fable","pct":61}]},"atLimit":true,"limitingWindows":["5h"]},{"number":3,"email":"c@example.com","active":false,"disabled":true,"usageStatus":"token_expired","usage":null}]}'
 case "$1" in
   list) print -r -- "$ROSTER" ;;
-  switch) [[ "$2" == 9 ]] && { print -ru2 -- "No account found with identifier: 9"; exit 1 }; print -r -- "Switched to Account-$2" ;;
+  switch) [[ "$2" == 9 ]] && { print -ru2 -- "No account found with identifier: 9"; exit 1 }
+    [[ "$2" == 8 ]] && { print -rn -- $'\xff'; exit 0 }
+    print -r -- "Switched to Account-$2" ;;
   *) exit 2 ;;
 esac
 STUB
@@ -201,6 +203,7 @@ s.sendall(head + body[:5])
 time.sleep(0.3)
 try:
     s.sendall(body[5:])
+    s.shutdown(socket.SHUT_WR)
 except OSError:
     pass
 data = b""
@@ -215,12 +218,22 @@ check "a body that arrives in pieces is read whole" "${CODE}" "200"
 contains "and the switch ran" "$(calls)" "tycswap switch 2"
 rawpost '{"entry":"2"}' abc
 check "a Content-Length that is not a number is 400" "${CODE}" "400"
+rawpost '{"entry":"2"}' 1_3
+check "nor one int() would stretch to a number" "${CODE}" "400"
+rawpost '{"entry":"2"}' 20
+check "a body that ends short of its Content-Length is 400" "${CODE}" "400"
+check "and nothing ran" "$(calls)" ""
+post /api/switch "${(l:60000::[:)${:-}}" "${TOKEN}"
+check "a body nested too deep for the parser is 400" "${CODE}" "400"
 post /api/switch '{"entry":"2\u0000"}' "${TOKEN}"
 check "a NUL byte in the entry is answered, not dropped" "${CODE}" "502"
 check "and nothing ran" "$(calls)" ""
+post /api/switch '{"entry":"8"}' "${TOKEN}"
+check "a switch that ran and printed bytes that are not UTF-8 is still a success" "${CODE}" "200"
+: > "${LOG}"
 print -r -- '#!/bin/sh' > "${BASE}/noexec"
 check "run() reports a binary it cannot execute instead of raising" \
-  "$(cd "${SCRIPT_DIR}/lib" && python3 -I -c 'import sys; sys.path.insert(0, "."); import web; print(web.run([sys.argv[1]])["code"])' "${BASE}/noexec" 2>&1)" "126"
+  "$(cd "${SCRIPT_DIR}/lib" && python3 -I -B -c 'import sys; sys.path.insert(0, "."); import web; print(web.run([sys.argv[1]])["code"])' "${BASE}/noexec" 2>&1)" "126"
 
 for p in /api/fetch /api/auto /api/config; do
   post "$p" '{}' "${TOKEN}"
