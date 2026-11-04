@@ -31,7 +31,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
+    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|flakelab-switch-result|flakelab-nix-access-tokens|*.exe|wslpath|xdg-open) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -638,6 +638,43 @@ lacks    "with no mv to fail on"      "${out}" "mv -n ~/.config/tyc"
 rm -rf "${BASE}/home/.config/tyc"
 lacks    "no old directory, no warning" "$(secrets)" "~/.config/tyc"
 rm -rf "${BASE}/home/.config"
+
+print -r -- "nix token: report render state and permissions without revealing the token"
+TOKEN_TOOLS="${BASE}/token-tools"
+TOKEN_CONF="${BASE}/token-conf"
+TOKEN_FILE="${BASE}/access-tokens.conf"
+mkdir -p "${TOKEN_TOOLS}" "${TOKEN_CONF}"
+cat > "${TOKEN_TOOLS}/flakelab-nix-access-tokens" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == --status ]] || exit 2
+print -r -- "${FAKE_NIX_TOKEN_STATE:-current}"
+STUB
+cat > "${TOKEN_TOOLS}/nix" <<'STUB'
+#!/usr/bin/env zsh
+[[ "${FAKE_NIX_EMPTY:-0}" == 1 ]] || print -r -- 'github.com=fixture_do_not_print'
+exit 0
+STUB
+chmod +x "${TOKEN_TOOLS}"/*
+print -r -- 'extra-access-tokens = github.com=fixture_do_not_print' > "${TOKEN_FILE}"
+chmod 600 "${TOKEN_FILE}"
+token_section() {
+  section 'Nix GitHub token' PATH="${TOKEN_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other \
+    FLAKELAB_NIX_TOKENS_FILE="${TOKEN_FILE}" NIX_CONF_DIR="${TOKEN_CONF}" "$@"
+}
+out="$(token_section)"
+contains "missing include is named" "${out}" "token render is not configured"
+lacks "another configured token is not ruled out" "${out}" "fetches GitHub anonymously"
+print -r -- "!include ${TOKEN_FILE}" > "${TOKEN_CONF}/nix.conf"
+out="$(token_section)"
+contains "matching render is reported" "${out}" "rendered GitHub token matches"
+contains "effective Nix configuration is checked" "${out}" "nix reads a github.com access token"
+lacks "the token is never printed" "${out}" "fixture_do_not_print"
+contains "rotation is reported" "$(token_section FAKE_NIX_TOKEN_STATE=stale)" "rotated after the last render"
+contains "withdrawal is reported" "$(token_section FAKE_NIX_TOKEN_STATE=withdrawn)" "no longer holds"
+contains "an effective override is reported" "$(token_section FAKE_NIX_EMPTY=1)" "nix reads no github.com access token"
+chmod 644 "${TOKEN_FILE}"
+contains "readable token file is a failure" "$(token_section)" "[FAIL] ${TOKEN_FILE} is mode 644"
+rm -rf "${TOKEN_TOOLS}" "${TOKEN_CONF}" "${TOKEN_FILE}"
 
 # on_tty <redirect> [<VAR=value>...]: a whole doctor run on a pseudo-terminal
 # (util-linux script) with TERM=xterm and that environment, <redirect> (`> file`,

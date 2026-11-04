@@ -40,12 +40,42 @@ let
       lib.throwIf (cfg.backupRoot == cfg.repoPath || lib.hasPrefix "${cfg.repoPath}/" cfg.backupRoot)
         "flakelab.backupRoot (${cfg.backupRoot}) is inside repoPath (${cfg.repoPath}): nix copies the overlay directory whole into the world-readable store, so the payload - keys, cleartext secrets - must live outside it. Leave it null for ${cfg.repoPath}-payload."
         cfg.backupRoot;
+  # The secrets file the shell sources, as zsh.nix picks it: exactly one, no fallback.
+  # $HOME expands in the wrapper, so a moved home is followed.
+  secretsSource =
+    if cfg.sopsSecretsFile != null then
+      "/run/secrets/flakelab-env"
+    else
+      ''"$HOME/.config/flakelab/secrets.env"'';
+  # Where a key is added, for messages: the render is not edited, its ciphertext is.
+  secretsName =
+    if cfg.sopsSecretsFile != null then
+      lib.escapeShellArg "the overlay's sops secrets (sopsSecretsFile)"
+    else
+      secretsSource;
 in
 # `rec`, because wrappers pin sibling wrappers: nix-update and nix-update-all pin
 # nix-clone-repos (the CLI keeps it off PATH under its own name, so a bare `--all`
 # would trip its guard) and switch-result; web pins accounts and claude-sessions.
 rec {
   mcp = (import ./mcp-clients.nix { inherit pkgs cfg; }).launcher;
+
+  # The file nix.conf `!include`s for GitHub's access token (nix/nix-access-tokens.nix). Only
+  # this path is in the store; the token is rendered into it at run time.
+  nixAccessTokensFile = "/run/flakelab-nix/access-tokens.conf";
+
+  # Not a `flakelab` subcommand: run as the login by flakelab-nix-access-tokens.service and by
+  # nix-update, which pin it. Its PATH is pinned whole, as the unit has none worth inheriting.
+  nix-access-tokens = pkgs.writeShellScriptBin "flakelab-nix-access-tokens" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+      ]
+    }
+    export FLAKELAB_SECRETS_NAME=${secretsName}
+    exec ${zsh} ${s}/nix-access-tokens --source ${secretsSource} --out ${nixAccessTokensFile} "$@"
+  '';
 
   clone-repos = pkgs.writeShellScriptBin "clone-repos" ''
     export PATH=${
@@ -355,6 +385,8 @@ rec {
     export FLAKELAB_CLAUDE_MARKETPLACES=${
       lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
     }
+    export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
+    export FLAKELAB_SECRETS_NAME=${secretsName}
     export PATH=${
       bin [
         pkgs.zsh
@@ -363,6 +395,7 @@ rec {
         pkgs.findutils
         nix-clone-repos
         switch-result
+        nix-access-tokens
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-update "$@"
@@ -377,6 +410,8 @@ rec {
     export FLAKELAB_CLAUDE_MARKETPLACES=${
       lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
     }
+    export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
+    export FLAKELAB_SECRETS_NAME=${secretsName}
     export PATH=${
       bin [
         pkgs.zsh
@@ -385,6 +420,7 @@ rec {
         pkgs.findutils
         nix-clone-repos
         switch-result
+        nix-access-tokens
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-update --all "$@"
@@ -469,12 +505,14 @@ rec {
     ${trayEnv}
     # Which secrets file the shell sources, decided on the same option as zsh.nix.
     export FLAKELAB_SOPS_RENDER=${if cfg.sopsSecretsFile != null then "1" else "0"}
+    export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
     export FLAKELAB_CLAUDE_REMOTE_CONTROL=${lib.boolToString cfg.claudeRemoteControl}
     export FLAKELAB_CLAUDE_UPDATE_CHANNEL=${cfg.claudeAutoUpdatesChannel}
     export PATH=${
       bin [
         pkgs.zsh
         nix-tycswap-tray
+        nix-access-tokens
         pkgs.git
         pkgs.openssh
         pkgs.glab

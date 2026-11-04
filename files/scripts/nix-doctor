@@ -43,11 +43,13 @@ while (( $# > 0 )); do
       echo "it runs in (WSL target only), the AI CLIs the overlay installs (Claude Code"
       echo "as the native ~/.local/bin/claude; Codex), the switcher (tycswap), its"
       echo "auto-switch timer and, on WSL, its Windows tray (flakelab tray status),"
-      echo "which git config file wins, secrets.env (mode + CRLF),"
+      echo "which git config file wins, secrets.env (mode + CRLF), the mode of the GitHub"
+      echo "token rendered for nix,"
       echo "glab config modes (global and repo-local), glab auth, the ssh-agent and its"
       echo "keys, GitLab SSH, cloned repos, and a writable npm prefix."
       echo ""
       echo "Non-blocking (WARN): deferred activation steps, a skip-healthcheck marker,"
+      echo "no GitHub token for nix, or one not rendered or out of date,"
       echo "run-time overrides of the auto-switch settings, Claude plugins installed,"
       echo "a claude in ~/.npm-global/bin that shadows the native one (reported, never"
       echo "removed), the Claude update blockers, a local flakelab checkout that is"
@@ -153,12 +155,89 @@ user_manager_hint() {
   log_hint "no user manager answers, so no user unit runs: systemctl status user@${UID}.service${see}"
 }
 
+# The file nix.conf includes for nix's GitHub token (nix/nix-access-tokens.nix), and the nix.conf
+# that should include it: NIX_CONF_DIR is nix's own way to move the latter.
+NIX_TOKENS_FILE="${FLAKELAB_NIX_TOKENS_FILE:-/run/flakelab-nix/access-tokens.conf}"
+NIX_CONF="${NIX_CONF_DIR:-/etc/nix}/nix.conf"
+
 # The one secrets file the shell sources, as zsh.nix picks it; nothing when none.
 _shell_secrets_file() {
   if ${SOPS_ENROLLED}; then
     [[ -r "${SOPS_RENDER}" ]] && print -r -- "${SOPS_RENDER}"
   elif [[ -r "${SECRETS}" ]]; then
     print -r -- "${SECRETS}"
+  fi
+  return 0
+}
+
+# The token nix sends GitHub. Its state comes from the renderer as one word, so no value passes
+# through here, and nix is asked only for a count: `nix config show` prints tokens.
+_check_nix_github_token() {
+  local state mode owner me n where
+  me="$(id -un)"
+  if ${SOPS_ENROLLED}; then
+    where="the overlay's sops secrets (sopsSecretsFile)"
+  else
+    where="${SECRETS}"
+  fi
+  if ! grep -qxF -- "!include ${NIX_TOKENS_FILE}" "${NIX_CONF}" 2> /dev/null; then
+    log_warn "${NIX_CONF} does not include ${NIX_TOKENS_FILE}; flakelab's GitHub token render is not configured"
+    log_hint "the running generation predates the token render: flakelab update"
+    return 0
+  fi
+  if ! (( $+commands[flakelab-nix-access-tokens] )); then
+    log_warn "flakelab-nix-access-tokens is not on PATH, so the token nix sends GitHub is not checked"
+    log_hint "run the doctor as 'flakelab doctor', whose wrapper pins it"
+    return 0
+  fi
+  state="$(flakelab-nix-access-tokens --status 2> /dev/null)"
+  case "${state}" in
+    current)
+      log_ok "the rendered GitHub token matches the shell's secrets (${NIX_TOKENS_FILE})"
+      ;;
+    stale)
+      log_warn "the rendered GitHub token is not the GH_TOKEN in ${where}: it was rotated after the last render"
+      log_hint "flakelab update renders it again"
+      ;;
+    unrendered)
+      log_warn "GH_TOKEN is set but not rendered for nix; without another configured token, fetches are anonymous"
+      log_hint "flakelab update renders it; if it stays missing: systemctl status flakelab-nix-access-tokens.service"
+      ;;
+    withdrawn)
+      log_warn "the rendered GitHub token remains although ${where} no longer holds it"
+      log_hint "flakelab update removes it"
+      ;;
+    invalid)
+      log_warn "GH_TOKEN in ${where} holds a character a nix.conf line cannot carry; refresh the render to withdraw any old token"
+      log_hint "the render accepts letters, digits and _ . - only; check the value there"
+      ;;
+    none)
+      log_warn "no GH_TOKEN in ${where}; without another configured token, nix shares GitHub's 60 API requests an hour per IP, and past them flakelab update keeps the old flakelab input"
+      log_hint "add GH_TOKEN there (a GitHub token; public repos need no scope), then: flakelab update"
+      ;;
+    *)
+      log_warn "could not read the state of nix's GitHub token from flakelab-nix-access-tokens"
+      return 0
+      ;;
+  esac
+  [[ -e "${NIX_TOKENS_FILE}" ]] || return 0
+  mode="$(stat -c '%a' -- "${NIX_TOKENS_FILE}" 2> /dev/null)"
+  owner="$(stat -c '%U' -- "${NIX_TOKENS_FILE}" 2> /dev/null)"
+  if [[ "${mode}" != 600 || "${owner}" != "${me}" ]]; then
+    log_fail "${NIX_TOKENS_FILE} is mode ${mode:-?}, owned by ${owner:-?}; expected 600 and ${me}, or other users read the token"
+    log_hint "flakelab update writes it anew"
+  else
+    log_ok "${NIX_TOKENS_FILE} mode 600, owned by ${me}"
+  fi
+  # An `access-tokens =` in NIX_CONFIG or ~/.config/nix/nix.conf replaces the include's entry.
+  if (( $+commands[nix] )) && nix config show access-tokens > /dev/null 2>&1; then
+    n="$(nix config show access-tokens 2> /dev/null | grep -c 'github\.com=')"
+    if (( n > 0 )); then
+      log_ok "nix reads a github.com access token"
+    else
+      log_warn "nix reads no github.com access token although ${NIX_TOKENS_FILE} holds one"
+      log_hint "an access-tokens setting in NIX_CONFIG or ~/.config/nix/nix.conf replaces it; use extra-access-tokens there"
+    fi
   fi
   return 0
 }
@@ -777,6 +856,9 @@ elif needs_glab; then
 else
   log_ok "no gitlabGroups configured for this user — skipping the GITLAB_TOKEN check"
 fi
+
+log_head "Nix GitHub token"
+_check_nix_github_token
 
 log_head "GitLab CLI"
 # glab refuses to start on ANY config file it reads at a mode other than 600 —

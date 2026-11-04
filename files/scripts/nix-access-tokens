@@ -1,0 +1,154 @@
+#!/usr/bin/env zsh
+
+# NOT set -e: a missing token is a warning, not a failure, and every outcome says which it was.
+set -uo pipefail
+umask 077
+
+show_help() {
+  cat <<'NIX_ACCESS_TOKENS_HELP'
+flakelab-nix-access-tokens [--status]
+
+Renders GH_TOKEN from the secrets file the shell sources (the sops render, or
+~/.config/flakelab/secrets.env) into the file /etc/nix/nix.conf `!include`s,
+as `extra-access-tokens = github.com=...`, mode 600 and owned by the login.
+nix's GitHub lookups then count against the token's rate limit instead of the
+60 requests an hour GitHub allows every anonymous client behind one IP.
+
+Run as the login by flakelab-nix-access-tokens.service on every boot and switch,
+and by `flakelab update` before it re-locks. Not a `flakelab` subcommand.
+
+No token is a warning, never a failure: the file is removed and nix fetches
+anonymously. The value is never printed and never on a command line.
+
+  --status   print one word for the state instead of rendering:
+             current     the file holds the GH_TOKEN the secrets hold
+             stale       it holds another token (rotated since the last render)
+             unrendered  the secrets hold one, the file does not
+             withdrawn   the file holds one, the secrets do not
+             none        neither does
+             invalid     the secrets hold one nix.conf cannot carry
+
+The wrapper passes --source <secrets file> and --out <file>, and exports
+FLAKELAB_SECRETS_NAME, where a key is added, for the messages.
+
+Exit status: 0 rendered, removed or reported; 1 the file could not be written;
+2 a usage error.
+NIX_ACCESS_TOKENS_HELP
+}
+
+src="" out="" mode=render
+while (( $# )); do
+  case "$1" in
+    --source) (( $# > 1 )) || { print -ru2 -- "flakelab-nix-access-tokens: --source needs a file"; exit 2 }; src="$2"; shift ;;
+    --out)    (( $# > 1 )) || { print -ru2 -- "flakelab-nix-access-tokens: --out needs a file"; exit 2 }; out="$2"; shift ;;
+    --status) mode=status ;;
+    -h|--help) show_help; exit 0 ;;
+    *) print -ru2 -- "flakelab-nix-access-tokens: unknown argument: $1 (try --help)"; exit 2 ;;
+  esac
+  shift
+done
+if [[ -z "${src}" || -z "${out}" ]]; then
+  print -ru2 -- "flakelab-nix-access-tokens: --source and --out are required (the wrapper passes both)"
+  exit 2
+fi
+
+# The secrets file as the shell sources it (CRs stripped, `set -a`), in a subshell whose own output
+# and errors go nowhere: an error from a malformed line can quote its value. Only the token comes out,
+# into a variable. GITHUB_TOKEN is what gh falls back to, so it is taken here too.
+_read_source() {
+  [[ -r "${src}" ]] || return 1
+  REPLY="$( (
+    unset GH_TOKEN GITHUB_TOKEN
+    set +u
+    set -a
+    source =(tr -d '\r' < "${src}") > /dev/null 2>&1
+    print -rn -- "${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  ) 2> /dev/null )"
+  return 0
+}
+
+# The token this script last wrote, read back from its own line.
+_read_out() {
+  local line
+  REPLY=""
+  [[ -r "${out}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == "extra-access-tokens = github.com="* ]]; then
+      REPLY="${line#extra-access-tokens = github.com=}"
+      return 0
+    fi
+  done < "${out}"
+  return 0
+}
+
+# nix.conf splits a value on whitespace and cuts it at `#`, and a line it cannot parse is an
+# error in every nix command, so only the characters a GitHub token is made of pass.
+_valid() { [[ -n "$1" && "$1" != *[^A-Za-z0-9_.-]* ]] }
+
+token=""
+source_readable=true
+_read_source && token="${REPLY}" || source_readable=false
+_read_out
+rendered="${REPLY}"
+
+if [[ "${mode}" == status ]]; then
+  if [[ -n "${token}" ]] && ! _valid "${token}"; then
+    print -r -- invalid
+  elif [[ -n "${token}" && "${rendered}" == "${token}" ]]; then
+    print -r -- current
+  elif [[ -n "${token}" && -n "${rendered}" ]]; then
+    print -r -- stale
+  elif [[ -n "${token}" ]]; then
+    print -r -- unrendered
+  elif [[ -n "${rendered}" ]]; then
+    print -r -- withdrawn
+  else
+    print -r -- none
+  fi
+  exit 0
+fi
+
+_anonymous="nix fetches GitHub anonymously, sharing the 60 API requests an hour GitHub allows per IP; past them a lookup gets HTTP 403 and flakelab update keeps the old flakelab input"
+
+# No usable token: a file from an earlier render goes, so a withdrawn token is not sent on.
+if [[ -z "${token}" ]] || ! _valid "${token}"; then
+  removed=""
+  if [[ -e "${out}" ]]; then
+    if rm -f -- "${out}"; then
+      removed=" (the token rendered earlier is removed)"
+    else
+      print -ru2 -- "✗ could not remove ${out}, which holds a GitHub token the secrets no longer hold — remove it by hand"
+      exit 1
+    fi
+  fi
+  if ! ${source_readable}; then
+    print -ru2 -- "⚠ no GitHub token for nix: ${src} is not readable — ${_anonymous}${removed}"
+  elif [[ -z "${token}" ]]; then
+    print -ru2 -- "⚠ no GitHub token for nix: ${src} sets no GH_TOKEN — ${_anonymous}${removed}. Add GH_TOKEN to ${FLAKELAB_SECRETS_NAME:-${src}}, then: flakelab update"
+  else
+    print -ru2 -- "⚠ GH_TOKEN in ${src} holds a character a nix.conf line cannot carry (only letters, digits and _ . - can), so it is not rendered — ${_anonymous}${removed}"
+  fi
+  exit 0
+fi
+
+dir="${out:h}"
+if [[ ! -d "${dir}" || ! -w "${dir}" ]]; then
+  print -ru2 -- "✗ cannot render the GitHub token for nix: ${dir} is missing or not writable by $(id -un) — systemctl status flakelab-nix-access-tokens.service"
+  exit 1
+fi
+# Written whole beside the target and renamed over it, so nix never reads half a file.
+if ! tmp="$(mktemp -- "${dir}/.access-tokens.XXXXXX")"; then
+  print -ru2 -- "✗ cannot render the GitHub token for nix: no temporary file in ${dir}"
+  exit 1
+fi
+# print is a builtin: the value is never an argument of a process.
+if ! { print -r -- "# flakelab-nix-access-tokens: GH_TOKEN from ${src}, rewritten on every boot, switch and flakelab update"
+       print -r -- "extra-access-tokens = github.com=${token}" } > "${tmp}" \
+   || ! chmod 600 -- "${tmp}" \
+   || ! mv -f -- "${tmp}" "${out}"; then
+  rm -f -- "${tmp}"
+  print -ru2 -- "✗ cannot render the GitHub token for nix: writing ${out} failed"
+  exit 1
+fi
+print -r -- "✓ nix fetches GitHub with the GH_TOKEN from ${src}"
+exit 0

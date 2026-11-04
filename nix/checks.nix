@@ -285,6 +285,7 @@ in
   ] "web";
   # The input report reads the lock with `nix eval`, which is under test too.
   nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
+  nix-access-tokens = suiteCheckWith [ pkgs.nix ] "nix-access-tokens";
   claude-plugin-orphans = suiteCheck "claude-plugin-orphans";
   # The native MCP section runs lib/mcp.py, a python3 program.
   nix-doctor = suiteCheckWith [ pkgs.python3 ] "nix-doctor";
@@ -1805,8 +1806,17 @@ in
     assert forced.config.sops.gnupg.home == null;
     assert forced.config.sops.useSystemdActivation;
     assert self.nixosConfigurations.default.config.sops.secrets == { };
-    # A key file is re-split on every render and never exported.
-    assert secret.restartUnits == [ "flakelab-sops-key-files.service" ];
+    # Secret rotation refreshes both runtime consumers.
+    assert
+      secret.restartUnits == [
+        "flakelab-nix-access-tokens.service"
+        "flakelab-sops-key-files.service"
+      ];
+    assert forced.config.systemd.services.flakelab-nix-access-tokens.serviceConfig.User == secret.owner;
+    assert forced.config.systemd.services.flakelab-nix-access-tokens.serviceConfig.UMask == "0077";
+    assert builtins.elem "sops-install-secrets.service"
+      forced.config.systemd.services.flakelab-nix-access-tokens.after;
+    assert hasInfix "!include /run/flakelab-nix/access-tokens.conf" forced.config.nix.extraOptions;
     assert hasInfix "FIXTURE_KEY" forced.config.systemd.services.flakelab-sops-key-files.script;
     assert !hasInfix "FIXTURE_ENV_ONLY" forced.config.systemd.services.flakelab-sops-key-files.script;
     assert hasInfix "grep -vE '^(FIXTURE_ENV_ONLY|FIXTURE_KEY)='" zshOn;
