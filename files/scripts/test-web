@@ -192,14 +192,14 @@ for p in /api/fetch /api/auto /api/config; do
   post "$p" '{}' "${TOKEN}"
   check "${p} is gone" "${CODE}" "404"
 done
-: > "${LOG}"
 
 check "and none of them ran" "$(calls)" ""
 
 post /api/sessions/start "{\"tool\":\"codex\",\"dir\":\"${BASE}\"}" "${TOKEN}"
 check "start runs the sessions command" "${CODE}" "200"
 contains "detached, in the directory" "$(calls)" "claude-sessions --start codex ${BASE} --detach"
-: > "${LOG}"
+post /api/sessions/start '{"tool":"codex","dir":"."}' "${TOKEN}"
+contains "a relative directory goes as an absolute path, never an option" "$(calls)" "claude-sessions --start codex ${PWD:A} --detach"
 post /api/sessions/start "{\"tool\":\"claude\",\"dir\":\"${BASE}\",\"args\":[\"--mcp-config\",\"x\"]}" "${TOKEN}"
 check "agent arguments are 400" "${CODE}" "400"
 post /api/sessions/start "{\"tool\":\"claude\",\"dir\":\"${BASE}\",\"args\":[]}" "${TOKEN}"

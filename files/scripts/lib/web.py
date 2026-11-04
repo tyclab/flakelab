@@ -462,22 +462,24 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/sessions/start":
-            tool = str(doc.get("tool", "")).strip()
-            d = str(doc.get("dir", "")).strip()
-            if tool not in TOOLS:
-                self.send_json(
-                    400, {"error": "tool must be one of " + ", ".join(TOOLS)}
-                )
-                return
-            if not d or not os.path.isdir(os.path.expanduser(d)):
-                self.send_json(400, {"error": "dir must be an existing directory"})
-                return
             # Agent arguments (--mcp-config, --settings, a prompt) would make the
             # token run anything; the page never sends them.
             if "args" in doc:
                 self.send_json(400, {"error": "args are not accepted; the tool starts as configured"})
                 return
-            r = run([SESSIONS, "--start", tool, os.path.expanduser(d), "--detach"])
+            tool = str(doc.get("tool", "")).strip()
+            d = os.path.expanduser(str(doc.get("dir", "")).strip())
+            if tool not in TOOLS:
+                self.send_json(
+                    400, {"error": "tool must be one of " + ", ".join(TOOLS)}
+                )
+                return
+            if not d or not os.path.isdir(d):
+                self.send_json(400, {"error": "dir must be an existing directory"})
+                return
+            # Absolute, so the directory never reads as an option of
+            # claude-sessions: a relative "-x" or "--" would.
+            r = run([SESSIONS, "--start", tool, os.path.abspath(d), "--detach"])
             self.send_json(200 if r["ok"] else 502, {"call": r})
             return
         self.send_json(404, {"error": "not found"})
