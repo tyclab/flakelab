@@ -665,6 +665,13 @@ on_tty "2> ${(q)BASE}/tty-stderr" > /dev/null
 lacks    "stderr to a file gets none, stdout a terminal" "$(< "${BASE}/tty-stderr")" $'\e'
 rm -f "${BASE}/tty-stdout" "${BASE}/tty-stderr"
 
+# Piped, the colours are empty and the --strict line starts with "--": print -P
+# must not take it for options.
+print -r -- "--strict says it counted the warnings, piped"
+out="$(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other zsh "${DOCTOR}" --strict 2>&1 < /dev/null)"
+contains "the count is printed"          "${out}" "warning(s) counted as failures"
+lacks    "print reads no option from it" "${out}" "bad option"
+
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))
