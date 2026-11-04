@@ -46,6 +46,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- `flakelab doctor` and `flakelab tray` report missing WSL interop handlers without prescribing an unconditional shutdown. The doctor distinguishes an inherited socket from a working Windows command, counts a failed multiline tray check once while retaining individual tray drift warnings, reports dashboard inspection failures, and warns that a dashboard restart disconnects browser terminals.
 - Nix GitHub fetches use the shell's `GH_TOKEN` through a runtime mode-600 include, refreshed on activation, secret rotation and before `flakelab update` checks its input. The token never enters the Nix store or command arguments. Doctor reports missing, stale or overridden renders; an update that falls back to a cached input exits unsuccessfully even when the cached generation builds.
 - `gitpublisher` lets required pre-push hooks and their validation locks finish instead of killing and retrying the whole push after 30 seconds. Pushes run once with transport inactivity limits; failures stop at a gate and ask for a remote-branch check before another attempt. Fetch and API timeouts stay unchanged.
 - `flakelab doctor --strict` prints its "N warning(s) counted as failures" line again when piped. Since the colours became terminal-only, the empty colour left the line starting with `--strict`, which `print -P` took for options (`bad option: -t`), so the line was dropped.

@@ -65,13 +65,13 @@ fi
 _token="${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap/remote.token"
 _win_token="\\\\wsl.localhost\\${_distro}${_token//\//\\}"
 
-# powershell.exe is itself an interop call: check for a wiped WSLInterop handler first, or
-# the failure is 'exec format error' from a binary never mentioned (known-issues.md).
+# Check this process's handler view before invoking PowerShell (known-issues.md).
 _binfmt="${FLAKELAB_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
 if [[ ! -e "${_binfmt}/WSLInterop" && ! -e "${_binfmt}/WSLInterop-late" ]]; then
-  die "WSL interop is broken (no WSLInterop in /proc/sys/fs/binfmt_misc), so .exe calls fail.
-  Heal it from a Windows terminal:  wsl --shutdown
-  then re-enter this distro and retry."
+  die "no WSLInterop handler visible at ${_binfmt}; Windows tray status and sync are unavailable here.
+  Verify host interop outside any sandbox; see known-issues.md.
+  Do not replace WSL's handler or disable its protection.
+  A WSL restart ends every session and is an operator decision, never an agent action."
 fi
 # Absolute path: PATH may lack the Windows directories; FLAKELAB_POWERSHELL_EXE names
 # one outright (the suite's hook). cwd /mnt/c: from ext4 PowerShell gets an unusable cwd.
