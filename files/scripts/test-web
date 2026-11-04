@@ -188,6 +188,40 @@ post /api/switch '[1]' "${TOKEN}"
 check "a body that is not an object is 400" "${CODE}" "400"
 : > "${LOG}"
 
+# curl sends a request whole; these need a raw socket. The body leaves in two
+# pieces 0.3 s apart; $2, when given, replaces the Content-Length.
+rawpost() {
+  CODE="$(python3 -I - "${PORT}" "${TOKEN}" "$1" "${2:-}" <<'PY'
+import socket, sys, time
+port, token, body, length = int(sys.argv[1]), sys.argv[2], sys.argv[3].encode(), sys.argv[4]
+head = (f"POST /api/switch HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n"
+        f"Content-Length: {length or len(body)}\r\nConnection: close\r\n\r\n").encode()
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+s.sendall(head + body[:5])
+time.sleep(0.3)
+try:
+    s.sendall(body[5:])
+except OSError:
+    pass
+data = b""
+while chunk := s.recv(65536):
+    data += chunk
+print(data.split(b" ", 2)[1].decode() if data else "none")
+PY
+)"
+}
+rawpost '{"entry":"2"}'
+check "a body that arrives in pieces is read whole" "${CODE}" "200"
+contains "and the switch ran" "$(calls)" "tycswap switch 2"
+rawpost '{"entry":"2"}' abc
+check "a Content-Length that is not a number is 400" "${CODE}" "400"
+post /api/switch '{"entry":"2\u0000"}' "${TOKEN}"
+check "a NUL byte in the entry is answered, not dropped" "${CODE}" "502"
+check "and nothing ran" "$(calls)" ""
+print -r -- '#!/bin/sh' > "${BASE}/noexec"
+check "run() reports a binary it cannot execute instead of raising" \
+  "$(cd "${SCRIPT_DIR}/lib" && python3 -I -c 'import sys; sys.path.insert(0, "."); import web; print(web.run([sys.argv[1]])["code"])' "${BASE}/noexec" 2>&1)" "126"
+
 for p in /api/fetch /api/auto /api/config; do
   post "$p" '{}' "${TOKEN}"
   check "${p} is gone" "${CODE}" "404"

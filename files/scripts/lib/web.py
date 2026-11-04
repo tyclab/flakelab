@@ -205,6 +205,9 @@ def run(argv, stdin_text=None):
             "stdout": "",
             "stderr": f"{shlex.join(argv)}: timed out after {TIMEOUT}s",
         }
+    except (OSError, ValueError) as e:
+        # Not executable, or an argument the OS cannot take (a NUL byte).
+        return {"ok": False, "code": 126, "stdout": "", "stderr": f"{argv[0]}: {e}"}
 
 
 def parse(text, default):
@@ -284,10 +287,23 @@ class Handler(BaseHTTPRequestHandler):
         return morsel is not None and TOKEN.has_session(morsel.value)
 
     def body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return None
         if n <= 0:
             return {}
-        raw = self.rfile.read(min(n, 65536))
+        # rfile is unbuffered (rbufsize), so one read returns what one recv
+        # got: a body that arrives in pieces is read until it is whole.
+        want, raw = min(n, 65536), b""
+        try:
+            while len(raw) < want:
+                chunk = self.rfile.read(want - len(raw))
+                if not chunk:
+                    break
+                raw += chunk
+        except OSError:
+            return None
         try:
             doc = json.loads(raw.decode() or "{}")
         except ValueError:
