@@ -657,10 +657,11 @@ collect_pairs() {
 # The tool's own resume command for a session id.
 typeset -a RESUME_ARGS=()
 # A retired tycswap group's history is copied into ~/.claude when the group
-# retires, so its sessions resume on the default login.
+# retires, so its sessions resume on the default login; until then, in the
+# group's own profile.
 resume_args() {
   local tool="$1" sid="$2" group="${3:-}" profile="${4:-}"
-  if [[ "$tool" == claude && -n "$group" ]]; then
+  if [[ "$tool" == claude && -n "$group" ]] && default_copy "$sid"; then
     RESUME_ARGS=(claude --resume "$sid")
   elif [[ "$tool" == claude && -n "$profile" ]]; then
     RESUME_ARGS=(env "CLAUDE_CONFIG_DIR=${profile}" claude --resume "$sid")
@@ -669,6 +670,11 @@ resume_args() {
   else
     RESUME_ARGS=(codex resume "$sid")
   fi
+}
+
+default_copy() {
+  local -a copies=("${HOME}"/.claude/projects/*/${1}.jsonl(N))
+  (( ${#copies} > 0 ))
 }
 
 resume_cmd() {
@@ -785,10 +791,12 @@ print_recent() {
   print -r -- "# not running, changed in the last ${RECENT_HOURS}h — newest first"
   # A profile that shares the history links projects/ to ~/.claude's, so the
   # same transcript is globbed twice: the first sighting lists it.
-  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${TYCSWAP_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
+  for f in "${HOME}"/.claude/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${TYCSWAP_PROFILES}"/*/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om) "${TYCSWAP_GROUPS}"/{fable,opus}/profile/projects/*/*.jsonl(N.mh-${RECENT_HOURS}om); do
     sid="${f:t:r}"
     profile="${${f:A}:h:h:h}"
     [[ "$profile" == "${HOME}/.claude" ]] && profile=""
+    # A retired group's copy in ~/.claude is the one listed.
+    [[ -n "$(profile_group "$profile")" ]] && default_copy "$sid" && continue
     [[ -n "${live[claude${US}${sid}${US}${profile}]:-}" || -n "${seen[claude${US}${sid}${US}${profile}]:-}" ]] && continue
     seen[claude${US}${sid}${US}${profile}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"

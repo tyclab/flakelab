@@ -706,9 +706,11 @@ check "Opus keeps its own profile" "$(print -r -- "$OUT" | jq -r '.[] | select(.
 excludes "listing never reads profile credentials" "$OUT" DO-NOT-EXPOSE-CREDENTIAL
 run --save "${BASE}/groups.txt"
 check "saved metadata contains the actual migrated id and profile" "$(jq -Rr --arg id "$SID_M" 'fromjson? | select(.session == $id) | [.group,.profile] | join("|")' "${BASE}/groups.txt")" "fable|${FABLE_PROFILE}"
+# Fable's history is already in ~/.claude (retired); Opus's is not yet.
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_M}.jsonl"
 run --resume "${BASE}/groups.txt"
-contains "a saved Fable group session resumes on the default login" "$OUT" "claude --resume ${SID_M}"
-contains "a saved Opus group session resumes on the default login" "$OUT" "claude --resume ${SID_N}"
+contains "a retired group's session resumes on the default login" "$OUT" "&& claude --resume ${SID_M}"
+contains "a group not yet retired resumes in its own profile" "$OUT" "env CLAUDE_CONFIG_DIR=${OPUS_PROFILE} claude --resume ${SID_N}"
 excludes "no resume goes through tycswap" "$OUT" 'tycswap run'
 export WSL_DISTRO_NAME=flakelab
 : > "$WT_LOG"
@@ -722,12 +724,14 @@ unset WSL_DISTRO_NAME
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_A}.jsonl"
 run --resume "${BASE}/old-shape.txt"
 contains "the Codex line in a mixed old snapshot keeps its tool" "$OUT" "codex resume ${SID_B}"
-# Retirement copies a group's history into ~/.claude; the group profile's
-# own copy is not listed again.
+# A group's history before retirement resumes in the group's profile; once
+# retirement copied it into ~/.claude, only that copy is listed.
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${FABLE_PROFILE}/projects/-work/${SID_N}.jsonl"
+run --recent
+contains "a stopped group session not yet retired resumes in its profile" "$OUT" "env CLAUDE_CONFIG_DIR=${FABLE_PROFILE} claude --resume ${SID_N}"
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_N}.jsonl"
 run --recent
-contains "a retired group's copied history resumes on the default login" "$OUT" "claude --resume ${SID_N}"
+contains "a retired group's copied history resumes on the default login" "$OUT" "&& claude --resume ${SID_N}"
 check "and is listed once" "$(print -r -- "$OUT" | grep -c -- "--resume ${SID_N}")" "1"
 run --autosave
 AUTO_GROUP="${HOME}/.local/state/flakelab/sessions/${BOX}-autosave-$(tr -d '-' < /proc/sys/kernel/random/boot_id | cut -c1-12).txt"
@@ -736,7 +740,7 @@ print -r -- '{"tool":"claude","cwd":"/tmp","session":"x","group":"bogus","profil
 run --resume "${BASE}/bad-group.txt"
 check "corrupt group metadata fails before launching" "$RC" 1
 rm -rf "${PROC}/310" "${PROC}/320" "$GROUP_ROOT"
-rm "${HOME}/.claude/sessions/310.json" "${HOME}/.claude/projects/-work/${SID_A}.jsonl" "${HOME}/.claude/projects/-work/${SID_N}.jsonl"
+rm "${HOME}/.claude/sessions/310.json" "${HOME}/.claude/projects/-work/${SID_A}.jsonl" "${HOME}/.claude/projects/-work/${SID_N}.jsonl" "${HOME}/.claude/projects/-work/${SID_M}.jsonl"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
