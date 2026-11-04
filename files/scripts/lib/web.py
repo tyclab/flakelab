@@ -39,7 +39,7 @@ without one), GET /api/health {ok, logo}.
 API (all JSON, the bearer required):
   GET  /api/state                {accounts (tycswap list --json), sessions, terminal}
   POST /api/switch {entry}       tycswap switch <entry> [--force]
-  POST /api/sessions/start {tool, dir, args?}   claude-sessions --start <tool> <dir> --detach
+  POST /api/sessions/start {tool, dir}   claude-sessions --start <tool> <dir> --detach
   POST /api/terminal             a session cookie for /terminal/ (204)
 Every CLI result comes back as {ok, code, stdout, stderr} beside the parsed
 document where there is one.
@@ -472,14 +472,12 @@ class Handler(BaseHTTPRequestHandler):
             if not d or not os.path.isdir(os.path.expanduser(d)):
                 self.send_json(400, {"error": "dir must be an existing directory"})
                 return
-            args = doc.get("args", [])
-            if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-                self.send_json(400, {"error": "args must be a list of strings"})
+            # Agent arguments (--mcp-config, --settings, a prompt) would make the
+            # token run anything; the page never sends them.
+            if "args" in doc:
+                self.send_json(400, {"error": "args are not accepted; the tool starts as configured"})
                 return
-            argv = [SESSIONS, "--start", tool, os.path.expanduser(d), "--detach"]
-            if args:
-                argv += ["--"] + args
-            r = run(argv)
+            r = run([SESSIONS, "--start", tool, os.path.expanduser(d), "--detach"])
             self.send_json(200 if r["ok"] else 502, {"call": r})
             return
         self.send_json(404, {"error": "not found"})
