@@ -23,7 +23,7 @@ echo setup-wsl-nix : provision the NixOS-WSL distro
 echo.
 echo   [S] Status      - read-only: overlay / key / secrets / distro / interop
 echo   [D] Dry run     - rehearse 'provision', change nothing
-echo   [P] Provision   - the real run (wipes WSL interop, offers wsl --shutdown)
+echo   [P] Provision   - the real run (updates WSL, wipes WSL interop, offers wsl --shutdown)
 echo   [Q] Quit
 echo.
 choice /c SDPQ /n /m "Choose [S/D/P/Q]: "
@@ -42,8 +42,10 @@ goto :overlay_check
 
 :provision
 echo.
-echo WARNING: this run wipes WSLInterop VM-wide and ends with an offer to run
-echo          'wsl --shutdown', which kills every WSL session on this machine.
+echo WARNING: this run starts with 'wsl --update', which restarts WSL when it
+echo          installs a new version, wipes WSLInterop VM-wide and ends with an
+echo          offer to run 'wsl --shutdown'. A restart or a shutdown kills every
+echo          WSL session on this machine.
 choice /c YN /n /m "Continue? [Y/N]: "
 if errorlevel 2 goto :quit
 set "EXTRA="

@@ -102,7 +102,8 @@
     which KILLS EVERY WSL SESSION, as `wsl --shutdown` does; when nothing new is
     installed, nothing restarts. Stable releases before WSL 3 wipe interop
     during a provision (known-issues.md). A non-interactive run updates only
-    with -Shutdown.
+    with -Shutdown. Installing needs elevation: a non-elevated run shows a UAC
+    prompt, so an unattended one waits on it - run elevated, or pass this.
 
 .PARAMETER RestoreInstance
     The backup INSTANCE read by the overlay-payload restore - the `provision`
@@ -1084,7 +1085,8 @@ function Invoke-WslUpdate {
     & wsl.exe --update | ForEach-Object { "$_" -replace "`0", '' } | Where-Object { $_.Trim() } | ForEach-Object { Write-Host "    $_" }
     $rc = $LASTEXITCODE
     $after = Get-WslVersion
-    if ($after -ne $before) { Say "WSL updated: $before -> $after (WSL restarted)" 'Green' }
+    if ($after -eq 'unknown') { Warn "wsl --update exited $rc and the WSL version is unreadable now - carrying on. Check:  wsl --version" }
+    elseif ($after -ne $before) { Say "WSL updated: $before -> $after (WSL restarted)" 'Green' }
     elseif ($rc -ne 0) { Warn "wsl --update failed (exit $rc) - carrying on with WSL $before" }
     else { Say "WSL $before is current - nothing installed, nothing restarted" }
 }

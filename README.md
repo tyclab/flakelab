@@ -86,8 +86,12 @@ generates the private overlay next door (`..\flakelab-config`), downloads the
 base image, imports the `flakelab` distro, applies the overlay twice and prints
 `wsl -d flakelab`. **No token, key or secret is needed** — the steps that want
 one defer and say so. `-Shutdown` pre-answers the `wsl --shutdown` the run
-offers if its interop check fails after a rebuild. A shutdown kills every WSL
-session on the machine; leave the flag off to be asked instead. The answers land in
+offers if its interop check fails after a rebuild; leave the flag off to be asked
+instead. The run starts with `wsl --update` (`-SkipWslUpdate` skips it), which
+restarts WSL when it installs a new version. A shutdown or that restart kills
+every WSL session on the machine; an unattended run updates only with
+`-Shutdown`, and from a non-elevated console the install waits on a UAC
+prompt. The answers land in
 `..\flakelab-config\files\config\user_data.yaml` — the same schema as
 [`files/config/user_data.example.yaml`](files/config/user_data.example.yaml),
 so everything optional (locale, aliases, env vars, MCP servers, plugins, extra
