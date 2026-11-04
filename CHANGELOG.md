@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ## [Unreleased]
 
+### Removed
+
+- `flakelab sessions --group` and `session-groups.md`: tycswap retired its session groups, and plain `claude` follows the session's model on the default login. `--group` now exits 2 saying so; a saved or listed session from a former group resumes with `claude --resume`, since retirement copies the group's history into `~/.claude`. Pair this with the tycswap release that retires the groups.
+
 ### Added
 
 - With the tycswap auto-switch timer on, the Claude Code statusline also hands its input to `tycswap auto --observe` in the background and refreshes every 15 seconds: a session near a five-hour or weekly bar triggers a fresh-usage tick at once instead of at the next two-minute timer, and the default login counts the model limits its sessions actually run (tycswap 0.8.5, DESIGN A75/A76). Without the timer the statusline stays the statusbar plugin command.

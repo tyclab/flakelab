@@ -338,7 +338,6 @@ print -r -- "a flag with no value exits 2"
 typeset -A VALUE_FLAGS=(
   activate-hooks       '--repos-dir'
   build-dev-wsl-nix    '--name --flake --base'
-  claude-sessions      '--group'
   clone-repos          '--key-file --max-jobs --repos-dir'
   gh-repos             '--owner'
   gitchecker           '--repos-dir --repo --max-jobs --max-depth'
