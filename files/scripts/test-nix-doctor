@@ -139,6 +139,13 @@ cgroup_section() {
     FLAKELAB_INIT_CGROUP_RECORD="${CGREC}" FLAKELAB_BOOTED_SYSTEM="${BASE}/booted"
 }
 
+BINFMT="${BASE}/binfmt"
+mkdir -p "${BINFMT}"
+interop_section() {
+  section 'WSL interop' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=wsl \
+    FLAKELAB_BINFMT_ROOT="${BINFMT}" "$@"
+}
+
 # stub <name> <exit status>: a <name> in ${UMT}, the tools beside it, that exits as
 # given whatever it is asked (`systemctl --user show-environment` included).
 UMT="${BASE}/tools-um"
@@ -355,6 +362,55 @@ rc=0
 env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" zsh "${DOCTOR}" --strct > /dev/null 2>&1 || rc=$?
 [[ "${rc}" == 2 ]] && ok "an unknown option exits 2" || bad "an unknown option exits 2 (got ${rc})"
 
+print -r -- "WSL interop: missing registry remains a failure with host verification guidance"
+out="$(interop_section)"
+contains "fails for the missing registry" "${out}" "[FAIL] binfmt_misc register is not visible"
+contains "requires host evidence"        "${out}" "outside any sandbox"
+lacks    "does not prescribe shutdown"   "${out}" "wsl --shutdown"
+
+print -r -- "WSL interop: missing handler remains a failure without an unconditional shutdown remedy"
+touch "${BINFMT}/register"
+out="$(interop_section)"
+contains "fails for the missing handler" "${out}" "[FAIL] WSLInterop handler missing"
+contains "requires host evidence"        "${out}" "outside any sandbox"
+contains "preserves WSL protection"      "${out}" "Do not replace WSL's handler or disable its protection"
+lacks    "does not prescribe shutdown"   "${out}" "wsl --shutdown"
+lacks    "does not claim only one fix"   "${out}" "The only fix"
+
+print -r -- "WSL interop: either registered spelling passes"
+for handler in WSLInterop WSLInterop-late; do
+  touch "${BINFMT}/${handler}"
+  out="$(interop_section)"
+  contains "${handler} is accepted" "${out}" "[ OK ] WSLInterop handler registered"
+  lacks "${handler} is not reported missing" "${out}" "handler missing"
+  rm -f "${BINFMT}/${handler}"
+done
+touch "${BINFMT}/WSLInterop"
+
+print -r -- "WSL interop: socket presence is separate from registry and execution health"
+python3 - "${BASE}/interop.sock" <<'PY'
+import socket, sys
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.bind(sys.argv[1])
+PY
+out="$(interop_section WSL_INTEROP="${BASE}/interop.sock")"
+contains "reports the socket only"       "${out}" "inherited WSL_INTEROP socket exists"
+contains "leaves execution unverified"   "${out}" "Windows execution unverified"
+lacks    "an existing socket adds no warning" "${out}" "[WARN]"
+rm -f "${BINFMT}/WSLInterop"
+out="$(interop_section WSL_INTEROP="${BASE}/interop.sock")"
+contains "an existing socket does not hide the missing handler" "${out}" "[FAIL] WSLInterop handler missing"
+contains "the socket observation remains independent" "${out}" "inherited WSL_INTEROP socket exists"
+touch "${BINFMT}/WSLInterop"
+for socket_path in "${BASE}/missing.sock" "${BINFMT}/register"; do
+  out="$(interop_section WSL_INTEROP="${socket_path}")"
+  contains "missing or nonsocket path warns" "${out}" "[WARN] inherited WSL_INTEROP socket is missing or not a socket"
+  contains "a registered handler still passes" "${out}" "[ OK ] WSLInterop handler registered"
+done
+out="$(interop_section)"
+contains "unset is a note" "${out}" "WSL_INTEROP is unset; no inherited socket to inspect"
+lacks    "unset adds no warning" "${out}" "[WARN]"
+
 print -r -- "activation: a skip-healthcheck marker left behind warns"
 MARKER="${BASE}/home/.local/state/flakelab/skip-healthcheck"
 mkdir -p "${MARKER:h}"
@@ -462,9 +518,22 @@ lacks    "and no hint"                                "${out}" "flakelab tray   
 out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT=$'tray: exe: tycswap 0.8.2 at C:\\x\\tycswap.exe\ntray: off: register the logon task io.github.tyclab.tycswap.remote (it is not registered)\ntray: off: start the tray (none running)')"
 contains "an off line is a warning"                   "${out}" "[WARN] tray: register the logon task io.github.tyclab.tycswap.remote"
 contains "each of them"                               "${out}" "[WARN] tray: start the tray (none running)"
+check    "two independent tray findings are two warnings" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "2"
 contains "and the hint names the fix"                 "${out}" "flakelab tray   # installs the pinned exe"
 out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT='powershell.exe not found - is /mnt/c mounted?')"
 contains "a line that is not a tray fact is a warning too" "${out}" "[WARN] tray: powershell.exe not found"
+out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT=$'WSLInterop handler is missing\nCheck Windows executable access from a host terminal\nReview known-issues.md')"
+check    "one multiline failure is one warning" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+contains "the first line names the failure" "${out}" "[WARN] tray: WSLInterop handler is missing"
+contains "the first follow-up stays visible" "${out}" "Check Windows executable access from a host terminal"
+contains "the second follow-up stays visible" "${out}" "Review known-issues.md"
+lacks    "the first follow-up is not another warning" "${out}" "[WARN] tray: Check Windows executable access"
+lacks    "the second follow-up is not another warning" "${out}" "[WARN] tray: Review known-issues.md"
+for tray_output in '' 'tray: running: pid 7'; do
+  out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=7 FAKE_TRAY_OUT="${tray_output}")"
+  contains "a failed status cannot disappear behind empty or OK output" "${out}" "[WARN] tray status failed (exit 7)"
+  check "the status failure is counted once" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+done
 out="$(section Switcher PATH="${NOTRAY}" HOME="${BASE}/home" FLAKELAB_TARGET=wsl FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_APP_PORT=7337)"
 contains "no nix-tycswap-tray on PATH warns"          "${out}" "[WARN] tycswapAppPort is set, but nix-tycswap-tray is not on PATH"
 out="$(switcher_section FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_OUT='tray: off: start the tray (none running)' FAKE_TRAY_RC=1)"
@@ -479,16 +548,32 @@ lacks    "no port: no tray line at all"               "${out}" "tray"
 # process to read).
 PROCT="${BASE}/proc-web"
 dashboard_section() {
-  print -rl -- '#!/bin/sh' 'case "$*" in *"show flakelab-web.service"*) printf "%s\n" "${FAKE_WEB_SHOW:-}" ;; esac' 'exit 0' > "${UMT}/systemctl"
+  print -rl -- '#!/bin/sh' 'case "$*" in *"show flakelab-web.service"*) printf "%s\n" "${FAKE_WEB_SHOW:-}"; exit "${FAKE_WEB_SHOW_RC:-0}" ;; esac' 'exit 0' > "${UMT}/systemctl"
   chmod +x "${UMT}/systemctl"
   rm -rf "${PROCT}"; mkdir -p "${PROCT}/4242"
   (( $# > 1 )) && printf '%s\0' "${@:2}" > "${PROCT}/4242/cmdline"
-  section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_PROC_ROOT="${PROCT}" FAKE_WEB_SHOW="$1"
+  section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_PROC_ROOT="${PROCT}" FAKE_WEB_SHOW="$1" FAKE_WEB_SHOW_RC="${FAKE_WEB_SHOW_RC:-0}"
 }
 WEB_HERE="${DOCTOR:A:h}/lib/web.py"
 
 print -r -- "dashboard: no unit"
 contains "is a note" "$(dashboard_section $'LoadState=not-found\nActiveState=inactive\nMainPID=0')" "[ OK ] note: no dashboard unit (flakelab.web.enable runs flakelab-web)"
+out="$(FAKE_WEB_SHOW_RC=1 dashboard_section $'LoadState=not-found\nActiveState=inactive\nMainPID=0')"
+contains "systemd's nonzero not-found result is still a note" "${out}" "[ OK ] note: no dashboard unit"
+lacks "not-found adds no warning" "${out}" "[WARN]"
+
+print -r -- "dashboard: failed or incomplete inspection is never a missing-unit success"
+for web_show in '' $'LoadState=loaded\nActiveState=active\nMainPID=4242'; do
+  out="$(FAKE_WEB_SHOW_RC=1 dashboard_section "${web_show}" python3 "${WEB_HERE}")"
+  contains "failed inspection warns even with partial output" "${out}" "[WARN] cannot inspect flakelab-web.service"
+  lacks "failed inspection does not claim no unit" "${out}" "[ OK ] note: no dashboard unit"
+  lacks "failed inspection does not claim current code" "${out}" "[ OK ] dashboard runs this generation"
+done
+for web_show in '' $'ActiveState=active\nMainPID=4242'; do
+  out="$(dashboard_section "${web_show}" python3 "${WEB_HERE}")"
+  contains "successful but incomplete inspection warns" "${out}" "[WARN] cannot inspect flakelab-web.service"
+  lacks "incomplete inspection does not claim no unit" "${out}" "[ OK ] note: no dashboard unit"
+done
 
 print -r -- "dashboard: the unit is loaded but down"
 out="$(dashboard_section $'LoadState=loaded\nActiveState=failed\nMainPID=0')"
@@ -502,6 +587,7 @@ print -r -- "dashboard: running a previous generation's web.py"
 out="$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242' python3 /nix/store/00000000000000000000000000000000-scripts/lib/web.py)"
 contains "warns"             "${out}" "[WARN] the dashboard runs a previous generation's code; activation never restarts it"
 contains "names the restart" "${out}" "systemctl --user restart flakelab-web.service"
+contains "explains the active-terminal impact" "${out}" "disconnects browser terminals; reopen them from the dashboard"
 
 print -r -- "dashboard: a process that cannot be read"
 contains "warns, naming the pid" "$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242')" "[WARN] the dashboard's process (4242) cannot be read"

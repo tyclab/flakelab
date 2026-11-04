@@ -134,9 +134,17 @@ check "and powershell never ran" "${#ARGV}" "0"
 
 print -r -- "failures"
 run_tray FLAKELAB_BINFMT_ROOT="${BASE}/no-binfmt" -- sync
-check "a wiped WSLInterop handler exits 1" "${RC}" "1"
-contains "and names the heal" "${OUT}" "WSL interop is broken"
+check "a missing WSLInterop handler exits 1" "${RC}" "1"
+contains "and names the observed problem" "${OUT}" "no WSLInterop handler visible"
+contains "and requires host evidence" "${OUT}" "Verify host interop outside any sandbox"
+contains "and preserves registry protection" "${OUT}" "Do not replace WSL's handler or disable its protection"
+lacks "and prescribes no unconditional shutdown" "${OUT}" "wsl --shutdown"
 check "and powershell never ran" "${#ARGV}" "0"
+mv "${BINFMT}/WSLInterop" "${BINFMT}/WSLInterop-late"
+run_tray -- status
+check "the late handler is accepted" "${RC}" "0"
+argv_has -Mode status && ok "and checks the tray" || bad "late handler: ${ARGV[*]}"
+mv "${BINFMT}/WSLInterop-late" "${BINFMT}/WSLInterop"
 run_tray PATH="${NOPS}" FLAKELAB_POWERSHELL_EXE="${BASE}/no-powershell.exe" -- sync
 check "no powershell.exe exits 1" "${RC}" "1"
 contains "and names it" "${OUT}" "powershell.exe not found"
