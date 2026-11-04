@@ -33,7 +33,8 @@
                  secrets.env + the SSH key from it, bootstrap, then restore the
                  `flakelab backup` payload and clone the GitLab groups. The fresh-PC
                  command.
-      bootstrap  Download/import the base image and apply the overlay with TWO
+      bootstrap  Update WSL (`wsl --update`, see -SkipWslUpdate), download/import
+                 the base image and apply the overlay with TWO
                  `nixos-rebuild switch` runs (see Invoke-Bootstrap for why),
                  seeding the SSH key + secrets.env and loading the key into the
                  distro's ssh-agent in between.
@@ -95,6 +96,14 @@
 .PARAMETER SkipCloneRepos
     Skip `flakelab clone` (faster iteration on provisioning issues).
 
+.PARAMETER SkipWslUpdate
+    Skip the `wsl --update` that `bootstrap` and `provision` run before the
+    import. It takes the stable channel. Installing a new version restarts WSL,
+    which KILLS EVERY WSL SESSION, as `wsl --shutdown` does; when nothing new is
+    installed, nothing restarts. Stable releases before WSL 3 wipe interop
+    during a provision (known-issues.md). A non-interactive run updates only
+    with -Shutdown.
+
 .PARAMETER RestoreInstance
     The backup INSTANCE read by the overlay-payload restore - the `provision`
     step that runs `flakelab backup --restore` inside the new distro. That
@@ -115,7 +124,8 @@
     Answer yes up front to the `wsl --shutdown` this script offers after each
     rebuild. `nixos-rebuild` unregisters the kernel-global WSLInterop handler for
     EVERY distro in the VM (known-issues.md), and the only recovery is a shutdown
-    - which also KILLS EVERY WSL SESSION.
+    - which also KILLS EVERY WSL SESSION. A non-interactive run needs it for the
+    `wsl --update` too (see -SkipWslUpdate).
 
 .PARAMETER Force
     Overwrite existing overlay files on `init`, REGENERATE the overlay flake from
@@ -163,6 +173,7 @@ param(
     [switch]$CopyLiveCredentials,
     [switch]$SkipCloneRepos,
     [switch]$SkipSecondSwitch,
+    [switch]$SkipWslUpdate,
     [switch]$Shutdown,
     [switch]$Force,
     [switch]$DryRun
@@ -1052,6 +1063,32 @@ function Invoke-WslShutdown {
     return 'ok'
 }
 
+# The first version `wsl --version` prints is WSL's own: its labels are localised, its numbers are not.
+function Get-WslVersion {
+    $out = (@(Invoke-NativeQuiet 'wsl.exe' @('--version')) -replace "`0", '') -join "`n"
+    $m = [regex]::Match($out, '\d+(\.\d+){2,3}')
+    if ($m.Success) { return $m.Value }
+    return 'unknown'
+}
+
+# Before the import unless -SkipWslUpdate. Only an install restarts WSL, so the version is compared, not the output.
+function Invoke-WslUpdate {
+    $before = Get-WslVersion
+    if ($SkipWslUpdate) { Say "WSL $before - update skipped (-SkipWslUpdate)"; return }
+    if ($DryRun) { Write-Host "  [dry-run] wsl --update (WSL $before)" -ForegroundColor DarkGray; return }
+    if (-not $Shutdown -and -not (Test-InteractiveConsole)) {
+        Warn "WSL $before - not updated: a new version restarts WSL and kills every WSL session, which an unattended run does only with -Shutdown. Update:  wsl --update"
+        return
+    }
+    Say "wsl --update (WSL $before; installing a new version restarts WSL - all WSL sessions die)"
+    & wsl.exe --update | ForEach-Object { "$_" -replace "`0", '' } | Where-Object { $_.Trim() } | ForEach-Object { Write-Host "    $_" }
+    $rc = $LASTEXITCODE
+    $after = Get-WslVersion
+    if ($after -ne $before) { Say "WSL updated: $before -> $after (WSL restarted)" 'Green' }
+    elseif ($rc -ne 0) { Warn "wsl --update failed (exit $rc) - carrying on with WSL $before" }
+    else { Say "WSL $before is current - nothing installed, nothing restarted" }
+}
+
 # `sshKeys` in the applied flake is the source of truth; absent, [ "id_ed25519" ] as options.nix declares.
 function Get-DeclaredSshKeyName {
     foreach ($src in @($UserSourceWin, (Join-Path $RepoWin 'nix\users\default.nix'))) {
@@ -1526,6 +1563,7 @@ function Invoke-Bootstrap {
     Say "Bootstrap '$DistroName' from overlay: $OverlayWin (user: $User)"
     $wslVer = @(Invoke-NativeQuiet 'wsl.exe' @('--version')) -replace "`0", ''
     if (-not $wslVer) { throw "WSL not available. Run once: wsl --install --no-distribution" }
+    Invoke-WslUpdate
     # Baseline, so a wipe that was already there is not blamed on this run - and so
     # an operator who sees .exe failures mid-run knows which switch caused them.
     Show-InteropState 'before start' $true $true | Out-Null
@@ -1880,6 +1918,7 @@ function Invoke-Status {
     else { 'MISSING' }
     $payloadState = if (Test-Path (Join-Path $PayloadWin "instances\$DistroName")) { 'staged' } else { 'none' }
     $configState = if ($ConfigPath) { $ConfigPath } else { 'none (pass -Config to generate the flake)' }
+    Write-Host ("  WSL           : {0}" -f (Get-WslVersion))
     Write-Host ("  overlay       : {0} ({1})" -f $OverlayWin, $overlayState)
     Write-Host ("  payload root  : {0}" -f $PayloadWin)
     Write-Host ("  config        : {0}" -f $configState)

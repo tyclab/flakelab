@@ -104,6 +104,7 @@ repos) is added there, then `provision -Force` regenerates the flake from it.
 | `-SshPassphrase <pw>`                      | Load the key under `<overlay>-payload\shared\ssh\keys` into the distro's ssh-agent unattended, so the SSH-dependent activation steps run instead of deferring. |
 | `-RestoreInstance <name>`                  | Restore a `flakelab backup` payload written under another distro's name (migrating a box called `NixOS` into `flakelab`).                                      |
 | `-SkipCloneRepos` / `-SkipSecondSwitch`    | Faster iteration when debugging provisioning; both steps are idempotent and run later anyway.                                                                  |
+| `-SkipWslUpdate`                           | Keep the installed WSL; otherwise `bootstrap`/`provision` run `wsl --update` first, and an install restarts WSL (ends every session).                          |
 | `-Force`                                   | Regenerate the overlay flake from the config (a hand-edited flake is otherwise kept).                                                                          |
 | `-DryRun`                                  | Print every step, touch nothing.                                                                                                                               |
 
