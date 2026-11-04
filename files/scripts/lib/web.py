@@ -182,6 +182,8 @@ def run(argv, stdin_text=None):
             input=stdin_text,
             capture_output=True,
             text=True,
+            # Output that is not UTF-8 must not read as a call that never ran.
+            errors="replace",
             timeout=TIMEOUT,
             stdin=None if stdin_text is not None else subprocess.DEVNULL,
         )
@@ -205,6 +207,9 @@ def run(argv, stdin_text=None):
             "stdout": "",
             "stderr": f"{shlex.join(argv)}: timed out after {TIMEOUT}s",
         }
+    except (OSError, ValueError) as e:
+        # Not executable, or an argument the OS cannot take (a NUL byte).
+        return {"ok": False, "code": 126, "stdout": "", "stderr": f"{argv[0]}: {e}"}
 
 
 def parse(text, default):
@@ -284,13 +289,28 @@ class Handler(BaseHTTPRequestHandler):
         return morsel is not None and TOKEN.has_session(morsel.value)
 
     def body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0:
+        # Digits only: int() would also take "+1", "1_0" and non-ASCII digits.
+        cl = (self.headers.get("Content-Length") or "0").strip()
+        if not (cl.isascii() and cl.isdigit()):
+            return None
+        n = int(cl)
+        if n == 0:
             return {}
-        raw = self.rfile.read(min(n, 65536))
+        # rfile is unbuffered (rbufsize), so one read returns what one recv
+        # got: a body that arrives in pieces is read until it is whole, and
+        # one that ends short of it is refused.
+        raw, got = bytearray(min(n, 65536)), 0
+        try:
+            while got < len(raw):
+                k = self.rfile.readinto(memoryview(raw)[got:])
+                if not k:
+                    return None
+                got += k
+        except OSError:
+            return None
         try:
             doc = json.loads(raw.decode() or "{}")
-        except ValueError:
+        except (ValueError, RecursionError):  # nesting too deep for the parser
             return None
         return doc if isinstance(doc, dict) else None
 
