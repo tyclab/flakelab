@@ -116,7 +116,11 @@ Read for this topic; paths below are relative to the repository root unless stat
   `gitcleaner --repo . --json` and act with `--only <branch> --yes` — never
   `--yes` alone, which sweeps every repo it can reach. A branch still checked
   out (HEAD or a worktree) is listed under `parked`; acting on it also takes
-  `--unpark`.
+  `--unpark`. `gitcleaner` exits 0 when nothing is left in its selection (none
+  found, or all removed), 1 when stale items are left in it. Under `--only` the
+  selection is the named branches, so a 0 there says those went, not that the
+  repo is clean: a plan with candidates exits 1, the act that removed its
+  names exits 0.
 - `gitpublisher` supports GitLab remotes only. For this GitHub repository,
   use `git push` and `gh pr create` after the same local checks. On GitLab,
   `gitpublisher` publishes the working tree as an MR (branch, commit through
