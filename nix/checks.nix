@@ -570,7 +570,11 @@ in
         name: sys:
         pkgs.writeText name
           sys.config.home-manager.users.${sys.config.flakelab.username}.home.activation.claudeSettings.data;
+      observing = earlier.extendModules {
+        modules = [ { flakelab.tycswapAutoSwitchInterval = "2min"; } ];
+      };
       entryEarlier = entry "claude-settings-earlier-activation" earlier;
+      entryObserving = entry "claude-settings-observing-activation" observing;
       entryLater = entry "claude-settings-later-activation" later;
     in
     pkgs.runCommandLocal "flakelab-check-claude-settings-prune"
@@ -606,6 +610,16 @@ in
         bash -euo pipefail ${entryEarlier}
         jq -e '.env | .MY_VAR == "mine" and .WHATSAPP_MCP_DIR == "/example/whatsapp-mcp-server" and .PLAYWRIGHT_MCP_EXTENSION == "true"' "$settings" > /dev/null
         jq -e '.statusLine.command | test("/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$")' "$settings" > /dev/null
+
+        echo "with the auto-switch timer the statusline also feeds tycswap and refreshes every 15 s; without it, the plugin alone again"
+        bash -euo pipefail ${entryObserving}
+        jq -e '.statusLine.command | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$")' "$settings" > /dev/null
+        jq -e '.statusLine.refreshInterval == 15' "$settings" > /dev/null
+        script=$(jq -r '.statusLine.command' "$settings")
+        grep -q '/bin/tycswap auto --observe >/dev/null 2>&1 & )$' "$script"
+        grep -q 'statusline-command.sh"$' "$script"
+        bash -euo pipefail ${entryEarlier}
+        jq -e '.statusLine | (.command | test("statusline-command\\.sh\"$")) and (has("refreshInterval") | not)' "$settings" > /dev/null
         bash -euo pipefail ${entryLater}
         jq -e --argjson b "$base" '.env | keys == ($b + ["MY_VAR"] | sort)' "$settings" > /dev/null
         jq -e 'has("statusLine") | not' "$settings" > /dev/null

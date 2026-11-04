@@ -165,19 +165,29 @@ let
   # flakelab's own is removed once the statusbar plugin is not enabled, so a
   # local override survives while a provisioned box follows this flake; the
   # sort -V glob resolves the newest cached plugin version at statusline time.
-  # tycswap reads usage from the endpoint itself, so nothing is teed off stdin.
+  # With the auto-switch timer the command is a store script that also hands
+  # its stdin to `tycswap auto --observe` in the background: the session's live
+  # rate_limits bring the next tick forward near a bar and its model sets which
+  # model limits the default login counts (tycswap DESIGN A75, A76). The
+  # 15-second refresh keeps that reading current while only subagents work.
   statuslineMarketplace = marketplaceOf "statusbar";
   claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
-  claudeStatuslineArg = lib.optionalString (
-    statuslineMarketplace != null
-  ) "--arg statusline ${lib.escapeShellArg claudeStatuslinePlugin}";
+  claudeStatuslineObserve = pkgs.writeShellScript "flakelab-claude-statusline" ''
+    input=$(cat)
+    ( printf '%s' "$input" | ${lib.getExe pkgs.tycswap} auto --observe >/dev/null 2>&1 & )
+    printf '%s' "$input" | ${claudeStatuslinePlugin}
+  '';
+  claudeStatuslineArg = lib.optionalString (statuslineMarketplace != null) (
+    "--arg statusline "
+    + lib.escapeShellArg (if tycswapHook then "${claudeStatuslineObserve}" else claudeStatuslinePlugin)
+  );
   claudeStatuslineOurs = ''((.statusLine.command // "") | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$|/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$"))'';
   claudeStatuslineJq =
     if statuslineMarketplace != null then
       ''
         | .statusLine = (
             if .statusLine == null or ${claudeStatuslineOurs}
-            then {type: "command", command: $statusline} else .statusLine end)
+            then {type: "command", command: $statusline}${lib.optionalString tycswapHook " + {refreshInterval: 15}"} else .statusLine end)
       ''
     else
       ''
