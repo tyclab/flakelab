@@ -190,7 +190,9 @@ print -r -- "── interactive: y / n / q ────────────�
 build_fixture interactive; ROOTS="${FIXTURE_ROOTS}"
 if command -v script >/dev/null 2>&1; then
   # y deletes the first candidate, n keeps the second, q stops the run.
-  OUT="$(printf 'ynq' | TERM=xterm script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"
+  OUT="$(printf 'ynq' | TERM=xterm script -qec "zsh ${CLEANER} --repos-dir ${ROOTS}" /dev/null 2>&1)"; RC=$?
+  # script(1) -e returns the child's status: what q left behind is still work.
+  check "stopping with candidates left exits 1" "${RC}" "1"
   contains "asks before each delete" "${OUT}" "[y/N/a/q]"
   contains "prints the SHA to restore from" "${OUT}" "restore: git -C"
   contains "q reports that it stopped early" "${OUT}" "Stopped at your request"
@@ -254,7 +256,9 @@ print -r -- "── --yes ──────────────────
 build_fixture apply; ROOTS="${FIXTURE_ROOTS}"
 git -C "${ROOTS}/repo" worktree add -q "${BASE}/apply/wt-live" -b live-branch >/dev/null 2>&1
 OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
-check "--yes exits 1 after removing" "${RC}" "1"
+# Exit 1 means work is left. A run that removed every candidate it found has
+# none, and a caller reading 1 as failure would retry or report a false error.
+check "--yes exits 0 once it removed everything it found" "${RC}" "0"
 contains "deletes the merged branch" "${OUT}" "deleted merged-branch"
 contains "deletes the squash-merged branch" "${OUT}" "deleted squashed"
 contains "prunes the stale worktree" "${OUT}" "pruned worktree"
@@ -291,7 +295,7 @@ check "the plan changed nothing" "$(branches_of "${ROOTS}")" \
 # The act. --only is the whole point: an agent removes what it decided on, not
 # whatever the sweep happens to find on a second pass.
 OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only merged-branch --yes --json < /dev/null 2>/dev/null)"; RC=$?
-check "--only --yes exits 1 after removing" "${RC}" "1"
+check "--only --yes exits 0 after removing what it named" "${RC}" "0"
 check "exactly one branch went" "$(print -r -- "${OUT}" | jq -r '.removed.branches')" "1"
 check "and it was the named one" \
   "$(print -r -- "${OUT}" | jq -r '.repos[0].branches[] | select(.action == "deleted") | .name')" \
@@ -320,7 +324,7 @@ print -r -- "── HEAD parked on an older branch ─────────�
 build_fixture parked; ROOTS="${FIXTURE_ROOTS}"
 git -C "${ROOTS}/repo" checkout -qb parked "$(git -C "${ROOTS}/repo" rev-parse origin/main~1)" >/dev/null 2>&1
 OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only merged-branch --yes < /dev/null 2>&1)"; RC=$?
-check "exits 1 after removing" "${RC}" "1"
+check "exits 0 after removing" "${RC}" "0"
 contains "deletes the merged branch despite the parked HEAD" "${OUT}" "deleted merged-branch"
 excludes "no refused delete" "${OUT}" "FAILED to delete"
 
@@ -367,18 +371,28 @@ contains "and says --unpark is missing" "${OUT}" "--unpark"
 check "the checkout did not move" "$(head_of "${R}")" "landed"
 
 print -r -- dirt >> "${R}/f"
-OUT="$(zsh "${CLEANER}" --repo "${R}" --only landed --unpark --yes < /dev/null 2>&1)"
+OUT="$(zsh "${CLEANER}" --repo "${R}" --only landed --unpark --yes < /dev/null 2>&1)"; RC=$?
+check "a checkout its changes hold back is work left: exits 1" "${RC}" "1"
 contains "uncommitted changes block the switch" "${OUT}" "uncommitted changes"
 check "so the checkout stays" "$(head_of "${R}")" "landed"
 git -C "${R}" checkout -q -- f
 
 OUT="$(zsh "${CLEANER}" --repo "${R}" --only landed --unpark --yes < /dev/null 2>&1)"; RC=$?
-check "--unpark --yes exits 1 after acting" "${RC}" "1"
+check "--unpark --yes exits 0 after acting" "${RC}" "0"
 contains "switches to the default branch" "${OUT}" "switched to main"
 contains "then deletes the branch" "${OUT}" "deleted landed"
 contains "with its restore command" "${OUT}" "restore: git -C"
 check "the checkout is on main" "$(head_of "${R}")" "main"
 check "and the parked branch is gone" "$(git -C "${R}" for-each-ref refs/heads/landed | wc -l)" "0"
+
+build_fixture parkyes; ROOTS="${FIXTURE_ROOTS}"; R="${ROOTS}/repo"
+land_branch parkyes landed
+git -C "${R}" switch -q landed >/dev/null 2>&1
+OUT="$(zsh "${CLEANER}" --repo "${R}" --yes --json < /dev/null 2>/dev/null)"; RC=$?
+check "--yes without --unpark removes the branches" "$(print -r -- "${OUT}" | jq -r '.removed.branches')" "3"
+check "but reports the parked checkout" "$(print -r -- "${OUT}" | jq -r '.repos[0].parked[0].action')" "reported"
+check "which is work left: exits 1" "${RC}" "1"
+check "and the checkout stays" "$(head_of "${R}")" "landed"
 
 build_fixture parkask; ROOTS="${FIXTURE_ROOTS}"; R="${ROOTS}/repo"
 land_branch parkask landed
@@ -471,7 +485,7 @@ for forge in gitlab github; do
   WT="${BASE}/matched-${forge}/landed"
   git -C "${R}" worktree add -q "${WT}" squashed >/dev/null 2>&1
   OUT="$(zsh "${CLEANER}" --repo "${R}" --no-ff --only squashed --unpark --yes --json < /dev/null 2>/dev/null)"; RC=$?
-  check "${forge}: the recorded merged tip still unparks" "${RC}" "1"
+  check "${forge}: the recorded merged tip still unparks" "${RC}" "0"
   check "${forge}: the matching worktree is removed" "$([[ -d "${WT}" ]] && print kept || print gone)" "gone"
 done
 
