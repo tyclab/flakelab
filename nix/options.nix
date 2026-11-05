@@ -571,6 +571,79 @@ in
       description = "systemd time span (OnUnitActiveSec syntax, e.g. \"30min\") between runs of `flakelab backup --state-only` — the narrow sync that moves ONLY the state-root categories (merged history, Claude and Codex memory, transcripts) in both directions, takes no snapshot and never touches the payload. null schedules none, leaving the state root to the daily full backup's push and manual `--restore` pulls. Needs stateRoot (without a root there is nothing to sync) but NOT backupAutostart: the two timers are independent, so a box that must not run the unattended daily payload pass — a guest whose backup root is a soft network mount, say — still converges its state root. While it is scheduled, a Claude Code SessionEnd hook also starts the sync when a session closes, so a finished session does not wait out the period.";
     };
 
+    sessionArchiveSchedule = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "daily";
+      description = "systemd calendar expression (OnCalendar syntax) for `flakelab session-archive run`, the user timer flakelab-session-archive: each run takes the Claude Code transcripts in stateRoot (stateTranscripts) that went quiet for sessionArchiveQuietDays, copies each one gzipped into sessionArchiveRoot and writes one summary card per session into its area's library. The model calls are billed per token to the API key SESSION_ARCHIVE_ANTHROPIC_API_KEY, read at use time from the secrets file and never ANTHROPIC_API_KEY, within sessionArchiveRunCapUsd per run. Persistent: a box that was off at the slot catches up at its next start. null schedules none, and `flakelab session-archive run` still works by hand. Needs sessionArchiveRoot and at least one sessionArchiveAreas entry.";
+    };
+
+    sessionArchiveRoot = mkOption {
+      type = types.nullOr (types.strMatching "/.*");
+      default = null;
+      description = "Absolute path of the session archive: one gzipped copy per transcript version, `<root>/<project slug>/<uuid>.<sha8>.jsonl.gz`, never overwritten with different content and never deleted by the lane; each card's pointer block names its copy. Point it at storage that outlives the box and its local transcripts, such as a mounted NAS or cloud-drive folder. A `.owner` file holding this box's machine-id claims it and each library, and a run against one claimed by another box exits 1, so two boxes never write the same archive. null leaves the lane without an archive. Exported as SESSION_ARCHIVE_ROOT.";
+    };
+
+    sessionArchiveAreas = mkOption {
+      type = types.attrsOf (
+        types.submodule {
+          options = {
+            description = mkOption {
+              type = types.str;
+              description = "One sentence the model reads to decide that a session belongs to this area.";
+            };
+            library = mkOption {
+              type = types.str;
+              description = "Absolute path of the folder this area's cards (`session-<uuid>.md`) are written to.";
+            };
+            projects = mkOption {
+              type = types.listOf types.str;
+              description = "Claude Code project slugs (the directory names under ~/.claude/projects, as stateRoot holds them) whose sessions the lane reads.";
+            };
+          };
+        }
+      );
+      default = { };
+      example = {
+        work = {
+          description = "Sessions about the team's services, their code and their deployment.";
+          library = "/mnt/notes/work/sessions";
+          projects = [ "-home-me-git-service" ];
+        };
+      };
+      description = "The areas a session card can be filed under, by name: the data boundary of the lane. The model assigns each session one area from these descriptions; a session it cannot place is held for `flakelab session-archive review` and gets no card. Empty (the default) leaves the lane nothing to read. Exported as SESSION_ARCHIVE_AREAS (JSON).";
+    };
+
+    sessionArchiveModel = mkOption {
+      type = types.str;
+      default = "claude-haiku-5-5";
+      description = "Model id of the summarize and merge calls. The default is the cheap tier; pick another from a measurement on your own sessions. Exported as SESSION_ARCHIVE_MODEL.";
+    };
+
+    sessionArchiveEffort = mkOption {
+      type = types.str;
+      default = "low";
+      description = "Effort the model is asked for on those calls. Exported as SESSION_ARCHIVE_EFFORT.";
+    };
+
+    sessionArchiveQuietDays = mkOption {
+      type = types.ints.unsigned;
+      default = 3;
+      description = "Days a transcript must go without a new record (its last timestamp, not its mtime) before a run takes it, so a session still being resumed is not summarized half-way; one that grows later gets a new archive copy and a rewritten card. Exported as SESSION_ARCHIVE_QUIET_DAYS.";
+    };
+
+    sessionArchiveRunCapUsd = mkOption {
+      type = types.numbers.positive;
+      default = 2.0;
+      description = "Most a run spends on model calls, in US dollars at list price: once it is reached, the session in flight is finished and no other is started. Exported as SESSION_ARCHIVE_RUN_CAP_USD.";
+    };
+
+    sessionArchiveRunSessions = mkOption {
+      type = types.ints.positive;
+      default = 20;
+      description = "Most sessions one run takes; the rest wait for the next. `flakelab doctor` warns when more than twice this many are eligible. Exported as SESSION_ARCHIVE_RUN_SESSIONS.";
+    };
+
     stateSyncthing = mkOption {
       type = types.nullOr (
         types.submodule {

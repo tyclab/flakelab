@@ -53,6 +53,29 @@ let
       lib.escapeShellArg "the overlay's sops secrets (sopsSecretsFile)"
     else
       secretsSource;
+  sessionArchiveAreas = builtins.toJSON cfg.sessionArchiveAreas;
+  # The overlay's values unless the caller set one: a measurement run passes its
+  # own model, effort, scratch root and libraries on the command line.
+  sessionArchiveEnv = lib.concatStrings (
+    lib.mapAttrsToList
+      (name: value: ''
+        [ -n "''${${name}:-}" ] || ${name}=${lib.escapeShellArg value}
+        export ${name}
+      '')
+      (
+        {
+          SESSION_ARCHIVE_AREAS = sessionArchiveAreas;
+          SESSION_ARCHIVE_MODEL = cfg.sessionArchiveModel;
+          SESSION_ARCHIVE_EFFORT = cfg.sessionArchiveEffort;
+          SESSION_ARCHIVE_QUIET_DAYS = toString cfg.sessionArchiveQuietDays;
+          SESSION_ARCHIVE_RUN_CAP_USD = builtins.toJSON cfg.sessionArchiveRunCapUsd;
+          SESSION_ARCHIVE_RUN_SESSIONS = toString cfg.sessionArchiveRunSessions;
+        }
+        // lib.optionalAttrs (cfg.sessionArchiveRoot != null) {
+          SESSION_ARCHIVE_ROOT = cfg.sessionArchiveRoot;
+        }
+      )
+  );
 in
 # `rec`, because wrappers pin sibling wrappers: nix-update and nix-update-all pin
 # nix-clone-repos (the CLI keeps it off PATH under its own name, so a bare `--all`
@@ -238,7 +261,12 @@ rec {
   '';
 
   # python3 runs lib/session_archive/ (stdlib only); util-linux brings flock.
+  # FLAKELAB_STATE_ROOT is the source: the redacted transcript copies.
   session-archive = pkgs.writeShellScriptBin "session-archive" ''
+    ${lib.optionalString (cfg.stateRoot != null) ''
+      export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
+    ''}
+    ${sessionArchiveEnv}
     export PATH=${
       bin [
         pkgs.python3
@@ -520,11 +548,14 @@ rec {
     export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
     export FLAKELAB_CLAUDE_REMOTE_CONTROL=${lib.boolToString cfg.claudeRemoteControl}
     export FLAKELAB_CLAUDE_UPDATE_CHANNEL=${cfg.claudeAutoUpdatesChannel}
+    # The "Session archive" section asks the pinned session-archive only when areas are set.
+    export SESSION_ARCHIVE_AREAS=${lib.escapeShellArg sessionArchiveAreas}
     export PATH=${
       bin [
         pkgs.zsh
         nix-tycswap-tray
         nix-access-tokens
+        session-archive
         pkgs.git
         pkgs.openssh
         pkgs.glab
