@@ -123,16 +123,20 @@ def judge(cfg, store, now, uuid, slug, path, stat):
     if age < LIVE_SECONDS:
         return candidate("live")
     row = store.session(uuid)
-    # At the size and mtime recorded, the recorded SHA stands and the file is not read.
+    # At the size and mtime recorded, the recorded SHA and last entry stand and the file is not read.
     if row is not None and (row["size"], row["mtime"]) == (stat.st_size, stat.st_mtime):
-        return candidate(verdict(row, row["sha256"]), row["sha256"])
-    last = last_entry(path)
-    # Unknown age falls back to the file's mtime, which is never earlier than its last record.
-    if last is not None:
-        age = now.timestamp() - last.timestamp()
-    if age < cfg.quiet_days * 86400:
-        return candidate("quiet", last=last)
-    sha256, spoke = digest(path)
+        recorded = datetime.fromisoformat(row["last_entry"]) if row["last_entry"] else None
+        return candidate(verdict(row, row["sha256"]), row["sha256"], recorded)
+    try:
+        last = last_entry(path)
+        # Unknown age falls back to the file's mtime, which is never earlier than its last record.
+        if last is not None:
+            age = now.timestamp() - last.timestamp()
+        if age < cfg.quiet_days * 86400:
+            return candidate("quiet", last=last)
+        sha256, spoke = digest(path)
+    except OSError:
+        return candidate("unreadable")
     return candidate(verdict(row, sha256) if spoke else "no_operator_text", sha256, last)
 
 
@@ -144,13 +148,18 @@ def scan(cfg, store, now):
     if not projects.is_dir():
         raise SourceError("the state root has no claude/projects directory")
     found, largest = [], {}
+    # One file or folder that cannot be read is counted as unreadable; its OSError, which names the path, is dropped.
     for slug in cfg.projects:
         try:
             entries = sorted(os.scandir(projects / slug), key=lambda e: e.name)
         except (FileNotFoundError, NotADirectoryError):
             continue
+        except OSError:
+            found.append(Candidate("", slug, projects / slug, None, None, "unreadable"))
+            continue
         for entry in entries:
-            if ".jsonl" not in entry.name or not entry.is_file():
+            # Plain files only, as state-sync's `*.jsonl(N.)`: it never places a symlink.
+            if ".jsonl" not in entry.name or not entry.is_file(follow_symlinks=False):
                 continue
             path = Path(entry.path)
             if is_sync_artifact(f"{slug}/{entry.name}"):
@@ -160,7 +169,11 @@ def scan(cfg, store, now):
             session = SESSION_FILE.fullmatch(entry.name)
             if session is None:
                 continue
-            stat = entry.stat()
+            try:
+                stat = entry.stat()
+            except OSError:
+                found.append(Candidate(session[1], slug, path, None, None, "unreadable"))
+                continue
             best = largest.get(session[1])
             if best is None or stat.st_size > best[2].st_size:
                 largest[session[1]] = (slug, path, stat)

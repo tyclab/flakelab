@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -63,8 +64,9 @@ class Scratch(unittest.TestCase):
         return path
 
     def record(self, path, status, sha=None, **fields):
-        """Record the session at path as the pipeline would: the SHA of the bytes and the stat it was taken at."""
+        """Record the session at path as the pipeline would: SHA, stat and last entry of the bytes as scanned."""
         stat = path.stat()
+        fields.setdefault("last_entry", sources.last_entry(path))
         self.store.record_session(path.stem, path.parent.name, sha or sha256(path), status, size=stat.st_size,
                                   mtime=stat.st_mtime, **fields)
 
@@ -160,18 +162,19 @@ class StoreTest(Scratch):
 
     def test_store_record_session_counts_holds(self):
         self.assertIsNone(self.store.session(UUID))
-        stat = {"size": 4096, "mtime": 1768478400.25}
+        stat = {"size": 4096, "mtime": 1768478400.25, "last_entry": None}
         self.store.record_session(UUID, SLUG, "a" * 64, "done", area="lab", card_hash="c1", archive_path="/srv/a.gz",
                                   **stat)
-        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="model_error", size=5000, mtime=1768478500.5)
-        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="unparsable", size=5000, mtime=1768478500.5)
+        later = {"size": 5000, "mtime": 1768478500.5, "last_entry": OLD}
+        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="model_error", **later)
+        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="unparsable", **later)
         row = self.store.session(UUID)
         self.assertEqual((row["status"], row["holds"], row["reason"], row["sha256"]), ("held", 2, "unparsable", "b" * 64))
-        self.assertEqual((row["size"], row["mtime"]), (5000, 1768478500.5))
+        self.assertEqual((row["size"], row["mtime"], row["last_entry"]), (5000, 1768478500.5, OLD.isoformat()))
         self.assertEqual((row["area"], row["card_hash"], row["archive_path"]), ("lab", "c1", "/srv/a.gz"))
         self.assertEqual([r["uuid"] for r in self.store.held()], [UUID])
         self.store.record_session(UUID, SLUG, "b" * 64, "review", reason="unclear_area", **stat)
-        self.assertEqual(self.store.session(UUID)["holds"], 2)
+        self.assertEqual((self.store.session(UUID)["holds"], self.store.session(UUID)["last_entry"]), (2, None))
         self.store.record_session(UUID, SLUG, "b" * 64, "done", area="lab", card_hash="c2", archive_path="/srv/b.gz",
                                   **stat)
         self.assertEqual((self.store.session(UUID)["holds"], self.store.held()), (0, []))
@@ -180,7 +183,23 @@ class StoreTest(Scratch):
         with self.assertRaises(ValueError):
             self.store.record_session(UUID, SLUG, "b" * 64, "finished", **stat)
         with self.assertRaises(TypeError):
-            self.store.record_session(UUID, SLUG, "b" * 64, "done")
+            self.store.record_session(UUID, SLUG, "b" * 64, "done", size=1, mtime=1.0)
+
+    def test_store_rejects_other_schema_version(self):
+        self.assertEqual(self.store.db.execute("PRAGMA user_version").fetchone()[0], store.SCHEMA_VERSION)
+        self.store.close()
+        store.Store(self.cfg.state_dir / "state.sqlite3").close()
+        for name, setup in (("unversioned.sqlite3", "CREATE TABLE sessions (uuid TEXT)"),
+                            ("newer.sqlite3", "PRAGMA user_version = 7")):
+            path = self.tmp / name
+            db = sqlite3.connect(path)
+            db.execute(setup)
+            db.commit()
+            db.close()
+            with self.subTest(name=name), self.assertRaises(store.StoreError) as caught:
+                store.Store(path)
+            self.assertRegex(str(caught.exception), r"^the state database has schema version (0|7); this lane reads version 1:")
+            self.assertNotIn(str(self.tmp), str(caught.exception))
 
 
 class ScanTest(Scratch):
@@ -218,15 +237,16 @@ class ScanTest(Scratch):
         path = self.transcript(spoken())
         self.record(path, "done", area="lab")
         found = self.scan()[UUID]
-        self.assertEqual((found.reason, found.sha256, found.last_entry), ("unchanged", sha256(path), None))
+        self.assertEqual((found.reason, found.sha256, found.last_entry), ("unchanged", sha256(path), OLD + timedelta(minutes=1)))
         os.utime(path, ((OLD + timedelta(hours=1)).timestamp(),) * 2)
         found = self.scan()[UUID]
         self.assertEqual((found.reason, found.sha256, found.last_entry), ("unchanged", sha256(path), OLD + timedelta(minutes=1)))
 
     def test_scan_reads_file_only_when_size_or_mtime_changed(self):
         path = self.transcript(spoken())
-        self.record(path, "done", sha="f" * 64, area="lab")
-        self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), ("unchanged", "f" * 64))
+        self.record(path, "done", sha="f" * 64, area="lab", last_entry=OLD - timedelta(days=1))
+        found = self.scan()[UUID]
+        self.assertEqual((found.reason, found.sha256, found.last_entry), ("unchanged", "f" * 64, OLD - timedelta(days=1)))
         for status, reason in (("review", "review"), ("held", "eligible")):
             self.record(path, status, sha="f" * 64, reason="model_error")
             self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), (reason, "f" * 64))
@@ -236,6 +256,37 @@ class ScanTest(Scratch):
         self.record(path, "done", sha="f" * 64, area="lab")
         self.transcript(spoken(OLD + timedelta(hours=2)), append=True, modified=moved)
         self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), ("eligible", sha256(path)))
+
+    def test_scan_orders_fast_path_retry_by_last_entry(self):
+        held = self.transcript(spoken())
+        self.record(held, "held", reason="model_error")
+        self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
+        found = sources.scan(self.cfg, self.store, NOW)
+        self.assertEqual([(c.uuid, c.reason, c.last_entry) for c in found], [
+            (UUID, "eligible", OLD + timedelta(minutes=1)),
+            (OTHER_UUID, "eligible", OLD + timedelta(days=1, minutes=1)),
+        ])
+
+    def test_scan_reports_unreadable_file_and_continues(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads a file of mode 000")
+        areas = {"lab": {"description": "Lab work.", "library": str(self.tmp / "library"),
+                         "projects": [SLUG, OTHER_SLUG, "-work-gamma"]}}
+        cfg = config.load({**self.env, "SESSION_ARCHIVE_AREAS": json.dumps(areas)})
+        locked = self.transcript(spoken())
+        self.transcript(spoken(), uuid=OTHER_UUID)
+        self.transcript(spoken(), uuid=THIRD_UUID, slug=OTHER_SLUG)
+        unsearchable = self.transcript(spoken(), uuid=THIRD_UUID, slug="-work-gamma")
+        for target, mode, kept in ((locked, 0, 0o644), (locked.parent.parent / OTHER_SLUG, 0, 0o755),
+                                   (unsearchable.parent, 0o444, 0o755)):
+            target.chmod(mode)
+            self.addCleanup(target.chmod, kept)
+        found = sources.scan(cfg, self.store, NOW)
+        self.assertEqual([(c.uuid, c.slug, c.reason) for c in found], [
+            (OTHER_UUID, SLUG, "eligible"), (UUID, SLUG, "unreadable"), ("", OTHER_SLUG, "unreadable"),
+            (THIRD_UUID, "-work-gamma", "unreadable"),
+        ])
+        self.assertEqual((found[1].path, found[1].size, found[1].sha256), (locked, locked.stat().st_size, None))
 
     def test_scan_keeps_review_until_sha_changes(self):
         path = self.transcript(spoken())
