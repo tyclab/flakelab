@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for `flakelab session-archive`: lib/test-session-archive.py under unittest, which takes any arguments.
+lib="${0:A:h}/lib"
+export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${lib}${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m unittest -v test-session-archive "$@"
