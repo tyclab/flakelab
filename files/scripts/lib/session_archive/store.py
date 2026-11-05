@@ -9,8 +9,9 @@ from uuid import uuid4
 STATUSES = ("done", "held", "review")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
-  uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, area TEXT,
-  card_hash TEXT, archive_path TEXT, holds INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL);
+  uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
+  status TEXT NOT NULL, reason TEXT, area TEXT, card_hash TEXT, archive_path TEXT, holds INTEGER NOT NULL DEFAULT 0,
+  updated TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY, started TEXT NOT NULL, finished TEXT, result TEXT, counts TEXT);
 CREATE TABLE IF NOT EXISTS ledger (
@@ -19,14 +20,18 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS ledger_run ON ledger (run_id);
 """
 # area, card_hash and archive_path describe the last card and archive copy, which stay: a hold keeps them.
+# A new SHA is new input, so the count of holds starts again.
 RECORD = """
-INSERT INTO sessions (uuid, slug, sha256, status, reason, area, card_hash, archive_path, holds, updated)
-VALUES (:uuid, :slug, :sha256, :status, :reason, :area, :card_hash, :archive_path, :holds, :updated)
+INSERT INTO sessions (uuid, slug, sha256, size, mtime, status, reason, area, card_hash, archive_path, holds, updated)
+VALUES (:uuid, :slug, :sha256, :size, :mtime, :status, :reason, :area, :card_hash, :archive_path, :holds, :updated)
 ON CONFLICT (uuid) DO UPDATE SET
-  slug = excluded.slug, sha256 = excluded.sha256, status = excluded.status, reason = excluded.reason,
+  slug = excluded.slug, sha256 = excluded.sha256, size = excluded.size, mtime = excluded.mtime,
+  status = excluded.status, reason = excluded.reason,
   area = COALESCE(excluded.area, area), card_hash = COALESCE(excluded.card_hash, card_hash),
   archive_path = COALESCE(excluded.archive_path, archive_path),
-  holds = CASE excluded.status WHEN 'held' THEN holds + 1 WHEN 'done' THEN 0 ELSE holds END,
+  holds = CASE WHEN excluded.status = 'done' THEN 0
+               WHEN excluded.sha256 = sha256 THEN holds + excluded.holds
+               ELSE excluded.holds END,
   updated = excluded.updated
 """
 
@@ -47,14 +52,16 @@ class Store:
     def close(self):
         self.db.close()
 
-    def record_session(self, uuid, slug, sha256, status, reason=None, area=None, card_hash=None, archive_path=None):
+    def record_session(self, uuid, slug, sha256, status, reason=None, area=None, card_hash=None, archive_path=None,
+                       *, size: int, mtime: float):
+        """size and mtime are the stat taken before sha256 was computed (Candidate.size, Candidate.mtime)."""
         if status not in STATUSES:
             raise ValueError(f"unknown session status: {status}")
         with self.db:
             self.db.execute(RECORD, {
-                "uuid": uuid, "slug": slug, "sha256": sha256, "status": status, "reason": reason, "area": area,
-                "card_hash": card_hash, "archive_path": archive_path, "holds": int(status == "held"),
-                "updated": now_iso(),
+                "uuid": uuid, "slug": slug, "sha256": sha256, "size": int(size), "mtime": float(mtime),
+                "status": status, "reason": reason, "area": area, "card_hash": card_hash,
+                "archive_path": archive_path, "holds": int(status == "held"), "updated": now_iso(),
             })
 
     def session(self, uuid):

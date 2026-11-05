@@ -36,6 +36,8 @@ class Candidate:
     sha256: str | None
     last_entry: datetime | None
     reason: str
+    size: int | None = None
+    mtime: float | None = None
 
 
 def is_sync_artifact(rel):
@@ -106,26 +108,32 @@ def digest(path):
 def verdict(row, sha256):
     if row is None:
         return "eligible"
-    if row["status"] == "held":
-        return "held" if row["holds"] >= MAX_HOLDS else "eligible"
     if row["sha256"] != sha256:
         return "eligible"
+    if row["status"] == "held":
+        return "held" if row["holds"] >= MAX_HOLDS else "eligible"
     return "unchanged" if row["status"] == "done" else "review"
 
 
 def judge(cfg, store, now, uuid, slug, path, stat):
+    def candidate(reason, sha256=None, last=None):
+        return Candidate(uuid, slug, path, sha256, last, reason, stat.st_size, stat.st_mtime)
+
     age = now.timestamp() - stat.st_mtime
     if age < LIVE_SECONDS:
-        return Candidate(uuid, slug, path, None, None, "live")
+        return candidate("live")
+    row = store.session(uuid)
+    # At the size and mtime recorded, the recorded SHA stands and the file is not read.
+    if row is not None and (row["size"], row["mtime"]) == (stat.st_size, stat.st_mtime):
+        return candidate(verdict(row, row["sha256"]), row["sha256"])
     last = last_entry(path)
     # Unknown age falls back to the file's mtime, which is never earlier than its last record.
     if last is not None:
         age = now.timestamp() - last.timestamp()
     if age < cfg.quiet_days * 86400:
-        return Candidate(uuid, slug, path, None, last, "quiet")
+        return candidate("quiet", last=last)
     sha256, spoke = digest(path)
-    reason = verdict(store.session(uuid), sha256) if spoke else "no_operator_text"
-    return Candidate(uuid, slug, path, sha256, last, reason)
+    return candidate(verdict(row, sha256) if spoke else "no_operator_text", sha256, last)
 
 
 def scan(cfg, store, now):

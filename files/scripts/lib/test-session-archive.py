@@ -62,6 +62,12 @@ class Scratch(unittest.TestCase):
         os.utime(path, (modified.timestamp(), modified.timestamp()))
         return path
 
+    def record(self, path, status, sha=None, **fields):
+        """Record the session at path as the pipeline would: the SHA of the bytes and the stat it was taken at."""
+        stat = path.stat()
+        self.store.record_session(path.stem, path.parent.name, sha or sha256(path), status, size=stat.st_size,
+                                  mtime=stat.st_mtime, **fields)
+
     def scan(self, cfg=None):
         found = sources.scan(cfg or self.cfg, self.store, NOW)
         self.assertEqual(len(found), len({(c.uuid, c.path) for c in found}))
@@ -154,19 +160,27 @@ class StoreTest(Scratch):
 
     def test_store_record_session_counts_holds(self):
         self.assertIsNone(self.store.session(UUID))
-        self.store.record_session(UUID, SLUG, "a" * 64, "done", area="lab", card_hash="c1", archive_path="/srv/a.gz")
-        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="model_error")
-        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="unparsable")
+        stat = {"size": 4096, "mtime": 1768478400.25}
+        self.store.record_session(UUID, SLUG, "a" * 64, "done", area="lab", card_hash="c1", archive_path="/srv/a.gz",
+                                  **stat)
+        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="model_error", size=5000, mtime=1768478500.5)
+        self.store.record_session(UUID, SLUG, "b" * 64, "held", reason="unparsable", size=5000, mtime=1768478500.5)
         row = self.store.session(UUID)
         self.assertEqual((row["status"], row["holds"], row["reason"], row["sha256"]), ("held", 2, "unparsable", "b" * 64))
+        self.assertEqual((row["size"], row["mtime"]), (5000, 1768478500.5))
         self.assertEqual((row["area"], row["card_hash"], row["archive_path"]), ("lab", "c1", "/srv/a.gz"))
         self.assertEqual([r["uuid"] for r in self.store.held()], [UUID])
-        self.store.record_session(UUID, SLUG, "b" * 64, "done", area="lab", card_hash="c2", archive_path="/srv/b.gz")
+        self.store.record_session(UUID, SLUG, "b" * 64, "review", reason="unclear_area", **stat)
+        self.assertEqual(self.store.session(UUID)["holds"], 2)
+        self.store.record_session(UUID, SLUG, "b" * 64, "done", area="lab", card_hash="c2", archive_path="/srv/b.gz",
+                                  **stat)
         self.assertEqual((self.store.session(UUID)["holds"], self.store.held()), (0, []))
-        self.store.record_session(OTHER_UUID, SLUG, "c" * 64, "review", reason="unclear_area")
+        self.store.record_session(OTHER_UUID, SLUG, "c" * 64, "review", reason="unclear_area", **stat)
         self.assertEqual([r["uuid"] for r in self.store.review()], [OTHER_UUID])
         with self.assertRaises(ValueError):
-            self.store.record_session(UUID, SLUG, "b" * 64, "finished")
+            self.store.record_session(UUID, SLUG, "b" * 64, "finished", **stat)
+        with self.assertRaises(TypeError):
+            self.store.record_session(UUID, SLUG, "b" * 64, "done")
 
 
 class ScanTest(Scratch):
@@ -193,21 +207,39 @@ class ScanTest(Scratch):
         path = self.transcript(spoken())
         first = self.scan()[UUID]
         self.assertEqual((first.reason, first.sha256, first.slug, first.path), ("eligible", sha256(path), SLUG, path))
-        self.store.record_session(UUID, SLUG, first.sha256, "done", area="lab")
+        self.assertEqual((first.size, first.mtime), (path.stat().st_size, OLD.timestamp()))
+        self.record(path, "done", area="lab")
         self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
         grown = self.scan()[UUID]
-        self.assertEqual((grown.reason, grown.sha256), ("eligible", sha256(path)))
+        self.assertEqual((grown.reason, grown.sha256, grown.size), ("eligible", sha256(path), path.stat().st_size))
         self.assertNotEqual(grown.sha256, first.sha256)
 
     def test_scan_skips_unchanged(self):
         path = self.transcript(spoken())
-        self.store.record_session(UUID, SLUG, sha256(path), "done", area="lab")
+        self.record(path, "done", area="lab")
+        found = self.scan()[UUID]
+        self.assertEqual((found.reason, found.sha256, found.last_entry), ("unchanged", sha256(path), None))
+        os.utime(path, ((OLD + timedelta(hours=1)).timestamp(),) * 2)
         found = self.scan()[UUID]
         self.assertEqual((found.reason, found.sha256, found.last_entry), ("unchanged", sha256(path), OLD + timedelta(minutes=1)))
 
+    def test_scan_reads_file_only_when_size_or_mtime_changed(self):
+        path = self.transcript(spoken())
+        self.record(path, "done", sha="f" * 64, area="lab")
+        self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), ("unchanged", "f" * 64))
+        for status, reason in (("review", "review"), ("held", "eligible")):
+            self.record(path, status, sha="f" * 64, reason="model_error")
+            self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), (reason, "f" * 64))
+        moved = OLD + timedelta(hours=1)
+        os.utime(path, (moved.timestamp(), moved.timestamp()))
+        self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), ("eligible", sha256(path)))
+        self.record(path, "done", sha="f" * 64, area="lab")
+        self.transcript(spoken(OLD + timedelta(hours=2)), append=True, modified=moved)
+        self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), ("eligible", sha256(path)))
+
     def test_scan_keeps_review_until_sha_changes(self):
         path = self.transcript(spoken())
-        self.store.record_session(UUID, SLUG, sha256(path), "review", reason="unclear_area")
+        self.record(path, "review", reason="unclear_area")
         self.assertEqual(self.scan()[UUID].reason, "review")
         self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
         self.assertEqual(self.scan()[UUID].reason, "eligible")
@@ -237,10 +269,23 @@ class ScanTest(Scratch):
     def test_scan_retries_held_under_three_then_skips(self):
         path = self.transcript(spoken())
         for holds, reason in ((1, "eligible"), (2, "eligible"), (3, "held")):
-            self.store.record_session(UUID, SLUG, sha256(path), "held", reason="model_error")
+            self.record(path, "held", reason="model_error")
             self.assertEqual((self.store.session(UUID)["holds"], self.scan()[UUID].reason), (holds, reason))
-        self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
+        os.utime(path, ((OLD + timedelta(hours=1)).timestamp(),) * 2)
         self.assertEqual(self.scan()[UUID].reason, "held")
+
+    def test_scan_sha_change_resets_holds(self):
+        path = self.transcript(spoken())
+        for _ in range(3):
+            self.record(path, "held", reason="model_error")
+        self.assertEqual(self.scan()[UUID].reason, "held")
+        self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
+        self.assertEqual((self.scan()[UUID].reason, self.scan()[UUID].sha256), ("eligible", sha256(path)))
+        self.record(path, "held", reason="model_error")
+        self.assertEqual((self.store.session(UUID)["holds"], self.scan()[UUID].reason), (1, "eligible"))
+        self.transcript(spoken(OLD + timedelta(hours=2)), append=True)
+        self.record(path, "review", reason="unclear_area")
+        self.assertEqual(self.store.session(UUID)["holds"], 0)
 
     def test_scan_skips_artifacts_and_subagents(self):
         self.transcript(spoken())
