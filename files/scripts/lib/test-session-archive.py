@@ -831,6 +831,57 @@ class SummarizeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no window summaries"):
             summarize.merge(stub, self.cfg, [], self.cfg.areas)
 
+    def whats(self, call):
+        return re.findall(r'"what": "([^"]*)"', call["user"])
+
+    def test_merge_groups_parts_under_input_bound(self):
+        parts = [{**SUMMARY, "what": f"Window {n} sorted shelf {n}."} for n in range(12)]
+        system = summarize.system_prompt(summarize.asset(summarize.MERGE), self.cfg.areas)
+        size = summarize.estimate(json.dumps(parts[0], ensure_ascii=False))
+        answers = [{**SUMMARY, "what": f"Group {n}."} for n in range(3)] + [{**SUMMARY, "what": "The session."}]
+        stub = summarize.StubTransport(answers)
+        # Room for four parts a group: three groups, then their three answers in one more call.
+        with mock.patch.object(summarize, "MERGE_INPUT_TOKENS", summarize.merge_overhead(system) + 4.5 * size):
+            merged = summarize.merge(stub, self.cfg, parts, self.cfg.areas, charge=self.charged.append)
+        self.assertEqual((merged["what"], len(stub.calls), len(self.charged)), ("The session.", 4, 4))
+        self.assertEqual([self.whats(call) for call in stub.calls], [
+            *([f"Window {n} sorted shelf {n}." for n in range(first, first + 4)] for first in (0, 4, 8)),
+            ["Group 0.", "Group 1.", "Group 2."]])
+        self.assertEqual([call["user"].split("\n")[0] for call in stub.calls], ["PART 1 of 4"] * 3 + ["PART 1 of 3"])
+        self.assertEqual({call["max_tokens"] for call in stub.calls}, {summarize.MERGE_MAX_TOKENS})
+        self.assertEqual(summarize.MERGE_MAX_TOKENS, 32_000)
+
+    def test_merge_retries_max_tokens_by_splitting(self):
+        parts = [{**SUMMARY, "what": f"Window {n}."} for n in range(4)]
+        cut = summarize.completion('{"what": "Sorted', "max_tokens", summarize.STUB_USAGE, "claude-haiku-5-5",
+                                   "claude-haiku-5-5")
+        halves = [{**SUMMARY, "what": "Windows 0 and 1."}, {**SUMMARY, "what": "Windows 2 and 3."}]
+        stub = summarize.StubTransport([cut, *halves, {**SUMMARY, "what": "The session."}])
+        merged = summarize.merge(stub, self.cfg, parts, self.cfg.areas, charge=self.charged.append)
+        self.assertEqual([self.whats(call) for call in stub.calls], [
+            [f"Window {n}." for n in range(4)], ["Window 0.", "Window 1."], ["Window 2.", "Window 3."],
+            ["Windows 0 and 1.", "Windows 2 and 3."]])
+        self.assertEqual((merged["what"], len(self.charged), self.charged[0].stop_reason),
+                         ("The session.", 4, "max_tokens"))
+        # Once only: a half cut again, or a pair that halves into single parts, holds the session.
+        for answers, given, calls in (([cut, cut], parts, 2), ([cut], parts[:2], 1)):
+            stub = summarize.StubTransport(answers)
+            with self.subTest(parts=len(given)), self.assertRaises(summarize.SummarizeError) as caught:
+                summarize.merge(stub, self.cfg, given, self.cfg.areas)
+            self.assertEqual((caught.exception.reason, caught.exception.detail, len(stub.calls)),
+                             ("model_error", "stop_reason max_tokens", calls))
+
+    def test_projection_counts_grouped_merge_calls(self):
+        self.assertEqual([summarize.merge_calls(count, 4_000, 750) for count in (1, 2, 9, 10, 109)], [0, 1, 1, 2, 15])
+        per_input, per_output = summarize.rates("claude-haiku-5-5")
+        merge_call = summarize.MERGE_INPUT_TOKENS * per_input + summarize.MERGE_OUTPUT_TOKENS * per_output
+        fixture = windows.split(render.render(FIXTURE))
+        window_call = max(len(w.text.encode()) for w in fixture) / 3.5 * per_input + 4_000 * per_output
+        self.assertAlmostEqual(pipeline.projected(self.cfg, fixture), (3 * window_call + merge_call) / 1e6)
+        [single] = fixture[2:]
+        self.assertAlmostEqual(pipeline.projected(self.cfg, [single]),
+                               (len(single.text.encode()) / 3.5 * per_input + 4_000 * per_output) / 1e6)
+
 
 class BudgetTest(Scratch):
     def test_budget_denies_above_cap(self):
@@ -1472,7 +1523,8 @@ class PipelineTest(Lane):
     def test_run_holds_too_large_session_without_calls(self):
         self.fixture()
         self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
-        # The fixture projects 4 calls x (60,137 B / 3.5 at 0.10 + 4,000 at 0.50 USD per million) = 0.0149 USD.
+        # The fixture projects 3 windows x (60,137 B / 3.5 at 0.10 + 4,000 at 0.50 USD per million) and one merge
+        # (40,000 at 0.10 + 6,000 at 0.50): 0.0182 USD.
         done, stub = self.lane([SPOKEN_SUMMARY], cfg=config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.01"}))
         self.assertEqual(pipeline.journal(done),
                          journal(scanned=2, eligible=2, done=1, held=1, windows=4, archived=1, cards=1))
@@ -1493,7 +1545,7 @@ class PipelineTest(Lane):
         half = "widget shelf " * 2800
         self.transcript([said("user", f"first half: {half}"), said("user", f"second half: {half}")])
         self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
-        cfg = config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.012"})
+        cfg = config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.014"})
         done, stub = self.lane([SPOKEN_SUMMARY] * 4, cfg=cfg, usage=BIG_USAGE)
         self.assertEqual((done.result, len(stub.calls), done.counts["done"], done.counts["windows"]),
                          ("capped", 3, 1, 2))

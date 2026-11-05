@@ -24,6 +24,12 @@ WINDOW_TAIL = "Summarize the transcript window above as the system prompt says."
 MERGE_TAIL = "Merge the window summaries above into one, as the system prompt says."
 URL = "https://api.anthropic.com/v1/messages"
 MAX_TOKENS = 16_000
+# A merge call's input stays under MERGE_INPUT_TOKENS (estimated at BYTES_PER_TOKEN); its answer may run to
+# MERGE_MAX_TOKENS, though the merge prompt asks for about MERGE_OUTPUT_TOKENS.
+MERGE_INPUT_TOKENS = 40_000
+MERGE_MAX_TOKENS = 32_000
+MERGE_OUTPUT_TOKENS = 6_000
+BYTES_PER_TOKEN = 3.5
 RETRY_HTTP = 429
 ATTEMPTS = 4
 USAGE = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
@@ -206,17 +212,73 @@ def window(transport, cfg, window, areas, *, charge=None) -> dict:
     return checked(done, shape, charge)
 
 
+def estimate(text) -> float:
+    """Tokens of text, roughly and on the high side: BYTES_PER_TOKEN bytes a token."""
+    return len(text.encode()) / BYTES_PER_TOKEN
+
+
+def merge_overhead(system) -> float:
+    return estimate(system) + estimate(MERGE_TAIL)
+
+
+def grouped(sizes, overhead) -> list[list[int]]:
+    """Consecutive indexes of sizes (tokens) in groups whose overhead plus sizes stays under MERGE_INPUT_TOKENS. A group
+    takes two at least, so every round of merging shortens the list."""
+    groups, current, used = [], [], overhead
+    for index, size in enumerate(sizes):
+        if len(current) >= 2 and used + size > MERGE_INPUT_TOKENS:
+            groups.append(current)
+            current, used = [], overhead
+        current.append(index)
+        used += size
+    return [*groups, current] if current else groups
+
+
+def merge_calls(count, part_tokens, overhead) -> int:
+    """The merge calls count window summaries of part_tokens each need, every merged answer at MERGE_OUTPUT_TOKENS."""
+    calls, sizes = 0, [part_tokens] * count
+    while len(sizes) > 1:
+        groups = grouped(sizes, overhead)
+        calls += sum(len(group) > 1 for group in groups)
+        sizes = [MERGE_OUTPUT_TOKENS if len(group) > 1 else sizes[group[0]] for group in groups]
+    return calls
+
+
+def merge_group(transport, cfg, group, system, shape, charge, split=True) -> list[dict]:
+    """The group's answer as a one-item list; a max_tokens stop is retried once as the group's two halves (two
+    items)."""
+    if len(group) == 1:
+        return group
+    user = "".join(f"PART {number} of {len(group)}\n{json.dumps(part, ensure_ascii=False)}\n\n"
+                   for number, part in enumerate(group, 1)) + MERGE_TAIL
+    done = transport.complete(system, user, shape, cfg.model, cfg.effort, max_tokens=MERGE_MAX_TOKENS)
+    if split and done.stop_reason == "max_tokens":
+        if charge:
+            charge(done)
+        half = len(group) // 2
+        return [*merge_group(transport, cfg, group[:half], system, shape, charge, split=False),
+                *merge_group(transport, cfg, group[half:], system, shape, charge, split=False)]
+    return [checked(done, shape, charge)]
+
+
 def merge(transport, cfg, parts: list[dict], areas, *, charge=None) -> dict:
-    """One summary from the windows' summaries, in window order; a single window's is already the session's."""
+    """One summary from the windows' summaries, in window order: merged in consecutive groups whose estimated input
+    stays under MERGE_INPUT_TOKENS, then the groups' answers the same way until one remains. A single window's summary
+    is already the session's."""
     if not parts:
         raise ValueError("no window summaries to merge")
     if len(parts) == 1:
         return parts[0]
-    shape = schema(json.loads(asset(SCHEMA)), areas)
-    user = "".join(f"PART {number} of {len(parts)}\n{json.dumps(part, ensure_ascii=False)}\n\n"
-                   for number, part in enumerate(parts, 1)) + MERGE_TAIL
-    done = transport.complete(system_prompt(asset(MERGE), areas), user, shape, cfg.model, cfg.effort)
-    return checked(done, shape, charge)
+    shape, system = schema(json.loads(asset(SCHEMA)), areas), system_prompt(asset(MERGE), areas)
+    overhead = merge_overhead(system)
+    while len(parts) > 1:
+        sizes = [estimate(json.dumps(part, ensure_ascii=False)) for part in parts]
+        merged = [answer for group in grouped(sizes, overhead)
+                  for answer in merge_group(transport, cfg, [parts[i] for i in group], system, shape, charge)]
+        if len(merged) == len(parts):  # every group was cut and halved into what it was: no round shortens it
+            raise SummarizeError("model_error", "stop_reason max_tokens")
+        parts = merged
+    return parts[0]
 
 
 class Budget:

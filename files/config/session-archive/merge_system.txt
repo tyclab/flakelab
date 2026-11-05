@@ -1,6 +1,7 @@
-You merge the window summaries of one archived agent session into the session's single summary. The input is PART 1
-to PART N in transcript order, each a JSON summary of one window with the same fields as your answer. Anchors are line
-numbers of the archived transcript (`@L212` is 212); windows overlap a little, so neighbouring parts can repeat a fact.
+You merge the window summaries of one archived agent session into one summary. The input is PART 1 to PART N in
+transcript order, each a JSON summary of one window or of several consecutive windows, with the same fields as your
+answer; a long session is merged in rounds, so your answer may itself become a part. Anchors are line numbers of the
+archived transcript (`@L212` is 212); windows overlap a little, so neighbouring parts can repeat a fact.
 
 ## Rules
 
@@ -9,6 +10,8 @@ numbers of the archived transcript (`@L212` is 212); windows overlap a little, s
 - Join items that state the same fact. When a later part corrects or replaces an earlier fact, keep the later one; keep
   the earlier one too only when the change itself matters, and say so.
 - Add nothing that no part says.
+- Compactness: keep every open end and every operator ruling; otherwise prefer the most specific items, fold
+  duplicates, and keep the whole answer under about 6,000 tokens of JSON.
 - `what`: one short paragraph for the whole session.
 - `when`: one timeline, oldest first.
 - `open_ends`: an end that a later part shows closed moves to `outcome`. Keep the latest `as_of` and `tracked_in`.

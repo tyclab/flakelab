@@ -17,7 +17,6 @@ UNCLEAR = "unclear_area"
 ROOT_UNREACHABLE = "root_unreachable"
 LIBRARY_UNREACHABLE = "library_unreachable"
 UNAVAILABLE = "model_unavailable"
-BYTES_PER_TOKEN = 3.5
 OUTPUT_TOKENS = 4_000
 # Failures every later call would meet too: the key, the model id, the service or the network, after the retries.
 UNAVAILABLE_ERROR = re.compile(r"http (?:401|403|404|429|5[0-9]{2})|network \w+")
@@ -88,11 +87,14 @@ def summarized(transport, cfg, parts, work, charge) -> dict:
 
 
 def projected(cfg, parts) -> float:
-    """A conservative price of a session before its first call: every window and the merge priced as the largest window
-    sent (BYTES_PER_TOKEN bytes a token) plus OUTPUT_TOKENS of output."""
+    """A conservative price of a session before its first call: every window at the largest window's input plus
+    OUTPUT_TOKENS of output, and each merge call the grouping needs at its input bound plus a merged answer."""
     per_input, per_output = summarize.rates(cfg.model)
-    largest = max(len(part.text.encode()) for part in parts)
-    return (len(parts) + 1) * (largest / BYTES_PER_TOKEN * per_input + OUTPUT_TOKENS * per_output) / 1e6
+    largest = summarize.estimate(max((part.text for part in parts), key=lambda text: len(text.encode())))
+    overhead = summarize.merge_overhead(summarize.system_prompt(summarize.asset(summarize.MERGE), cfg.areas))
+    merges = summarize.merge_calls(len(parts), OUTPUT_TOKENS, overhead)
+    return (len(parts) * (largest * per_input + OUTPUT_TOKENS * per_output)
+            + merges * (summarize.MERGE_INPUT_TOKENS * per_input + summarize.MERGE_OUTPUT_TOKENS * per_output)) / 1e6
 
 
 def blank(summary) -> bool:

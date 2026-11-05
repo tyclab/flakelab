@@ -726,8 +726,11 @@ transcript whose last `timestamp` (not its mtime) is less than
 
 Each session is rendered whole with `@L<line>` anchors and redaction (only a
 record longer than a window is cut, and marked), split into 60,000-byte windows
-of whole records, summarized one call per window and, with more than one window,
-merged in one more call. The citation check then keeps the anchors that name a
+of whole records and summarized one call per window. With more than one window
+the summaries are merged in rounds: consecutive ones whose input stays under
+about 40,000 tokens go into one call, then the answers the same way until one
+remains, and a merge that hits its 32,000-token answer limit is retried once as
+two halves. The citation check then keeps the anchors that name a
 record and marks an item `(unverified)` when none does or a quote is in none of
 those records, exactly or at a `difflib` ratio of 0.85. The model files the
 session under one of `sessionArchiveAreas`; one it cannot place (`unclear`)
@@ -744,8 +747,9 @@ answer, a transcript, work file, archive copy or card that cannot be read,
 rendered or written, a missing library, and a stop (SIGTERM at the unit's
 timeout, Ctrl-C) while it is in flight: the next run retries it, and after
 three holds of the same content only `run --session` does. Before its first
-call a session's cost is projected (every window and the merge at the largest
-window's input, 3.5 bytes a token, plus 4,000 output tokens); one projected
+call a session's cost is projected (every window at the largest window's input,
+3.5 bytes a token, plus 4,000 output tokens, and each merge call the rounds
+need at 40,000 tokens in and 6,000 out); one projected
 above `sessionArchiveRunCapUsd` is held as `too_large` without a call (`run
 --session` with a raised `SESSION_ARCHIVE_RUN_CAP_USD` is the way through), and
 one that fits the cap but not what the run has left waits for the next run.
