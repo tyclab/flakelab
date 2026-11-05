@@ -709,8 +709,8 @@ lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agen
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
-# archive_section [VAR=value...]: the doctor's "Session archive" section with areas configured and a
-# session-archive on PATH whose `status --json` prints FAKE_SA_STATUS and exits FAKE_SA_RC.
+# archive_section [VAR=value...]: the doctor's "Session archive" section with areas and a schedule configured
+# and a session-archive on PATH whose `status --json` prints FAKE_SA_STATUS and exits FAKE_SA_RC.
 SA_TOOLS="${BASE}/sa-tools"
 mkdir -p "${SA_TOOLS}"
 cat > "${SA_TOOLS}/session-archive" <<'STUB'
@@ -722,7 +722,8 @@ STUB
 chmod +x "${SA_TOOLS}/session-archive"
 SA_AREAS='{"work":{"description":"d","library":"/srv/cards","projects":["p"]}}'
 archive_section() {
-  section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" "$@"
+  section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" \
+    SESSION_ARCHIVE_SCHEDULED=true "$@"
 }
 # archive_status [<jq edit>]: a healthy status --json answer, its last run <hours> (1) ago, edited as given.
 archive_status() {
@@ -760,6 +761,20 @@ lacks    "nor called reachable"            "${out}" "archive root reachable"
 out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 1 | .review = 2 | .root_ok = false')")"
 check    "three findings, three warnings" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "3"
 lacks    "and no all-clear for the counts" "${out}" "none held"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 2 | .root_ok = false | .last_result = "error\nTraceback"')")"
+contains "a multi-line result does not hide the held count" "${out}" "[WARN] 2 held"
+contains "nor the root"                   "${out}" "[WARN] the archive root (flakelab.sessionArchiveRoot) is unreachable"
+contains "and reads as one line"          "${out}" "[ OK ] last run 1 h ago (error Traceback, 0.42 USD)"
+
+print -r -- "session archive: with no schedule the run's age is a note, the other findings stay"
+out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status . 50)")"
+contains "a run 50 h ago is shown"        "${out}" "[ OK ] note: last run 50 h ago (ok, 0.42 USD); no schedule (flakelab.sessionArchiveSchedule), so its age is not checked"
+lacks    "and not warned about"           "${out}" "[WARN]"
+out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status '.last_run = null | .last_result = null | .held = 2')")"
+contains "no run at all is a note"        "${out}" "[ OK ] note: the session archive has never run; no schedule"
+check    "held still warns, alone"        "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+contains "it is the held count"           "${out}" "[WARN] 2 held"
+contains "the wrapper variable absent reads as no schedule" "$(section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" FAKE_SA_STATUS="$(archive_status . 50)")" "[ OK ] note: last run 50 h ago"
 
 print -r -- "session archive: an answer it cannot use warns"
 contains "a failing status"   "$(archive_section FAKE_SA_RC=1)" "[WARN] session-archive status --json gave no usable answer"

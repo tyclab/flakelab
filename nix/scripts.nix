@@ -548,8 +548,10 @@ rec {
     export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
     export FLAKELAB_CLAUDE_REMOTE_CONTROL=${lib.boolToString cfg.claudeRemoteControl}
     export FLAKELAB_CLAUDE_UPDATE_CHANNEL=${cfg.claudeAutoUpdatesChannel}
-    # The "Session archive" section asks the pinned session-archive only when areas are set.
+    # The "Session archive" section asks the pinned session-archive only when areas are
+    # set, and holds the last run's age against 48 h only when a timer runs it.
     export SESSION_ARCHIVE_AREAS=${lib.escapeShellArg sessionArchiveAreas}
+    export SESSION_ARCHIVE_SCHEDULED=${lib.boolToString (cfg.sessionArchiveSchedule != null)}
     export PATH=${
       bin [
         pkgs.zsh

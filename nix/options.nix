@@ -575,7 +575,7 @@ in
       type = types.nullOr types.str;
       default = null;
       example = "daily";
-      description = "systemd calendar expression (OnCalendar syntax) for `flakelab session-archive run`, the user timer flakelab-session-archive: each run takes the Claude Code transcripts in stateRoot (stateTranscripts) that went quiet for sessionArchiveQuietDays, copies each one gzipped into sessionArchiveRoot and writes one summary card per session into its area's library. The model calls are billed per token to the API key SESSION_ARCHIVE_ANTHROPIC_API_KEY, read at use time from the secrets file and never ANTHROPIC_API_KEY, within sessionArchiveRunCapUsd per run. Persistent: a box that was off at the slot catches up at its next start. null schedules none, and `flakelab session-archive run` still works by hand. Needs sessionArchiveRoot and at least one sessionArchiveAreas entry.";
+      description = "systemd calendar expression (OnCalendar syntax) for `flakelab session-archive run`, the user timer flakelab-session-archive: each run takes the Claude Code transcripts in stateRoot (stateTranscripts) that went quiet for sessionArchiveQuietDays, copies each one gzipped into sessionArchiveRoot and writes one summary card per session into its area's library. The model calls are billed per token to the API key SESSION_ARCHIVE_ANTHROPIC_API_KEY, read at use time from the secrets file and never ANTHROPIC_API_KEY, within sessionArchiveRunCapUsd per run. Persistent: a box that was off at the slot catches up at its next start. null schedules none, and `flakelab session-archive run` still works by hand; `flakelab doctor` then shows the last run's age instead of warning when it passes 48 h. Needs stateRoot, sessionArchiveRoot and at least one sessionArchiveAreas entry.";
     };
 
     sessionArchiveRoot = mkOption {
@@ -593,7 +593,7 @@ in
               description = "One sentence the model reads to decide that a session belongs to this area.";
             };
             library = mkOption {
-              type = types.str;
+              type = types.strMatching "/.*";
               description = "Absolute path of the folder this area's cards (`session-<uuid>.md`) are written to.";
             };
             projects = mkOption {

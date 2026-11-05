@@ -15,8 +15,9 @@ in
 {
   assertions = [
     {
-      assertion = !on || (cfg.sessionArchiveRoot != null && cfg.sessionArchiveAreas != { });
-      message = "flakelab.sessionArchiveSchedule needs flakelab.sessionArchiveRoot and at least one flakelab.sessionArchiveAreas entry: a run copies each transcript into the root and files its card under an area.";
+      assertion =
+        !on || (cfg.stateRoot != null && cfg.sessionArchiveRoot != null && cfg.sessionArchiveAreas != { });
+      message = "flakelab.sessionArchiveSchedule needs flakelab.stateRoot, flakelab.sessionArchiveRoot and at least one flakelab.sessionArchiveAreas entry: a run reads the transcripts under the state root, copies each into the archive root and files its card under an area.";
     }
   ];
 

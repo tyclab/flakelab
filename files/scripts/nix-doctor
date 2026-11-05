@@ -56,8 +56,8 @@ while (( $# > 0 )); do
       echo "dirty, behind its tracking ref or missing, the secret-gate findings held"
       echo "back from the shared state root (with the transcripts held back whole), and,"
       echo "with session-archive areas configured, a last archive run over 48 h ago or"
-      echo "never, held or review sessions, a backlog over twice a run, and an archive"
-      echo "root that is unreachable or claimed by another box."
+      echo "never (only with a schedule), held or review sessions, a backlog over twice"
+      echo "a run, and an archive root that is unreachable or claimed by another box."
       echo ""
       echo "The update blockers, in the environment and in ~/.claude/settings.json:"
       echo "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, which stops Claude Code's"
@@ -1137,25 +1137,32 @@ elif ! (( $+commands[session-archive] )); then
 elif ! saJson="$(session-archive status --json 2> /dev/null)" \
     || ! saFields="$(jq -er 'select(all(.eligible, .held, .review, .last_run_usd, .run_sessions; type == "number"))
         | [.last_run, .last_result, .eligible, .held, .review, .last_run_usd, .run_sessions, .root_ok, .owner_ok]
-        | map(tostring) | join("\u001f")' <<< "${saJson}" 2> /dev/null)"; then
+        | map(tostring | gsub("[\n\r\u001f]"; " ")) | join("\u001f")' <<< "${saJson}" 2> /dev/null)"; then
   log_warn "session-archive status --json gave no usable answer"
   log_hint "flakelab session-archive status"
 else
-  local saLast saResult saEligible saHeld saReview saUsd saPerRun saRootOk saOwnerOk saEpoch saAge
+  local saLast saResult saEligible saHeld saReview saUsd saPerRun saRootOk saOwnerOk saEpoch saAge saRun
   IFS=$'\x1f' read -r saLast saResult saEligible saHeld saReview saUsd saPerRun saRootOk saOwnerOk <<< "${saFields}"
-  if [[ "${saLast}" == null ]]; then
+  [[ "${saResult}" == null ]] && saResult="no result"
+  # The age catches a broken timer: with no schedule (the wrapper says) runs are by hand, and it is only shown.
+  local saUnscheduled="no schedule (flakelab.sessionArchiveSchedule), so its age is not checked"
+  if [[ "${saLast}" == null && "${SESSION_ARCHIVE_SCHEDULED:-}" != true ]]; then
+    log_ok "note: the session archive has never run; ${saUnscheduled}"
+  elif [[ "${saLast}" == null ]]; then
     log_warn "the session archive has never run"
-    log_hint "flakelab session-archive run; flakelab.sessionArchiveSchedule runs it on a timer"
+    log_hint "the timer's first slot may be ahead (systemctl --user list-timers); flakelab session-archive run starts one now"
   elif ! saEpoch="$(date -d "${saLast}" +%s 2> /dev/null)"; then
     log_warn "cannot read the time of the session archive's last run"
   else
     saAge=$(( $(date +%s) - saEpoch ))
-    if (( saAge >= 48 * 3600 )); then
+    saRun="last run $(( saAge / 3600 )) h ago (${saResult}, $(printf '%.2f' "${saUsd}") USD)"
+    if [[ "${SESSION_ARCHIVE_SCHEDULED:-}" != true ]]; then
+      log_ok "note: ${saRun}; ${saUnscheduled}"
+    elif (( saAge >= 48 * 3600 )); then
       log_warn "the session archive last ran $(( saAge / 3600 )) h ago, over 48 h"
       log_hint "systemctl --user status flakelab-session-archive.timer flakelab-session-archive.service"
     else
-      [[ "${saResult}" == null ]] && saResult="no result"
-      log_ok "last run $(( saAge / 3600 )) h ago (${saResult}, $(printf '%.2f' "${saUsd}") USD)"
+      log_ok "${saRun}"
     fi
   fi
   if (( saHeld > 0 )); then
