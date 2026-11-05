@@ -755,7 +755,7 @@ contains "a backlog over twice a run warns" "$(archive_section FAKE_SA_STATUS="$
 lacks    "twice a run does not"     "$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = 40')")" "[WARN]"
 out="$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = null')")"
 lacks    "no counted backlog yet is no finding" "${out}" "[WARN]"
-contains "and the counts say so"     "${out}" "[ OK ] none held, none waiting for review; no backlog count until a run finishes"
+contains "and the counts say so"     "${out}" "[ OK ] none held, none waiting for review; no backlog count until a full run finishes"
 lacks    "never printed as null"     "${out}" "null"
 out="$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = null | .held = 1')")"
 check    "held still warns, alone"   "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"

@@ -116,6 +116,15 @@ class Store:
     def last_run(self):
         return self.db.execute("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT 1").fetchone()
 
+    def last_count(self, name):
+        """name's value in the most recent run's counts that hold one (not None); None when no run recorded it."""
+        for (counts,) in self.db.execute("SELECT counts FROM runs WHERE counts IS NOT NULL "
+                                         "ORDER BY started DESC, rowid DESC"):
+            value = json.loads(counts).get(name)
+            if value is not None:
+                return value
+        return None
+
     def held(self):
         return self.by_status("held")
 

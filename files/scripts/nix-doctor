@@ -1173,13 +1173,13 @@ else
     log_warn "${saReview} session(s) waiting for review, with no card"
     log_hint "flakelab session-archive review"
   fi
-  # eligible is the last finished run's count (status never scans); null before one has finished.
+  # eligible is the last full run's count (status never scans; --session runs count none); null before one finished.
   if [[ "${saEligible}" != null ]] && (( saEligible > 2 * saPerRun )); then
     log_warn "${saEligible} sessions eligible, more than twice the ${saPerRun} a run takes"
     log_hint "raise flakelab.sessionArchiveRunSessions, or run flakelab session-archive run by hand"
   fi
   if (( saHeld == 0 && saReview == 0 )) && [[ "${saEligible}" == null ]]; then
-    log_ok "none held, none waiting for review; no backlog count until a run finishes"
+    log_ok "none held, none waiting for review; no backlog count until a full run finishes"
   elif (( saHeld == 0 && saReview == 0 && saEligible <= 2 * saPerRun )); then
     log_ok "${saEligible} eligible (${saPerRun} per run), none held, none waiting for review"
   fi

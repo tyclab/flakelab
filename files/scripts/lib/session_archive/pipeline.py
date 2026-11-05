@@ -174,5 +174,7 @@ def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, kee
         else:
             result = "ok"
     finally:
-        store.finish_run(run_id, result, counts)
+        # A --session run sees one session, not the backlog: it records no eligible count, so status keeps the last
+        # full run's.
+        store.finish_run(run_id, result, counts if session is None else {**counts, "eligible": None})
     return RunSummary(counts, store.run_usd(run_id), result)

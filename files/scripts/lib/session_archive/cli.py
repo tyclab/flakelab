@@ -111,18 +111,17 @@ def run(args: argparse.Namespace, env) -> int:
 
 
 def status(args: argparse.Namespace, env) -> int:
-    """The store's account, without reading the state root: eligible is what the last run counted, None until a run
-    has finished."""
+    """The store's account, without reading the state root: eligible is what the last full run (not --session)
+    counted, None until one has finished."""
     cfg = config.load(env)
     machine_id = archive.machine_id(env)
     with opened(cfg) as db:
-        last, held, review = db.last_run(), db.held(), db.review()
+        last, held, review, eligible = db.last_run(), db.held(), db.review(), db.last_count("eligible")
         usd = db.run_usd(last["run_id"]) if last else 0.0
-    counted = json.loads(last["counts"]) if last and last["counts"] else {}
     marks = [mark for mark in map(archive.owner, folders(cfg)) if mark is not None]
     report = {
         "last_run": last["started"] if last else None, "last_result": last["result"] if last else None,
-        "eligible": counted.get("eligible"), "held": len(held), "review": len(review),
+        "eligible": eligible, "held": len(held), "review": len(review),
         "last_run_usd": round(usd, 6), "run_sessions": cfg.run_sessions,
         "root_ok": None if cfg.root is None else cfg.root.is_dir(),
         "owner_ok": all(mark == machine_id for mark in marks) if marks else None,
@@ -132,7 +131,7 @@ def status(args: argparse.Namespace, env) -> int:
         return 0
     print("\n".join([
         f"last run: {last['started']} ({last['result'] or 'no result'}, {usd:.2f} USD)" if last else "last run: never",
-        f"eligible at the last run: {'not counted yet' if report['eligible'] is None else report['eligible']} "
+        f"eligible at the last full run: {'not counted yet' if eligible is None else eligible} "
         f"({cfg.run_sessions} per run)",
         f"held: {len(held)}", *(f"  {row['uuid']} {row['reason']}, {row['holds']} hold(s)" for row in held),
         f"waiting for review: {len(review)}",

@@ -1237,6 +1237,10 @@ class Lane(Scratch):
     def count(self, table):
         return self.store.db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
+    def three_sessions(self):
+        for uuid, hours in ((UUID, 0), (OTHER_UUID, 1), (THIRD_UUID, 2)):
+            self.transcript(spoken(OLD + timedelta(hours=hours)), uuid=uuid)
+
 
 class PipelineTest(Lane):
     def test_run_writes_card_archive_and_state(self):
@@ -1302,10 +1306,6 @@ class PipelineTest(Lane):
         self.assertEqual((row["sha256"], row["archive_path"], row["card_hash"]),
                          (sha256(path), str(second), cards.content_hash(card)))
         self.assertFalse(work.exists())
-
-    def three_sessions(self):
-        for uuid, hours in ((UUID, 0), (OTHER_UUID, 1), (THIRD_UUID, 2)):
-            self.transcript(spoken(OLD + timedelta(hours=hours)), uuid=uuid)
 
     def test_run_stops_at_cap_after_finishing_session(self):
         self.three_sessions()
@@ -1488,6 +1488,7 @@ class CliRunTest(Lane):
         self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
         self.transcript(spoken(OLD + timedelta(days=2)), uuid=THIRD_UUID)
         self.assertIsNone(self.status()["eligible"])
+        self.assertIn("\neligible at the last full run: not counted yet (20 per run)\n", self.status(human=True))
         failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
         self.lane(FIXTURE_RESPONSES + [{**SPOKEN_SUMMARY, "area": "unclear"}, failed])
         archive.check_owner(self.root, "box-a")
@@ -1500,13 +1501,28 @@ class CliRunTest(Lane):
         (self.library / ".owner").write_text("box-b\n")
         self.assertIs(self.status()["owner_ok"], False)
         out = self.status(human=True)
-        self.assertIn("\neligible at the last run: 3 (20 per run)\n", out)
+        self.assertIn("\neligible at the last full run: 3 (20 per run)\n", out)
         self.assertIn(f"{THIRD_UUID} model_error", out)
         self.assertNotIn(str(self.tmp), out)
         self.assertEqual(self.status(FLAKELAB_STATE_ROOT="")["eligible"], 3)
+        # A run in progress has no result yet; the backlog stays the last full run's.
         self.store.start_run()
-        self.assertEqual([self.status()[name] for name in ("last_result", "eligible")], [None, None])
-        self.assertIn("\neligible at the last run: not counted yet (20 per run)\n", self.status(human=True))
+        self.assertEqual([self.status()[name] for name in ("last_result", "eligible")], [None, 3])
+
+    def test_status_keeps_backlog_after_session_run(self):
+        self.three_sessions()
+        done, _ = self.lane([SPOKEN_SUMMARY], session=UUID)
+        self.assertEqual(pipeline.journal(done), journal(scanned=3, done=1, windows=1, archived=1, cards=1))
+        self.assertIsNone(json.loads(self.store.last_run()["counts"])["eligible"])
+        self.assertEqual([self.status()[name] for name in ("last_result", "eligible")], ["ok", None])
+        done, _ = self.lane([SPOKEN_SUMMARY], limit=1)
+        self.assertEqual((done.counts["eligible"], self.status()["eligible"]), (2, 2))
+        done, _ = self.lane([SPOKEN_SUMMARY], session=THIRD_UUID)
+        self.assertEqual(pipeline.journal(done), journal(scanned=3, done=1, windows=1, archived=1, cards=1))
+        last = self.store.last_run()
+        self.assertEqual((last["result"], json.loads(last["counts"])["eligible"], self.count("runs")), ("ok", None, 3))
+        report = self.status()
+        self.assertEqual((report["last_run"], report["last_result"], report["eligible"]), (last["started"], "ok", 2))
 
 
 if __name__ == "__main__":
