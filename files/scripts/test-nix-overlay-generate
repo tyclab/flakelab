@@ -1160,6 +1160,12 @@ zsh_always="$(sed -n "s/^_secret_always='\(.*\)'\$/\1/p" "${GEN}")"
 ps1_always="$(sed -n "s/^\$SecretNameAlways = '\(.*\)'\$/\1/p" "${PS1_SRC}")"
 check "the zsh writer withholds a webhook first"  "${zsh_always}" '(^|_)WEBHOOK(_|$)'
 check "and so does the twin"                      "${ps1_always}" "${zsh_always}"
+# The named secrets are hand-kept twice: a name on one list only reaches the flake through the other writer.
+zsh_names="$(sed -n '/^typeset -a _secret_names=(/,/^)/p' "${GEN}" | grep -oE '[A-Z][A-Z0-9_]+' | sort -u)"
+ps1_names="$(sed -n '/^\$SecretKeyNames = @(/,/)$/p;/^\$RetiredSecretKeyNames = @(/p' "${PS1_SRC}" \
+  | grep -oE "'[A-Z][A-Z0-9_]+'" | tr -d "'" | sort -u)"
+contains "the zsh writer's named secrets are read"     "${zsh_names}" "GITLAB_TOKEN"
+check "both writers withhold the same named secrets" "${ps1_names}" "${zsh_names}"
 contains "the zsh split goes through the classifier" "$(< "${GEN}")" 'if _is_secret_name "${_k}"; then'
 contains "the twin has one classifier"               "${ps1_src}" 'function Test-SecretName'
 contains "which its flake emitter calls"             "${ps1_src}" 'if (Test-SecretName $k) {'
