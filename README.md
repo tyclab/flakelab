@@ -523,7 +523,8 @@ a closing Claude Code session is pushed at once.
 
 Claude's local transcript cleanup window is pinned to 30 days. Automatic pulls
 and restores leave absent sessions older than that window in the archive;
-the archive retains their contents. To bring one back, including its subagents
+the archive retains their contents until `sessionArchiveRetentionDays` prunes a
+session the session archive took (below). To bring one back, including its subagents
 and tool-result files, run `flakelab backup --fetch-session <session-uuid>`, then
 `claude --resume <session-uuid>`. Fetch requires `stateRoot` and
 `stateTranscripts`, preserves active local transcripts, and supports `--dry-run`.
@@ -570,6 +571,25 @@ move every Claude Code session onto API billing. A run stops at
 and the doctor's "Session archive" section show the last run, the backlog and
 the held and review counts; `run --dry-run` counts without a model call or a
 write.
+
+#### Transcript retention
+
+`sessionArchiveRetentionDays` (null by default, which keeps everything) ends
+each run that is not a dry run with a retention step: a session the lane
+archived whose last entry is older than that many days loses its archive copies
+and its transcript in the state root, and its card's pointer then reads
+`Archive: removed <date> after <N>-day retention`, without the `Fetch:` and
+`Local` lines. The card stays. A session is pruned only while its archive copy,
+its card and its state-root transcript still match the SHA-256 the lane
+recorded, and only once `~/.claude/projects` on the box no longer holds it:
+state-sync would push a local copy straight back, so the step waits for Claude
+Code's `cleanupPeriodDays` and counts the session as `kept` meanwhile. A
+transcript that grew is archived again first; held and review sessions and
+subagent transcripts are never touched. The journal line counts `pruned` and
+`kept`; a prune that fails ends the run `prune_error` (exit 1), which the doctor
+reports, and the next run finishes it. It needs `sessionArchiveRoot`. The
+deletion replicates: under `stateSyncthing` it reaches the hub and every other
+box, and `flakelab backup --fetch-session` can no longer bring the session back.
 
 ### Account switcher
 

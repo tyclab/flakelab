@@ -581,7 +581,7 @@ in
     sessionArchiveRoot = mkOption {
       type = types.nullOr (types.strMatching "/.*");
       default = null;
-      description = "Absolute path of the session archive: one gzipped copy per transcript version, `<root>/<project slug>/<uuid>.<sha8>.jsonl.gz`, never overwritten with different content and never deleted by the lane; each card's pointer block names its copy. Point it at storage that outlives the box and its local transcripts, such as a mounted NAS or cloud-drive folder. A `.owner` file holding this box's machine-id claims it and each library, and a run against one claimed by another box exits 1, so two boxes never write the same archive. null leaves the lane without an archive. Exported as SESSION_ARCHIVE_ROOT.";
+      description = "Absolute path of the session archive: one gzipped copy per transcript version, `<root>/<project slug>/<uuid>.<sha8>.jsonl.gz`, never overwritten with different content and deleted by the lane only under sessionArchiveRetentionDays; each card's pointer block names its copy. Point it at storage that outlives the box and its local transcripts, such as a mounted NAS or cloud-drive folder. A `.owner` file holding this box's machine-id claims it and each library, and a run against one claimed by another box exits 1, so two boxes never write the same archive. null leaves the lane without an archive. Exported as SESSION_ARCHIVE_ROOT.";
     };
 
     sessionArchiveAreas = mkOption {
@@ -648,6 +648,13 @@ in
       type = types.ints.positive;
       default = 20;
       description = "Most sessions one run takes; the rest wait for the next. `flakelab doctor` warns when more than twice this many are eligible. Exported as SESSION_ARCHIVE_RUN_SESSIONS.";
+    };
+
+    sessionArchiveRetentionDays = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      example = 90;
+      description = "Days a session is kept after its last entry once the lane has archived it. At the end of each run that is not a dry run, every session with a card whose last entry is older loses its archive copies (every version under sessionArchiveRoot) and its transcript in stateRoot, and its card's pointer reads `Archive: removed <date> after <N>-day retention` without the Fetch and Local lines; the card stays. Only a session whose archive copy, card and state-root transcript still match its recorded SHA-256 is pruned, and only once this box's ~/.claude/projects no longer holds it (Claude Code's cleanupPeriodDays removes that copy), since state-sync would push it straight back; held and review sessions, subagent transcripts and a transcript that grew are never touched. A prune that fails ends the run `prune_error` (exit 1) and is retried by the next. null keeps every transcript and archive copy. Needs sessionArchiveRoot. Exported as SESSION_ARCHIVE_RETENTION_DAYS.";
     };
 
     stateSyncthing = mkOption {

@@ -17,7 +17,7 @@ import signal
 import sqlite3
 import uuid
 
-from session_archive import archive, config, pipeline, sources, store, summarize
+from session_archive import archive, config, pipeline, retention, sources, store, summarize
 from session_archive import secrets as lane_secrets
 
 PROG = "flakelab session-archive"
@@ -150,6 +150,9 @@ def run(args: argparse.Namespace, env) -> int:
         raise Failure("a library is unreachable: the run took no session")
     if done.result == pipeline.UNAVAILABLE:
         raise Failure(f"the model API is unavailable ({done.detail}): the run stopped, holding no session")
+    if done.result == retention.ERROR:
+        raise Failure(f"retention could not prune {done.counts['prune_errors']} session(s) ({done.detail}): the next "
+                      "run retries")
     if args.session and not done.counts["eligible"]:
         print(f"session-archive: session {args.session} not taken: {done.result}", file=sys.stderr)
     return 0

@@ -112,6 +112,8 @@ def verdict(row, sha256):
         return "eligible"
     if row["status"] == "held":
         return "held" if row["holds"] >= MAX_HOLDS else "eligible"
+    if row["status"] == "pruned":
+        return "pruned"
     return "unchanged" if row["status"] == "done" else "review"
 
 

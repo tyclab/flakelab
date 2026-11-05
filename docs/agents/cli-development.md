@@ -96,7 +96,12 @@ Read for this topic; paths below are relative to the repository root unless stat
     `files/config/session-archive/`): `run` (`--session UUID`, `--dry-run`,
     `--limit N`, `--keep`), `status` (`--json`), `review`. It reads the state
     root's redacted transcripts (`FLAKELAB_STATE_ROOT`) and writes nothing
-    there, and never reads `~/.claude/projects`; its own state is
+    there; with `SESSION_ARCHIVE_RETENTION_DAYS` (`sessionArchiveRetentionDays`)
+    a run's last step deletes an archived session's state-root transcript and
+    archive copies past the period and retires its card's pointer, only after
+    checking that `~/.claude/projects` no longer holds it (the one read there),
+    counting `pruned` and `kept`, and a failed prune exits 1 as `prune_error`
+    (`lib/session_archive/retention.py`). Its own state is
     `~/.local/state/flakelab/session-archive/` (`state.sqlite3`, `review.md`,
     `work/<uuid>/`, `lock`). The key is `SESSION_ARCHIVE_ANTHROPIC_API_KEY`,
     read at use time from the first readable of `$FLAKELAB_SECRETS_ENV`, the

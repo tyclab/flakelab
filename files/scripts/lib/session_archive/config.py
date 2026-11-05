@@ -32,6 +32,8 @@ class Config:
     run_sessions: int
     state_dir: Path
     state_root: Path | None
+    retention_days: int | None
+    local_projects: Path
 
 
 def absolute(env, name):
@@ -88,7 +90,8 @@ def areas(raw):
 
 def load(env) -> Config:
     configured = areas(env.get("SESSION_ARCHIVE_AREAS", ""))
-    state_home = env.get("XDG_STATE_HOME") or str(Path(env.get("HOME") or Path.home()) / ".local/state")
+    home = Path(env.get("HOME") or Path.home())
+    state_home = env.get("XDG_STATE_HOME") or str(home / ".local/state")
     return Config(
         root=absolute(env, "SESSION_ARCHIVE_ROOT"),
         areas=configured,
@@ -100,4 +103,7 @@ def load(env) -> Config:
         run_sessions=number(env, "SESSION_ARCHIVE_RUN_SESSIONS", int, 20, 1),
         state_dir=Path(state_home) / "flakelab/session-archive",
         state_root=absolute(env, "FLAKELAB_STATE_ROOT"),
+        retention_days=number(env, "SESSION_ARCHIVE_RETENTION_DAYS", int, None, 1),
+        # This box's own transcripts, which state-sync pushes into the state root (its TX_HOME).
+        local_projects=home / ".claude/projects",
     )

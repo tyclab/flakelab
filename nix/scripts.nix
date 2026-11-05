@@ -74,6 +74,9 @@ let
         // lib.optionalAttrs (cfg.sessionArchiveRoot != null) {
           SESSION_ARCHIVE_ROOT = cfg.sessionArchiveRoot;
         }
+        // lib.optionalAttrs (cfg.sessionArchiveRetentionDays != null) {
+          SESSION_ARCHIVE_RETENTION_DAYS = toString cfg.sessionArchiveRetentionDays;
+        }
       )
   );
 in

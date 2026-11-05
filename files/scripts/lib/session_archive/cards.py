@@ -1,4 +1,5 @@
-"""Summary cards: the markdown of one session's card and its atomic write into an area's library; never deletes a card.
+"""Summary cards: the markdown of one session's card, its atomic write into an area's library, and its pointer retired
+once retention removes the files it names; never deletes a card.
 
 An item renders as `- <text> (unverified) @L<a>,@L<b>`, the note only when the citation check did not verify it, then an
 open end's `as of <date>, tracked in <ref>` line (an empty part, or a ref such as `not tracked`, left out) and one
@@ -17,7 +18,9 @@ RECIPE = "session-archive-v1"
 SECTIONS = (("why", "Why"), ("when", "When"), ("how", "How"), ("outcome", "Outcome"), ("open_ends", "Open ends"),
             ("continue", "What an agent needs to continue"))
 POINTER = "## Pointer"
+ARCHIVE, FETCH, LOCAL = "Archive: ", "Fetch: ", "Local (until cleanup): "
 EXTRACTED = "Extracted: "
+RETIRED = re.compile(r"Archive: removed [0-9]{4}-[0-9]{2}-[0-9]{2} after [0-9]+-day retention")
 NONE = "None."
 UNTRACKED = ("", "none", "not tracked", "n/a", "-")
 BLOCK = re.compile(r"[#>`~<|*+_-]|[0-9]+[.)]")
@@ -65,9 +68,26 @@ def bullet(item) -> list[str]:
 def pointer(meta) -> list[str]:
     archive = str(meta.archive_path)
     fetch = "'" + archive.replace("'", "'\\''") + "'"
-    return [f"Archive: {archive}", f"SHA-256: {meta.sha256}", f"Bytes: {meta.bytes}", f"Fetch: zcat {fetch}",
-            f"Local (until cleanup): {meta.local_path}", f"Project: {meta.slug}", f"Area: {meta.area}",
+    return [f"{ARCHIVE}{archive}", f"SHA-256: {meta.sha256}", f"Bytes: {meta.bytes}", f"{FETCH}zcat {fetch}",
+            f"{LOCAL}{meta.local_path}", f"Project: {meta.slug}", f"Area: {meta.area}",
             f"Recipe: {RECIPE}", f"Model: {meta.model_id}/{meta.effort}", f"{EXTRACTED}{meta.extracted}"]
+
+
+def retire(text, archive_path, date, days) -> tuple[str, bool] | None:
+    """(card, retired before) once retention removes its session's files: the pointer's Archive line reads `Archive:
+    removed <date> after <days>-day retention` and its Fetch and Local lines go, so it names no missing file. A card
+    retired before keeps its line; None when the pointer names another archive copy or none."""
+    head, mark, tail = text.rpartition(f"\n{POINTER}\n")
+    lines = tail.splitlines()
+    named = [line for line in lines if line.startswith(ARCHIVE)]
+    if not mark or len(named) != 1:
+        return None
+    before = RETIRED.fullmatch(named[0]) is not None
+    if not before and named[0] != f"{ARCHIVE}{archive_path}":
+        return None
+    line = named[0] if before else f"{ARCHIVE}removed {date} after {days}-day retention"
+    kept = [line if part.startswith(ARCHIVE) else part for part in lines if not part.startswith((FETCH, LOCAL))]
+    return head + mark + "\n".join(kept) + "\n", before
 
 
 def render(meta: CardMeta, summary) -> str:

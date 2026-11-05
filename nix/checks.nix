@@ -1559,6 +1559,41 @@ in
       touch $out
     '';
 
+  # sessionArchiveRetentionDays reaches the lane only when set, and never
+  # without the archive root its prunes depend on.
+  session-archive-retention =
+    let
+      inherit (nixpkgs) lib;
+      sys = self.nixosConfigurations.default;
+      ext = attrs: sys.extendModules { modules = [ { flakelab = attrs; } ]; };
+      refused =
+        s:
+        lib.any (
+          a: !a.assertion && lib.hasInfix "sessionArchiveRetentionDays" a.message
+        ) s.config.home-manager.users.${s.config.flakelab.username}.assertions;
+      wrapperOf =
+        attrs:
+        (import ./scripts.nix {
+          inherit (sys) pkgs;
+          cfg = sys.config.flakelab // attrs;
+        }).session-archive;
+      retained = {
+        sessionArchiveRetentionDays = 90;
+        sessionArchiveRoot = "/srv/archive";
+      };
+    in
+    assert !(refused sys);
+    assert refused (ext {
+      sessionArchiveRetentionDays = 90;
+    });
+    assert !(refused (ext retained));
+    pkgs.runCommandLocal "flakelab-check-session-archive-retention" { } ''
+      grep -q 'SESSION_ARCHIVE_RETENTION_DAYS=90$' ${wrapperOf retained}/bin/session-archive
+      grep -q 'export SESSION_ARCHIVE_RETENTION_DAYS$' ${wrapperOf retained}/bin/session-archive
+      ! grep -q SESSION_ARCHIVE_RETENTION_DAYS ${wrapperOf { }}/bin/session-archive
+      touch $out
+    '';
+
   # The auto-switch timer is tycswap's `tycswap auto --once` on a user timer,
   # present only when an interval is set and the binary is installed; the
   # quota hook follows the same switch. The global compinit stays off

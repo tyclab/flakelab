@@ -19,6 +19,10 @@ in
         !on || (cfg.stateRoot != null && cfg.sessionArchiveRoot != null && cfg.sessionArchiveAreas != { });
       message = "flakelab.sessionArchiveSchedule needs flakelab.stateRoot, flakelab.sessionArchiveRoot and at least one flakelab.sessionArchiveAreas entry: a run reads the transcripts under the state root, copies each into the archive root and files its card under an area.";
     }
+    {
+      assertion = cfg.sessionArchiveRetentionDays == null || cfg.sessionArchiveRoot != null;
+      message = "flakelab.sessionArchiveRetentionDays needs flakelab.sessionArchiveRoot: retention prunes only sessions whose copy the lane wrote there.";
+    }
   ];
 
   systemd.user.services = lib.mkIf on {

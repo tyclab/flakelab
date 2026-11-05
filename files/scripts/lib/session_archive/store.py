@@ -7,7 +7,12 @@ import sqlite3
 from uuid import uuid4
 
 STATUSES = ("done", "held", "review")
-SCHEMA_VERSION = 3
+# A done session whose archive copy and state-root transcript retention removed; set only by mark_pruned.
+PRUNED = "pruned"
+# Version 4 is version 3's tables plus the pruned status, which a version 3 lane would read as a review: a run marks
+# a version 3 database 4, and a read-only open takes it as it is.
+SCHEMA_VERSION = 4
+READABLE = (3, SCHEMA_VERSION)
 SCHEMA = (
     """CREATE TABLE sessions (
   uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
@@ -64,19 +69,23 @@ class Store:
         except BaseException:
             self.db.close()
             raise
-        if version != SCHEMA_VERSION:
+        if version not in (READABLE if readonly else (SCHEMA_VERSION,)):
             self.db.close()
             raise StoreError(f"the state database has schema version {version}; this lane reads version "
                              f"{SCHEMA_VERSION}: move the database aside to start a new one")
 
     def schema(self):
-        """Create the tables in an empty database; the version of any other. One write lock: a second opener waits."""
+        """Create the tables in an empty database, mark a version 3 one 4; the version of any other. One write lock: a
+        second opener waits."""
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
             if version == 0 and self.db.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
                 for statement in SCHEMA:
                     self.db.execute(statement)
+                version = SCHEMA_VERSION
+            elif version == 3:
+                self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 version = SCHEMA_VERSION
         return version
 
@@ -98,6 +107,15 @@ class Store:
 
     def session(self, uuid):
         return self.db.execute("SELECT * FROM sessions WHERE uuid = ?", (uuid,)).fetchone()
+
+    def mark_pruned(self, uuid, sha256, card_hash) -> bool:
+        """The done session at sha256 as pruned, its archive path cleared and its retired card's hash kept; False when
+        the row is not that any more."""
+        with self.db:
+            return self.db.execute(
+                "UPDATE sessions SET status = ?, reason = NULL, archive_path = NULL, card_hash = ?, updated = ? "
+                "WHERE uuid = ? AND sha256 = ? AND status = 'done'",
+                (PRUNED, card_hash, now_iso(), uuid, sha256)).rowcount == 1
 
     def start_run(self) -> str:
         started = now_iso()

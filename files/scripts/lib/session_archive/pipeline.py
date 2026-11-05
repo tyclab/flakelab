@@ -8,9 +8,10 @@ from pathlib import Path
 import re
 import shutil
 
-from session_archive import archive, cards, cite, render, sources, summarize, windows
+from session_archive import archive, cards, cite, render, retention, sources, summarize, windows
 
-COUNTS = ("scanned", "eligible", "done", "held", "review", "windows", "archived", "cards")
+COUNTS = ("scanned", "eligible", "done", "held", "review", "windows", "archived", "cards", "pruned", "kept",
+          "prune_errors")
 FORCED = ("held", "review")
 REVIEW = "review.md"
 UNCLEAR = "unclear_area"
@@ -51,7 +52,7 @@ def journal(summary) -> str:
     c = summary.counts
     return (f"session-archive: scanned={c['scanned']} eligible={c['eligible']} done={c['done']} held={c['held']} "
             f"review={c['review']} windows={c['windows']} usd={summary.usd:.2f} archived={c['archived']} "
-            f"cards={c['cards']}")
+            f"cards={c['cards']} pruned={c['pruned']} kept={c['kept']}")
 
 
 def save(work, name, value):
@@ -252,8 +253,9 @@ def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, 
 
 def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, keep=False) -> RunSummary:
     """Eligible sessions, oldest first, until run_sessions (or limit) are taken or the run cap is spent; the session in
-    flight always finishes. result: ok, capped, root_unreachable, library_unreachable, model_unavailable, or for
-    --session missing or the reason it was not taken."""
+    flight always finishes. Then, with a retention period and a reachable archive, the retention step, whose error turns
+    an ok or capped result into prune_error. result: ok, capped, root_unreachable, library_unreachable,
+    model_unavailable, prune_error, or for --session missing or the reason it was not taken."""
     summarize.rates(cfg.model)  # an unpriced model is a config error, before any call
     found = sources.scan(cfg, store, now)
     counts = dict.fromkeys(COUNTS, 0) | {"scanned": len(found),
@@ -274,6 +276,10 @@ def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, kee
     run_id, result, detail = store.start_run(), "error", None
     try:
         result, detail = take(cfg, store, transport, queue, run_id, counts, keep, now)
+        if cfg.retention_days is not None and result not in (ROOT_UNREACHABLE, LIBRARY_UNREACHABLE):
+            errors = retention.prune(cfg, store, now, counts)
+            if errors and result in ("ok", "capped"):
+                result, detail = retention.ERROR, errors[0]
     finally:
         # A --session run sees one session, not the backlog: it records no eligible count, so status keeps the last
         # full run's.

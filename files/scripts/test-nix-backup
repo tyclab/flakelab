@@ -3519,9 +3519,10 @@ absent "and so is the second" \
   "${SLUG_STATE}/sess/subagents/agent-9x.jsonl_OTHERBOX_Jan-09-003137-2026_Conflict"
 
 # Both legs compared line counts by reading every transcript on both sides,
-# every run: the whole corpus over the mount twice per half hour, growing with
-# a retention that is unlimited by ruling. A transcript is append-only, so an
-# unchanged size, mtime and inode is an unchanged line count.
+# every run: the whole corpus over the mount twice per half hour, growing until
+# sessionArchiveRetentionDays prunes what the session archive took (null keeps
+# all). A transcript is append-only, so an unchanged size, mtime and inode is an
+# unchanged line count.
 print -r -- "an unchanged transcript is not read again to count its lines"
 transcript_fixture transcript-lines-cached
 for n in {1..6}; do
@@ -3555,6 +3556,32 @@ print -r -- '{"n":3}' >> "${SLUG_STATE}/quiet-5.jsonl"
 run_backup --state-only --force
 check "and one that grew on the other box is still pulled" "$(wc -l < "${SLUG_HOME}/quiet-5.jsonl")" "3"
 rm -f "${BASE}/bin/wc" "${BASE}/wc.log"
+
+# The session archive's retention deletes a state-root transcript it archived.
+# What state-sync then does is what it relies on: with no local copy the file
+# stays gone and nothing complains; a local copy is pushed straight back, which
+# is why retention waits for Claude Code's cleanup to remove it first.
+print -r -- "a transcript pruned from the state root stays gone unless this box still holds it"
+transcript_fixture pruned-transcripts
+mkdir -p "${SLUG_STATE}"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' } > "${SLUG_HOME}/kept.jsonl"
+cp "${SLUG_HOME}/kept.jsonl" "${SLUG_STATE}/kept.jsonl"
+touch -d '1 hour ago' "${SLUG_HOME}/kept.jsonl"
+{ print -r -- '{"n":1}'; print -r -- '{"n":2}' } > "${SLUG_STATE}/gone.jsonl"
+rec 1000 0 "typed-here" > "${FIX_HOME}/.zsh_history"
+LINES_INDEX="${FIX_HOME}/.local/state/flakelab/state-sync/transcript-lines"
+run_backup --state-only --force
+check    "the first run exits clean"               "${RC}" "0"
+contains "and counts the copies it compares"       "$(< "${LINES_INDEX}")" "${SLUG_STATE}/gone.jsonl"
+rm -f "${SLUG_HOME}/gone.jsonl"                     # Claude Code's cleanup
+rm -f "${SLUG_STATE}/gone.jsonl" "${SLUG_STATE}/kept.jsonl"  # the retention prune
+run_backup --state-only --force
+check    "the run after the prune exits clean"     "${RC}" "0"
+excludes "and reports no failure"                  "${OUT}" "Could not"
+absent   "the pruned transcript is not recreated"  "${SLUG_STATE}/gone.jsonl"
+absent   "nor pulled back here"                    "${SLUG_HOME}/gone.jsonl"
+is_file  "one this box still holds is pushed back" "${SLUG_STATE}/kept.jsonl"
+excludes "the line index forgets the pruned copy"  "$(< "${LINES_INDEX}")" "gone.jsonl"
 
 print -r -- "a longer copy that forks a quiet local transcript parks the local branch first"
 transcript_fixture diverged-pull

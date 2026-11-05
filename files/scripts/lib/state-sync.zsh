@@ -731,7 +731,8 @@ SYNC_TRANSCRIPT_WROTE=false
 # Line counts, remembered across runs. Both legs decide by comparing the line
 # counts of the two copies, and counting is reading: every transcript on both
 # sides, every run — the whole corpus over the mount twice per half hour,
-# growing with a retention that is unlimited by ruling. A transcript is
+# growing until sessionArchiveRetentionDays (null, the default, keeps all)
+# prunes the parent transcripts the session archive took. A transcript is
 # append-only and every placement is a rename, so an unchanged size, mtime and
 # inode is an unchanged count. Only the two trees both legs walk are
 # remembered; a staged candidate has a throwaway path. Local and per-box, like
