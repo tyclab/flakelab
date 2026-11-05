@@ -900,7 +900,7 @@ None.
 ## Open ends
 
 - Shelf 9 gaps stay open. @L38
-  as of 2026-01-10, tracked in not tracked
+  as of 2026-01-10
   > "fill the gaps from shelf 9 first"
 
 ## What an agent needs to continue
@@ -1025,6 +1025,18 @@ class CardTest(unittest.TestCase):
         gap = item("Gaps stay open.", [38], as_of="2026-01-10", tracked_in="plan file", verified=False)
         card = cards.render(CARD_META, summary_of(open_ends=[gap]))
         self.assertIn("\n- Gaps stay open. (unverified) @L38\n  as of 2026-01-10, tracked in plan file\n\n", card)
+
+    def test_card_open_end_omits_empty_tracking(self):
+        cases = [(" 2026-01-10 ", " MR !12 ", "  as of 2026-01-10, tracked in MR !12\n")]
+        cases += [("2026-01-10", ref, "  as of 2026-01-10\n")
+                  for ref in ("", "  ", "None", "NOT TRACKED", " n/a ", "-", "Not\ntracked")]
+        cases += [(" ", "issue #4", "  tracked in issue #4\n"), ("", "not tracked", ""), ("", "", "")]
+        for as_of, tracked_in, detail in cases:
+            with self.subTest(as_of=as_of, tracked_in=tracked_in):
+                gap = item("Gaps stay open.", [38], "3 gaps on shelf 4", as_of=as_of, tracked_in=tracked_in,
+                           verified=True)
+                card = cards.render(CARD_META, summary_of(open_ends=[gap]))
+                self.assertIn(f'\n- Gaps stay open. @L38\n{detail}  > "3 gaps on shelf 4"\n\n', card)
 
     def files(self):
         return sorted(path.name for path in self.library.iterdir())

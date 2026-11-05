@@ -1,7 +1,8 @@
 """Summary cards: the markdown of one session's card and its atomic write into an area's library; never deletes a card.
 
 An item renders as `- <text> (unverified) @L<a>,@L<b>`, the note only when the citation check did not verify it, then an
-open end's `as of <date>, tracked in <ref>` line and one `> "<quote>"` line per quote line, indented under the bullet.
+open end's `as of <date>, tracked in <ref>` line (an empty part, or a ref such as `not tracked`, left out) and one
+`> "<quote>"` line per quote line, indented under the bullet.
 """
 
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ SECTIONS = (("why", "Why"), ("when", "When"), ("how", "How"), ("outcome", "Outco
 POINTER = "## Pointer"
 EXTRACTED = "Extracted: "
 NONE = "None."
+UNTRACKED = ("", "none", "not tracked", "n/a", "-")
 
 
 @dataclass(frozen=True)
@@ -41,7 +43,10 @@ def bullet(item) -> list[str]:
     head = [one_line(item["text"]), "" if item.get("verified") else "(unverified)", anchors]
     lines = ["- " + " ".join(part for part in head if part)]
     if "as_of" in item:
-        lines.append(f"  as of {one_line(item['as_of'])}, tracked in {one_line(item['tracked_in'])}")
+        as_of, ref = one_line(item["as_of"]), one_line(item["tracked_in"])
+        detail = [f"as of {as_of}" if as_of else "", "" if ref.lower() in UNTRACKED else f"tracked in {ref}"]
+        if any(detail):
+            lines.append("  " + ", ".join(part for part in detail if part))
     for quote in item["quotes"]:
         lines.extend(f"  > {part}" for part in f'"{quote}"'.splitlines())
     return lines
