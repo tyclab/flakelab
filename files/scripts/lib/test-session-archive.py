@@ -1403,6 +1403,8 @@ class PipelineTest(Lane):
         self.assertEqual((tree(self.tmp / "state"), names(self.root), names(self.library)), before)
         self.assertEqual([self.count(table) for table in ("sessions", "runs", "ledger")], [0, 0, 0])
         self.assertEqual(names(self.cfg.state_dir), ["lock", "state.sqlite3"])
+        rc, out, err = call("status", "--json", env=self.env)
+        self.assertEqual((rc, err, [json.loads(out)[name] for name in ("last_run", "eligible")]), (0, "", [None, None]))
         rc, out, err = call("run", env={**self.env, "SESSION_ARCHIVE_ROOT": ""})
         self.assertEqual((rc, out), (1, ""))
         self.assertIn("SESSION_ARCHIVE_ROOT is not set", err)
@@ -1465,22 +1467,27 @@ class CliRunTest(Lane):
         self.assertEqual((self.count("runs"), self.count("sessions"), names(self.root)), (0, 0, []))
         self.assertEqual(call("run", "--dry-run", env=self.env), (0, journal(windows=1) + "\n", ""))
 
-    def status(self, **changes):
-        rc, out, err = call("status", "--json", env={**self.env, **changes})
+    def status(self, human=False, **changes):
+        """status --json (or its lines) without a scan: eligible is the last run's count, the state root unread."""
+        with mock.patch.object(sources, "scan", side_effect=AssertionError("status scanned the state root")):
+            rc, out, err = call("status", *([] if human else ["--json"]), env={**self.env, **changes})
         self.assertEqual((rc, err), (0, ""))
+        if human:
+            return out
         report = json.loads(out)
         self.assertEqual(set(report), STATUS_FIELDS)
         return report
 
     def test_status_json_fields(self):
-        self.assertEqual(self.status(), {"last_run": None, "last_result": None, "eligible": 0, "held": 0, "review": 0,
-                                         "last_run_usd": 0.0, "run_sessions": 20, "root_ok": True, "owner_ok": None})
+        self.assertEqual(self.status(), {"last_run": None, "last_result": None, "eligible": None, "held": 0,
+                                         "review": 0, "last_run_usd": 0.0, "run_sessions": 20, "root_ok": True,
+                                         "owner_ok": None})
         self.assertEqual((self.status(SESSION_ARCHIVE_ROOT="")["root_ok"],
                           self.status(SESSION_ARCHIVE_ROOT=str(self.tmp / "absent"))["root_ok"]), (None, False))
         self.fixture()
         self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
         self.transcript(spoken(OLD + timedelta(days=2)), uuid=THIRD_UUID)
-        self.assertEqual(self.status()["eligible"], 3)
+        self.assertIsNone(self.status()["eligible"])
         failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
         self.lane(FIXTURE_RESPONSES + [{**SPOKEN_SUMMARY, "area": "unclear"}, failed])
         archive.check_owner(self.root, "box-a")
@@ -1488,16 +1495,18 @@ class CliRunTest(Lane):
         self.assertEqual(datetime.fromisoformat(report["last_run"]).tzinfo, UTC)
         self.assertAlmostEqual(report.pop("last_run_usd"), 5 * PER_CALL)
         self.assertEqual({**report, "last_run": None}, {
-            "last_run": None, "last_result": "ok", "eligible": 1, "held": 1, "review": 1, "run_sessions": 7,
+            "last_run": None, "last_result": "ok", "eligible": 3, "held": 1, "review": 1, "run_sessions": 7,
             "root_ok": True, "owner_ok": True})
         (self.library / ".owner").write_text("box-b\n")
         self.assertIs(self.status()["owner_ok"], False)
-        rc, out, err = call("status", env=self.env)
-        self.assertEqual((rc, err), (0, ""))
+        out = self.status(human=True)
+        self.assertIn("\neligible at the last run: 3 (20 per run)\n", out)
         self.assertIn(f"{THIRD_UUID} model_error", out)
         self.assertNotIn(str(self.tmp), out)
-        rc, out, err = call("status", "--json", env={**self.env, "FLAKELAB_STATE_ROOT": ""})
-        self.assertEqual((rc, out, err), (1, "", "session-archive: FLAKELAB_STATE_ROOT is not set\n"))
+        self.assertEqual(self.status(FLAKELAB_STATE_ROOT="")["eligible"], 3)
+        self.store.start_run()
+        self.assertEqual([self.status()[name] for name in ("last_result", "eligible")], [None, None])
+        self.assertIn("\neligible at the last run: not counted yet (20 per run)\n", self.status(human=True))
 
 
 if __name__ == "__main__":
