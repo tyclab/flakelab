@@ -114,7 +114,7 @@ def run(args: argparse.Namespace, env) -> int:
     if done.result == pipeline.ROOT_UNREACHABLE:
         raise Failure("the archive root is unreachable: the run took no session")
     if done.result == pipeline.UNAVAILABLE:
-        raise Failure(f"the model API is unavailable ({done.detail}): the run stopped after holding one session")
+        raise Failure(f"the model API is unavailable ({done.detail}): the run stopped, holding no session")
     if args.session and not done.counts["eligible"]:
         print(f"session-archive: session {args.session} not taken: {done.result}", file=sys.stderr)
     return 0

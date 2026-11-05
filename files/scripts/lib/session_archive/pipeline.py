@@ -103,10 +103,10 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
         models.append(done.model_id)
         budget.charge(c.uuid, done.model_id, done.usage, done.usd)
 
-    def hold(reason, copied=None, created=False, detail=None):
+    def hold(reason, copied=None, created=False):
         # A hold keeps the last card's area, card hash and archive path in the store, and the work directory.
         store.record_session(c.uuid, c.slug, c.sha256, "held", reason, **stat)
-        return Outcome("held", reason, sum(spent), None, copied, len(parts), archive_created=created, detail=detail)
+        return Outcome("held", reason, sum(spent), None, copied, len(parts), archive_created=created)
 
     def finished(outcome):
         if not keep:
@@ -124,7 +124,8 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
         raise
     except summarize.SummarizeError as error:
         if UNAVAILABLE_ERROR.fullmatch(error.detail):
-            return hold(UNAVAILABLE, detail=error.detail)
+            # The transport failed, not the session: no hold, its row and its earlier card stay as they were.
+            return finished(Outcome("skipped", UNAVAILABLE, sum(spent), None, None, len(parts), detail=error.detail))
         return hold(error.reason)
     except Exception:
         return hold("model_error")
@@ -174,7 +175,7 @@ def tally(counts, outcome):
 
 def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, str | None]:
     """(result, detail) of the queue's sessions. A box-level failure is the run's, not a session's: an unreachable
-    root takes none, a model API that is unavailable stops after the one in flight."""
+    root takes none, a model API that is unavailable stops the run at the session in flight, which is not held."""
     if cfg.root is None or not Path(cfg.root).is_dir():
         return ROOT_UNREACHABLE, None
     budget = summarize.Budget(store, run_id, cfg.run_cap_usd)

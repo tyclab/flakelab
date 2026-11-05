@@ -1521,21 +1521,22 @@ class CliRunTest(Lane):
     def test_run_stops_queue_on_transport_failure(self):
         self.transcript(spoken())
         self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
-        stopped = journal(scanned=2, eligible=2, held=1, windows=1)
-        for holds, error in ((1, "http 401"), (2, "network TimeoutError")):
+        # The outage is the transport's: no session is held, the one in flight is left as it was, work/ and all.
+        stopped = journal(scanned=2, eligible=2, windows=1)
+        for error in ("http 401", "network TimeoutError"):
             done, stub = self.lane([failed(error), SPOKEN_SUMMARY])
             self.assertEqual((pipeline.journal(done), done.result, len(stub.calls)), (stopped, "model_unavailable", 1))
-            row = self.store.session(UUID)
-            self.assertEqual((row["status"], row["reason"], row["holds"]), ("held", "model_unavailable", holds))
-            self.assertIsNone(self.store.session(OTHER_UUID))
+            self.assertEqual((self.store.session(UUID), self.store.session(OTHER_UUID), self.store.held()),
+                             (None, None, []))
+            self.assertFalse((self.work / UUID).exists())
         with mock.patch("urllib.request.urlopen", side_effect=http_error(403)):
             self.assertEqual(call("run", env=self.env), (1, stopped + "\n", "session-archive: the model API is "
-                                                         "unavailable (http 403): the run stopped after holding one "
+                                                         "unavailable (http 403): the run stopped, holding no "
                                                          "session\n"))
-        self.assertEqual((self.store.session(UUID)["holds"], self.store.session(OTHER_UUID),
-                          self.store.last_run()["result"]), (3, None, "model_unavailable"))
-        done, _ = self.lane([SPOKEN_SUMMARY])
-        self.assertEqual((done.result, self.store.session(OTHER_UUID)["status"]), ("ok", "done"))
+        self.assertEqual((self.store.session(UUID), self.store.session(OTHER_UUID), self.store.last_run()["result"]),
+                         (None, None, "model_unavailable"))
+        done, _ = self.lane([SPOKEN_SUMMARY] * 2)
+        self.assertEqual((done.result, done.counts["done"], self.store.session(UUID)["holds"]), ("ok", 2, 0))
 
     def test_status_creates_nothing(self):
         fresh = str(self.tmp / "fresh")
