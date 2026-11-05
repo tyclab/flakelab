@@ -48,13 +48,17 @@ def now_iso():
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, readonly=False):
+        """readonly opens an existing database and never creates or writes anything (status, review)."""
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path)
+        if readonly:
+            self.db = sqlite3.connect(f"{self.path.absolute().as_uri()}?mode=ro", uri=True)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         try:
-            version = self.schema()
+            version = self.db.execute("PRAGMA user_version").fetchone()[0] if readonly else self.schema()
         except BaseException:
             self.db.close()
             raise

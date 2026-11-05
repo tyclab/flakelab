@@ -45,7 +45,7 @@ class SummarizeError(RuntimeError):
 
     def __init__(self, reason, detail):
         super().__init__(f"{reason}: {detail}")
-        self.reason = reason
+        self.reason, self.detail = reason, detail
 
 
 @dataclass(frozen=True)

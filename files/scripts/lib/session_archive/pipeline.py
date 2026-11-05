@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 import shutil
 
 from session_archive import archive, cards, cite, render, sources, summarize, windows
@@ -13,6 +14,14 @@ COUNTS = ("scanned", "eligible", "done", "held", "review", "windows", "archived"
 FORCED = ("held", "review")
 REVIEW = "review.md"
 UNCLEAR = "unclear_area"
+ROOT_UNREACHABLE = "root_unreachable"
+UNAVAILABLE = "model_unavailable"
+# Failures every later call would meet too: the key, the model id, the service or the network, after the retries.
+UNAVAILABLE_ERROR = re.compile(r"http (?:401|403|404|429|5[0-9]{2})|network \w+")
+
+
+class WorkError(RuntimeError):
+    """A work/ file could not be written; it holds the session."""
 
 
 @dataclass(frozen=True)
@@ -24,6 +33,8 @@ class Outcome:
     archive_path: Path | None
     windows: int = 0
     card_written: bool = False
+    archive_created: bool = False
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,7 @@ class RunSummary:
     counts: dict
     usd: float
     result: str
+    detail: str | None = None
 
 
 def journal(summary) -> str:
@@ -41,7 +53,24 @@ def journal(summary) -> str:
 
 
 def save(work, name, value):
-    (work / name).write_text(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=1))
+    """A work file in UTF-8 whatever the locale; a failure is a WorkError naming no path."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=1)
+    try:
+        (work / name).write_text(text, encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise WorkError(type(error).__name__) from None
+
+
+def prepare(work, rendered, parts):
+    """work/<uuid>/ afresh, with the rendered text and each window."""
+    shutil.rmtree(work, ignore_errors=True)
+    try:
+        work.mkdir(parents=True, mode=0o700, exist_ok=True)
+    except OSError as error:
+        raise WorkError(type(error).__name__) from None
+    save(work, "rendered.txt", rendered.text)
+    for number, part in enumerate(parts, 1):
+        save(work, f"w{number}.txt", part.text)
 
 
 def summarized(transport, cfg, parts, work, charge) -> dict:
@@ -74,10 +103,10 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
         models.append(done.model_id)
         budget.charge(c.uuid, done.model_id, done.usage, done.usd)
 
-    def hold(reason, copied=None):
+    def hold(reason, copied=None, created=False, detail=None):
         # A hold keeps the last card's area, card hash and archive path in the store, and the work directory.
         store.record_session(c.uuid, c.slug, c.sha256, "held", reason, **stat)
-        return Outcome("held", reason, sum(spent), None, copied, len(parts))
+        return Outcome("held", reason, sum(spent), None, copied, len(parts), archive_created=created, detail=detail)
 
     def finished(outcome):
         if not keep:
@@ -86,28 +115,28 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
 
     if not parts:
         return hold("unreadable")
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True, mode=0o700, exist_ok=True)
-    save(work, "rendered.txt", rendered.text)
-    for number, part in enumerate(parts, 1):
-        save(work, f"w{number}.txt", part.text)
     try:
+        prepare(work, rendered, parts)
         merged = summarized(transport, cfg, parts, work, charge)
+    except WorkError:
+        return hold("work_error")
     except (summarize.UnknownModel, OSError):
         raise
     except summarize.SummarizeError as error:
+        if UNAVAILABLE_ERROR.fullmatch(error.detail):
+            return hold(UNAVAILABLE, detail=error.detail)
         return hold(error.reason)
     except Exception:
         return hold("model_error")
     summary = cite.check(merged, rendered)
     area = cfg.areas.get(summary["area"])
     if area is None:
-        with (cfg.state_dir / REVIEW).open("a") as entries:
+        with (cfg.state_dir / REVIEW).open("a", encoding="utf-8") as entries:
             entries.write(f"- {now.date().isoformat()} {c.uuid} {UNCLEAR}\n")
         store.record_session(c.uuid, c.slug, c.sha256, "review", UNCLEAR, **stat)
         return finished(Outcome("review", UNCLEAR, sum(spent), None, None, len(parts)))
     try:
-        copied = archive.copy(cfg.root, c.slug, c.uuid, c.path, c.sha256)
+        copied, created = archive.copy(cfg.root, c.slug, c.uuid, c.path, c.sha256)
     except archive.ArchiveError:
         return hold("archive_error")
     meta = cards.CardMeta(c.uuid, c.slug, area.name, copied, c.sha256, c.size, c.path, models[-1], cfg.effort,
@@ -115,12 +144,12 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
     try:
         card, card_hash, written = cards.write(area.library, c.uuid, cards.render(meta, summary))
     except FileNotFoundError:
-        return hold("library_missing", copied)
-    except OSError:
-        return hold("card_error", copied)
+        return hold("library_missing", copied, created)
+    except (OSError, UnicodeError):
+        return hold("card_error", copied, created)
     store.record_session(c.uuid, c.slug, c.sha256, "done", area=area.name, card_hash=card_hash,
                          archive_path=str(copied), **stat)
-    return finished(Outcome("done", None, sum(spent), card, copied, len(parts), written))
+    return finished(Outcome("done", None, sum(spent), card, copied, len(parts), written, created))
 
 
 def forced(store, candidate):
@@ -139,13 +168,30 @@ def forced(store, candidate):
 def tally(counts, outcome):
     counts[outcome.status] = counts.get(outcome.status, 0) + 1
     counts["windows"] += outcome.windows
-    counts["archived"] += outcome.archive_path is not None
+    counts["archived"] += outcome.archive_created
     counts["cards"] += outcome.card_written
+
+
+def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, str | None]:
+    """(result, detail) of the queue's sessions. A box-level failure is the run's, not a session's: an unreachable
+    root takes none, a model API that is unavailable stops after the one in flight."""
+    if cfg.root is None or not Path(cfg.root).is_dir():
+        return ROOT_UNREACHABLE, None
+    budget = summarize.Budget(store, run_id, cfg.run_cap_usd)
+    for c in queue:
+        if not budget.allow():
+            return "capped", None
+        outcome = run_session(cfg, store, transport, c, run_id, keep=keep, now=now)
+        tally(counts, outcome)
+        if outcome.reason == UNAVAILABLE:
+            return UNAVAILABLE, outcome.detail
+    return "ok", None
 
 
 def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, keep=False) -> RunSummary:
     """Eligible sessions, oldest first, until run_sessions (or limit) are taken or the run cap is spent; the session in
-    flight always finishes. result: ok, capped, or for --session missing or the reason it was not taken."""
+    flight always finishes. result: ok, capped, root_unreachable, model_unavailable, or for --session missing or the
+    reason it was not taken."""
     summarize.rates(cfg.model)  # an unpriced model is a config error, before any call
     found = sources.scan(cfg, store, now)
     counts = dict.fromkeys(COUNTS, 0) | {"scanned": len(found),
@@ -163,18 +209,11 @@ def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, kee
         for c in queue:
             tally(counts, run_session(cfg, store, transport, c, None, dry_run=True))
         return RunSummary(counts, 0.0, "dry_run")
-    run_id, result = store.start_run(), "error"
-    budget = summarize.Budget(store, run_id, cfg.run_cap_usd)
+    run_id, result, detail = store.start_run(), "error", None
     try:
-        for c in queue:
-            if not budget.allow():
-                result = "capped"
-                break
-            tally(counts, run_session(cfg, store, transport, c, run_id, keep=keep, now=now))
-        else:
-            result = "ok"
+        result, detail = take(cfg, store, transport, queue, run_id, counts, keep, now)
     finally:
         # A --session run sees one session, not the backlog: it records no eligible count, so status keeps the last
         # full run's.
         store.finish_run(run_id, result, counts if session is None else {**counts, "eligible": None})
-    return RunSummary(counts, store.run_usd(run_id), result)
+    return RunSummary(counts, store.run_usd(run_id), result, detail)

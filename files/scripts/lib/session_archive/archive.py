@@ -75,9 +75,9 @@ def pack(src, temp) -> str:
     return digest.hexdigest()
 
 
-def copy(root, slug, uuid, src, sha256) -> Path:
-    """The archive copy of src, whose SHA-256 the scan took: the existing file when it holds those bytes, else a new one
-    written under a temp name and renamed into place."""
+def copy(root, slug, uuid, src, sha256) -> tuple[Path, bool]:
+    """(path, created) of src's archive copy, whose SHA-256 the scan took: the existing file when it holds those bytes,
+    else a new one written under a temp name and renamed into place."""
     if root is None:
         raise ArchiveError("no archive root is configured (SESSION_ARCHIVE_ROOT)")
     if not Path(root).is_dir():
@@ -90,7 +90,7 @@ def copy(root, slug, uuid, src, sha256) -> Path:
         if target.exists():
             if unpacked_sha(target) != sha256:
                 raise ArchiveError("an archive copy of other content holds this copy's name")
-            return target
+            return target, False
         if pack(src, temp) != sha256:
             raise ArchiveError("the transcript changed after the scan")
         os.replace(temp, target)
@@ -106,4 +106,4 @@ def copy(root, slug, uuid, src, sha256) -> Path:
         # Only this call's own temp file, left behind when the write or the rename failed.
         with contextlib.suppress(OSError):
             temp.unlink()
-    return target
+    return target, True

@@ -67,6 +67,12 @@ def opened(cfg):
     return contextlib.closing(store.Store(cfg.state_dir / STATE_DB))
 
 
+def reader(cfg):
+    """The state database read-only, or None before a run has made it: status and review create nothing."""
+    path = cfg.state_dir / STATE_DB
+    return contextlib.closing(store.Store(path, readonly=True)) if path.is_file() else contextlib.nullcontext()
+
+
 def folders(cfg) -> list:
     """The archive root and every library, each once."""
     return list(dict.fromkeys([*([cfg.root] if cfg.root else []), *(area.library for area in cfg.areas.values())]))
@@ -105,6 +111,10 @@ def run(args: argparse.Namespace, env) -> int:
     if done.result == "missing":
         raise Failure(f"session {args.session} is not under the configured projects")
     print(pipeline.journal(done))
+    if done.result == pipeline.ROOT_UNREACHABLE:
+        raise Failure("the archive root is unreachable: the run took no session")
+    if done.result == pipeline.UNAVAILABLE:
+        raise Failure(f"the model API is unavailable ({done.detail}): the run stopped after holding one session")
     if args.session and not done.counts["eligible"]:
         print(f"session-archive: session {args.session} not taken: {done.result}", file=sys.stderr)
     return 0
@@ -115,9 +125,11 @@ def status(args: argparse.Namespace, env) -> int:
     counted, None until one has finished."""
     cfg = config.load(env)
     machine_id = archive.machine_id(env)
-    with opened(cfg) as db:
-        last, held, review, eligible = db.last_run(), db.held(), db.review(), db.last_count("eligible")
-        usd = db.run_usd(last["run_id"]) if last else 0.0
+    last, held, review, eligible, usd = None, [], [], None, 0.0
+    with reader(cfg) as db:
+        if db is not None:
+            last, held, review, eligible = db.last_run(), db.held(), db.review(), db.last_count("eligible")
+            usd = db.run_usd(last["run_id"]) if last else 0.0
     marks = [mark for mark in map(archive.owner, folders(cfg)) if mark is not None]
     report = {
         "last_run": last["started"] if last else None, "last_result": last["result"] if last else None,
@@ -141,15 +153,16 @@ def status(args: argparse.Namespace, env) -> int:
 
 
 def review(args: argparse.Namespace, env) -> int:
+    """One line per session waiting for review: the last review.md has for it, else one from its state row."""
     cfg = config.load(env)
-    with opened(cfg) as db:
-        waiting = {row["uuid"] for row in db.review()}
+    with reader(cfg) as db:
+        waiting = db.review() if db is not None else []
     try:
-        entries = (cfg.state_dir / pipeline.REVIEW).read_text().splitlines()
+        entries = (cfg.state_dir / pipeline.REVIEW).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         entries = []
-    shown = [line for line in entries
-             if (named := sources.UUID_IN_NAME.search(line)) is not None and named.group() in waiting]
+    latest = {named.group(): line for line in entries if (named := sources.UUID_IN_NAME.search(line)) is not None}
+    shown = [latest.get(row["uuid"]) or f"- {row['updated'][:10]} {row['uuid']} {row['reason']}" for row in waiting]
     print("\n".join(shown) if shown else "no session waits for review")
     return 0
 

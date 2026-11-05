@@ -1184,7 +1184,7 @@ else
     log_ok "${saEligible} eligible (${saPerRun} per run), none held, none waiting for review"
   fi
   if [[ "${saRootOk}" == false ]]; then
-    log_warn "the archive root (flakelab.sessionArchiveRoot) is unreachable: a run holds every session it takes"
+    log_warn "the archive root (flakelab.sessionArchiveRoot) is unreachable: a run takes no session until it is back"
   fi
   if [[ "${saOwnerOk}" == false ]]; then
     log_warn "the archive root or a library is claimed by another box (.owner): a run exits 1"

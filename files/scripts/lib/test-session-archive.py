@@ -16,6 +16,7 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -24,7 +25,8 @@ import urllib.error
 from session_archive import archive, cards, cite, cli, config, pipeline, render, sources, store, summarize, windows
 from session_archive import secrets as lane_secrets
 
-SHIM = Path(__file__).resolve().parent.parent / "session-archive"
+LIB = Path(__file__).resolve().parent
+SHIM = LIB.parent / "session-archive"
 FIXTURE = Path(__file__).resolve().parent / "fixtures/session-archive/session-a.jsonl"
 UUID = "0f9b6c2e-3a41-4d7e-9c55-1b2a3c4d5e6f"
 OTHER_UUID = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
@@ -1200,6 +1202,11 @@ def names(folder):
     return sorted(path.name for path in folder.iterdir())
 
 
+def failed(error):
+    """A completion that gave no summary, as ApiTransport returns it for error."""
+    return summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, error)
+
+
 def tree(top):
     """Every file under top with the SHA-256 and mtime of its bytes."""
     return {str(p.relative_to(top)): (sha256(p), p.stat().st_mtime_ns) for p in sorted(top.rglob("*")) if p.is_file()}
@@ -1332,8 +1339,8 @@ class PipelineTest(Lane):
     def test_run_holds_session_on_model_error(self):
         self.transcript(spoken())
         self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
-        failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
-        done, _ = self.lane([failed, SPOKEN_SUMMARY])
+        # A request only this session makes fail (http 400) holds it, and the run goes on.
+        done, _ = self.lane([failed("http 400"), SPOKEN_SUMMARY])
         self.assertEqual(pipeline.journal(done),
                          journal(scanned=2, eligible=2, done=1, held=1, windows=2, archived=1, cards=1))
         row = self.store.session(UUID)
@@ -1355,37 +1362,48 @@ class PipelineTest(Lane):
         self.assertTrue(self.card().exists())
         self.assertFalse((self.work / UUID).exists())
 
-    def test_run_holds_session_when_archive_root_missing(self):
+    def test_run_holds_session_when_archive_copy_fails(self):
         path = self.transcript(spoken())
-        absent = self.tmp / "absent"
-        done, stub = self.lane([SPOKEN_SUMMARY], cfg=config.load({**self.env, "SESSION_ARCHIVE_ROOT": str(absent)}))
+        taken = self.copy_of(path)
+        taken.parent.mkdir()
+        taken.write_bytes(gzip.compress(b"another transcript\n"))
+        done, stub = self.lane([SPOKEN_SUMMARY])
         self.assertEqual(pipeline.journal(done), journal(held=1, windows=1))
         self.assertEqual((len(stub.calls), self.store.session(UUID)["reason"]), (1, "archive_error"))
         self.assertAlmostEqual(done.usd, PER_CALL)
-        self.assertEqual((absent.exists(), names(self.library)), (False, []))
+        self.assertEqual((gzip.decompress(taken.read_bytes()), names(self.library)), (b"another transcript\n", []))
         self.assertEqual(names(self.work / UUID), ["rendered.txt", "summary.json", "w1.json", "w1.txt"])
+        taken.unlink()
         shutil.rmtree(self.library)
-        done, _ = self.lane([SPOKEN_SUMMARY])
-        self.assertEqual(pipeline.journal(done), journal(held=1, windows=1, archived=1))
-        row = self.store.session(UUID)
-        self.assertEqual((row["status"], row["reason"], row["holds"], row["archive_path"]),
-                         ("held", "library_missing", 2, None))
-        self.assertEqual((names(self.root / SLUG), self.library.exists()), ([self.copy_of(path).name], False))
+        for holds, archived in ((2, 1), (3, 0)):
+            done, _ = self.lane([SPOKEN_SUMMARY])
+            self.assertEqual(pipeline.journal(done), journal(held=1, windows=1, archived=archived))
+            row = self.store.session(UUID)
+            self.assertEqual((row["status"], row["reason"], row["holds"], row["archive_path"]),
+                             ("held", "library_missing", holds, None))
+        self.assertEqual((names(self.root / SLUG), self.library.exists()), ([taken.name], False))
 
     def test_run_routes_unclear_area_to_review(self):
         self.transcript(spoken())
+        self.cfg.state_dir.joinpath("review.md").write_text(f"- 2026-01-02 {UUID} unclear_area\n")
         done, _ = self.lane([{**SPOKEN_SUMMARY, "area": "unclear"}])
         self.assertEqual(pipeline.journal(done), journal(review=1, windows=1))
         row = self.store.session(UUID)
         self.assertEqual((row["status"], row["reason"], row["area"], row["card_hash"], row["archive_path"]),
                          ("review", "unclear_area", None, None, None))
         entry = f"- 2026-01-20 {UUID} unclear_area\n"
-        self.assertEqual((self.cfg.state_dir / "review.md").read_text(), entry)
+        self.assertEqual((self.cfg.state_dir / "review.md").read_text(), f"- 2026-01-02 {UUID} unclear_area\n{entry}")
         self.assertEqual((names(self.root), names(self.library), names(self.work)), ([], [], []))
         self.assertEqual(self.lane([])[0].counts["eligible"], 0)
         self.assertEqual(call("review", env=self.env), (0, entry, ""))
+        # One line per waiting session, the last review.md has for it; a row review.md lacks still shows.
+        self.record(self.transcript(spoken(), uuid=OTHER_UUID), "review", reason="unclear_area")
+        since = self.store.session(OTHER_UUID)["updated"][:10]
+        self.assertEqual(call("review", env=self.env), (0, f"{entry}- {since} {OTHER_UUID} unclear_area\n", ""))
         done, _ = self.lane([SPOKEN_SUMMARY], session=UUID)
         self.assertEqual((done.counts["done"], self.store.session(UUID)["status"]), (1, "done"))
+        self.assertEqual(call("review", env=self.env), (0, f"- {since} {OTHER_UUID} unclear_area\n", ""))
+        self.store.record_session(OTHER_UUID, SLUG, "a" * 64, "done", size=1, mtime=1.0, last_entry=None)
         self.assertEqual(call("review", env=self.env), (0, "no session waits for review\n", ""))
 
     def test_dry_run_makes_no_model_calls(self):
@@ -1409,14 +1427,44 @@ class PipelineTest(Lane):
         self.assertEqual((rc, out), (1, ""))
         self.assertIn("SESSION_ARCHIVE_ROOT is not set", err)
 
+    def test_run_writes_work_files_as_utf8_under_c_locale(self):
+        """The timer's locale can be C (ASCII): work files and the card are UTF-8 all the same."""
+        self.transcript([said("user", "sortiere die Größen ✓"),
+                         said("assistant", [{"type": "text", "text": "Erledigt — nach Größe."}])])
+        summary = summary_of(what="Sortierte die Größen.", why=[item("Nach Größe.", [1], "sortiere die Größen")])
+        script = ("import json, os, sys\nfrom datetime import datetime\n"
+                  "from session_archive import config, pipeline, store, summarize\n"
+                  "cfg = config.load(os.environ)\n"
+                  "stub = summarize.StubTransport([json.loads(sys.argv[1])])\n"
+                  "done = pipeline.run(cfg, store.Store(cfg.state_dir / 'state.sqlite3'), stub,\n"
+                  "                    datetime.fromisoformat(sys.argv[2]), keep=True)\n"
+                  "print(pipeline.journal(done))\n")
+        env = {**self.env, "PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(LIB), "PYTHONDONTWRITEBYTECODE": "1",
+               "LC_ALL": "C", "PYTHONUTF8": "0"}
+        proc = subprocess.run([sys.executable, "-c", script, json.dumps(summary), NOW.isoformat()], env=env,
+                              capture_output=True, text=True, timeout=60, check=False)
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr),
+                         (0, journal(done=1, windows=1, archived=1, cards=1) + "\n", ""))
+        self.assertIn("OPERATOR: sortiere die Größen ✓\n", (self.work / UUID / "rendered.txt").read_text("utf-8"))
+        self.assertEqual(json.loads((self.work / UUID / "summary.json").read_text("utf-8")), summary)
+        self.assertIn("\n## What\n\nSortierte die Größen.\n", self.card().read_text("utf-8"))
+        # A work file that cannot be written holds its session, before any model call.
+        shutil.rmtree(self.work)
+        self.work.write_text("not a folder\n")
+        self.transcript(spoken(), uuid=OTHER_UUID)
+        done, stub = self.lane([SPOKEN_SUMMARY])
+        self.assertEqual((done.counts["held"], stub.calls, self.store.session(OTHER_UUID)["reason"]),
+                         (1, [], "work_error"))
+
     def test_archive_copy_is_idempotent_and_never_overwrites(self):
         path = self.transcript(spoken())
         sha = sha256(path)
-        copied = archive.copy(self.root, SLUG, UUID, path, sha)
-        self.assertEqual(copied, self.root / SLUG / f"{UUID}.{sha[:8]}.jsonl.gz")
+        copied, created = archive.copy(self.root, SLUG, UUID, path, sha)
+        self.assertEqual((copied, created), (self.root / SLUG / f"{UUID}.{sha[:8]}.jsonl.gz", True))
         self.assertEqual(gzip.decompress(copied.read_bytes()), path.read_bytes())
         stamp = copied.stat().st_mtime_ns
-        self.assertEqual((archive.copy(self.root, SLUG, UUID, path, sha), copied.stat().st_mtime_ns), (copied, stamp))
+        self.assertEqual((archive.copy(self.root, SLUG, UUID, path, sha), copied.stat().st_mtime_ns),
+                         ((copied, False), stamp))
         copied.write_bytes(gzip.compress(b"other bytes\n"))
         for root, uuid, digest in ((self.root, UUID, sha), (self.root, OTHER_UUID, "0" * 64), (None, UUID, sha),
                                    (self.tmp / "absent", UUID, sha)):
@@ -1458,6 +1506,54 @@ class CliRunTest(Lane):
         self.assertEqual(call("run", env=self.env)[0], 1)
         self.assertEqual((names(self.root), self.count("runs")), ([], 1))
 
+    def test_run_stops_before_loop_when_root_unreachable(self):
+        self.transcript(spoken())
+        absent = {**self.env, "SESSION_ARCHIVE_ROOT": str(self.tmp / "absent")}
+        done, stub = self.lane([SPOKEN_SUMMARY], cfg=config.load(absent))
+        self.assertEqual((pipeline.journal(done), done.result, stub.calls), (journal(), "root_unreachable", []))
+        self.assertEqual((self.store.session(UUID), self.count("ledger"), self.store.last_run()["result"]),
+                         (None, 0, "root_unreachable"))
+        self.assertEqual(call("run", env=absent), (1, journal() + "\n", "session-archive: the archive root is "
+                                                                       "unreachable: the run took no session\n"))
+        self.assertEqual((self.store.session(UUID), self.count("runs"), (self.tmp / "absent").exists()),
+                         (None, 2, False))
+
+    def test_run_stops_queue_on_transport_failure(self):
+        self.transcript(spoken())
+        self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
+        stopped = journal(scanned=2, eligible=2, held=1, windows=1)
+        for holds, error in ((1, "http 401"), (2, "network TimeoutError")):
+            done, stub = self.lane([failed(error), SPOKEN_SUMMARY])
+            self.assertEqual((pipeline.journal(done), done.result, len(stub.calls)), (stopped, "model_unavailable", 1))
+            row = self.store.session(UUID)
+            self.assertEqual((row["status"], row["reason"], row["holds"]), ("held", "model_unavailable", holds))
+            self.assertIsNone(self.store.session(OTHER_UUID))
+        with mock.patch("urllib.request.urlopen", side_effect=http_error(403)):
+            self.assertEqual(call("run", env=self.env), (1, stopped + "\n", "session-archive: the model API is "
+                                                         "unavailable (http 403): the run stopped after holding one "
+                                                         "session\n"))
+        self.assertEqual((self.store.session(UUID)["holds"], self.store.session(OTHER_UUID),
+                          self.store.last_run()["result"]), (3, None, "model_unavailable"))
+        done, _ = self.lane([SPOKEN_SUMMARY])
+        self.assertEqual((done.result, self.store.session(OTHER_UUID)["status"]), ("ok", "done"))
+
+    def test_status_creates_nothing(self):
+        fresh = str(self.tmp / "fresh")
+        self.assertEqual(self.status(XDG_STATE_HOME=fresh), {
+            "last_run": None, "last_result": None, "eligible": None, "held": 0, "review": 0, "last_run_usd": 0.0,
+            "run_sessions": 20, "root_ok": True, "owner_ok": None})
+        self.assertIn("last run: never\n", self.status(human=True, XDG_STATE_HOME=fresh))
+        self.assertEqual(call("review", env={**self.env, "XDG_STATE_HOME": fresh}),
+                         (0, "no session waits for review\n", ""))
+        self.assertEqual((Path(fresh).exists(), names(self.root), names(self.library)), (False, [], []))
+        self.transcript(spoken())
+        self.lane([{**SPOKEN_SUMMARY, "area": "unclear"}])
+        state = tree(self.cfg.state_dir)
+        self.assertEqual((self.status()["review"], call("review", env=self.env)[0]), (1, 0))
+        self.status(human=True)
+        self.assertEqual((tree(self.cfg.state_dir), names(self.root), names(self.library)), (state, [], []))
+        self.assertNotIn("lock", names(self.cfg.state_dir))
+
     def test_lock_second_instance_exits_zero(self):
         self.transcript(spoken())
         with open(self.cfg.state_dir / "lock", "a") as held:
@@ -1489,8 +1585,7 @@ class CliRunTest(Lane):
         self.transcript(spoken(OLD + timedelta(days=2)), uuid=THIRD_UUID)
         self.assertIsNone(self.status()["eligible"])
         self.assertIn("\neligible at the last full run: not counted yet (20 per run)\n", self.status(human=True))
-        failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
-        self.lane(FIXTURE_RESPONSES + [{**SPOKEN_SUMMARY, "area": "unclear"}, failed])
+        self.lane(FIXTURE_RESPONSES + [{**SPOKEN_SUMMARY, "area": "unclear"}, failed("http 400")])
         archive.check_owner(self.root, "box-a")
         report = self.status(SESSION_ARCHIVE_RUN_SESSIONS="7")
         self.assertEqual(datetime.fromisoformat(report["last_run"]).tzinfo, UTC)
