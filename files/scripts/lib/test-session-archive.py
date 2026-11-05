@@ -12,8 +12,10 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+import urllib.error
 
-from session_archive import cli, config, render, sources, store, windows
+from session_archive import cli, config, render, sources, store, summarize, windows
 from session_archive import secrets as lane_secrets
 
 SHIM = Path(__file__).resolve().parent.parent / "session-archive"
@@ -583,6 +585,260 @@ class WindowsTest(unittest.TestCase):
                     self.assertTrue(any(shared), shared)
         (self.tmp / "empty.jsonl").write_text("\n")
         self.assertEqual(windows.split(render.render(self.tmp / "empty.jsonl")), [])
+
+
+SUMMARY = {
+    "what": "Sorted the widget catalogue by name.",
+    "why": [{"text": "The operator asked for a sorted list.", "anchors": [2],
+             "quotes": ["please sort the widget list"]}],
+    "when": [], "how": [], "outcome": [],
+    "open_ends": [{"text": "Shelf 9 gaps stay open.", "anchors": [38], "quotes": [], "as_of": "2026-01-10",
+                   "tracked_in": "not tracked"}],
+    "continue": [], "area": "lab",
+}
+API_USAGE = {"input_tokens": 1200, "output_tokens": 300, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
+AREAS = config.load({"HOME": "/home/someone", "SESSION_ARCHIVE_AREAS": json.dumps({
+    "lab": {"description": "Lab work.", "library": "/srv/library/lab", "projects": ["-a"]},
+    "home": {"description": "Home\nmatters.", "library": "/srv/library/home", "projects": ["-b"]},
+})})
+AREAS_BLOCK = "lab: Lab work.\nhome: Home matters.\nunclear: none fits or the session spans two\n"
+
+
+class Reply:
+    """What urllib.request.urlopen returns: a context manager whose read() gives the body."""
+
+    def __init__(self, body):
+        self.body = json.dumps(body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, *args):
+        return self.body
+
+
+def api_reply(text, stop="end_turn", model="claude-haiku-5-5-20261001"):
+    return Reply({"id": "msg_01", "type": "message", "role": "assistant", "model": model, "stop_reason": stop,
+                  "content": [{"type": "thinking", "thinking": "", "signature": "sig"}, {"type": "text", "text": text}],
+                  "usage": {**API_USAGE, "service_tier": "standard"}})
+
+
+def http_error(code):
+    body = io.BytesIO(b'{"type": "error", "error": {"message": "response body text"}}')
+    return urllib.error.HTTPError("https://api.anthropic.com/v1/messages", code, "status", {}, body)
+
+
+class Urlopen:
+    """Stands in for urllib.request.urlopen: records each request and plays the outcomes in order."""
+
+    def __init__(self, *outcomes):
+        self.outcomes, self.requests = list(outcomes), []
+
+    def __call__(self, request, timeout=None):
+        self.requests.append((request, timeout))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class TransportTest(unittest.TestCase):
+    def complete(self, *outcomes, key="lane-test-key", model="claude-haiku-5-5", **options):
+        fake, waits = Urlopen(*outcomes), []
+        transport = summarize.ApiTransport(key, sleep=waits.append)
+        with mock.patch("urllib.request.urlopen", fake):
+            done = transport.complete("SYSTEM TEXT", "WINDOW TEXT", {"type": "object"}, model, "low", **options)
+        return done, fake.requests, waits
+
+    def test_api_transport_builds_request_shape(self):
+        done, [(request, timeout)], waits = self.complete(api_reply(json.dumps(SUMMARY)))
+        self.assertEqual((request.full_url, request.get_method()), ("https://api.anthropic.com/v1/messages", "POST"))
+        self.assertEqual({name.lower(): value for name, value in request.header_items()}, {
+            "x-api-key": "lane-test-key", "anthropic-version": "2023-06-01", "content-type": "application/json"})
+        self.assertEqual(json.loads(request.data), {
+            "model": "claude-haiku-5-5", "max_tokens": 16000, "system": "SYSTEM TEXT", "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": {"type": "object"}}},
+            "messages": [{"role": "user", "content": "WINDOW TEXT"}],
+        })
+        self.assertGreater(timeout, 0)
+        self.assertEqual(waits, [])
+        self.assertEqual(done, summarize.Completion(SUMMARY, API_USAGE, done.usd, "claude-haiku-5-5-20261001",
+                                                    "end_turn", None))
+        self.assertAlmostEqual(done.usd, (1200 * 0.10 + 300 * 0.50) / 1e6)
+        _, [(request, _)], _ = self.complete(api_reply("{}"), max_tokens=2000)
+        self.assertEqual(json.loads(request.data)["max_tokens"], 2000)
+        cut, _, _ = self.complete(api_reply('{"what": "Sorted', stop="max_tokens"))
+        self.assertEqual((cut.parsed, cut.usage, cut.stop_reason, cut.error),
+                         (None, API_USAGE, "max_tokens", "stop_reason max_tokens"))
+        self.assertGreater(cut.usd, 0)
+        for text in ("not json {", "[1, 2]"):
+            garbled, _, _ = self.complete(api_reply(text))
+            self.assertEqual((garbled.parsed, garbled.error), (None, summarize.UNPARSABLE))
+        with self.assertRaisesRegex(summarize.UnknownModel, "^no list price for model claude-unknown-1$"):
+            self.complete(model="claude-unknown-1")
+
+    def test_api_transport_retries_429_then_succeeds(self):
+        done, requests, waits = self.complete(http_error(429), api_reply(json.dumps(SUMMARY)))
+        self.assertEqual((len(requests), waits, done.parsed, done.error), (2, [20], SUMMARY, None))
+        self.assertEqual(requests[0][0].data, requests[1][0].data)
+        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        done, requests, waits = self.complete(http_error(529), refused, TimeoutError("timed out"), http_error(500))
+        self.assertEqual((len(requests), waits), (4, [20, 40, 60]))
+        self.assertEqual((done.parsed, done.usd, done.stop_reason, done.error), (None, 0.0, None, "http 500"))
+        self.assertEqual(done.usage, dict.fromkeys(API_USAGE, 0))
+        done, requests, _ = self.complete(refused, refused, refused, refused)
+        self.assertEqual((len(requests), done.error), (4, "network ConnectionRefusedError"))
+        for code in (400, 401, 403, 404, 413):
+            with self.subTest(code=code):
+                done, requests, waits = self.complete(http_error(code))
+                self.assertEqual((len(requests), waits, done.error), (1, [], f"http {code}"))
+
+    def test_api_transport_keeps_key_and_bodies_out_of_errors(self):
+        key = "lane-key-" + "k" * 24
+        done, _, _ = self.complete(http_error(400), key=key)
+        garbled, _, _ = self.complete(Reply("not a message"), key=key)
+        for text in (done.error, garbled.error, repr(done), repr(summarize.ApiTransport(key))):
+            self.assertNotIn(key, text)
+            self.assertNotIn("response body text", text)
+        self.assertEqual(garbled.error, "response is not a message")
+        for bad in ("lane-key\nInjected: 1", "lane key", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError) as caught:
+                summarize.ApiTransport(bad)
+            self.assertEqual(str(caught.exception), f"{lane_secrets.KEY} is not a value an HTTP header can carry")
+
+    def test_price_haiku_example(self):
+        million = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+        self.assertAlmostEqual(summarize.price(million, "claude-haiku-5-5"), 0.60)
+        self.assertAlmostEqual(summarize.price(million, "claude-haiku-5-5-20261001"), 0.60)
+        self.assertAlmostEqual(summarize.price(million, "claude-sonnet-5-5"), 12.0)
+        self.assertAlmostEqual(summarize.price(million, "claude-opus-5-5"), 24.0)
+        cached = {"input_tokens": 200_000, "cache_creation_input_tokens": 300_000, "cache_read_input_tokens": 500_000}
+        self.assertAlmostEqual(summarize.price(cached, "claude-haiku-5-5"), 0.10)
+        self.assertEqual(summarize.price({}, "claude-opus-5-5"), 0.0)
+        for unknown in ("claude-unknown-1", "claude-haiku-5-5-preview", "claude-haiku-5"):
+            with self.subTest(model=unknown), self.assertRaises(summarize.UnknownModel):
+                summarize.price(million, unknown)
+
+
+class PromptTest(unittest.TestCase):
+    def test_system_prompt_appends_areas_block(self):
+        self.assertEqual(summarize.system_prompt("Summarize.\n\n## Areas\n", AREAS.areas),
+                         f"Summarize.\n\n## Areas\n\n{AREAS_BLOCK}")
+        self.assertEqual(summarize.system_prompt("Summarize.\n\n## Areas", {}),
+                         "Summarize.\n\n## Areas\n\nunclear: none fits or the session spans two\n")
+        fields = json.loads(summarize.asset(summarize.SCHEMA))["properties"]
+        for name in (summarize.SYSTEM, summarize.MERGE):
+            base = summarize.asset(name)
+            with self.subTest(asset=name):
+                self.assertTrue(base.endswith("\n## Areas\n"), base[-80:])
+                self.assertEqual(base.count("## Areas"), 1)
+                self.assertEqual(summarize.system_prompt(base, AREAS.areas), f"{base}\n{AREAS_BLOCK}")
+                for word in ("@L", "verbatim", "anchors", "quotes"):
+                    self.assertIn(word, base)
+        system = summarize.asset(summarize.SYSTEM)
+        for field in fields:
+            self.assertIn(f"`{field}`", system)
+
+    def test_schema_area_enum(self):
+        base = json.loads(summarize.asset(summarize.SCHEMA))
+        shaped = summarize.schema(base, AREAS.areas)
+        self.assertEqual(shaped["properties"]["area"], {"type": "string", "enum": ["lab", "home", "unclear"]})
+        self.assertEqual(base["properties"]["area"], {"type": "string"})
+        self.assertEqual(summarize.schema(base, {})["properties"]["area"]["enum"], ["unclear"])
+        self.assertEqual(list(base["properties"]),
+                         ["what", "why", "when", "how", "outcome", "open_ends", "continue", "area"])
+        item = {"text": {"type": "string"}, "anchors": {"type": "array", "items": {"type": "integer"}},
+                "quotes": {"type": "array", "items": {"type": "string"}}}
+        for name in ("why", "when", "how", "outcome", "continue"):
+            self.assertEqual(base["properties"][name]["items"]["properties"], item)
+        self.assertEqual(base["properties"]["open_ends"]["items"]["properties"],
+                         {**item, "as_of": {"type": "string"}, "tracked_in": {"type": "string"}})
+        objects = [base]
+        while objects:
+            node = objects.pop()
+            if node.get("type") == "object":
+                self.assertEqual((node["additionalProperties"], node["required"]), (False, list(node["properties"])))
+            objects.extend(child for child in (*node.get("properties", {}).values(), node.get("items")) if child)
+        self.assertTrue(summarize.conforms(SUMMARY, shaped))
+        for bad in ({**SUMMARY, "area": "elsewhere"}, {**SUMMARY, "extra": 1}, {**SUMMARY, "why": [{"text": "x"}]},
+                    {**SUMMARY, "why": [{"text": "x", "anchors": ["2"], "quotes": []}]},
+                    {**SUMMARY, "why": [{"text": "x", "anchors": [True], "quotes": []}]}):
+            self.assertFalse(summarize.conforms(bad, shaped), bad)
+
+
+class SummarizeTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = AREAS
+        self.charged = []
+        self.shape = summarize.schema(json.loads(summarize.asset(summarize.SCHEMA)), self.cfg.areas)
+        [self.first, *_] = windows.split(render.render(FIXTURE))
+
+    def test_window_returns_parsed_or_raises_on_unparsable(self):
+        failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
+        stub = summarize.StubTransport([SUMMARY, "not json {", {**SUMMARY, "area": "elsewhere"},
+                                        {k: v for k, v in SUMMARY.items() if k != "continue"}, failed])
+        self.assertEqual(summarize.window(stub, self.cfg, self.first, self.cfg.areas, charge=self.charged.append),
+                         SUMMARY)
+        [call] = stub.calls
+        self.assertEqual(call["user"], f"{self.first.text}\n\n{summarize.WINDOW_TAIL}")
+        self.assertEqual((call["user"].count("\nWINDOW "), call["user"].startswith("SESSION session-a\nWINDOW 1 of")),
+                         (1, True))
+        self.assertEqual(call["system"], summarize.system_prompt(summarize.asset(summarize.SYSTEM), self.cfg.areas))
+        self.assertEqual(call["schema"], self.shape)
+        self.assertEqual((call["model"], call["effort"], call["max_tokens"]), ("claude-haiku-5-5", "low", 16000))
+        for reason in ("unparsable", "unparsable", "unparsable", "model_error"):
+            with self.subTest(reason=reason), self.assertRaises(summarize.SummarizeError) as caught:
+                summarize.window(stub, self.cfg, self.first, self.cfg.areas, charge=self.charged.append)
+            self.assertEqual(caught.exception.reason, reason)
+        self.assertEqual(str(caught.exception), "model_error: http 500")
+        self.assertEqual(len(self.charged), 5)
+        self.assertEqual(self.charged[0], summarize.Completion(SUMMARY, summarize.STUB_USAGE, self.charged[0].usd,
+                                                               "claude-haiku-5-5", "end_turn", None))
+        self.assertGreater(self.charged[0].usd, 0)
+        with self.assertRaisesRegex(RuntimeError, "no response left"):
+            summarize.window(stub, self.cfg, self.first, self.cfg.areas)
+
+    def test_merge_skips_single_window(self):
+        stub = summarize.StubTransport([])
+        self.assertIs(summarize.merge(stub, self.cfg, [SUMMARY], self.cfg.areas, charge=self.charged.append), SUMMARY)
+        self.assertEqual((stub.calls, self.charged), ([], []))
+        later = {**SUMMARY, "what": "Relabelled shelf 9.", "area": "home"}
+        merged = {**SUMMARY, "what": "Sorted the catalogue and relabelled shelf 9."}
+        stub = summarize.StubTransport([merged])
+        self.assertEqual(summarize.merge(stub, self.cfg, [SUMMARY, later], self.cfg.areas, charge=self.charged.append),
+                         merged)
+        [call] = stub.calls
+        self.assertEqual(call["system"], summarize.system_prompt(summarize.asset(summarize.MERGE), self.cfg.areas))
+        self.assertEqual(call["schema"], self.shape)
+        parts = [json.dumps(part, ensure_ascii=False) for part in (SUMMARY, later)]
+        self.assertEqual(call["user"], f"PART 1 of 2\n{parts[0]}\n\nPART 2 of 2\n{parts[1]}\n\n{summarize.MERGE_TAIL}")
+        self.assertEqual(len(self.charged), 1)
+        with self.assertRaises(summarize.SummarizeError):
+            summarize.merge(summarize.StubTransport(["[]"]), self.cfg, [SUMMARY, later], self.cfg.areas)
+        with self.assertRaisesRegex(ValueError, "no window summaries"):
+            summarize.merge(stub, self.cfg, [], self.cfg.areas)
+
+
+class BudgetTest(Scratch):
+    def test_budget_denies_above_cap(self):
+        run, other = self.store.start_run(), self.store.start_run()
+        budget = summarize.Budget(self.store, run, 0.5)
+        self.assertTrue(budget.allow())
+        budget.charge(UUID, "claude-haiku-5-5", API_USAGE, 0.25)
+        self.assertTrue(budget.allow())
+        budget.charge(OTHER_UUID, "claude-haiku-5-5-20261001", API_USAGE, 0.25)
+        self.assertFalse(budget.allow())
+        budget.charge(OTHER_UUID, "claude-haiku-5-5", API_USAGE, 0.25)
+        self.assertFalse(budget.allow())
+        rows = self.store.db.execute("SELECT uuid, model_id, usage, usd FROM ledger WHERE run_id = ? ORDER BY rowid",
+                                     (run,)).fetchall()
+        self.assertEqual([(r["uuid"], r["model_id"], json.loads(r["usage"]), r["usd"]) for r in rows][:2], [
+            (UUID, "claude-haiku-5-5", API_USAGE, 0.25), (OTHER_UUID, "claude-haiku-5-5-20261001", API_USAGE, 0.25)])
+        self.assertTrue(summarize.Budget(self.store, other, 0.5).allow())
+        self.assertFalse(summarize.Budget(self.store, other, 0).allow())
 
 
 def call(*argv):

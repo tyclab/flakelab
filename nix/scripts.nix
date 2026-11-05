@@ -261,12 +261,14 @@ rec {
   '';
 
   # python3 runs lib/session_archive/ (stdlib only); util-linux brings flock.
-  # FLAKELAB_STATE_ROOT is the source: the redacted transcript copies.
+  # FLAKELAB_STATE_ROOT is the source: the redacted transcript copies. The
+  # prompts come from the store, as `s` holds files/scripts alone.
   session-archive = pkgs.writeShellScriptBin "session-archive" ''
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
     ''}
     ${sessionArchiveEnv}
+    export SESSION_ARCHIVE_PROMPTS=${../files/config/session-archive}
     export PATH=${
       bin [
         pkgs.python3
