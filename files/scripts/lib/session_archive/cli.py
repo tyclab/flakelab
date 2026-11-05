@@ -1,4 +1,5 @@
-"""Command line of `flakelab session-archive`: run, status and review; exit 0 ok, 1 failure, 2 usage error."""
+"""Command line of `flakelab session-archive`: run, status and review; exit 0 ok, 1 failure, 2 usage error. A run prints
+one counts-only journal line; no message names a path or a secret."""
 
 import os
 import sys
@@ -8,9 +9,28 @@ if __name__ == "__main__":
     sys.path[0] = os.environ.get("SESSION_ARCHIVE_LIB") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import argparse
+import contextlib
+from datetime import UTC, datetime
+import fcntl
+import json
+import sqlite3
 import uuid
 
+from session_archive import archive, config, pipeline, sources, store, summarize
+from session_archive import secrets as lane_secrets
+
 PROG = "flakelab session-archive"
+STATE_DB = "state.sqlite3"
+ROOT_STATE = {None: "not configured", True: "reachable", False: "unreachable"}
+OWNER_STATE = {None: "unclaimed", True: "this box", False: "another box"}
+
+
+class Failure(RuntimeError):
+    """A refusal whose message names no path."""
+
+
+FAILURES = (Failure, config.ConfigError, lane_secrets.MissingSecret, store.StoreError, sources.SourceError,
+            summarize.UnknownModel, archive.ArchiveError)
 
 
 def session_id(value: str) -> str:
@@ -30,15 +50,105 @@ def session_count(value: str) -> int:
     return count
 
 
-def run(args: argparse.Namespace) -> int:
+@contextlib.contextmanager
+def single(state_dir):
+    """True while this process holds the lane's lock; False when another instance does."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with open(state_dir / "lock", "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            ours = True
+        except BlockingIOError:
+            ours = False
+        yield ours
+
+
+def opened(cfg):
+    return contextlib.closing(store.Store(cfg.state_dir / STATE_DB))
+
+
+def folders(cfg) -> list:
+    """The archive root and every library, each once."""
+    return list(dict.fromkeys([*([cfg.root] if cfg.root else []), *(area.library for area in cfg.areas.values())]))
+
+
+def owned(cfg, machine_id, claim) -> bool:
+    """No folder names another box; with claim, every folder without a marker gets this one's. Every marker is read
+    before any is written, so a refusal claims nothing."""
+    if any(archive.owner(folder) not in (None, machine_id) for folder in folders(cfg)):
+        return False
+    return not claim or all([archive.check_owner(folder, machine_id) for folder in folders(cfg)])
+
+
+def transport(env):
+    try:
+        return summarize.ApiTransport(lane_secrets.api_key(env))
+    except ValueError as error:  # names the key, never its value
+        raise Failure(str(error)) from None
+
+
+def run(args: argparse.Namespace, env) -> int:
+    cfg = config.load(env)
+    if cfg.root is None and not args.dry_run:
+        raise Failure("SESSION_ARCHIVE_ROOT is not set: a run copies each session into the archive root")
+    machine_id = archive.machine_id(env)
+    with single(cfg.state_dir) as ours:
+        if not ours:
+            print("already running")
+            return 0
+        model = None if args.dry_run else transport(env)
+        if not owned(cfg, machine_id, claim=not args.dry_run):
+            raise Failure("the archive root or a library is owned by another box (.owner)")
+        with opened(cfg) as db:
+            done = pipeline.run(cfg, db, model, datetime.now(UTC), limit=args.limit, session=args.session,
+                                dry_run=args.dry_run, keep=args.keep)
+    if done.result == "missing":
+        raise Failure(f"session {args.session} is not under the configured projects")
+    print(pipeline.journal(done))
+    if args.session and not done.counts["eligible"]:
+        print(f"session-archive: session {args.session} not taken: {done.result}", file=sys.stderr)
     return 0
 
 
-def status(args: argparse.Namespace) -> int:
+def status(args: argparse.Namespace, env) -> int:
+    cfg = config.load(env)
+    machine_id = archive.machine_id(env)
+    with opened(cfg) as db:
+        found = sources.scan(cfg, db, datetime.now(UTC))
+        last, held, review = db.last_run(), db.held(), db.review()
+        usd = db.run_usd(last["run_id"]) if last else 0.0
+    marks = [mark for mark in map(archive.owner, folders(cfg)) if mark is not None]
+    report = {
+        "last_run": last["started"] if last else None, "last_result": last["result"] if last else None,
+        "eligible": sum(c.reason == "eligible" for c in found), "held": len(held), "review": len(review),
+        "last_run_usd": round(usd, 6), "run_sessions": cfg.run_sessions,
+        "root_ok": None if cfg.root is None else cfg.root.is_dir(),
+        "owner_ok": all(mark == machine_id for mark in marks) if marks else None,
+    }
+    if args.json:
+        print(json.dumps(report))
+        return 0
+    print("\n".join([
+        f"last run: {last['started']} ({last['result'] or 'no result'}, {usd:.2f} USD)" if last else "last run: never",
+        f"eligible: {report['eligible']} ({cfg.run_sessions} per run)",
+        f"held: {len(held)}", *(f"  {row['uuid']} {row['reason']}, {row['holds']} hold(s)" for row in held),
+        f"waiting for review: {len(review)}",
+        f"archive root: {ROOT_STATE[report['root_ok']]}", f"owner: {OWNER_STATE[report['owner_ok']]}",
+    ]))
     return 0
 
 
-def review(args: argparse.Namespace) -> int:
+def review(args: argparse.Namespace, env) -> int:
+    cfg = config.load(env)
+    with opened(cfg) as db:
+        waiting = {row["uuid"] for row in db.review()}
+    try:
+        entries = (cfg.state_dir / pipeline.REVIEW).read_text().splitlines()
+    except FileNotFoundError:
+        entries = []
+    shown = [line for line in entries
+             if (named := sources.UUID_IN_NAME.search(line)) is not None and named.group() in waiting]
+    print("\n".join(shown) if shown else "no session waits for review")
     return 0
 
 
@@ -62,12 +172,21 @@ def parser() -> argparse.ArgumentParser:
     return top
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], env=None) -> int:
     try:
         args = parser().parse_args(argv)
     except SystemExit as stop:
         return stop.code if isinstance(stop.code, int) else 2
-    return args.handler(args)
+    try:
+        return args.handler(args, os.environ if env is None else env)
+    except FAILURES as error:
+        message = str(error)
+    except sqlite3.Error as error:
+        message = f"the state database failed: {error}"
+    except OSError as error:  # its filename is a path: only the reason is shown
+        message = f"failed: {error.strerror or type(error).__name__}"
+    print(f"session-archive: {message}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

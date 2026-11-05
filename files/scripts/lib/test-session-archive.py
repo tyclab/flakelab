@@ -4,6 +4,8 @@ import contextlib
 import copy
 import dataclasses
 from datetime import UTC, datetime, timedelta
+import fcntl
+import gzip
 import hashlib
 import io
 import json
@@ -19,7 +21,7 @@ import unittest
 from unittest import mock
 import urllib.error
 
-from session_archive import cards, cite, cli, config, render, sources, store, summarize, windows
+from session_archive import archive, cards, cite, cli, config, pipeline, render, sources, store, summarize, windows
 from session_archive import secrets as lane_secrets
 
 SHIM = Path(__file__).resolve().parent.parent / "session-archive"
@@ -1126,10 +1128,10 @@ class CardTest(unittest.TestCase):
         self.assertFalse(absent.exists())
 
 
-def call(*argv):
+def call(*argv, env=None):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = cli.main(list(argv))
+        rc = cli.main(list(argv), env)
     return rc, out.getvalue(), err.getvalue()
 
 
@@ -1151,16 +1153,15 @@ class CliTest(unittest.TestCase):
         self.assertIn("invalid choice: 'bogus'", err)
         self.assertEqual(shim("bogus").returncode, 2)
 
-    def test_cli_flags_parse_and_stubs_exit_0(self):
-        for argv in (
-            ["run"],
-            ["run", "--session", UUID, "--dry-run", "--limit", "3", "--keep"],
-            ["status"],
-            ["status", "--json"],
-            ["review"],
-        ):
-            with self.subTest(argv=argv):
-                self.assertEqual(call(*argv)[0], 0)
+    def test_cli_flags_parse(self):
+        args = cli.parser().parse_args(["run", "--session", UUID.upper(), "--dry-run", "--limit", "1", "--keep"])
+        self.assertEqual((args.command, args.session, args.dry_run, args.limit, args.keep),
+                         ("run", UUID, True, 1, True))
+        args = cli.parser().parse_args(["run"])
+        self.assertEqual((args.session, args.dry_run, args.limit, args.keep), (None, False, None, False))
+        self.assertEqual((cli.parser().parse_args(["status", "--json"]).json, cli.parser().parse_args(["status"]).json),
+                         (True, False))
+        self.assertIs(cli.parser().parse_args(["review"]).handler, cli.review)
 
     def test_cli_usage_errors_exit_2(self):
         for argv in (
@@ -1176,6 +1177,327 @@ class CliTest(unittest.TestCase):
                 rc, out, err = call(*argv)
                 self.assertEqual((rc, out), (2, ""))
                 self.assertIn("usage: flakelab session-archive", err)
+
+
+FIXTURE_SUMMARY = summary_of(
+    why=[item("The operator asked for a sorted catalogue.", [2], "Sort the widget catalogue by name")],
+    outcome=[item("The shelves were repainted.", [5], "the shelves were repainted blue")],
+)
+MERGED = {**FIXTURE_SUMMARY, "what": "Sorted the widget catalogue and kept a backup."}
+FIXTURE_RESPONSES = [FIXTURE_SUMMARY] * 3 + [MERGED]
+SPOKEN_SUMMARY = summary_of(why=[item("The operator asked for a sorted list.", [1], "please sort the widget list")])
+PER_CALL = summarize.price(summarize.STUB_USAGE, "claude-haiku-5-5")
+STATUS_FIELDS = {"last_run", "last_result", "eligible", "held", "review", "last_run_usd", "run_sessions", "root_ok",
+                 "owner_ok"}
+
+
+def journal(scanned=1, eligible=1, done=0, held=0, review=0, windows=0, archived=0, cards=0, usd="0.00"):
+    return (f"session-archive: scanned={scanned} eligible={eligible} done={done} held={held} review={review} "
+            f"windows={windows} usd={usd} archived={archived} cards={cards}")
+
+
+def names(folder):
+    return sorted(path.name for path in folder.iterdir())
+
+
+def tree(top):
+    """Every file under top with the SHA-256 and mtime of its bytes."""
+    return {str(p.relative_to(top)): (sha256(p), p.stat().st_mtime_ns) for p in sorted(top.rglob("*")) if p.is_file()}
+
+
+class Lane(Scratch):
+    """A scratch box with an archive root and a library, as machine box-a."""
+
+    def setUp(self):
+        super().setUp()
+        self.root, self.library = self.tmp / "archive", self.tmp / "library"
+        self.root.mkdir()
+        self.library.mkdir()
+        self.env.update({"SESSION_ARCHIVE_ROOT": str(self.root), "SESSION_ARCHIVE_MACHINE_ID": "box-a"})
+        self.cfg = config.load(self.env)
+        self.work = self.cfg.state_dir / "work"
+
+    def fixture(self, uuid=UUID, slug=SLUG):
+        path = self.tmp / "state/claude/projects" / slug / f"{uuid}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(FIXTURE, path)
+        os.utime(path, (OLD.timestamp(), OLD.timestamp()))
+        return path
+
+    def lane(self, responses, cfg=None, **options):
+        stub = summarize.StubTransport(responses)
+        return pipeline.run(cfg or self.cfg, self.store, stub, NOW, **options), stub
+
+    def card(self, uuid=UUID):
+        return self.library / f"session-{uuid}.md"
+
+    def copy_of(self, path, uuid=UUID, slug=SLUG):
+        return self.root / slug / f"{uuid}.{sha256(path)[:8]}.jsonl.gz"
+
+    def count(self, table):
+        return self.store.db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+
+
+class PipelineTest(Lane):
+    def test_run_writes_card_archive_and_state(self):
+        path = self.fixture()
+        source = tree(self.tmp / "state")
+        done, stub = self.lane(FIXTURE_RESPONSES)
+        self.assertEqual(pipeline.journal(done), journal(done=1, windows=3, archived=1, cards=1))
+        self.assertEqual(done.result, "ok")
+        self.assertAlmostEqual(done.usd, 4 * PER_CALL)
+        for number, call_made in enumerate(stub.calls[:3], 1):
+            self.assertTrue(call_made["user"].startswith(f"SESSION {UUID}\nWINDOW {number} of 3; "))
+        self.assertTrue(stub.calls[3]["user"].startswith("PART 1 of 3\n"))
+        archived = self.copy_of(path)
+        self.assertEqual((names(self.root / SLUG), names(self.library)), ([archived.name], [self.card().name]))
+        self.assertEqual(gzip.decompress(archived.read_bytes()), FIXTURE.read_bytes())
+        card = self.card().read_text()
+        self.assertIn("\n## What\n\nSorted the widget catalogue and kept a backup.\n", card)
+        self.assertIn('\n- The operator asked for a sorted catalogue. @L2\n  > "Sort the widget catalogue by name"\n',
+                      card)
+        self.assertIn('\n- The shelves were repainted. (unverified) @L5\n', card)
+        self.assertEqual(card.split("\n## Pointer\n\n")[1].splitlines(), [
+            f"Archive: {archived}", f"SHA-256: {sha256(path)}", f"Bytes: {path.stat().st_size}",
+            f"Fetch: zcat '{archived}'", f"Local (until cleanup): {path}", f"Project: {SLUG}", "Area: lab",
+            "Recipe: session-archive-v1", "Model: claude-haiku-5-5/low", "Extracted: 2026-01-20"])
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["sha256"], row["area"], row["archive_path"], row["holds"]),
+                         ("done", None, sha256(path), "lab", str(archived), 0))
+        self.assertEqual((row["card_hash"], row["size"]), (cards.content_hash(card), path.stat().st_size))
+        last = self.store.last_run()
+        self.assertEqual((last["result"], json.loads(last["counts"])["done"], self.count("ledger")), ("ok", 1, 4))
+        self.assertEqual(names(self.work), [])
+        self.assertEqual(tree(self.tmp / "state"), source)
+
+    def test_run_is_idempotent_second_run_skips(self):
+        self.fixture()
+        self.lane(FIXTURE_RESPONSES)
+        written, row = (tree(self.root), tree(self.library)), dict(self.store.session(UUID))
+        done, stub = self.lane([])
+        self.assertEqual(pipeline.journal(done), journal(eligible=0))
+        self.assertEqual((stub.calls, done.result, done.usd), ([], "ok", 0.0))
+        self.assertEqual(((tree(self.root), tree(self.library)), dict(self.store.session(UUID))), (written, row))
+        self.assertEqual((self.count("runs"), self.count("ledger")), (2, 4))
+
+    def test_run_rewrites_card_and_adds_archive_copy_when_sha_changes(self):
+        path = self.fixture()
+        self.lane(FIXTURE_RESPONSES, keep=True)
+        first, work = self.copy_of(path), self.work / UUID
+        self.assertEqual(names(work), ["rendered.txt", "summary.json", "w1.json", "w1.txt", "w2.json", "w2.txt",
+                                       "w3.json", "w3.txt"])
+        self.assertEqual(json.loads((work / "summary.json").read_text()), MERGED)
+        self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
+        grown = {**MERGED, "what": "Sorted the catalogue, then the widget list."}
+        done, _ = self.lane([FIXTURE_SUMMARY] * 3 + [grown])
+        self.assertEqual(pipeline.journal(done), journal(done=1, windows=3, archived=1, cards=1))
+        second = self.copy_of(path)
+        self.assertEqual(names(self.root / SLUG), sorted([first.name, second.name]))
+        self.assertEqual(gzip.decompress(first.read_bytes()), FIXTURE.read_bytes())
+        self.assertEqual(gzip.decompress(second.read_bytes()), path.read_bytes())
+        card = self.card().read_text()
+        self.assertIn("\n## What\n\nSorted the catalogue, then the widget list.\n", card)
+        self.assertIn(f"\nArchive: {second}\nSHA-256: {sha256(path)}\nBytes: {path.stat().st_size}\n", card)
+        row = self.store.session(UUID)
+        self.assertEqual((row["sha256"], row["archive_path"], row["card_hash"]),
+                         (sha256(path), str(second), cards.content_hash(card)))
+        self.assertFalse(work.exists())
+
+    def three_sessions(self):
+        for uuid, hours in ((UUID, 0), (OTHER_UUID, 1), (THIRD_UUID, 2)):
+            self.transcript(spoken(OLD + timedelta(hours=hours)), uuid=uuid)
+
+    def test_run_stops_at_cap_after_finishing_session(self):
+        self.three_sessions()
+        capped = config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.0001"})
+        done, stub = self.lane([SPOKEN_SUMMARY] * 3, cfg=capped)
+        self.assertEqual(pipeline.journal(done), journal(scanned=3, eligible=3, done=1, windows=1, archived=1, cards=1))
+        self.assertEqual((done.result, len(stub.calls), self.store.last_run()["result"]), ("capped", 1, "capped"))
+        self.assertGreaterEqual(done.usd, 0.0001)
+        self.assertEqual((names(self.library), self.store.session(UUID)["status"]), ([self.card().name], "done"))
+        self.assertEqual((self.store.session(OTHER_UUID), self.store.session(THIRD_UUID)), (None, None))
+        done, stub = self.lane([], cfg=config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0"}))
+        self.assertEqual((done.counts["eligible"], done.counts["done"], stub.calls, done.result), (2, 0, [], "capped"))
+
+    def test_run_takes_at_most_limit_and_run_sessions(self):
+        self.three_sessions()
+        done, _ = self.lane([SPOKEN_SUMMARY] * 3, limit=1)
+        self.assertEqual((done.counts["eligible"], done.counts["done"], done.result), (3, 1, "ok"))
+        done, _ = self.lane([SPOKEN_SUMMARY] * 3, cfg=config.load({**self.env, "SESSION_ARCHIVE_RUN_SESSIONS": "1"}),
+                            limit=2)
+        self.assertEqual((done.counts["eligible"], done.counts["done"], done.result), (2, 1, "ok"))
+        self.assertEqual([self.store.session(uuid)["status"] for uuid in (UUID, OTHER_UUID)], ["done", "done"])
+        self.assertIsNone(self.store.session(THIRD_UUID))
+
+    def test_run_holds_session_on_model_error(self):
+        self.transcript(spoken())
+        self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
+        failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
+        done, _ = self.lane([failed, SPOKEN_SUMMARY])
+        self.assertEqual(pipeline.journal(done),
+                         journal(scanned=2, eligible=2, done=1, held=1, windows=2, archived=1, cards=1))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["holds"], row["card_hash"], row["archive_path"]),
+                         ("held", "model_error", 1, None, None))
+        self.assertEqual(names(self.library), [self.card(OTHER_UUID).name])
+        self.assertEqual([name[:36] for name in names(self.root / SLUG)], [OTHER_UUID])
+        self.assertEqual((names(self.work), names(self.work / UUID)), ([UUID], ["rendered.txt", "w1.txt"]))
+        # A held session is retried until its third hold; any other failure of the model side holds it too.
+        for responses, reason, holds in ((["not json {"], "unparsable", 2), ([], "model_error", 3)):
+            done, _ = self.lane(responses)
+            row = self.store.session(UUID)
+            self.assertEqual((done.counts["held"], row["reason"], row["holds"]), (1, reason, holds))
+        done, stub = self.lane([])
+        self.assertEqual((done.counts["eligible"], stub.calls), (0, []))
+        done, _ = self.lane([SPOKEN_SUMMARY], session=UUID)
+        self.assertEqual(pipeline.journal(done), journal(scanned=2, done=1, windows=1, archived=1, cards=1))
+        self.assertEqual((self.store.session(UUID)["status"], self.store.session(UUID)["holds"]), ("done", 0))
+        self.assertTrue(self.card().exists())
+        self.assertFalse((self.work / UUID).exists())
+
+    def test_run_holds_session_when_archive_root_missing(self):
+        path = self.transcript(spoken())
+        absent = self.tmp / "absent"
+        done, stub = self.lane([SPOKEN_SUMMARY], cfg=config.load({**self.env, "SESSION_ARCHIVE_ROOT": str(absent)}))
+        self.assertEqual(pipeline.journal(done), journal(held=1, windows=1))
+        self.assertEqual((len(stub.calls), self.store.session(UUID)["reason"]), (1, "archive_error"))
+        self.assertAlmostEqual(done.usd, PER_CALL)
+        self.assertEqual((absent.exists(), names(self.library)), (False, []))
+        self.assertEqual(names(self.work / UUID), ["rendered.txt", "summary.json", "w1.json", "w1.txt"])
+        shutil.rmtree(self.library)
+        done, _ = self.lane([SPOKEN_SUMMARY])
+        self.assertEqual(pipeline.journal(done), journal(held=1, windows=1, archived=1))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["holds"], row["archive_path"]),
+                         ("held", "library_missing", 2, None))
+        self.assertEqual((names(self.root / SLUG), self.library.exists()), ([self.copy_of(path).name], False))
+
+    def test_run_routes_unclear_area_to_review(self):
+        self.transcript(spoken())
+        done, _ = self.lane([{**SPOKEN_SUMMARY, "area": "unclear"}])
+        self.assertEqual(pipeline.journal(done), journal(review=1, windows=1))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["area"], row["card_hash"], row["archive_path"]),
+                         ("review", "unclear_area", None, None, None))
+        entry = f"- 2026-01-20 {UUID} unclear_area\n"
+        self.assertEqual((self.cfg.state_dir / "review.md").read_text(), entry)
+        self.assertEqual((names(self.root), names(self.library), names(self.work)), ([], [], []))
+        self.assertEqual(self.lane([])[0].counts["eligible"], 0)
+        self.assertEqual(call("review", env=self.env), (0, entry, ""))
+        done, _ = self.lane([SPOKEN_SUMMARY], session=UUID)
+        self.assertEqual((done.counts["done"], self.store.session(UUID)["status"]), (1, "done"))
+        self.assertEqual(call("review", env=self.env), (0, "no session waits for review\n", ""))
+
+    def test_dry_run_makes_no_model_calls(self):
+        self.fixture()
+        self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
+        before = (tree(self.tmp / "state"), names(self.root), names(self.library))
+        done, stub = self.lane([], dry_run=True)
+        self.assertEqual((pipeline.journal(done), stub.calls), (journal(scanned=2, eligible=2, windows=4), []))
+        done = pipeline.run(self.cfg, self.store, None, NOW, dry_run=True, limit=1)
+        self.assertEqual(pipeline.journal(done), journal(scanned=2, eligible=2, windows=3))
+        self.assertEqual(call("run", "--dry-run", env=self.env),
+                         (0, journal(scanned=2, eligible=2, windows=4) + "\n", ""))
+        self.assertEqual(call("run", "--dry-run", "--session", OTHER_UUID, env=self.env),
+                         (0, journal(scanned=2, windows=1) + "\n", ""))
+        self.assertEqual((tree(self.tmp / "state"), names(self.root), names(self.library)), before)
+        self.assertEqual([self.count(table) for table in ("sessions", "runs", "ledger")], [0, 0, 0])
+        self.assertEqual(names(self.cfg.state_dir), ["lock", "state.sqlite3"])
+        rc, out, err = call("run", env={**self.env, "SESSION_ARCHIVE_ROOT": ""})
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("SESSION_ARCHIVE_ROOT is not set", err)
+
+    def test_archive_copy_is_idempotent_and_never_overwrites(self):
+        path = self.transcript(spoken())
+        sha = sha256(path)
+        copied = archive.copy(self.root, SLUG, UUID, path, sha)
+        self.assertEqual(copied, self.root / SLUG / f"{UUID}.{sha[:8]}.jsonl.gz")
+        self.assertEqual(gzip.decompress(copied.read_bytes()), path.read_bytes())
+        stamp = copied.stat().st_mtime_ns
+        self.assertEqual((archive.copy(self.root, SLUG, UUID, path, sha), copied.stat().st_mtime_ns), (copied, stamp))
+        copied.write_bytes(gzip.compress(b"other bytes\n"))
+        for root, uuid, digest in ((self.root, UUID, sha), (self.root, OTHER_UUID, "0" * 64), (None, UUID, sha),
+                                   (self.tmp / "absent", UUID, sha)):
+            with self.subTest(root=root, uuid=uuid), self.assertRaises(archive.ArchiveError) as caught:
+                archive.copy(root, SLUG, uuid, path, digest)
+            self.assertNotIn(str(self.tmp), str(caught.exception))
+        self.assertEqual((gzip.decompress(copied.read_bytes()), names(self.root / SLUG)),
+                         (b"other bytes\n", [copied.name]))
+        self.assertFalse((self.tmp / "absent").exists())
+
+
+class CliRunTest(Lane):
+    def setUp(self):
+        super().setUp()
+        (self.tmp / "state/claude/projects").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "secrets.env").write_text(f"{LANE_KEY}=lane-test-key\n")
+        self.env["FLAKELAB_SECRETS_ENV"] = str(self.tmp / "secrets.env")
+        network = mock.patch("urllib.request.urlopen", side_effect=AssertionError("no network in tests"))
+        network.start()
+        self.addCleanup(network.stop)
+
+    def test_run_refuses_root_owned_by_other_machine(self):
+        keyless = {**self.env, "FLAKELAB_SECRETS_ENV": str(self.tmp / "absent.env")}
+        self.assertEqual(call("run", env=keyless), (1, "", f"session-archive: {LANE_KEY} is not set in the flakelab "
+                                                            "secrets file\n"))
+        self.assertEqual((names(self.root), names(self.library)), ([], []))
+        self.assertEqual(call("run", env=self.env), (0, journal(scanned=0, eligible=0) + "\n", ""))
+        for folder in (self.root, self.library):
+            self.assertEqual((folder / ".owner").read_text(), "box-a\n")
+        other = {**self.env, "SESSION_ARCHIVE_MACHINE_ID": "box-b"}
+        for argv in (["run"], ["run", "--dry-run"]):
+            rc, out, err = call(*argv, env=other)
+            self.assertEqual((rc, out), (1, ""))
+            self.assertIn("owned by another box", err)
+            self.assertNotIn(str(self.tmp), err)
+        self.assertEqual(((self.root / ".owner").read_text(), self.count("runs")), ("box-a\n", 1))
+        (self.root / ".owner").unlink()
+        (self.library / ".owner").write_text("box-b\n")
+        self.assertEqual(call("run", env=self.env)[0], 1)
+        self.assertEqual((names(self.root), self.count("runs")), ([], 1))
+
+    def test_lock_second_instance_exits_zero(self):
+        self.transcript(spoken())
+        with open(self.cfg.state_dir / "lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for argv in (["run"], ["run", "--dry-run"]):
+                self.assertEqual(call(*argv, env=self.env), (0, "already running\n", ""))
+        self.assertEqual((self.count("runs"), self.count("sessions"), names(self.root)), (0, 0, []))
+        self.assertEqual(call("run", "--dry-run", env=self.env), (0, journal(windows=1) + "\n", ""))
+
+    def status(self, **changes):
+        rc, out, err = call("status", "--json", env={**self.env, **changes})
+        self.assertEqual((rc, err), (0, ""))
+        report = json.loads(out)
+        self.assertEqual(set(report), STATUS_FIELDS)
+        return report
+
+    def test_status_json_fields(self):
+        self.assertEqual(self.status(), {"last_run": None, "last_result": None, "eligible": 0, "held": 0, "review": 0,
+                                         "last_run_usd": 0.0, "run_sessions": 20, "root_ok": True, "owner_ok": None})
+        self.assertEqual((self.status(SESSION_ARCHIVE_ROOT="")["root_ok"],
+                          self.status(SESSION_ARCHIVE_ROOT=str(self.tmp / "absent"))["root_ok"]), (None, False))
+        self.fixture()
+        self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
+        self.transcript(spoken(OLD + timedelta(days=2)), uuid=THIRD_UUID)
+        self.assertEqual(self.status()["eligible"], 3)
+        failed = summarize.Completion(None, dict.fromkeys(API_USAGE, 0), 0.0, "claude-haiku-5-5", None, "http 500")
+        self.lane(FIXTURE_RESPONSES + [{**SPOKEN_SUMMARY, "area": "unclear"}, failed])
+        archive.check_owner(self.root, "box-a")
+        report = self.status(SESSION_ARCHIVE_RUN_SESSIONS="7")
+        self.assertEqual(datetime.fromisoformat(report["last_run"]).tzinfo, UTC)
+        self.assertAlmostEqual(report.pop("last_run_usd"), 5 * PER_CALL)
+        self.assertEqual({**report, "last_run": None}, {
+            "last_run": None, "last_result": "ok", "eligible": 1, "held": 1, "review": 1, "run_sessions": 7,
+            "root_ok": True, "owner_ok": True})
+        (self.library / ".owner").write_text("box-b\n")
+        self.assertIs(self.status()["owner_ok"], False)
+        rc, out, err = call("status", env=self.env)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn(f"{THIRD_UUID} model_error", out)
+        self.assertNotIn(str(self.tmp), out)
+        rc, out, err = call("status", "--json", env={**self.env, "FLAKELAB_STATE_ROOT": ""})
+        self.assertEqual((rc, out, err), (1, "", "session-archive: FLAKELAB_STATE_ROOT is not set\n"))
 
 
 if __name__ == "__main__":
