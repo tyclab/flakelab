@@ -9,6 +9,8 @@ archived transcript (`@L212` is 212); windows overlap a little, so neighbouring 
   quote; every quote stays verbatim as its part gives it. Joining two items joins their anchors and their quotes.
 - Join items that state the same fact. When a later part corrects or replaces an earlier fact, keep the later one; keep
   the earlier one too only when the change itself matters, and say so.
+- Dates: a state (a version, a generation, a branch head, a count, a setting) keeps the date its part gives it, and a
+  state without one gets the date of the part's records; never `current`, `now`, `latest` or `today`.
 - Add nothing that no part says.
 - Compactness: keep every open end and every operator ruling; otherwise prefer the most specific items, fold
   duplicates, and keep the whole answer under about 6,000 tokens of JSON.
