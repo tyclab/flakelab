@@ -112,7 +112,11 @@ Read for this topic; paths below are relative to the repository root unless stat
     `prompt_confirm`/`prompt_keys`, never a bare `read`.
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
-  stdout, abort included. To remove a branch, take the plan from
+  stdout, abort included. In gitchecker's document a linked worktree's row
+  holds only its own tree and the branch it has checked out; the repository's
+  other branches, stashes and open MRs are on the row with
+  `shared_state: true`, and every row of one repository names the same
+  `repository`. To remove a branch, take the plan from
   `gitcleaner --repo . --json` and act with `--only <branch> --yes` — never
   `--yes` alone, which sweeps every repo it can reach. A branch still checked
   out (HEAD or a worktree) is listed under `parked`; acting on it also takes

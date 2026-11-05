@@ -431,6 +431,124 @@ run_gc --repo "${TESTROOT}/not-a-repo"
 assert_rc 2 "--repo on a non-repo exits 2"
 assert_has "not a git repo" "and names what was wrong"
 
+# ── Worktrees ────────────────────────────────────────────────────────
+print -r -- ""
+print -r -- "worktrees:"
+
+# assert_count <needle> <n> <label> — the needle occurs exactly n times in the output.
+assert_count() {
+  local needle="$1" label="$3"
+  local -i want="$2" got=0
+  local rest="${GC_OUT}"
+  while [[ "${rest}" == *"${needle}"* ]]; do
+    (( got++ ))
+    rest="${rest#*"${needle}"}"
+  done
+  if (( got == want )); then
+    (( PASSED++ )); print -r -- "  ok   ${label}"
+  else
+    (( FAILED++ )); print -r -- "  FAIL ${label}: ${(qq)needle} occurs ${got} times, want ${want}"
+    print -r -- "${GC_OUT}" | sed 's/^/       | /'
+  fi
+}
+# assert_jq <filter> <label> — the --json document in GC_OUT satisfies a jq -e filter.
+assert_jq() {
+  if print -r -- "${GC_OUT}" | jq -e "$1" >/dev/null 2>&1; then
+    (( PASSED++ )); print -r -- "  ok   $2"
+  else
+    (( FAILED++ )); print -r -- "  FAIL $2: jq -e $1"
+    print -r -- "${GC_OUT}" | sed 's/^/       | /'
+  fi
+}
+
+# One repository, three checkouts: the main clone and two linked worktrees. Refs,
+# stash and forge project are the repository's, so each is reported once; each
+# worktree row holds only its own tree and the branch it has checked out.
+WT="${TESTROOT}/roots/wt"
+mkdir -p "${WT}"
+WM="$(mk_repo "${WT}" main-clone gitlab.com t/wt)"
+for b in feat/a feat/b stale; do
+  git -C "${WM}" branch -q "${b}"
+  git -C "${WM}" push -q -u origin "${b}"
+done
+WCLONE="${TESTROOT}/clone-wt"
+git clone -q -b stale "${TESTROOT}/bare/t/wt.git" "${WCLONE}"
+print -r -- up > "${WCLONE}/up.txt"
+git -C "${WCLONE}" add up.txt && git -C "${WCLONE}" commit -qm up && git -C "${WCLONE}" push -q origin stale
+# feat/a moves upstream too, while wt-a holds it: only wt-a may fast-forward it.
+git -C "${WCLONE}" checkout -q -b feat/a origin/feat/a
+print -r -- a > "${WCLONE}/a.txt"
+git -C "${WCLONE}" add a.txt && git -C "${WCLONE}" commit -qm a && git -C "${WCLONE}" push -q origin feat/a
+git -C "${WM}" worktree add -q "${WT}/wt-a" feat/a
+git -C "${WM}" worktree add -q "${WT}/wt-b" feat/b
+git -C "${TESTROOT}/bare/t/wt.git" update-ref -d refs/heads/feat/b
+print -r -- wip > "${WM}/seed.txt"
+git -C "${WM}" stash -q
+cat > "${MR_JSON}" <<'JSON'
+[{"iid":5,"title":"land feat/a","source_branch":"feat/a","draft":false}]
+JSON
+write_stub glab 0 "${MR_JSON}"
+
+run_gc --repos-dir "${WT}"
+assert_rc 1 "a repository with worktrees still exits 1 on attention"
+assert_has "Scanned 3 checkouts of 1 repos" "the summary tells checkouts from repositories"
+assert_has "1 open MRs" "an MR is counted once, not once per worktree"
+assert_count "!5" 1 "and listed once"
+assert_count "1 stashed" 1 "the shared stash list is reported once"
+assert_count "gone: feat/b" 1 "a worktree's gone branch is reported on its own row only"
+assert_count "stale: fast-forwarded ↓1" 1 "a behind branch is fast-forwarded once"
+assert_count "fast-forwarded ↓1" 2 "a worktree fast-forwards the branch it holds"
+assert_lacks "refusing to fetch" "no checkout fast-forwards a branch another one holds"
+[[ "$(git -C "${WT}/wt-a" rev-parse HEAD)" == "$(git -C "${WCLONE}" rev-parse feat/a)" ]] &&
+  { (( PASSED++ )); print -r -- "  ok   the worktree's branch is at its upstream" } ||
+  { (( FAILED++ )); print -r -- "  FAIL the worktree's branch did not move" }
+
+run_gc --repos-dir "${WT}" --json
+assert_jq '.repositories == 1 and .scanned == 3' "--json counts repositories and checkouts"
+assert_jq '[.repos[] | select(.shared_state)] | length == 1' "one row carries the shared state"
+assert_jq '.repos[] | select(.rel == "main-clone") | .shared_state and .stashes == 1 and (.open_requests | length) == 1' \
+  "the main clone carries it"
+assert_jq '.repos[] | select(.rel == "wt-a") | .state == "current" and (.open_requests | length) == 0 and .stashes == 0' \
+  "a clean worktree on a synced branch is current"
+assert_jq '.repos[] | select(.rel == "wt-b") | [.branches[].name] == ["feat/b"] and .branches[0].state == "gone"' \
+  "a worktree's branches are the one it holds"
+assert_jq '[.repos[].repository] | unique | length == 1' "every row names the same repository"
+
+# The main clone out of scope: the first worktree named carries the shared state.
+run_gc --repo "${WT}/wt-a" --repo "${WT}/wt-b" --json
+assert_jq '.open_requests == 1 and ([.repos[] | select(.shared_state)] | length) == 1' \
+  "without the main clone, one worktree carries the shared state"
+assert_jq '.repos[] | select(.rel == "wt-a") | .shared_state and .stashes == 1' "the first one named"
+
+# A second clone of the same project is a repository of its own and lists the
+# project's MRs too, but the summary counts each MR once.
+W2="${TESTROOT}/clone-wt2"
+git clone -q "${TESTROOT}/bare/t/wt.git" "${W2}"
+git -C "${W2}" remote set-url origin "git@gitlab.com:t/wt.git"
+git -C "${W2}" config "url.${TESTROOT}/bare/t/wt.git.insteadOf" "git@gitlab.com:t/wt.git"
+run_gc --repo "${WM}" --repo "${W2}" --no-ff
+assert_has "Scanned 2 repos" "two clones are two repositories"
+assert_count "!5" 2 "each lists the project's MR"
+assert_has "1 open MRs" "and the summary counts it once"
+write_stub glab 0 /dev/null
+
+# A .git git cannot open is named, not read as a detached repository without an origin.
+UR="${TESTROOT}/roots/unreadable"
+mkdir -p "${UR}/empty/.git"
+UH="$(mk_repo "${UR}" host gitlab.com t/host)"
+mkdir -p "${UH}/sub/.git"
+git -C "${UH}" worktree add -q --detach "${UR}/orphan-wt"
+rm -rf "${UH}/.git/worktrees/orphan-wt"
+run_gc --repos-dir "${UR}"
+assert_rc 1 "an unreadable .git is attention"
+assert_count "skipped: not a git repository" 2 "an empty .git, even inside a repository, is not a repository"
+assert_has "skipped: broken worktree: its git dir" "a worktree whose git dir is gone is named"
+assert_lacks "detached HEAD" "neither is read as a detached HEAD"
+assert_lacks "no origin remote" "or as a repository without an origin"
+assert_has "Scanned 4 checkouts of 1 repos" "only the readable one counts as a repository"
+run_gc --repos-dir "${UR}" --json
+assert_jq '[.repos[] | select(.repository == null)] | length == 3' "--json gives an unreadable .git no repository"
+
 # ── Paging past the first hundred ────────────────────────────────────
 print -r -- ""
 print -r -- "paging:"
