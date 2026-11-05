@@ -6,6 +6,8 @@ set -uo pipefail
 # gitchecker — report which clones on this host are out of date
 #
 # Per repo: dirty state, every local branch vs its upstream, gone upstreams, detached HEAD, stashes, open MRs/PRs.
+# A linked worktree is its own row with its own tree and HEAD; what its repository shares (refs, stashes, the
+# forge project) is fetched, queried and reported once, on the main clone's row.
 # Only STRICTLY BEHIND branches fast-forward (not checked out: `git fetch . <up>:<branch>`); a dirty tree asks first
 # (--ff-dirty), --no-ff only reports. Never stashes, rebases or checks out.
 # Any network failure aborts the run rather than print a stale "current"; no origin, an unknown forge or a project
@@ -47,6 +49,13 @@ Finds every git clone under each root and reports, per repo: uncommitted and
 untracked changes, each local branch's ahead/behind/diverged state against its
 upstream, branches whose remote branch was deleted (gone), detached HEAD,
 branches with no upstream, stashed work, and open MRs/PRs on the forge.
+
+A linked worktree is a row of its own: its changes, its HEAD and the branch it
+holds. The rest of what its repository shares (the other branches, the stash
+list, the open MRs) is fetched and reported once, on the main clone's row, or
+on the first worktree's when the main clone is out of scope. A .git that git
+cannot open (an empty directory, a worktree whose git dir was removed) is
+listed as skipped and named.
 
 It changes one thing: a branch strictly behind its upstream is fast-forwarded
 (a checked-out one with a dirty tree only when asked: yes at the terminal, or
@@ -130,7 +139,8 @@ trap 'rm -rf "${WORKDIR}"' EXIT
 
 gitscan_ssh_mux "${WORKDIR}"
 
-# A worktree (.git is a file) is reported as its own repo: it has its own HEAD and dirty state.
+# A worktree (.git is a file) gets its own row: it has its own HEAD and dirty state. Its
+# repository is grouped below, so the state worktrees share is read once.
 typeset -a GITDIRS=() GITDIR_ROOTS=()
 if (( ${#ABS_ROOTS[@]} > 0 )); then
   gitscan_discover "${MAX_DEPTH}" "${ABS_ROOTS[@]}"
@@ -147,7 +157,7 @@ done
 if (( ${#GITDIRS[@]} == 0 )); then
   if (( JSON )); then
     jq -n --argjson roots "$(print -rn -- "${(F)ABS_ROOTS}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
-      '{ok: true, aborted: null, roots: $roots, scanned: 0, current: 0, attention: 0, open_requests: 0, repos: []}'
+      '{ok: true, aborted: null, roots: $roots, scanned: 0, repositories: 0, current: 0, attention: 0, open_requests: 0, repos: []}'
   else
     print -r -- "No git repos found under: ${(j:, :)ABS_ROOTS}"
   fi
@@ -155,6 +165,54 @@ if (( ${#GITDIRS[@]} == 0 )); then
 fi
 
 gitscan_require_gh "${GITDIRS[@]}"
+
+# repository_of <gitdir>: the absolute git dir the checkout's repository keeps its refs in,
+# on stdout. rc 1, with the reason on stdout, for a .git git cannot open.
+repository_of() {
+  local gitdir="$1" repo="${1:h}" target top common
+  if [[ -f "${gitdir}" ]]; then
+    target="$(<"${gitdir}")"
+    target="${${target%%$'\n'*}#gitdir: }"
+    [[ -n "${target}" && "${target}" != /* ]] && target="${repo}/${target}"
+    if [[ -n "${target}" && ! -d "${target}" ]]; then
+      print -r -- "broken worktree: its git dir ${target} is gone"
+      return 1
+    fi
+  fi
+  # git passes over a .git it cannot read and answers for the repository around it,
+  # so a top level that is not this directory means this .git is not a repository.
+  if ! top="$(git -C "${repo}" rev-parse --path-format=absolute --show-toplevel 2>/dev/null)" \
+      || [[ "${top:A}" != "${repo:A}" ]] \
+      || ! common="$(git -C "${repo}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    print -r -- "not a git repository"
+    return 1
+  fi
+  print -r -- "${common:A}"
+}
+
+# Checkouts grouped by repository. Worktrees share one ref store, one stash list and one
+# forge project: checked once per checkout, every worktree printed all of the repository's
+# branches, stashes and MRs again, counted each MR again, and parallel fetches into one
+# store fast-forwarded a branch on one row and refused it on another. The main clone
+# (.git is a directory) leads its group: its row carries the shared state.
+typeset -A REPO_MEMBERS=() BAD_REASON=()
+typeset -a REPO_KEYS=()
+typeset -i REPO_COUNT=0
+for (( i = 1; i <= ${#GITDIRS[@]}; i++ )); do
+  if ! key="$(repository_of "${GITDIRS[i]}")"; then
+    BAD_REASON[$i]="${key}"
+    key="unreadable:${i}"
+  fi
+  if (( ! ${+REPO_MEMBERS[$key]} )); then
+    REPO_KEYS+=("${key}")
+    REPO_MEMBERS[$key]="${i}"
+    [[ "${key}" == unreadable:* ]] || (( REPO_COUNT++ ))
+  elif [[ -d "${GITDIRS[i]}" ]]; then
+    REPO_MEMBERS[$key]="${i} ${REPO_MEMBERS[$key]}"
+  else
+    REPO_MEMBERS[$key]+=" ${i}"
+  fi
+done
 
 # The `p` flag makes the join separator a real tab; without it zsh joins on a literal `\t`.
 emit() {
@@ -181,20 +239,224 @@ abort_run() {
   } > "${ABORT_FILE}"
 }
 
-# Inspect one repo and write ${WORKDIR}/rec.<index>.
-check_repo() {
-  local idx="$1" gitdir="$2" root="$3"
-  local repo="${gitdir:h}"
-  local rec="${WORKDIR}/rec.${idx}"
+# check_branch <branch>: one local branch against its upstream, fast-forwarded when strictly
+# behind. Called from check_checkout and works on its locals (zsh scoping is dynamic): repo,
+# rec, head_branch, dirty, marks, branch_rows, attention. rc 1 when the run must abort.
+check_branch() {
+  local branch="$1" upstream counts label br_state
+  local -i ahead=0 behind=0
+
+  if ! upstream="$(git -C "${repo}" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{upstream}" 2>/dev/null)"; then
+    # No upstream at all, or one the prune just removed.
+    if [[ "$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)" == *gone* ]]; then
+      marks+=("${C_RED}gone: ${branch}${C_RESET}")
+      br_state=gone
+    elif [[ "${branch}" == "${head_branch}" ]]; then
+      marks+=("${C_CYAN}no upstream${C_RESET}")
+      br_state=no-upstream
+    else
+      marks+=("${C_CYAN}no upstream: ${branch}${C_RESET}")
+      br_state=no-upstream
+    fi
+    branch_rows+=("${branch}		0	0	${br_state}")
+    attention=1
+    return 0
+  fi
+
+  # A swallowed rev-list would normalise to 0/0, i.e. a false "current".
+  if ! counts="$(git -C "${repo}" rev-list --count --left-right "${upstream}...${branch}" 2>/dev/null)"; then
+    abort_run "${repo}" "upstream comparison failed for ${branch}" "rev-list ${upstream}...${branch}"
+    return 1
+  fi
+  behind="${counts%%[[:space:]]*}"
+  ahead="${counts##*[[:space:]]}"
+
+  # In-sync branches are recorded but never marked: the report prints only what
+  # needs attention, while a machine reader wants the whole branch inventory.
+  if (( ahead == 0 && behind == 0 )); then
+    branch_rows+=("${branch}	${upstream}	0	0	synced")
+    return 0
+  fi
+
+  # attention is set per outcome below: a branch this run fast-forwards ends in sync.
+  label=""
+  [[ "${branch}" != "${head_branch}" ]] && label="${branch}: "
+  if (( ahead > 0 && behind > 0 )); then
+    # Both directions means the upstream was rewritten, not routine drift.
+    marks+=("${C_RED}${label}diverged ↑${ahead}↓${behind}${C_RESET}")
+    br_state=diverged
+    attention=1
+  elif (( ahead > 0 )); then
+    marks+=("${C_YELLOW}${label}↑${ahead}${C_RESET}")
+    br_state=ahead
+    attention=1
+  else
+    # Strictly behind: the one state that fast-forwards.
+    br_state=behind
+    if (( FF )); then
+      local ff_allow=false
+      (( FF_DIRTY )) && ff_allow=true
+      if gitscan_ff_branch "${repo}" "${branch}" "${upstream}" "${head_branch}" "${dirty}" "${ff_allow}"; then
+        marks+=("${C_GREEN}${label}fast-forwarded ↓${behind}${C_RESET}")
+        branch_rows+=("${branch}	${upstream}	0	0	fast-forwarded")
+        return 0
+      fi
+      marks+=("${C_YELLOW}${label}↓${behind} (not fast-forwarded: ${GITSCAN_FF_OUT%%$'\n'*})${C_RESET}")
+      # Asked after the scan: this runs as a background job with stdin on /dev/null.
+      (( dirty > 0 && ! FF_DIRTY )) && [[ "${branch}" == "${head_branch}" ]] &&
+        emit "${rec}" ASK "${branch}" "${upstream}" "${behind}" "${dirty}"
+      attention=1
+    else
+      marks+=("${C_YELLOW}${label}↓${behind}${C_RESET}")
+      attention=1
+    fi
+  fi
+  branch_rows+=("${branch}	${upstream}	${ahead}	${behind}	${br_state}")
+  return 0
+}
+
+# rec_path <index>: the record file of GITDIRS[index]; zero-padded so a glob reads them in scan order.
+rec_path() { print -r -- "${WORKDIR}/rec.$(printf '%04d' "$1")" }
+
+# check_checkout <index> <shared> <repository>: one checkout's record. shared=1 is the row that
+# carries what its repository's checkouts share: every local branch not checked out in another
+# scanned checkout, the stash list and the open MRs. Every other row holds only what is its
+# own: its tree, its HEAD and the branch HEAD is on. Reads skip_reason, forge_rows and
+# other_heads from check_repository. rc 1 when the run must abort.
+check_checkout() {
+  local idx="$1" shared="$2" repository="$3"
+  local gitdir="${GITDIRS[idx]}" root="${GITDIR_ROOTS[idx]}"
+  local repo="${gitdir:h}" rec="$(rec_path "${idx}")"
   local rel="${repo#${root}/}"
   [[ "${rel}" == "${repo}" ]] && rel="${repo:t}"
-  local out line head_branch branch upstream counts label m br_state
-  local remote_url forge_line forge project jq_prog sigil forge_out parsed row
+  local line head_branch branch m row
+  local -i tracked=0 untracked=0 dirty=0 stashes=0 attention=0
+  typeset -a marks=() branch_rows=() branches=()
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" ]] && continue
+    if [[ "${line}" == '??'* ]]; then
+      (( untracked++ ))
+    else
+      (( tracked++ ))
+    fi
+  done < <(git -C "${repo}" status --porcelain=v1 2>/dev/null)
+  (( dirty = tracked + untracked ))
+  if (( dirty > 0 )); then
+    marks+=("${C_RED}✗ ${dirty} dirty${C_RESET}")
+    attention=1
+  fi
+
+  if ! head_branch="$(git -C "${repo}" symbolic-ref --short -q HEAD 2>/dev/null)"; then
+    head_branch="(detached)"
+    marks+=("${C_RED}detached HEAD${C_RESET}")
+    attention=1
+  fi
+
+  # Every local branch, not just HEAD's — a feature branch must not hide the fact
+  # that main has fallen behind. A branch another scanned checkout holds is on its row.
+  if (( shared )); then
+    branches=("${(@f)$(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)}")
+  elif [[ "${head_branch}" != "(detached)" ]]; then
+    branches=("${head_branch}")
+  fi
+  for branch in "${branches[@]}"; do
+    [[ -z "${branch}" ]] && continue
+    (( shared )) && (( ${+other_heads[${branch}]} )) && continue
+    check_branch "${branch}" || return 1
+  done
+
+  # Stashes — parked work is work that has not landed. One list per repository.
+  if (( shared )); then
+    stashes="$(git -C "${repo}" stash list 2>/dev/null | wc -l)"
+    if (( stashes > 0 )); then
+      marks+=("${C_YELLOW}${stashes} stashed${C_RESET}")
+      attention=1
+    fi
+  fi
+
+  # Open MRs count as attention: work that has not landed is work this repo is waiting on.
+  # A skip is the repository's, so every one of its rows carries it: none was compared
+  # against the forge.
+  if [[ -n "${skip_reason}" ]]; then
+    marks+=("${C_CYAN}skipped: ${skip_reason}${C_RESET}")
+    attention=1
+  elif (( shared && ${#forge_rows[@]} > 0 )); then
+    attention=1
+  fi
+
+  emit "${rec}" ROOT "${root}"
+  emit "${rec}" REL "${rel}"
+  emit "${rec}" PATH "${repo}"
+  emit "${rec}" REPOSITORY "${repository}"
+  emit "${rec}" SHARED "${shared}"
+  emit "${rec}" BRANCH "${head_branch}"
+  emit "${rec}" TRACKED "${tracked}"
+  emit "${rec}" UNTRACKED "${untracked}"
+  emit "${rec}" STASHES "${stashes}"
+  [[ "${head_branch}" == "(detached)" ]] && emit "${rec}" DETACHED 1
+  [[ -n "${skip_reason}" ]] && emit "${rec}" SKIP "${skip_reason}"
+  for m in "${marks[@]}"; do
+    emit "${rec}" MARK "${m}"
+  done
+  for row in "${branch_rows[@]}"; do
+    print -r -- "BR	${row}" >> "${rec}"
+  done
+  if (( shared )); then
+    [[ -z "${skip_reason}" ]] && emit "${rec}" PROJECT "${forge_line}"
+    for row in "${forge_rows[@]}"; do
+      print -r -- "FORGE	${row}" >> "${rec}"
+    done
+  fi
+  if (( attention )); then
+    emit "${rec}" STATE ATTENTION
+  else
+    emit "${rec}" STATE CURRENT
+  fi
+  return 0
+}
+
+# check_unreadable <index>: the record of a .git git cannot open. Nothing in it can be
+# read, so it is named and skipped: attention, never current, never a detached HEAD.
+check_unreadable() {
+  local idx="$1"
+  local gitdir="${GITDIRS[idx]}" root="${GITDIR_ROOTS[idx]}"
+  local repo="${gitdir:h}" rec="$(rec_path "${idx}")"
+  local rel="${repo#${root}/}"
+  [[ "${rel}" == "${repo}" ]] && rel="${repo:t}"
+  emit "${rec}" ROOT "${root}"
+  emit "${rec}" REL "${rel}"
+  emit "${rec}" PATH "${repo}"
+  emit "${rec}" REPOSITORY ""
+  emit "${rec}" SHARED 0
+  emit "${rec}" BRANCH ""
+  emit "${rec}" TRACKED 0
+  emit "${rec}" UNTRACKED 0
+  emit "${rec}" STASHES 0
+  emit "${rec}" SKIP "${BAD_REASON[$idx]}"
+  emit "${rec}" MARK "${C_CYAN}skipped: ${BAD_REASON[$idx]}${C_RESET}"
+  emit "${rec}" STATE ATTENTION
+}
+
+# check_repository <key> <index>...: one repository and its scanned checkouts, the one
+# carrying shared state first. The fetch and the forge query run once here; every
+# checkout then reads the refs that fetch wrote, in sequence, so no two workers ever
+# write the same ref store.
+check_repository() {
+  local key="$1"; shift
+  local owner="$1" idx head
+  local repo="${GITDIRS[owner]:h}"
+  local remote_url forge_line forge project jq_prog sigil forge_out parsed
   local iid title source draft skip_reason=""
-  local -i tracked=0 untracked=0 dirty=0 ahead=0 behind=0 stashes=0 attention=0
-  typeset -a marks=() forge_rows=() branch_rows=()
+  typeset -a forge_rows=()
+  typeset -A other_heads=()
 
   [[ -e "${ABORT_FILE}" ]] && return
+
+  if [[ "${key}" == unreadable:* ]]; then
+    check_unreadable "${owner}"
+    return
+  fi
 
   # Resolve the forge BEFORE any network call. A missing origin remote, or one
   # on a host this script does not integrate with, is a property of this single
@@ -231,117 +493,10 @@ check_repo() {
     fi
   fi
 
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    [[ -z "${line}" ]] && continue
-    if [[ "${line}" == '??'* ]]; then
-      (( untracked++ ))
-    else
-      (( tracked++ ))
-    fi
-  done < <(git -C "${repo}" status --porcelain=v1 2>/dev/null)
-  (( dirty = tracked + untracked ))
-  if (( dirty > 0 )); then
-    marks+=("${C_RED}✗ ${dirty} dirty${C_RESET}")
-    attention=1
-  fi
-
-  if ! head_branch="$(git -C "${repo}" symbolic-ref --short -q HEAD 2>/dev/null)"; then
-    head_branch="(detached)"
-    marks+=("${C_RED}detached HEAD${C_RESET}")
-    attention=1
-  fi
-
-  # Every local branch, not just HEAD's — a feature branch must not hide the
-  # fact that main has fallen behind.
-  while IFS= read -r branch || [[ -n "${branch}" ]]; do
-    [[ -z "${branch}" ]] && continue
-
-    if ! upstream="$(git -C "${repo}" rev-parse --abbrev-ref --symbolic-full-name "${branch}@{upstream}" 2>/dev/null)"; then
-      # No upstream at all, or one the prune just removed.
-      if [[ "$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)" == *gone* ]]; then
-        marks+=("${C_RED}gone: ${branch}${C_RESET}")
-        br_state=gone
-      elif [[ "${branch}" == "${head_branch}" ]]; then
-        marks+=("${C_CYAN}no upstream${C_RESET}")
-        br_state=no-upstream
-      else
-        marks+=("${C_CYAN}no upstream: ${branch}${C_RESET}")
-        br_state=no-upstream
-      fi
-      branch_rows+=("${branch}		0	0	${br_state}")
-      attention=1
-      continue
-    fi
-
-    # A swallowed rev-list would normalise to 0/0, i.e. a false "current".
-    if ! counts="$(git -C "${repo}" rev-list --count --left-right "${upstream}...${branch}" 2>/dev/null)"; then
-      abort_run "${repo}" "upstream comparison failed for ${branch}" "rev-list ${upstream}...${branch}"
-      return
-    fi
-    behind="${counts%%[[:space:]]*}"
-    ahead="${counts##*[[:space:]]}"
-    [[ -z "${behind}" ]] && behind=0
-    [[ -z "${ahead}" ]] && ahead=0
-
-    # In-sync branches are recorded but never marked: the report prints only what
-    # needs attention, while a machine reader wants the whole branch inventory.
-    if (( ahead == 0 && behind == 0 )); then
-      branch_rows+=("${branch}	${upstream}	0	0	synced")
-      continue
-    fi
-
-    # attention is set per outcome below: a branch this run fast-forwards ends in sync.
-    label=""
-    [[ "${branch}" != "${head_branch}" ]] && label="${branch}: "
-    if (( ahead > 0 && behind > 0 )); then
-      # Both directions means the upstream was rewritten, not routine drift.
-      marks+=("${C_RED}${label}diverged ↑${ahead}↓${behind}${C_RESET}")
-      br_state=diverged
-      attention=1
-    elif (( ahead > 0 )); then
-      marks+=("${C_YELLOW}${label}↑${ahead}${C_RESET}")
-      br_state=ahead
-      attention=1
-    else
-      # Strictly behind: the one state that fast-forwards.
-      br_state=behind
-      if (( FF )); then
-        local ff_allow=false
-        (( FF_DIRTY )) && ff_allow=true
-        if gitscan_ff_branch "${repo}" "${branch}" "${upstream}" "${head_branch}" "${dirty}" "${ff_allow}"; then
-          marks+=("${C_GREEN}${label}fast-forwarded ↓${behind}${C_RESET}")
-          branch_rows+=("${branch}	${upstream}	0	0	fast-forwarded")
-          continue
-        fi
-        marks+=("${C_YELLOW}${label}↓${behind} (not fast-forwarded: ${GITSCAN_FF_OUT%%$'\n'*})${C_RESET}")
-        # Asked after the scan: this runs as a background job with stdin on /dev/null.
-        (( dirty > 0 && ! FF_DIRTY )) && [[ "${branch}" == "${head_branch}" ]] &&
-          emit "${rec}" ASK "${branch}" "${upstream}" "${behind}" "${dirty}"
-        attention=1
-      else
-        marks+=("${C_YELLOW}${label}↓${behind}${C_RESET}")
-        attention=1
-      fi
-    fi
-    branch_rows+=("${branch}	${upstream}	${ahead}	${behind}	${br_state}")
-  done < <(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
-
-  # Stashes — parked work is work that has not landed.
-  stashes="$(git -C "${repo}" stash list 2>/dev/null | wc -l)"
-  if (( stashes > 0 )); then
-    marks+=("${C_YELLOW}${stashes} stashed${C_RESET}")
-    attention=1
-  fi
-
-  # Open MRs/PRs. Work that has not landed is work this repo is waiting on, so
-  # an open MR counts as attention.
-  # The skip decision was taken above, before the fetch. A forge-API failure
-  # below, by contrast, is a transient that puts every other repo's result in
-  # doubt too, and rightly aborts.
-  if [[ -n "${skip_reason}" ]]; then
-    marks+=("${C_CYAN}skipped: ${skip_reason}${C_RESET}")
-    attention=1
-  else
+  # Open MRs/PRs, once per repository. The skip decision was taken above, before
+  # the fetch. A forge-API failure below, by contrast, is a transient that puts
+  # every other repo's result in doubt too, and rightly aborts.
+  if [[ -z "${skip_reason}" ]]; then
     IFS=$'\t' read -r forge project <<< "${forge_line}"
 
     # @tsv, not string interpolation: it escapes tabs and newlines inside a title
@@ -378,34 +533,20 @@ check_repo() {
         # The draft flag is its own field, not a title prefix, so a parser gets a boolean.
         [[ "${draft}" == true ]] || draft=false
         forge_rows+=("${sigil}${iid}	$(sanitize "${title}")	$(sanitize "${source}")	${draft}")
-        attention=1
       done <<< "${parsed}"
     fi
   fi
 
-  emit "${rec}" ROOT "${root}"
-  emit "${rec}" REL "${rel}"
-  emit "${rec}" PATH "${repo}"
-  emit "${rec}" BRANCH "${head_branch}"
-  emit "${rec}" TRACKED "${tracked}"
-  emit "${rec}" UNTRACKED "${untracked}"
-  emit "${rec}" STASHES "${stashes}"
-  [[ "${head_branch}" == "(detached)" ]] && emit "${rec}" DETACHED 1
-  [[ -n "${skip_reason}" ]] && emit "${rec}" SKIP "${skip_reason}"
-  for m in "${marks[@]}"; do
-    emit "${rec}" MARK "${m}"
+  # The branch each other checkout holds is reported on that checkout's row only.
+  for idx in "${@:2}"; do
+    head="$(git -C "${GITDIRS[idx]:h}" symbolic-ref --short -q HEAD 2>/dev/null)" &&
+      other_heads[${head}]=1
   done
-  for row in "${branch_rows[@]}"; do
-    print -r -- "BR	${row}" >> "${rec}"
+
+  for idx in "$@"; do
+    [[ -e "${ABORT_FILE}" ]] && return
+    check_checkout "${idx}" "$(( idx == owner ))" "${key}" || return
   done
-  for row in "${forge_rows[@]}"; do
-    print -r -- "FORGE	${row}" >> "${rec}"
-  done
-  if (( attention )); then
-    emit "${rec}" STATE ATTENTION
-  else
-    emit "${rec}" STATE CURRENT
-  fi
 }
 
 # Stop the run as soon as a worker records a failure, rather than after the
@@ -429,10 +570,9 @@ check_abort() {
   exit 2
 }
 
-typeset -i i=0
 typeset -a job_pids=()
-for (( i = 1; i <= ${#GITDIRS[@]}; i++ )); do
-  check_repo "$(printf '%04d' ${i})" "${GITDIRS[i]}" "${GITDIR_ROOTS[i]}" &
+for key in "${REPO_KEYS[@]}"; do
+  check_repository "${key}" ${=REPO_MEMBERS[$key]} &
   job_pids+=($!)
   # zsh parses `wait -n` as a job spec and exits 127; waiting on the oldest child bounds concurrency.
   if (( ${#job_pids[@]} >= MAX_JOBS )); then
@@ -494,9 +634,10 @@ ask_dirty_behind() {
 render() {
   # Every local is declared once, here: re-running `local` on a name already
   # declared in this scope makes zsh print it instead of declaring it.
-  local rec state root rel branch group status_col k v iid title source
+  local rec state root rel branch group status_col k v iid title source project rest
   local prev_root="" prev_group=""
   typeset -a visible=() marks=()
+  typeset -A seen_mr=()
   typeset -i width=0
 
   # First pass: tally every repo, and collect the ones the filters keep.
@@ -507,12 +648,17 @@ render() {
     else
       (( ATTENTION++ ))
     fi
-    (( FORGE_COUNT += $(grep -c $'^FORGE\t' "${rec}") ))
+    # Per project: two clones of one project list the same MRs, and they are counted once.
+    project="$(field "${rec}" PROJECT)"
+    while IFS=$'\t' read -r k iid rest; do
+      [[ "${k}" == FORGE ]] && seen_mr[${project}:${iid}]=1
+    done < "${rec}"
     # --quiet is the summary alone; --dirty-only keeps the rows that need work.
     (( QUIET )) && continue
     [[ "${state}" == CURRENT ]] && (( DIRTY_ONLY )) && continue
     visible+=("${rec}")
   done
+  FORGE_COUNT=${#seen_mr}
 
   # Column width from the visible rows only, so a filtered run stays tight.
   for rec in "${visible[@]}"; do
@@ -583,6 +729,8 @@ render_json() {
     (( idx++ ))
     jq -n \
       --arg path "$(field "${rec}" PATH)" \
+      --arg repository "$(field "${rec}" REPOSITORY)" \
+      --argjson shared_state "$([[ "$(field "${rec}" SHARED)" == 1 ]] && print -n true || print -n false)" \
       --arg root "$(field "${rec}" ROOT)" \
       --arg rel "$(field "${rec}" REL)" \
       --arg branch "$(field "${rec}" BRANCH)" \
@@ -595,6 +743,8 @@ render_json() {
       --argjson branches "$(rows_json "${rec}" BR '{name: .[0], upstream: (if .[1] == "" then null else .[1] end), ahead: (.[2] | tonumber), behind: (.[3] | tonumber), state: .[4]}')" \
       --argjson open_requests "$(rows_json "${rec}" FORGE '{id: .[0], title: .[1], source_branch: .[2], draft: (.[3] == "true")}')" \
       '{path: $path, root: $root, rel: $rel, branch: $branch, state: $state,
+        repository: (if $repository == "" then null else $repository end),
+        shared_state: $shared_state,
         skipped: (if $skipped == "" then null else $skipped end),
         dirty: {tracked: $tracked, untracked: $untracked},
         detached: $detached, stashes: $stashes,
@@ -605,10 +755,11 @@ render_json() {
   jq -s \
     --argjson roots "$(print -rn -- "${(F)ABS_ROOTS}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
     --argjson scanned "${#GITDIRS[@]}" \
+    --argjson repositories "${REPO_COUNT}" \
     --argjson current "${CURRENT}" \
     --argjson attention "${ATTENTION}" \
     --argjson open_requests "${FORGE_COUNT}" \
-    '{ok: true, aborted: null, roots: $roots, scanned: $scanned, current: $current,
+    '{ok: true, aborted: null, roots: $roots, scanned: $scanned, repositories: $repositories, current: $current,
       attention: $attention, open_requests: $open_requests, repos: .}' \
     "${WORKDIR}"/json.*(N)
 }
@@ -625,7 +776,10 @@ fi
 render
 
 print -r -- ""
-print -r -- "Scanned ${#GITDIRS[@]} repos in ${#ABS_ROOTS[@]} roots: ${CURRENT} current, ${ATTENTION} need attention, ${FORGE_COUNT} open MRs"
+# Rows are checkouts; with worktrees in scope the repositories behind them are fewer.
+scanned="${#GITDIRS[@]} repos"
+(( REPO_COUNT != ${#GITDIRS[@]} )) && scanned="${#GITDIRS[@]} checkouts of ${REPO_COUNT} repos"
+print -r -- "Scanned ${scanned} in ${#ABS_ROOTS[@]} roots: ${CURRENT} current, ${ATTENTION} need attention, ${FORGE_COUNT} open MRs"
 
 (( ATTENTION > 0 )) && exit 1
 exit 0
