@@ -774,9 +774,11 @@ contains "nor the root"                   "${out}" "[WARN] the archive root (fla
 contains "and reads as one line"          "${out}" "[ OK ] last run 1 h ago (error Traceback, 0.42 USD)"
 
 print -r -- "session archive: a last run that ended in failure warns; ok, capped and one in progress do not"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.last_result = "model_unavailable"')")"
-contains "the failed run's result warns"  "${out}" "[WARN] the session archive's last run ended model_unavailable"
-check    "and nothing else does"          "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+for saCase in model_unavailable root_unreachable library_unreachable error; do
+  out="$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = \"${saCase}\"")")"
+  contains "${saCase}: the failed run's result warns" "${out}" "[WARN] the session archive's last run ended ${saCase}"
+  check    "${saCase}: and nothing else does"         "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+done
 for saCase in '"ok"' '"capped"' null; do
   lacks "${saCase}: no warning" "$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = ${saCase}")")" "[WARN]"
 done

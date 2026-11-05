@@ -99,9 +99,11 @@ def blank(summary) -> bool:
     return not summary["what"].strip() and not any(summary[name] for name in cite.LISTS)
 
 
-def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=False, *, now=None) -> Outcome:
+def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=False, *, now=None,
+                again=False) -> Outcome:
     """One eligible session through the pipeline; a failure after the scan holds it, and so does an interrupt (SIGTERM
-    at the unit's timeout, Ctrl-C) as timeout before it ends the run. A dry run counts its windows."""
+    at the unit's timeout, Ctrl-C) as timeout before it ends the run. again: the run before this one stopped on this
+    content (model_unavailable), so a second such stop is the session's failure. A dry run counts its windows."""
     c, now = candidate, now or datetime.now(UTC)
     if dry_run:
         try:
@@ -150,7 +152,7 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
         except (summarize.UnknownModel, OSError):
             raise
         except summarize.SummarizeError as error:
-            if UNAVAILABLE_ERROR.fullmatch(error.detail):
+            if UNAVAILABLE_ERROR.fullmatch(error.detail) and not again:
                 # The transport failed, not the session: no hold, its row and its earlier card stay as they were.
                 return finished(Outcome("skipped", UNAVAILABLE, sum(spent), None, None, len(parts),
                                         detail=error.detail))
@@ -226,20 +228,22 @@ def lost(store, folder) -> bool:
 
 def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, str | None]:
     """(result, detail) of the queue's sessions. A box-level failure is the run's, not a session's: an unreachable root
-    or library takes none, a model API that is unavailable stops the run at the session in flight, which is not held."""
+    or library takes none, a model API that is unavailable stops the run at the session in flight, which is not held
+    unless the run before stopped on the same content too (then it is held and the queue goes on)."""
     if cfg.root is None or not Path(cfg.root).is_dir() or lost(store, cfg.root):
         return ROOT_UNREACHABLE, None
     if any(lost(store, area.library) for area in cfg.areas.values()):
         return LIBRARY_UNREACHABLE, None
-    budget = summarize.Budget(store, run_id, cfg.run_cap_usd)
+    budget, repeat = summarize.Budget(store, run_id, cfg.run_cap_usd), store.stopped_before(run_id)
     for c in queue:
         if not budget.allow():
             return "capped", None
-        outcome = run_session(cfg, store, transport, c, run_id, keep=keep, now=now)
+        outcome = run_session(cfg, store, transport, c, run_id, keep=keep, now=now, again=repeat == (c.uuid, c.sha256))
         if outcome.reason == "capped":  # it fits the cap, not what this run has left: the next run takes it
             return "capped", None
         tally(counts, outcome)
         if outcome.reason == UNAVAILABLE:
+            store.mark_stopped(run_id, c.uuid, c.sha256)
             return UNAVAILABLE, outcome.detail
     return "ok", None
 

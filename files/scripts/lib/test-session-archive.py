@@ -212,7 +212,7 @@ class StoreTest(Scratch):
             db.close()
             with self.subTest(name=name), self.assertRaises(store.StoreError) as caught:
                 store.Store(path)
-            self.assertRegex(str(caught.exception), r"^the state database has schema version (0|7); this lane reads version 2:")
+            self.assertRegex(str(caught.exception), r"^the state database has schema version (0|7); this lane reads version 3:")
             self.assertNotIn(str(self.tmp), str(caught.exception))
 
 
@@ -1250,6 +1250,9 @@ class Lane(Scratch):
     def count(self, table):
         return self.store.db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
+    def transcript_path(self, uuid=UUID, slug=SLUG):
+        return self.tmp / "state/claude/projects" / slug / f"{uuid}.jsonl"
+
     def three_sessions(self):
         for uuid, hours in ((UUID, 0), (OTHER_UUID, 1), (THIRD_UUID, 2)):
             self.transcript(spoken(OLD + timedelta(hours=hours)), uuid=uuid)
@@ -1592,21 +1595,51 @@ class CliRunTest(Lane):
         self.transcript(spoken())
         self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
         # The outage is the transport's: no session is held, the one in flight is left as it was, work/ and all.
-        stopped = journal(scanned=2, eligible=2, windows=1)
-        for error in ("http 401", "network TimeoutError"):
-            done, stub = self.lane([failed(error), SPOKEN_SUMMARY])
-            self.assertEqual((pipeline.journal(done), done.result, len(stub.calls)), (stopped, "model_unavailable", 1))
+        # The second stop is another session's (--session), so neither is a repeat.
+        for error, options, journaled in (("http 401", {}, journal(scanned=2, eligible=2, windows=1)),
+                                          ("network TimeoutError", {"session": OTHER_UUID},
+                                           journal(scanned=2, windows=1))):
+            done, stub = self.lane([failed(error), SPOKEN_SUMMARY], **options)
+            self.assertEqual((pipeline.journal(done), done.result, len(stub.calls)),
+                             (journaled, "model_unavailable", 1))
             self.assertEqual((self.store.session(UUID), self.store.session(OTHER_UUID), self.store.held()),
                              (None, None, []))
-            self.assertFalse((self.work / UUID).exists())
+            self.assertEqual(names(self.work), [])
         with mock.patch("urllib.request.urlopen", side_effect=http_error(403)):
-            self.assertEqual(call("run", env=self.env), (1, stopped + "\n", "session-archive: the model API is "
-                                                         "unavailable (http 403): the run stopped, holding no "
-                                                         "session\n"))
+            self.assertEqual(call("run", env=self.env), (1, journal(scanned=2, eligible=2, windows=1) + "\n",
+                                                         "session-archive: the model API is unavailable (http 403): "
+                                                         "the run stopped, holding no session\n"))
         self.assertEqual((self.store.session(UUID), self.store.session(OTHER_UUID), self.store.last_run()["result"]),
                          (None, None, "model_unavailable"))
         done, _ = self.lane([SPOKEN_SUMMARY] * 2)
         self.assertEqual((done.result, done.counts["done"], self.store.session(UUID)["holds"]), ("ok", 2, 0))
+
+    def test_run_holds_session_that_stopped_two_runs_in_a_row(self):
+        self.three_sessions()
+
+        def stop(**options):
+            done, _ = self.lane([failed("http 500")], **options)
+            self.assertEqual(done.result, "model_unavailable")
+            return self.store.session(UUID)
+
+        self.assertIsNone(stop())
+        self.assertIsNone(stop(session=OTHER_UUID))  # another session stopped in between: the mark moves to it
+        self.assertIsNone(stop())
+        # The same content stops a second run in a row: that is the session's failure, held, and the queue advances.
+        done, stub = self.lane([failed("http 500"), SPOKEN_SUMMARY, SPOKEN_SUMMARY])
+        self.assertEqual((pipeline.journal(done), done.result, len(stub.calls)),
+                         (journal(scanned=3, eligible=3, done=2, held=1, windows=3, archived=2, cards=2), "ok", 3))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["holds"]), ("held", "model_error", 1))
+        self.assertEqual(names(self.work / UUID), ["rendered.txt", "w1.txt"])
+        # A run that went through in between resets the mark, and so does new content.
+        self.assertEqual(stop()["holds"], 1)
+        self.transcript(spoken(OLD + timedelta(minutes=30)), append=True)
+        self.assertEqual(stop()["holds"], 1)
+        done, _ = self.lane([failed("http 500")])
+        row = self.store.session(UUID)
+        self.assertEqual((done.result, row["reason"], row["holds"], row["sha256"]),
+                         ("ok", "model_error", 1, sha256(self.transcript_path())))
 
     def test_status_creates_nothing(self):
         fresh = str(self.tmp / "fresh")

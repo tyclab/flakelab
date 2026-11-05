@@ -7,13 +7,14 @@ import sqlite3
 from uuid import uuid4
 
 STATUSES = ("done", "held", "review")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA = (
     """CREATE TABLE sessions (
   uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
   last_entry TEXT, status TEXT NOT NULL, reason TEXT, area TEXT, card_hash TEXT, archive_path TEXT,
   holds INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL)""",
-    "CREATE TABLE runs (run_id TEXT PRIMARY KEY, started TEXT NOT NULL, finished TEXT, result TEXT, counts TEXT)",
+    """CREATE TABLE runs (run_id TEXT PRIMARY KEY, started TEXT NOT NULL, finished TEXT, result TEXT, counts TEXT,
+  stopped_uuid TEXT, stopped_sha TEXT)""",
     """CREATE TABLE ledger (
   run_id TEXT NOT NULL, uuid TEXT NOT NULL, model_id TEXT NOT NULL, usage TEXT NOT NULL, usd REAL NOT NULL,
   at TEXT NOT NULL)""",
@@ -117,6 +118,18 @@ class Store:
         with self.db:
             self.db.execute("UPDATE runs SET finished = ?, result = ?, counts = ? WHERE run_id = ?",
                             (now_iso(), result, json.dumps(counts, sort_keys=True), run_id))
+
+    def mark_stopped(self, run_id, uuid, sha256):
+        """The session (and content) a run stopped on with model_unavailable."""
+        with self.db:
+            self.db.execute("UPDATE runs SET stopped_uuid = ?, stopped_sha = ? WHERE run_id = ?",
+                            (uuid, sha256, run_id))
+
+    def stopped_before(self, run_id):
+        """(uuid, sha256) the run before run_id stopped on, or None when that run did not stop on a session."""
+        row = self.db.execute("SELECT stopped_uuid, stopped_sha FROM runs WHERE run_id != ? "
+                              "ORDER BY started DESC, rowid DESC LIMIT 1", (run_id,)).fetchone()
+        return (row["stopped_uuid"], row["stopped_sha"]) if row is not None and row["stopped_uuid"] else None
 
     def last_run(self):
         return self.db.execute("SELECT * FROM runs ORDER BY started DESC, rowid DESC LIMIT 1").fetchone()

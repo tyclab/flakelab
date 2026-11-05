@@ -753,8 +753,10 @@ Three failures belong to the run instead, and all exit 1: an unreachable
 archive root or library takes no session (`root_unreachable`,
 `library_unreachable`), and a model API that refuses the key or the model, or
 is still down after the retries, stops the run without holding the session in
-flight (`model_unavailable`). A model with no list price in `summarize.py` is
-refused before any call, since the run cap could not count it. Every call is
+flight (`model_unavailable`); when the same content stops the next run too,
+the failure is that session's, so it is held as a model error and the queue
+goes on. A model with no list price in `summarize.py` is refused before any
+call, since the run cap could not count it. Every call is
 priced into a ledger, and once a run reaches `sessionArchiveRunCapUsd` the
 session in flight finishes and no other starts.
 
