@@ -254,20 +254,21 @@ place to **generate** from, not to run this system: the flake's outputs are
 Everything is a subcommand of the one `flakelab` binary; `flakelab --help` lists
 them all, and the table has the daily ones.
 
-| Command                   | Action                                                                       |
-| ------------------------- | ---------------------------------------------------------------------------- |
-| `flakelab update`         | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`              |
-| `flakelab update-all`     | rebuild + clone                                                              |
-| `flakelab clone`          | clone / fetch GitLab group repos                                             |
-| `flakelab doctor`         | diagnose a provisioned distro                                                |
-| `flakelab backup`         | payload + optional shared state root                                         |
-| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux                |
-| `tycswap`                 | the account switcher: stored logins per agent CLI; a switch without a logout |
-| `flakelab notify`         | a push (ntfy, a JSON webhook) when a session waits on you; the hooks call it |
-| `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start          |
-| `flakelab mcp`            | MCP accounts shared by Claude and Codex (`mcp.md`)                           |
-| `flakelab overlay-gen`    | write the private overlay from a config                                      |
-| `flakelab test-provision` | throwaway-distro smoke test                                                  |
+| Command                    | Action                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `flakelab update`          | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`              |
+| `flakelab update-all`      | rebuild + clone                                                              |
+| `flakelab clone`           | clone / fetch GitLab group repos                                             |
+| `flakelab doctor`          | diagnose a provisioned distro                                                |
+| `flakelab backup`          | payload + optional shared state root                                         |
+| `flakelab sessions`        | running agent sessions; `--start`/`--attach` host one in tmux                |
+| `flakelab session-archive` | archive quiet Claude sessions, with a summary card for each (below)          |
+| `tycswap`                  | the account switcher: stored logins per agent CLI; a switch without a logout |
+| `flakelab notify`          | a push (ntfy, a JSON webhook) when a session waits on you; the hooks call it |
+| `flakelab web`             | the dashboard in a browser: tycswap logins, sessions, switch, start          |
+| `flakelab mcp`             | MCP accounts shared by Claude and Codex (`mcp.md`)                           |
+| `flakelab overlay-gen`     | write the private overlay from a config                                      |
+| `flakelab test-provision`  | throwaway-distro smoke test                                                  |
 
 `update` / `update-all` are commands, not aliases: they gate the rebuild on a
 pre-flight's exit status. The checkout is fetched (`--all --prune`); a clean
@@ -545,6 +546,29 @@ hostname and a synced state root never read each other's). After a crash,
 `flakelab sessions --resume` prints — and on WSL `--open` reopens — every
 session that was open here; `flakelab sessions --recent` lists the ones closed
 in the last day.
+
+### Session archive
+
+`flakelab session-archive run` takes each parent Claude Code transcript in the
+state root (the redacted copies of `stateTranscripts`) once it has been quiet
+for `sessionArchiveQuietDays`, copies it gzipped into `sessionArchiveRoot`, and
+writes one card, `session-<uuid>.md`, into its area's library: what, why, when,
+how, outcome, open ends and what an agent needs to continue, with `@L<line>`
+anchors and quotes checked against the transcript, then a pointer to the
+archive copy (path, SHA-256, the `zcat` that reads it). Each
+`sessionArchiveAreas` entry is a one-sentence description, a library folder and
+the project slugs to read; a session the model cannot place gets no card and is
+listed by `flakelab session-archive review`. The calls (`sessionArchiveModel`
+at `sessionArchiveEffort`, `claude-haiku-5-5` at `low` by default) are billed
+per token to `SESSION_ARCHIVE_ANTHROPIC_API_KEY` from the secrets file, never
+`ANTHROPIC_API_KEY`: zsh exports that file into every shell, and that name would
+move every Claude Code session onto API billing. A run stops at
+`sessionArchiveRunCapUsd` or `sessionArchiveRunSessions`, and
+`sessionArchiveSchedule` adds the `flakelab-session-archive` timer, which needs
+`stateRoot`, `sessionArchiveRoot` and at least one area. `status` (`--json`)
+and the doctor's "Session archive" section show the last run, the backlog and
+the held and review counts; `run --dry-run` counts without a model call or a
+write.
 
 ### Account switcher
 

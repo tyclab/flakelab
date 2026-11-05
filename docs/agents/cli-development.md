@@ -91,6 +91,25 @@ Read for this topic; paths below are relative to the repository root unless stat
     everywhere else. `status`, `login [--fresh]` from a desktop,
     `import-codex` once; a refusal exits 2. Its suite is python unittest in
     `lib/test-mcp.py`, run by `test-mcp`.
+  - `session-archive` (new, `session-archive`): a zsh shim over
+    `lib/session_archive/` (python3 stdlib; prompts and schema in
+    `files/config/session-archive/`): `run` (`--session UUID`, `--dry-run`,
+    `--limit N`, `--keep`), `status` (`--json`), `review`. It reads the state
+    root's redacted transcripts (`FLAKELAB_STATE_ROOT`) and writes nothing
+    there, and never reads `~/.claude/projects`; its own state is
+    `~/.local/state/flakelab/session-archive/` (`state.sqlite3`, `review.md`,
+    `work/<uuid>/`, `lock`). The key is `SESSION_ARCHIVE_ANTHROPIC_API_KEY`,
+    read at use time from the first readable of `$FLAKELAB_SECRETS_ENV`, the
+    sops render and `secrets.env`; never `ANTHROPIC_API_KEY`, which the shell
+    exports and which would put every Claude Code session on API billing. A
+    second run while one holds the lock prints `already running` and exits 0;
+    a `.owner` naming another machine in the archive root or a library, an
+    unreachable root (`root_unreachable`) or an unavailable model API
+    (`model_unavailable`, the session in flight not held) exits 1. A run
+    prints one counts-only journal line, and no message names a path or a
+    secret. The doctor reads `status --json`. Its suite is python unittest
+    in `lib/test-session-archive.py` with a stub model, run by
+    `test-session-archive`.
   - `gitchecker`, `gitcleaner`, `gitpublisher` stay STANDALONE commands — no
     namespace collision, and other repos and skills invoke them by name.
   - Exit codes: a usage error (an unknown flag or argument) exits 2 on every

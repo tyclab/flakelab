@@ -709,6 +709,60 @@ not mounted) skips the state categories with a recorded failure rather than
 silently writing them somewhere else. On a Windows drive POSIX modes are lost —
 one more reason the seed stays out.
 
+### The session archive
+
+`flakelab session-archive` keeps two tiers of each quiet Claude Code session: a
+card that answers the fixed questions (what, why, when, how, outcome, open ends,
+what an agent needs to continue) and a gzipped copy of the whole transcript,
+which the card's Pointer block names, so an agent reads the card first and
+fetches the transcript only for the detail. It reads the transcripts that
+passed the secret gate above,
+`<stateRoot>/claude/projects/<slug>/<uuid>.jsonl` for the slugs the areas name,
+never `~/.claude/projects`, and writes nothing into the state root. Only parent
+transcripts count, read once per uuid (the largest copy when one sits under
+two slugs); a sync conflict copy, a file written in the last ten minutes, a
+transcript whose last `timestamp` (not its mtime) is less than
+`sessionArchiveQuietDays` old, and one with no operator text are left out.
+
+Each session is rendered whole with `@L<line>` anchors and redaction (only a
+record longer than a window is cut, and marked), split into 60,000-byte windows
+of whole records, summarized one call per window and, with more than one window,
+merged in one more call. The citation check then keeps the anchors that name a
+record and marks an item `(unverified)` when none does or a quote is in none of
+those records, exactly or at a `difflib` ratio of 0.85. The model files the
+session under one of `sessionArchiveAreas`; one it cannot place (`unclear`)
+gets a line in `review.md` and no card. Otherwise the transcript is copied to
+`<sessionArchiveRoot>/<slug>/<uuid>.<sha8>.jsonl.gz`, a name never reused for
+other content, and the card `session-<uuid>.md` is written atomically to the
+area's library, replaced only when its content changed. A session that grew
+has a new SHA-256, so it gets a new copy and a rewritten card; the lane deletes
+neither, and removing local transcripts stays Claude Code's `cleanupPeriodDays`
+(30, above the quiet days).
+
+A failure of one session holds it — a model error, an unparsable answer, a
+transcript, work file, archive copy or card that cannot be read or written, a
+missing library: the next run retries it, and after three holds of the same
+content only `run --session` does. Two failures belong to the run instead, and both exit 1:
+an unreachable archive root takes no session (`root_unreachable`), and a model
+API that refuses the key or the model, or is still down after the retries,
+stops the run without holding the session in flight (`model_unavailable`). A
+model with no list price in `summarize.py` is refused before any call, since
+the run cap could not count it. Every call is priced into a ledger, and once a
+run reaches `sessionArchiveRunCapUsd` the session in flight finishes and no
+other starts.
+
+The state is per box, under `~/.local/state/flakelab/session-archive/`:
+`state.sqlite3` (a row per session, per run and per call), `review.md`,
+`work/<uuid>/` (removed once the session is through unless it is held or the
+run has `--keep`) and `lock`, which keeps one instance (a second one exits 0).
+`status` reads that store and never scans, so its backlog is what the last full
+run counted. A `.owner` file with the machine id claims the archive root and
+each library on the first run that is not a dry run; every marker is read before any is
+written, and one naming another box exits 1, so two boxes never write the same
+archive. The timer's service is a oneshot that activation never restarts, at
+`Nice` 10 with idle I/O and a two-hour timeout; the timer is `Persistent` with
+up to 20 minutes of random delay. Its journal is one line of counts.
+
 ## Language runtimes
 
 `nix/home/packages.nix` ships Go (`gopls`), Node 24 (`nodeenv`, `bun`,
