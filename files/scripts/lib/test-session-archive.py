@@ -371,7 +371,7 @@ FIXTURE_SPEAKERS = [
     (16, "SYSTEM"), (17, "OPERATOR"), (18, "SYSTEM"), (19, "HANDBACK"), (21, "OPERATOR"), (22, "SYSTEM"), (24, "SYSTEM"),
     (25, "OPERATOR"), (26, "SYSTEM"), (27, "CALL(Bash)"), (28, "RESULT(Bash)"), (29, "ASSISTANT"), (30, "CALL(Bash)"),
     (31, "RESULT(Bash)"), (32, "ASSISTANT"), (33, "OPERATOR"), (34, "OPERATOR"), (36, "SYSTEM"), (37, "SYSTEM"),
-    (38, "RESULT(?)"), (39, "OPERATOR"), (40, "ASSISTANT"),
+    (38, "RESULT(?)"), (38, "OPERATOR"), (39, "OPERATOR"), (40, "ASSISTANT"),
 ]
 
 
@@ -413,6 +413,8 @@ class RenderTest(unittest.TestCase):
         self.assertIn("\n@L39 OPERATOR: thanks, that is all\n", done.text)
         self.assertEqual((done.uuid, done.bytes_in), ("session-a", FIXTURE.stat().st_size))
         self.assertEqual(record_at(done, 5, "CALL(Read)").text, '{"file_path": "widgets/catalogue.txt"}')
+        self.assertEqual(record_at(done, 38, "OPERATOR").text, "fill the gaps from shelf 9 first")
+        self.assertNotIn("The task list changed", done.text)
         for line, speaker, start in (
             (8, "RESULT(Bash)", "[error] sort: cannot read"),
             (11, "OPERATOR", '[pasted] <pasted_content id="p1">'),
@@ -462,11 +464,13 @@ class RenderTest(unittest.TestCase):
         self.assertEqual([r.line for r in self.fixture.records if 8 <= r.line <= 10], [8, 10])
         path = self.write(said("user", "first prompt"), b"\n", b'{"type": "user", "mess\n', b"\x80\x81 not utf-8\n",
                           b"[1, 2]\n", b'"just a string"\n', said("user", "lone \ud83d half"),
+                          {**said("user", "out of range"), "timestamp": "0001-01-01T00:00:00+01:00"},
                           said("assistant", [{"type": "text", "text": "last"}]), b'{"type": "assistant", "message"')
         broken = render.render(path)
         self.assertEqual(broken.skipped_lines, 5)
-        self.assertEqual([(r.line, r.speaker, r.text) for r in broken.records], [
-            (1, "OPERATOR", "first prompt"), (7, "OPERATOR", "lone \ufffd half"), (8, "ASSISTANT", "last"),
+        self.assertEqual([(r.line, r.time, r.speaker, r.text) for r in broken.records], [
+            (1, stamp(OLD), "OPERATOR", "first prompt"), (7, stamp(OLD), "OPERATOR", "lone \ufffd half"),
+            (8, "", "OPERATOR", "out of range"), (9, stamp(OLD), "ASSISTANT", "last"),
         ])
         self.assertEqual((broken.bytes_in, broken.cuts), (path.stat().st_size, []))
 
@@ -476,27 +480,40 @@ class RedactTest(unittest.TestCase):
     def test_redact_masks_key_shapes(self):
         pem = "\n".join(["-----BEGIN RSA " + "PRIVATE KEY-----", "M" * 64, "M" * 9, "-----END RSA " + "PRIVATE KEY-----"])
         cut_pem = "-----BEGIN OPENSSH " + "PRIVATE KEY-----\n" + "A" * 70 + "\n" + "A" * 9 + "\nexport PATH=/bin"
+        heredoc = json.dumps({"command": "cat > k <<'EOF'\n" + cut_pem.split("\nexport")[0] + "\n" + "Z" * 30})
         for raw, masked in (
             ("key sk-ant-" + "a" * 24 + " in use", "key [REDACTED:anthropic] in use"),
             ('{"command": "echo\\nsk-ant-' + "a" * 12 + '"}', '{"command": "echo\\n[REDACTED:anthropic]"}'),
-            ("GITLAB_TOKEN=glpat-" + "g" * 20, "GITLAB_TOKEN=[REDACTED:gitlab]"),
+            ("key%3Dsk-ant-" + "a" * 12 + " <b>sk-proj-" + "o" * 20, "key%3D[REDACTED:anthropic] <b>[REDACTED:openai]"),
+            ("GITLAB_TOKEN=glpat-" + "g" * 20 + " x=xglpat-" + "g" * 8,
+             "GITLAB_TOKEN=[REDACTED:gitlab] x=x[REDACTED:gitlab]"),
             ("ghp_" + "h" * 36 + " github_pat_" + "h" * 40, "[REDACTED:github] [REDACTED:github]"),
-            ("xoxb-" + "s" * 12, "[REDACTED:slack]"),
+            ("idgithub_pat_" + "h" * 20, "id[REDACTED:github]"),
+            ("xoxb-" + "s" * 12 + " abcxoxp-" + "s" * 8, "[REDACTED:slack] abc[REDACTED:slack]"),
             ("id AKIA" + "Q" * 16, "id [REDACTED:aws]"),
             ("eyJ" + "a" * 10 + ".eyJ" + "b" * 10 + "." + "c" * 10, "[REDACTED:jwt]"),
             ("hvs." + "v" * 24, "[REDACTED:vault]"),
             (f"before\n{pem}\nafter", "before\n[REDACTED:pem]\nafter"),
             (cut_pem, "[REDACTED:pem]\nexport PATH=/bin"),
+            (heredoc, """{"command": "cat > k <<'EOF'\\n[REDACTED:pem]"}"""),
             ('curl -H "Authorization: Bearer ' + "b" * 24 + '"', 'curl -H "Authorization: Bearer [REDACTED:bearer]"'),
+            ('-H "Authorization: Basic ' + "Y" * 16 + '=="', '-H "Authorization: Basic [REDACTED:basic]"'),
+            ('{"Authorization": "token ' + "f" * 40 + '"}', '{"Authorization": "token [REDACTED:auth-token]"}'),
+            ("git clone https://deploy:" + "s" * 12 + "@git.example.invalid/w.git",
+             "git clone https://deploy:[REDACTED:url]@git.example.invalid/w.git"),
+            ("widgetctl login --password " + "p" * 9 + " --token '" + "t" * 8 + "'",
+             "widgetctl login --password [REDACTED:flag] --token '[REDACTED:flag]'"),
             ("password=" + "p" * 12, "password=[REDACTED:assign]"),
             ('{"api_key": "' + "k" * 16 + '", "n": 1}', '{"api_key": "[REDACTED:assign]", "n": 1}'),
-            ('{\\"db_password\\": \\"' + "p" * 10 + '\\"}', '{\\"db_password\\": \\"[REDACTED:assign]"}'),
+            ('{\\"db_password\\": \\"' + "p" * 10 + '\\"}', '{\\"db_password\\": \\"[REDACTED:assign]\\"}'),
+            ('{"command": "PASSWORD=' + "h" * 9 + '\\ncurl x"}', '{"command": "PASSWORD=[REDACTED:assign]\\ncurl x"}'),
             ("client_secret: " + "c" * 8, "client_secret: [REDACTED:assign]"),
         ):
             with self.subTest(raw=raw):
                 self.assertEqual(render.redact(raw), masked)
         for kept in ("token: abc1234", 'export BW_SESSION="${BW_SESSION_VALUE:-unset}"', "max_tokens: 16000",
-                     f"run --session {UUID}", f"sessionId: {UUID}", "the secrets.env file", "keys start with sk-ant-"):
+                     f"run --session {UUID}", f"sessionId: {UUID}", "the secrets.env file", "keys start with sk-ant-",
+                     "--token " + "t" * 7, '--token "$GITLAB_TOKEN" --password-file /run/pw', "ssh://git@host:22/repo"):
             with self.subTest(kept=kept):
                 self.assertEqual(render.redact(kept), kept)
         done = render.render(FIXTURE)

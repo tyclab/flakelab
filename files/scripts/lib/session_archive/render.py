@@ -16,27 +16,39 @@ MAX_RECORD = 60_000
 CUT = " [...{} chars cut...]"
 PASTED, RELAYED, ERROR = "[pasted] ", "[long; may relay another agent] ", "[error] "
 PEER, SUMMARY = "[peer session; not the operator] ", "[compaction summary; generated, not evidence] "
-SYSTEM_TAGS = ("<bash-stdout>", "<bash-stderr>", "<local-command-", "<system-reminder")
+REMINDER = "<system-reminder"
+SYSTEM_TAGS = ("<bash-stdout>", "<bash-stderr>", "<local-command-", REMINDER)
 DATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T")
 SURROGATE = re.compile("[\ud800-\udfff]")
 # A token's start: not inside a word, or right after an escaped newline or tab of JSON-dumped text.
 START = r"(?:(?<![A-Za-z0-9_])|(?<=\\[nrt]))"
 KEY_NAME = (r"[\w.-]{0,64}?(?:pass(?:word|wd|phrase)|secret|token|psk|\w_session"
             r"|(?:api|access|private|secret|signing)[_-]?key)")
-LINE_END = r"(?=\r?\n|\\r?\\n|$)"
-# Pilot rules with an 8-character floor: a cut tool result once let a 21-character session token prefix through.
+QUOTE = r"\\*[\"']?"
+AUTH = rf"\bauthorization{QUOTE}\s*[:=]\s*{QUOTE}\s*"
+# A value ends at whitespace, a quote, an angle bracket or a JSON escape (\n, \r, \t, \").
+VALUE = r"(?:[^\s\"'<>\\]|\\(?![nrt\"]))"
+NEWLINE = r"(?:\r?\n|(?:\\r)?\\n)"
+LINE_END = rf"(?={NEWLINE}|\\?[\"']|$)"
+# An 8-character floor (a cut tool result once let a 21-character session token prefix through); prefixes that no
+# word contains match anywhere, the others only at a token's start.
 RULES = [(name, re.compile(pattern)) for name, pattern in (
     ("pem", r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
-            rf"|(?:(?:\r?\n|\\r?\\n)+(?:[A-Za-z0-9+/=]+|[A-Za-z-]+:[^\n\\]*){LINE_END})*)"),
-    ("anthropic", rf"{START}sk-ant-[A-Za-z0-9_-]{{8,}}"),
-    ("gitlab", rf"{START}glpat-[A-Za-z0-9_-]{{8,}}"),
-    ("github", rf"{START}(?:gh[pousr]_[A-Za-z0-9]{{8,}}|github_pat_[A-Za-z0-9_]{{8,}})"),
-    ("slack", rf"{START}xox[abposr]-[A-Za-z0-9-]{{8,}}"),
+            rf"|(?:{NEWLINE}+(?:[A-Za-z0-9+/=]+|[A-Za-z-]+:[^\n\\]*){LINE_END})*)"),
+    ("anthropic", r"sk-ant-[A-Za-z0-9_-]{8,}"),
+    ("openai", r"sk-proj-[A-Za-z0-9_-]{8,}"),
+    ("gitlab", r"glpat-[A-Za-z0-9_-]{8,}"),
+    ("github", rf"(?:github_pat_[A-Za-z0-9_]{{8,}}|{START}gh[pousr]_[A-Za-z0-9]{{8,}})"),
+    ("slack", rf"(?:xox[abp]|{START}xox[osr])-[A-Za-z0-9-]{{8,}}"),
     ("aws", rf"{START}AKIA[0-9A-Z]{{16}}"),
     ("jwt", rf"{START}eyJ[A-Za-z0-9_-]{{8,}}\.eyJ[A-Za-z0-9_-]{{8,}}\.[A-Za-z0-9_-]{{8,}}"),
     ("vault", rf"{START}hv[sbr]\.[A-Za-z0-9_-]{{8,}}"),
     ("bearer", r"(?i)(\bbearer\s+)(?!\[REDACTED)[A-Za-z0-9._~+/=-]{8,}"),
-    ("assign", rf"(?i)(\b{KEY_NAME}\b\\*[\"']?\s*[:=]\s*\\*[\"']?)(?!\[REDACTED|\$)[^\s\"'<>]{{8,}}"),
+    ("basic", rf"(?i)({AUTH}basic\s+)(?!\[REDACTED)[A-Za-z0-9+/=]{{8,}}"),
+    ("auth-token", rf"(?i)({AUTH}token\s+)(?!\[REDACTED)[A-Za-z0-9._~+/=-]{{8,}}"),
+    ("url", r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s/:@\"'<>]*:)(?!\[REDACTED)[^\s/@\"'<>]+(?=@)"),
+    ("flag", rf"(?i)((?<![\w-])--{KEY_NAME}\s+{QUOTE})(?!\[REDACTED|\$|-){VALUE}{{8,}}"),
+    ("assign", rf"(?i)(\b{KEY_NAME}\b{QUOTE}\s*[:=]\s*{QUOTE})(?!\[REDACTED|\$){VALUE}{{8,}}"),
 )]
 
 
@@ -80,11 +92,11 @@ def when(stamp):
         return ""
     try:
         moment = datetime.fromisoformat(stamp)
-    except ValueError:
+        if moment.tzinfo is None:
+            return moment.isoformat(timespec="seconds")
+        return moment.astimezone(UTC).replace(tzinfo=None).isoformat(timespec="seconds") + "Z"
+    except (ValueError, OverflowError):
         return ""
-    if moment.tzinfo is None:
-        return moment.strftime("%Y-%m-%dT%H:%M:%S")
-    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def flat(content):
@@ -159,7 +171,10 @@ def said(record, names):
                 name = names.get(tool) if isinstance(tool, str) else None
                 yield f"RESULT({name or '?'})", ERROR if block.get("is_error") else "", flat(block.get("content"))
             elif isinstance(block, dict) and block.get("type") == "text":
-                yield prompt(flat(block.get("text")), origin, record)
+                # A message typed mid-turn rides beside the results; reminders appended there are dropped.
+                text = flat(block.get("text"))
+                if not text.lstrip().startswith(REMINDER):
+                    yield prompt(text, origin, record)
     else:
         yield prompt(flat(content), origin, record)
 
