@@ -7,15 +7,17 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import tempfile
 import unittest
 
-from session_archive import cli, config, sources, store
+from session_archive import cli, config, render, sources, store, windows
 from session_archive import secrets as lane_secrets
 
 SHIM = Path(__file__).resolve().parent.parent / "session-archive"
+FIXTURE = Path(__file__).resolve().parent / "fixtures/session-archive/session-a.jsonl"
 UUID = "0f9b6c2e-3a41-4d7e-9c55-1b2a3c4d5e6f"
 OTHER_UUID = "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 THIRD_UUID = "3e2d1c0b-9a8f-4e7d-a6c5-b4a39281706f"
@@ -361,6 +363,209 @@ class ScanTest(Scratch):
         with self.assertRaises(sources.SourceError) as caught:
             sources.scan(self.cfg, self.store, NOW)
         self.assertNotIn(str(self.tmp), str(caught.exception))
+
+
+FIXTURE_SPEAKERS = [
+    (2, "OPERATOR"), (5, "ASSISTANT"), (5, "CALL(Read)"), (6, "RESULT(Read)"), (7, "CALL(Bash)"), (8, "RESULT(Bash)"),
+    (10, "ASSISTANT"), (11, "OPERATOR"), (12, "OPERATOR"), (13, "CALL(Agent)"), (14, "RESULT(Agent)"), (15, "HANDBACK"),
+    (16, "SYSTEM"), (17, "OPERATOR"), (18, "SYSTEM"), (19, "HANDBACK"), (21, "OPERATOR"), (22, "SYSTEM"), (24, "SYSTEM"),
+    (25, "OPERATOR"), (26, "SYSTEM"), (27, "CALL(Bash)"), (28, "RESULT(Bash)"), (29, "ASSISTANT"), (30, "CALL(Bash)"),
+    (31, "RESULT(Bash)"), (32, "ASSISTANT"), (33, "OPERATOR"), (34, "OPERATOR"), (36, "SYSTEM"), (37, "SYSTEM"),
+    (38, "RESULT(?)"), (39, "OPERATOR"), (40, "ASSISTANT"),
+]
+
+
+def fixture_line(number):
+    return json.loads(FIXTURE.read_bytes().split(b"\n")[number - 1])
+
+
+def result_text(number):
+    """The content of the one tool_result on that fixture line, flattened."""
+    content = fixture_line(number)["message"]["content"][0]["content"]
+    return content if isinstance(content, str) else "\n".join(block["text"] for block in content)
+
+
+def record_at(rendered, line, speaker=None):
+    return next(r for r in rendered.records if r.line == line and speaker in (None, r.speaker))
+
+
+class RenderTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / f"{UUID}.jsonl"
+        self.fixture = render.render(FIXTURE)
+
+    def write(self, *lines):
+        self.path.write_bytes(b"".join(line if isinstance(line, bytes) else json.dumps(line).encode() + b"\n"
+                                       for line in lines))
+        return self.path
+
+    def test_render_anchors_every_record(self):
+        done = self.fixture
+        self.assertEqual([(r.line, r.speaker) for r in done.records], FIXTURE_SPEAKERS)
+        self.assertEqual(done.text, "\n".join(r.rendered for r in done.records))
+        for r in done.records:
+            anchor = " ".join(part for part in (f"@L{r.line}", r.time, r.speaker) if part)
+            self.assertEqual(r.rendered, f"{anchor}: {r.text}")
+        self.assertEqual([record_at(done, line).time for line in (2, 5, 39)],
+                         ["2026-01-10T09:00:00Z", "2026-01-10T09:01:00Z", ""])
+        self.assertIn("\n@L39 OPERATOR: thanks, that is all\n", done.text)
+        self.assertEqual((done.uuid, done.bytes_in), ("session-a", FIXTURE.stat().st_size))
+        self.assertEqual(record_at(done, 5, "CALL(Read)").text, '{"file_path": "widgets/catalogue.txt"}')
+        for line, speaker, start in (
+            (8, "RESULT(Bash)", "[error] sort: cannot read"),
+            (11, "OPERATOR", '[pasted] <pasted_content id="p1">'),
+            (12, "OPERATOR", "[long; may relay another agent] \u273b Notes"),
+            (15, "HANDBACK", "<task-notification>"),
+            (18, "SYSTEM", '[peer session; not the operator] <agent-message from="shelf-planner">'),
+            (24, "SYSTEM", "[compaction summary; generated, not evidence] This session"),
+            (33, "OPERATOR", "[image]\nthis is the label layout"),
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(record_at(done, line, speaker).text.startswith(start), record_at(done, line).text[:80])
+
+    def test_render_keeps_long_tool_result_whole(self):
+        whole = result_text(6).strip()
+        self.assertGreater(len(whole), 6_000)
+        self.assertEqual(record_at(self.fixture, 6).text, whole)
+        relayed = fixture_line(12)["message"]["content"]
+        self.assertEqual(record_at(self.fixture, 12).text, f"[long; may relay another agent] {relayed}")
+        call = record_at(self.fixture, 13).text
+        self.assertEqual(json.loads(call), fixture_line(13)["message"]["content"][0]["input"])
+
+    def test_render_cuts_only_records_over_max_record(self):
+        whole = result_text(31).strip()
+        self.assertGreater(len(whole.encode()), 60_000)
+        [(line, chars)] = self.fixture.cuts
+        record = record_at(self.fixture, 31)
+        marker = f" [...{chars} chars cut...]"
+        self.assertEqual(line, 31)
+        self.assertTrue(record.text.endswith(marker))
+        kept = record.text[:-len(marker)]
+        self.assertEqual((whole[:len(kept)], len(kept) + chars), (kept, len(whole)))
+        self.assertTrue(60_000 - 100 < len(record.rendered.encode()) <= 60_000)
+        self.assertEqual([r for r in self.fixture.records if "chars cut...]" in r.text], [record])
+        small = render.render(FIXTURE, max_record=2_000)
+        self.assertEqual([line for line, _ in small.cuts], [6, 31])
+        self.assertTrue(all(len(r.rendered.encode()) <= 2_000 for r in small.records))
+        self.assertEqual([r for r in small.records if r.line not in (6, 31)],
+                         [r for r in self.fixture.records if r.line not in (6, 31)])
+        wide = render.render(self.write(said("assistant", [{"type": "text", "text": "\u00e4" * 100}])), max_record=120)
+        [(_, chars)] = wide.cuts
+        [record] = wide.records
+        self.assertLessEqual(len(record.rendered.encode()), 120)
+        self.assertEqual(record.text, "\u00e4" * (100 - chars) + f" [...{chars} chars cut...]")
+
+    def test_render_skips_malformed_line(self):
+        self.assertEqual(self.fixture.skipped_lines, 1)
+        self.assertEqual([r.line for r in self.fixture.records if 8 <= r.line <= 10], [8, 10])
+        path = self.write(said("user", "first prompt"), b"\n", b'{"type": "user", "mess\n', b"\x80\x81 not utf-8\n",
+                          b"[1, 2]\n", b'"just a string"\n', said("user", "lone \ud83d half"),
+                          said("assistant", [{"type": "text", "text": "last"}]), b'{"type": "assistant", "message"')
+        broken = render.render(path)
+        self.assertEqual(broken.skipped_lines, 5)
+        self.assertEqual([(r.line, r.speaker, r.text) for r in broken.records], [
+            (1, "OPERATOR", "first prompt"), (7, "OPERATOR", "lone \ufffd half"), (8, "ASSISTANT", "last"),
+        ])
+        self.assertEqual((broken.bytes_in, broken.cuts), (path.stat().st_size, []))
+
+
+class RedactTest(unittest.TestCase):
+    # Invented values, assembled at run time so that no source line looks like a credential to the secrets scan.
+    def test_redact_masks_key_shapes(self):
+        pem = "\n".join(["-----BEGIN RSA " + "PRIVATE KEY-----", "M" * 64, "M" * 9, "-----END RSA " + "PRIVATE KEY-----"])
+        cut_pem = "-----BEGIN OPENSSH " + "PRIVATE KEY-----\n" + "A" * 70 + "\n" + "A" * 9 + "\nexport PATH=/bin"
+        for raw, masked in (
+            ("key sk-ant-" + "a" * 24 + " in use", "key [REDACTED:anthropic] in use"),
+            ('{"command": "echo\\nsk-ant-' + "a" * 12 + '"}', '{"command": "echo\\n[REDACTED:anthropic]"}'),
+            ("GITLAB_TOKEN=glpat-" + "g" * 20, "GITLAB_TOKEN=[REDACTED:gitlab]"),
+            ("ghp_" + "h" * 36 + " github_pat_" + "h" * 40, "[REDACTED:github] [REDACTED:github]"),
+            ("xoxb-" + "s" * 12, "[REDACTED:slack]"),
+            ("id AKIA" + "Q" * 16, "id [REDACTED:aws]"),
+            ("eyJ" + "a" * 10 + ".eyJ" + "b" * 10 + "." + "c" * 10, "[REDACTED:jwt]"),
+            ("hvs." + "v" * 24, "[REDACTED:vault]"),
+            (f"before\n{pem}\nafter", "before\n[REDACTED:pem]\nafter"),
+            (cut_pem, "[REDACTED:pem]\nexport PATH=/bin"),
+            ('curl -H "Authorization: Bearer ' + "b" * 24 + '"', 'curl -H "Authorization: Bearer [REDACTED:bearer]"'),
+            ("password=" + "p" * 12, "password=[REDACTED:assign]"),
+            ('{"api_key": "' + "k" * 16 + '", "n": 1}', '{"api_key": "[REDACTED:assign]", "n": 1}'),
+            ('{\\"db_password\\": \\"' + "p" * 10 + '\\"}', '{\\"db_password\\": \\"[REDACTED:assign]"}'),
+            ("client_secret: " + "c" * 8, "client_secret: [REDACTED:assign]"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(render.redact(raw), masked)
+        for kept in ("token: abc1234", 'export BW_SESSION="${BW_SESSION_VALUE:-unset}"', "max_tokens: 16000",
+                     f"run --session {UUID}", f"sessionId: {UUID}", "the secrets.env file", "keys start with sk-ant-"):
+            with self.subTest(kept=kept):
+                self.assertEqual(render.redact(kept), kept)
+        done = render.render(FIXTURE)
+        self.assertEqual(done.redactions, {"anthropic": 1, "assign": 2, "bearer": 1, "pem": 1})
+        for raw in ("sk-ant-x", "b" * 24, "p" * 12, "A" * 16, "Q" * 8):
+            self.assertNotIn(raw, done.text)
+
+    def test_redact_masks_truncated_session_token(self):
+        value = "Q" * 20
+        for raw, masked in (
+            (f"export BW_SESSION={value}", "export BW_SESSION=[REDACTED:assign]"),
+            (f'export BW_SESSION="{value}', 'export BW_SESSION="[REDACTED:assign]'),
+            (f'{{"command": "export BW_SESSION=\\"{value}', '{"command": "export BW_SESSION=\\"[REDACTED:assign]'),
+            ("BW_SESSION=" + "Q" * 8, "BW_SESSION=[REDACTED:assign]"),
+            ("BW_SESSION=" + "Q" * 7, "BW_SESSION=" + "Q" * 7),
+            ("token: " + "t" * 8, "token: [REDACTED:assign]"),
+            ("password=" + "p" * 7, "password=" + "p" * 7),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(render.redact(raw), masked)
+        result = record_at(render.render(FIXTURE), 28).text
+        self.assertTrue(result.endswith("\n[REDACTED:pem]\nexport BW_SESSION=[REDACTED:assign]"), result)
+
+
+class WindowsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.rendered = render.render(shutil.copy(FIXTURE, self.tmp / f"{UUID}.jsonl"))
+
+    def members(self, window, number, total):
+        """The indexes of the records a window holds, which must be whole and consecutive."""
+        head, body = window.text.split("\n\n", 1)
+        self.assertTrue(head.startswith(f"SESSION {UUID}\nWINDOW {number} of {total}; "
+                                        f"records @L{window.start_line} to @L{window.end_line}. "), head)
+        records = self.rendered.records
+        found = [i for i, r in enumerate(records) if r.rendered in body]
+        self.assertEqual(found, list(range(found[0], found[-1] + 1)))
+        self.assertEqual(body, "\n".join(records[i].rendered for i in found))
+        return found
+
+    def test_windows_cover_every_record_once_or_overlap(self):
+        records = self.rendered.records
+        for size, overlap, count in ((60_000, 6_000, 3), (1_500, 500, None)):
+            parts = windows.split(self.rendered, size=size, overlap=overlap)
+            spans = [self.members(w, n, len(parts)) for n, w in enumerate(parts, 1)]
+            with self.subTest(size=size):
+                self.assertEqual([w.name for w in parts], [f"{UUID}.w{n}" for n in range(1, len(parts) + 1)])
+                self.assertEqual(sorted(set().union(*spans)), list(range(len(records))))
+                for window, span in zip(parts, spans):
+                    first, last = records[span[0]], records[span[-1]]
+                    self.assertEqual((window.start_line, window.end_line), (first.line, last.line))
+                    body = len("\n".join(records[i].rendered for i in span).encode())
+                    self.assertTrue(body <= size or len(span) == 1, (window.name, body))
+                shared = []
+                for before, after in zip(spans, spans[1:]):
+                    common = [i for i in before if i in after]
+                    self.assertEqual((common, after[:len(common)]), (before[len(before) - len(common):], common))
+                    self.assertTrue(after[0] <= before[-1] + 1 and after[-1] > before[-1])
+                    self.assertLessEqual(len("\n".join(records[i].rendered for i in common).encode()), overlap)
+                    shared.append(len(common))
+                if count:
+                    self.assertEqual(len(parts), count)
+                    self.assertEqual([records[i].line for i in spans[1]], [31])
+                else:
+                    self.assertTrue(any(shared), shared)
+        (self.tmp / "empty.jsonl").write_text("\n")
+        self.assertEqual(windows.split(render.render(self.tmp / "empty.jsonl")), [])
 
 
 def call(*argv):
