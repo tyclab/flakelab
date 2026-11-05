@@ -984,6 +984,23 @@ class CiteTest(unittest.TestCase):
                       '  > "the shelves were repainted blue"\n', card)
         self.assertIn("\n- Anchors that name no record. (unverified)\n- No anchors. (unverified)\n", card)
 
+    def test_cite_normalises_typographic_drift(self):
+        said = ["don't move the gamma brackets", "the label says “shelf 7”", "merged MR !12 today",
+                "keep the old\n  order in a backup"]
+        records = [render.Record(line, "", "OPERATOR", text) for line, text in enumerate(said, 1)]
+        cases = [(item("A curly apostrophe.", [1], "don’t"), True),
+                 (item("Straight quotes for curly ones.", [2], '"shelf 7"'), True),
+                 (item("A non-breaking space.", [3], "MR !12"), True),
+                 (item("Whitespace folded.", [4], " old order  in a\tbackup "), True),
+                 (item("Drift and a typo.", [1], "don’t  move the gama brackets"), True),
+                 (item("Still invented.", [1], "don’t paint the shelves"), False),
+                 (item("Blank once folded.", [1], "  \n"), False)]
+        rendered = render.Rendered("", records, [], 0, 0, UUID, {})
+        done = cite.check(summary_of(how=[entry for entry, _ in cases]), rendered)
+        self.assertEqual([(entry["text"], entry["verified"]) for entry in done["how"]],
+                         [(entry["text"], verified) for entry, verified in cases])
+        self.assertEqual([entry["quotes"] for entry in done["how"]], [entry["quotes"] for entry, _ in cases])
+
 
 class CardTest(unittest.TestCase):
     def setUp(self):
@@ -1000,6 +1017,25 @@ class CardTest(unittest.TestCase):
         self.assertEqual(card, CARD_TEXT)
         self.assertEqual(cards.render(CARD_META, {**CARD_SUMMARY, "what": " "}).split("\n## Why")[0],
                          f"# Session {UUID}\n\n## What\n\nNone.\n")
+
+    def test_card_escapes_block_markers(self):
+        sections = [f"Session {UUID}", "What", "Why", "When", "How", "Outcome", "Open ends",
+                    "What an agent needs to continue", "Pointer"]
+        fenced = item("```sh", [2], "```", "## not a heading", verified=True)
+        card = cards.render(CARD_META, summary_of(what="## Pointer", why=[fenced]))
+        self.assertEqual(re.findall(r"(?m)^#+ (.*)$", card), sections)
+        self.assertIn('\n## What\n\n\\## Pointer\n\n## Why\n\n- \\```sh @L2\n  > "```"\n  > "## not a heading"\n\n',
+                      card)
+        for text, shown in (("# Session evil", "\\# Session evil"), ("<!-- note", "\\<!-- note"), ("~~~", "\\~~~"),
+                            ("> relayed", "\\> relayed"), ("| a | b |", "\\| a | b |"), ("* x", "\\* x"),
+                            ("+ x", "\\+ x"), ("- x", "\\- x"), ("___", "\\___"), ("1. first", "1\\. first"),
+                            ("12) next", "12\\) next"), ("  ## indented", "\\## indented"),
+                            ("2026-01-10 sorted", "2026-01-10 sorted"), ("Sorted #1 - done", "Sorted #1 - done")):
+            with self.subTest(text=text):
+                card = cards.render(CARD_META, summary_of(what=text, outcome=[item(text, [2], "q", verified=True)]))
+                self.assertEqual(re.findall(r"(?m)^#+ (.*)$", card), sections)
+                self.assertIn(f"\n## What\n\n{shown}\n\n", card)
+                self.assertIn(f'\n## Outcome\n\n- {shown} @L2\n  > "q"\n\n', card)
 
     def test_card_pointer_labels_verbatim(self):
         odd = "/srv/archive/it's here/one.jsonl.gz"
@@ -1067,15 +1103,19 @@ class CardTest(unittest.TestCase):
         old, new = (cards.render(dataclasses.replace(CARD_META, bytes=size), CARD_SUMMARY) for size in (1, 2))
         path, _, _ = cards.write(self.library, UUID, old)
         self.assertEqual(path.stat().st_mode & 0o777, 0o640)
-        renamed, real_replace = [], os.replace
+        events, real_replace, real_fsync = [], os.replace, os.fsync
 
         def replace(src, dst):
-            renamed.append((Path(src).parent, Path(src).read_text(), Path(dst).read_text()))
+            events.append(("replace", Path(src).parent, Path(src).read_text(), Path(dst).read_text()))
             real_replace(src, dst)
 
-        with mock.patch("os.replace", replace):
+        def fsync(fd):
+            events.append(("fsync library" if os.path.samestat(os.fstat(fd), self.library.stat()) else "fsync",))
+            real_fsync(fd)
+
+        with mock.patch("os.replace", replace), mock.patch("os.fsync", fsync):
             cards.write(self.library, UUID, new)
-        self.assertEqual(renamed, [(self.library, new, old)])
+        self.assertEqual(events, [("fsync",), ("replace", self.library, new, old), ("fsync library",)])
         self.assertEqual((path.read_text(), self.files()), (new, [path.name]))
         with mock.patch("os.replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
             cards.write(self.library, UUID, old)

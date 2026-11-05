@@ -1,10 +1,16 @@
 """The citation check: is each quote of a summary item in a record its anchors name, exactly or with a difflib ratio of
-FUZZY against a quote-long window of the record aligned on their longest common block? Reads, writes nothing."""
+FUZZY against a quote-long window of the record aligned on their longest common block? Both sides are compared with
+curly quotes made straight and whitespace (non-breaking spaces too) folded to single spaces. Reads, writes nothing."""
 
 from difflib import SequenceMatcher
 
 FUZZY = 0.85
 LISTS = ("why", "when", "how", "outcome", "open_ends", "continue")
+STRAIGHT = str.maketrans("‘’‚‛“”„‟", "''''\"\"\"\"")
+
+
+def plain(text) -> str:
+    return " ".join(text.translate(STRAIGHT).split())
 
 
 def close(quote, text) -> bool:
@@ -16,7 +22,8 @@ def close(quote, text) -> bool:
 
 
 def found(quote, texts) -> bool:
-    if not quote.strip():
+    quote = plain(quote)
+    if not quote:
         return False
     return any(quote in text for text in texts) or any(close(quote, text) for text in texts)
 
@@ -32,5 +39,5 @@ def check(summary, rendered) -> dict:
     """A copy of summary whose list items keep only anchors that name a record, once each, and gain verified."""
     texts = {}
     for record in rendered.records:
-        texts.setdefault(record.line, []).append(record.text)
+        texts.setdefault(record.line, []).append(plain(record.text))
     return {**summary, **{name: [cited(item, texts) for item in summary[name]] for name in LISTS}}

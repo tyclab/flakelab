@@ -2,13 +2,15 @@
 
 An item renders as `- <text> (unverified) @L<a>,@L<b>`, the note only when the citation check did not verify it, then an
 open end's `as of <date>, tracked in <ref>` line (an empty part, or a ref such as `not tracked`, left out) and one
-`> "<quote>"` line per quote line, indented under the bullet.
+`> "<quote>"` line per quote line, indented under the bullet. The model's `what` and item text sit on one line with a
+leading Markdown block marker escaped, so they cannot open a heading, list, quote, fence, table or HTML block.
 """
 
 from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
+import re
 import tempfile
 
 RECIPE = "session-archive-v1"
@@ -18,6 +20,7 @@ POINTER = "## Pointer"
 EXTRACTED = "Extracted: "
 NONE = "None."
 UNTRACKED = ("", "none", "not tracked", "n/a", "-")
+BLOCK = re.compile(r"[#>`~<|*+_-]|[0-9]+[.)]")
 
 
 @dataclass(frozen=True)
@@ -38,9 +41,16 @@ def one_line(text) -> str:
     return " ".join(text.split())
 
 
+def inline(text) -> str:
+    """text on one line, a backslash before the last character of a leading block marker (`\\#`, `1\\.`)."""
+    text = one_line(text)
+    marker = BLOCK.match(text)
+    return f"{text[:marker.end() - 1]}\\{text[marker.end() - 1:]}" if marker else text
+
+
 def bullet(item) -> list[str]:
     anchors = ",".join(f"@L{line}" for line in item["anchors"])
-    head = [one_line(item["text"]), "" if item.get("verified") else "(unverified)", anchors]
+    head = [inline(item["text"]), "" if item.get("verified") else "(unverified)", anchors]
     lines = ["- " + " ".join(part for part in head if part)]
     if "as_of" in item:
         as_of, ref = one_line(item["as_of"]), one_line(item["tracked_in"])
@@ -61,7 +71,7 @@ def pointer(meta) -> list[str]:
 
 
 def render(meta: CardMeta, summary) -> str:
-    lines = [f"# Session {meta.uuid}", "", "## What", "", one_line(summary["what"]) or NONE, ""]
+    lines = [f"# Session {meta.uuid}", "", "## What", "", inline(summary["what"]) or NONE, ""]
     for name, heading in SECTIONS:
         lines += [f"## {heading}", "", *([line for item in summary[name] for line in bullet(item)] or [NONE]), ""]
     return "\n".join([*lines, POINTER, "", *pointer(meta)]) + "\n"
@@ -98,6 +108,11 @@ def write(library, uuid, text) -> tuple[Path, str, bool]:
             os.fchmod(stream.fileno(), 0o666 & ~umask())
             os.fsync(stream.fileno())
         os.replace(temp, path)
+        folder = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(folder)
+        finally:
+            os.close(folder)
     finally:
         # Only this call's own temp file, left behind when the write or the rename failed.
         if os.path.exists(temp):
