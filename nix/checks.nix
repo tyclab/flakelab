@@ -283,6 +283,7 @@ in
     pkgs.python3
     pkgs.curl
   ] "web";
+  session-archive = suiteCheckWith [ pkgs.python3 ] "session-archive";
   # The input report reads the lock with `nix eval`, which is under test too.
   nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
   nix-access-tokens = suiteCheckWith [ pkgs.nix ] "nix-access-tokens";

@@ -237,6 +237,18 @@ rec {
     exec ${zsh} ${s}/web "$@"
   '';
 
+  # python3 runs lib/session_archive/ (stdlib only); util-linux brings flock.
+  session-archive = pkgs.writeShellScriptBin "session-archive" ''
+    export PATH=${
+      bin [
+        pkgs.python3
+        pkgs.util-linux
+        pkgs.jq
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/session-archive "$@"
+  '';
+
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''
     export PATH=${
       bin [
