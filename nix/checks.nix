@@ -575,9 +575,13 @@ in
       observing = earlier.extendModules {
         modules = [ { flakelab.tycswapAutoSwitchInterval = "2min"; } ];
       };
+      shortCleanup = later.extendModules {
+        modules = [ { flakelab.claudeCleanupPeriodDays = 7; } ];
+      };
       entryEarlier = entry "claude-settings-earlier-activation" earlier;
       entryObserving = entry "claude-settings-observing-activation" observing;
       entryLater = entry "claude-settings-later-activation" later;
+      entryShortCleanup = entry "claude-settings-short-cleanup-activation" shortCleanup;
     in
     pkgs.runCommandLocal "flakelab-check-claude-settings-prune"
       {
@@ -605,6 +609,12 @@ in
         jq -e '.cleanupPeriodDays == 30' "$settings" > /dev/null
         jq -e '.env | .WHATSAPP_MCP_DIR == "/earlier" and .MY_VAR == "mine"' "$settings" > /dev/null
         jq -e --argjson b "$base" '. == $b' "$record" > /dev/null
+
+        echo "claudeCleanupPeriodDays sets cleanupPeriodDays"
+        fresh short-cleanup
+        printf '{}' > "$settings"
+        bash -euo pipefail ${entryShortCleanup}
+        jq -e '.cleanupPeriodDays == 7' "$settings" > /dev/null
 
         echo "env keys and the statusline one generation rendered and the next does not are removed, the user's survive both"
         fresh generations
