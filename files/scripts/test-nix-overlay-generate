@@ -1162,7 +1162,7 @@ check "the zsh writer withholds a webhook first"  "${zsh_always}" '(^|_)WEBHOOK(
 check "and so does the twin"                      "${ps1_always}" "${zsh_always}"
 # The named secrets are hand-kept twice: a name on one list only reaches the flake through the other writer.
 zsh_names="$(sed -n '/^typeset -a _secret_names=(/,/^)/p' "${GEN}" | grep -oE '[A-Z][A-Z0-9_]+' | sort -u)"
-ps1_names="$(sed -n '/^\$SecretKeyNames = @(/,/)$/p;/^\$RetiredSecretKeyNames = @(/p' "${PS1_SRC}" \
+ps1_names="$(awk '/^\$(Retired)?SecretKeyNames = @\(/ { names = 1 } names { print; if (/\)$/) names = 0 }' "${PS1_SRC}" \
   | grep -oE "'[A-Z][A-Z0-9_]+'" | tr -d "'" | sort -u)"
 contains "the zsh writer's named secrets are read"     "${zsh_names}" "GITLAB_TOKEN"
 check "both writers withhold the same named secrets" "${ps1_names}" "${zsh_names}"
