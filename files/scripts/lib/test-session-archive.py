@@ -1,12 +1,16 @@
 """Offline suite for `flakelab session-archive`: the shim and lib/session_archive/, run by test-session-archive."""
 
 import contextlib
+import copy
+import dataclasses
 from datetime import UTC, datetime, timedelta
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -15,7 +19,7 @@ import unittest
 from unittest import mock
 import urllib.error
 
-from session_archive import cli, config, render, sources, store, summarize, windows
+from session_archive import cards, cite, cli, config, render, sources, store, summarize, windows
 from session_archive import secrets as lane_secrets
 
 SHIM = Path(__file__).resolve().parent.parent / "session-archive"
@@ -839,6 +843,235 @@ class BudgetTest(Scratch):
             (UUID, "claude-haiku-5-5", API_USAGE, 0.25), (OTHER_UUID, "claude-haiku-5-5-20261001", API_USAGE, 0.25)])
         self.assertTrue(summarize.Budget(self.store, other, 0.5).allow())
         self.assertFalse(summarize.Budget(self.store, other, 0).allow())
+
+
+def item(text, anchors, *quotes, **extra):
+    return {"text": text, "anchors": anchors, "quotes": list(quotes), **extra}
+
+
+def summary_of(**lists):
+    empty = dict.fromkeys(("why", "when", "how", "outcome", "open_ends", "continue"), [])
+    return {"what": "Sorted the widget catalogue.", **empty, "area": "lab", **lists}
+
+
+def blot(text, *positions):
+    return "".join("#" if i in positions else c for i, c in enumerate(text))
+
+
+ARCHIVED = f"/srv/archive/{SLUG}/{UUID}.0123abcd.jsonl.gz"
+LOCAL = f"/srv/state/claude/projects/{SLUG}/{UUID}.jsonl"
+CARD_META = cards.CardMeta(UUID, SLUG, "lab", Path(ARCHIVED), "ab" * 32, 4096, Path(LOCAL), "claude-haiku-5-5", "low",
+                           "2026-01-20")
+CARD_SUMMARY = summary_of(
+    what="Sorted the widget catalogue\nby name  and kept a backup.",
+    why=[item("The operator asked for a sorted catalogue.", [2], "Sort the widget catalogue by name", verified=True)],
+    when=[item("2026-01-10 09:00 the sort started.", [2, 5], verified=True)],
+    how=[item("Took the shelf\nnotes from a relayed list.", [12], "- shelf 1 holds batch 1\n- shelf 2 holds batch 2",
+              verified=True)],
+    open_ends=[item("Shelf 9 gaps stay open.", [38], "fill the gaps from shelf 9 first", as_of="2026-01-10",
+                    tracked_in="not tracked", verified=True)],
+    **{"continue": [item("The catalogue is widgets/catalogue.txt.", [5], "widgets/catalogue.txt", verified=True)]},
+)
+CARD_TEXT = f"""# Session {UUID}
+
+## What
+
+Sorted the widget catalogue by name and kept a backup.
+
+## Why
+
+- The operator asked for a sorted catalogue. @L2
+  > "Sort the widget catalogue by name"
+
+## When
+
+- 2026-01-10 09:00 the sort started. @L2,@L5
+
+## How
+
+- Took the shelf notes from a relayed list. @L12
+  > "- shelf 1 holds batch 1
+  > - shelf 2 holds batch 2"
+
+## Outcome
+
+None.
+
+## Open ends
+
+- Shelf 9 gaps stay open. @L38
+  as of 2026-01-10, tracked in not tracked
+  > "fill the gaps from shelf 9 first"
+
+## What an agent needs to continue
+
+- The catalogue is widgets/catalogue.txt. @L5
+  > "widgets/catalogue.txt"
+
+## Pointer
+
+Archive: {ARCHIVED}
+SHA-256: {"ab" * 32}
+Bytes: 4096
+Fetch: zcat '{ARCHIVED}'
+Local (until cleanup): {LOCAL}
+Project: {SLUG}
+Area: lab
+Recipe: session-archive-v1
+Model: claude-haiku-5-5/low
+Extracted: 2026-01-20
+"""
+
+
+class CiteTest(unittest.TestCase):
+    def setUp(self):
+        self.fixture = render.render(FIXTURE)
+
+    def test_cite_marks_exact_quote_verified(self):
+        given = summary_of(
+            why=[item("The operator asked for a sorted catalogue.", [2, 2, 1, 9, 999, 0, -2],
+                      "Sort the widget catalogue by name")],
+            how=[item("Read the catalogue.", [5], "widgets/catalogue.txt"),
+                 item("Quotes from two anchors.", [2, 40], "keep the old order", "the backup is kept")],
+            outcome=[item("The session finished.", [40])],
+            open_ends=[item("Shelf 9 gaps stay open.", [38], "fill the gaps from shelf 9 first", "3 gaps on shelf 4",
+                            as_of="2026-01-10", tracked_in="not tracked")],
+        )
+        before = copy.deepcopy(given)
+        done = cite.check(given, self.fixture)
+        self.assertEqual(given, before)
+        self.assertEqual(list(done), list(given))
+        self.assertEqual((done["what"], done["area"], done["when"], done["continue"]), (given["what"], "lab", [], []))
+        self.assertEqual(done["why"], [{**given["why"][0], "anchors": [2], "verified": True}])
+        for name in ("how", "outcome", "open_ends"):
+            with self.subTest(section=name):
+                self.assertEqual(done[name], [{**entry, "verified": True} for entry in given[name]])
+
+    def test_cite_accepts_fuzzy_quote(self):
+        operator = record_at(self.fixture, 2).text
+        dump = record_at(self.fixture, 31).text
+        middle = dump[len(dump) // 2:len(dump) // 2 + 300]
+        drifted = middle.replace("colour", "color")
+        flattened = "- shelf 1 holds batch 1 - shelf 2 holds batch 2"
+        for quote in (drifted, flattened, "Sort the widget catalog by name and keep the old order"):
+            self.assertFalse(any(quote in r.text for r in self.fixture.records), quote)
+        cases = [(item("Typo.", [2], "Sort the widget catalog by name and keep the old order"), True),
+                 (item("Newlines read as spaces.", [12], flattened), True),
+                 (item("Long record, drifted slice.", [31], drifted), True),
+                 (item("Three of twenty characters off.", [2], blot(operator[:20], 2, 9, 17)), True),
+                 (item("Four of twenty characters off.", [2], blot(operator[:20], 2, 7, 12, 17)), False),
+                 (item("Longer than its short record.", [17], "also drop the duplicates, then sort the rest again"),
+                  False)]
+        done = cite.check(summary_of(how=[entry for entry, _ in cases]), self.fixture)
+        self.assertEqual([(entry["text"], entry["verified"]) for entry in done["how"]],
+                         [(entry["text"], verified) for entry, verified in cases])
+
+    def test_cite_marks_missing_quote_unverified(self):
+        given = summary_of(outcome=[
+            item("An invented fact.", [2], "Sort the widget catalogue", "the shelves were repainted blue"),
+            item("A quote from a record no anchor names.", [2], "fill the gaps from shelf 9 first"),
+            item("An empty quote.", [2], ""),
+            item("Anchors that name no record.", [1, 9, 999]),
+            item("No anchors.", []),
+        ])
+        done = cite.check(given, self.fixture)
+        self.assertEqual([(entry["anchors"], entry["quotes"], entry["verified"]) for entry in done["outcome"]], [
+            ([2], ["Sort the widget catalogue", "the shelves were repainted blue"], False),
+            ([2], ["fill the gaps from shelf 9 first"], False), ([2], [""], False), ([], [], False), ([], [], False),
+        ])
+        card = cards.render(CARD_META, done)
+        self.assertIn('\n- An invented fact. (unverified) @L2\n  > "Sort the widget catalogue"\n'
+                      '  > "the shelves were repainted blue"\n', card)
+        self.assertIn("\n- Anchors that name no record. (unverified)\n- No anchors. (unverified)\n", card)
+
+
+class CardTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.library = Path(tmp.name) / "library"
+        self.library.mkdir()
+
+    def test_card_sections_in_spec_order(self):
+        card = cards.render(CARD_META, CARD_SUMMARY)
+        self.assertEqual(re.findall(r"(?m)^#+ (.*)$", card), [
+            f"Session {UUID}", "What", "Why", "When", "How", "Outcome", "Open ends", "What an agent needs to continue",
+            "Pointer"])
+        self.assertEqual(card, CARD_TEXT)
+        self.assertEqual(cards.render(CARD_META, {**CARD_SUMMARY, "what": " "}).split("\n## Why")[0],
+                         f"# Session {UUID}\n\n## What\n\nNone.\n")
+
+    def test_card_pointer_labels_verbatim(self):
+        odd = "/srv/archive/it's here/one.jsonl.gz"
+        card = cards.render(dataclasses.replace(CARD_META, archive_path=odd), CARD_SUMMARY)
+        self.assertEqual(card.split("\n## Pointer\n\n")[1].splitlines(), [
+            f"Archive: {odd}", f"SHA-256: {'ab' * 32}", "Bytes: 4096",
+            "Fetch: zcat '/srv/archive/it'\\''s here/one.jsonl.gz'", f"Local (until cleanup): {LOCAL}",
+            f"Project: {SLUG}", "Area: lab", "Recipe: session-archive-v1", "Model: claude-haiku-5-5/low",
+            "Extracted: 2026-01-20"])
+        fetch = next(line for line in card.splitlines() if line.startswith("Fetch: "))
+        self.assertEqual(shlex.split(fetch.removeprefix("Fetch: ")), ["zcat", odd])
+
+    def test_card_unverified_suffix(self):
+        for entry, line in (
+            (item("Sorted.", [2, 5], verified=True), "- Sorted. @L2,@L5\n"),
+            (item("Sorted.", [2, 5], verified=False), "- Sorted. (unverified) @L2,@L5\n"),
+            (item("Sorted.", [2, 5]), "- Sorted. (unverified) @L2,@L5\n"),
+            (item("Sorted.", [], "Sort the widget", verified=False), '- Sorted. (unverified)\n  > "Sort the widget"\n'),
+        ):
+            with self.subTest(entry=entry):
+                outcome = cards.render(CARD_META, summary_of(outcome=[entry])).split("## Outcome\n\n")[1]
+                self.assertTrue(outcome.startswith(line), outcome)
+        gap = item("Gaps stay open.", [38], as_of="2026-01-10", tracked_in="plan file", verified=False)
+        card = cards.render(CARD_META, summary_of(open_ends=[gap]))
+        self.assertIn("\n- Gaps stay open. (unverified) @L38\n  as of 2026-01-10, tracked in plan file\n\n", card)
+
+    def files(self):
+        return sorted(path.name for path in self.library.iterdir())
+
+    def test_card_write_is_idempotent(self):
+        (self.library / "card-older-recipe.md").write_text("kept\n")
+        card = cards.render(CARD_META, CARD_SUMMARY)
+        path, digest, written = cards.write(self.library, UUID, card)
+        self.assertEqual((path, written), (self.library / f"session-{UUID}.md", True))
+        self.assertEqual(path.read_text(), card)
+        later = cards.render(dataclasses.replace(CARD_META, extracted="2026-02-01"), CARD_SUMMARY)
+        self.assertNotEqual(later, card)
+        self.assertEqual(cards.write(self.library, UUID, card), (path, digest, False))
+        self.assertEqual(cards.write(self.library, UUID, later), (path, digest, False))
+        self.assertEqual(path.read_text(), card)
+        grown = cards.render(dataclasses.replace(CARD_META, bytes=8192, extracted="2026-02-01"), CARD_SUMMARY)
+        moved, regrown, written = cards.write(self.library, UUID, grown)
+        self.assertEqual((moved, written, path.read_text()), (path, True, grown))
+        self.assertNotEqual(regrown, digest)
+        self.assertEqual(cards.write(self.library, UUID, grown), (path, regrown, False))
+        self.assertEqual(cards.write(self.library, OTHER_UUID, card)[1:], (digest, True))
+        self.assertEqual(self.files(),
+                         sorted(["card-older-recipe.md", f"session-{OTHER_UUID}.md", f"session-{UUID}.md"]))
+
+    def test_card_write_is_atomic(self):
+        mask = os.umask(0o027)
+        self.addCleanup(os.umask, mask)
+        old, new = (cards.render(dataclasses.replace(CARD_META, bytes=size), CARD_SUMMARY) for size in (1, 2))
+        path, _, _ = cards.write(self.library, UUID, old)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+        renamed, real_replace = [], os.replace
+
+        def replace(src, dst):
+            renamed.append((Path(src).parent, Path(src).read_text(), Path(dst).read_text()))
+            real_replace(src, dst)
+
+        with mock.patch("os.replace", replace):
+            cards.write(self.library, UUID, new)
+        self.assertEqual(renamed, [(self.library, new, old)])
+        self.assertEqual((path.read_text(), self.files()), (new, [path.name]))
+        with mock.patch("os.replace", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            cards.write(self.library, UUID, old)
+        self.assertEqual((path.read_text(), self.files()), (new, [path.name]))
+        absent = self.library.parent / "absent"
+        with self.assertRaises(FileNotFoundError):
+            cards.write(absent, UUID, old)
+        self.assertFalse(absent.exists())
 
 
 def call(*argv):
