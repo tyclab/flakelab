@@ -16,8 +16,7 @@ archived transcript (`@L212` is 212); windows overlap a little, so neighbouring 
 - `when`: one timeline, oldest first.
 - `open_ends`: an end that a later part shows closed moves to `outcome`. Keep the latest `as_of` and `tracked_in`.
 - `continue`: keep what still holds at the end of the session.
-- `area`: the one area under Areas that fits the whole session; `unclear` when the parts disagree and the session
-  spans two areas, or none fits.
+- `area`: the area chosen by most parts; `unclear` only when no area has a majority or the parts split evenly.
 
 Example (invented), two `outcome` items and the merged one:
 

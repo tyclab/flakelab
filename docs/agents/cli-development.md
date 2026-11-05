@@ -107,9 +107,10 @@ Read for this topic; paths below are relative to the repository root unless stat
     another machine in the archive root or a library, an unreachable root or
     library (`root_unreachable`, `library_unreachable`, also a claimed folder
     that lost its `.owner`) or an unavailable model API (`model_unavailable`,
-    the session in flight not held unless it stopped the run before too)
-    exits 1. SIGTERM holds the session in flight (`timeout`) before the run
-    ends. A run prints one counts-only journal line, and no message names a
+    the session in flight not held) exits 1; when the same content stopped
+    the run before too, the session is held as `model_error` instead and the
+    run goes on. SIGTERM holds the session in flight (`timeout`) before the
+    run ends. A run prints one counts-only journal line, and no message names a
     path or a secret. The doctor reads `status --json`. Its suite is python
     unittest in `lib/test-session-archive.py` with a stub model, run by
     `test-session-archive`.

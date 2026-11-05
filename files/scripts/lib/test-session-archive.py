@@ -752,6 +752,13 @@ class PromptTest(unittest.TestCase):
         for field in fields:
             self.assertIn(f"`{field}`", system)
 
+    def test_merge_prompt_takes_the_majority_area(self):
+        merge = summarize.asset(summarize.MERGE)
+        rule = ("- `area`: the area chosen by most parts; `unclear` only when no area has a majority or the parts "
+                "split evenly.")
+        self.assertIn(rule, " ".join(merge.split()))
+        self.assertNotIn("the parts disagree", merge)
+
     def test_schema_area_enum(self):
         base = json.loads(summarize.asset(summarize.SCHEMA))
         shaped = summarize.schema(base, AREAS.areas)
@@ -850,6 +857,24 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual([call["user"].split("\n")[0] for call in stub.calls], ["PART 1 of 4"] * 3 + ["PART 1 of 3"])
         self.assertEqual({call["max_tokens"] for call in stub.calls}, {summarize.MERGE_MAX_TOKENS})
         self.assertEqual(summarize.MERGE_MAX_TOKENS, 32_000)
+
+    def test_merge_holds_a_cut_pair_at_once(self):
+        parts = [{**SUMMARY, "what": f"Window {n}."} for n in range(4)]
+        system = summarize.system_prompt(summarize.asset(summarize.MERGE), self.cfg.areas)
+        size = summarize.estimate(json.dumps(parts[0], ensure_ascii=False))
+        cut = summarize.completion('{"what": "Sorted', "max_tokens", summarize.STUB_USAGE, "claude-haiku-5-5",
+                                   "claude-haiku-5-5")
+        pair = {**SUMMARY, "what": "Windows 0 and 1."}
+        # Two groups of exactly two parts: a cut pair cannot be halved, so the session is held after that call.
+        for answers, calls in (([cut], 1), ([pair, cut], 2)):
+            stub = summarize.StubTransport(answers)
+            with (self.subTest(calls=calls), mock.patch.object(summarize, "MERGE_INPUT_TOKENS",
+                                                               summarize.merge_overhead(system) + 2.5 * size),
+                  self.assertRaises(summarize.SummarizeError) as caught):
+                summarize.merge(stub, self.cfg, parts, self.cfg.areas)
+            self.assertEqual((caught.exception.reason, caught.exception.detail, len(stub.calls)),
+                             ("model_error", "stop_reason max_tokens", calls))
+            self.assertEqual(self.whats(stub.calls[-1]), [f"Window {n}." for n in range(2 * calls - 2, 2 * calls)])
 
     def test_merge_retries_max_tokens_by_splitting(self):
         parts = [{**SUMMARY, "what": f"Window {n}."} for n in range(4)]
@@ -1610,6 +1635,20 @@ class CliRunTest(Lane):
         network = mock.patch("urllib.request.urlopen", side_effect=AssertionError("no network in tests"))
         network.start()
         self.addCleanup(network.stop)
+
+    def test_run_refuses_a_marker_written_between_check_and_claim(self):
+        real = cli.refuse_foreign
+
+        def racing(cfg, machine_id):
+            real(cfg, machine_id)
+            (self.root / ".owner").write_text("box-b\n")  # another box claims the root in between
+
+        with mock.patch.object(cli, "refuse_foreign", racing):
+            rc, out, err = call("run", env=self.env)
+        self.assertEqual((rc, out, err), (1, "", "session-archive: the archive root or a library is owned by another "
+                                                 "box (.owner)\n"))
+        self.assertEqual(((self.root / ".owner").read_text(), self.count("claims"), self.count("runs")),
+                         ("box-b\n", 0, 0))
 
     def test_run_refuses_root_owned_by_other_machine(self):
         keyless = {**self.env, "FLAKELAB_SECRETS_ENV": str(self.tmp / "absent.env")}

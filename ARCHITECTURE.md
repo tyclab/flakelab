@@ -729,8 +729,8 @@ record longer than a window is cut, and marked), split into 60,000-byte windows
 of whole records and summarized one call per window. With more than one window
 the summaries are merged in rounds: consecutive ones whose input stays under
 about 40,000 tokens go into one call, then the answers the same way until one
-remains, and a merge that hits its 32,000-token answer limit is retried once as
-two halves. The citation check then keeps the anchors that name a
+remains. A merge of three parts or more that hits its 32,000-token answer limit
+is retried once as two halves; a pair that does holds the session. The citation check then keeps the anchors that name a
 record and marks an item `(unverified)` when none does or a quote is in none of
 those records, exactly or at a `difflib` ratio of 0.85. The model files the
 session under one of `sessionArchiveAreas`; one it cannot place (`unclear`)

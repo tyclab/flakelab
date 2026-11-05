@@ -245,14 +245,14 @@ def merge_calls(count, part_tokens, overhead) -> int:
 
 
 def merge_group(transport, cfg, group, system, shape, charge, split=True) -> list[dict]:
-    """The group's answer as a one-item list; a max_tokens stop is retried once as the group's two halves (two
-    items)."""
+    """The group's answer as a one-item list. A max_tokens stop is retried once as the group's two halves (two items)
+    when it has three parts or more; a pair cannot be halved into anything smaller, so its cut holds the session."""
     if len(group) == 1:
         return group
     user = "".join(f"PART {number} of {len(group)}\n{json.dumps(part, ensure_ascii=False)}\n\n"
                    for number, part in enumerate(group, 1)) + MERGE_TAIL
     done = transport.complete(system, user, shape, cfg.model, cfg.effort, max_tokens=MERGE_MAX_TOKENS)
-    if split and done.stop_reason == "max_tokens":
+    if split and len(group) > 2 and done.stop_reason == "max_tokens":
         if charge:
             charge(done)
         half = len(group) // 2
@@ -273,11 +273,9 @@ def merge(transport, cfg, parts: list[dict], areas, *, charge=None) -> dict:
     overhead = merge_overhead(system)
     while len(parts) > 1:
         sizes = [estimate(json.dumps(part, ensure_ascii=False)) for part in parts]
-        merged = [answer for group in grouped(sizes, overhead)
-                  for answer in merge_group(transport, cfg, [parts[i] for i in group], system, shape, charge)]
-        if len(merged) == len(parts):  # every group was cut and halved into what it was: no round shortens it
-            raise SummarizeError("model_error", "stop_reason max_tokens")
-        parts = merged
+        # A group of two or more answers once, or twice when halved from three or more: each round shortens the list.
+        parts = [answer for group in grouped(sizes, overhead)
+                 for answer in merge_group(transport, cfg, [parts[i] for i in group], system, shape, charge)]
     return parts[0]
 
 

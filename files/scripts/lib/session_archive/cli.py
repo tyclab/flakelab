@@ -93,11 +93,14 @@ def refuse_foreign(cfg, machine_id):
 
 def claim(cfg, db, machine_id):
     """Marks each folder this box may write and records the first claim. A folder claimed before that lost its marker
-    (an unmounted share's mount point) is not claimed again: the run reports it unreachable."""
+    (an unmounted share's mount point) is not claimed again: the run reports it unreachable. A marker another box wrote
+    since refuse_foreign read them all refuses the run as well."""
     for folder in folders(cfg):
         if pipeline.lost(db, folder):
             continue
-        if archive.check_owner(folder, machine_id) and archive.owner(folder) == machine_id:
+        if not archive.check_owner(folder, machine_id):
+            raise Failure("the archive root or a library is owned by another box (.owner)")
+        if archive.owner(folder) == machine_id:
             db.claim(folder, machine_id)
 
 
