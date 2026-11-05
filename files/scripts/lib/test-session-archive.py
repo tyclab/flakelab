@@ -14,10 +14,12 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 import urllib.error
@@ -210,7 +212,7 @@ class StoreTest(Scratch):
             db.close()
             with self.subTest(name=name), self.assertRaises(store.StoreError) as caught:
                 store.Store(path)
-            self.assertRegex(str(caught.exception), r"^the state database has schema version (0|7); this lane reads version 1:")
+            self.assertRegex(str(caught.exception), r"^the state database has schema version (0|7); this lane reads version 2:")
             self.assertNotIn(str(self.tmp), str(caught.exception))
 
 
@@ -1189,6 +1191,10 @@ MERGED = {**FIXTURE_SUMMARY, "what": "Sorted the widget catalogue and kept a bac
 FIXTURE_RESPONSES = [FIXTURE_SUMMARY] * 3 + [MERGED]
 SPOKEN_SUMMARY = summary_of(why=[item("The operator asked for a sorted list.", [1], "please sort the widget list")])
 PER_CALL = summarize.price(summarize.STUB_USAGE, "claude-haiku-5-5")
+# 0.015 USD a call: one call spends past a cap that a small session's projection fits under.
+BIG_USAGE = {"input_tokens": 100_000, "output_tokens": 10_000, "cache_creation_input_tokens": 0,
+             "cache_read_input_tokens": 0}
+FOURTH_UUID = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
 STATUS_FIELDS = {"last_run", "last_result", "eligible", "held", "review", "last_run_usd", "run_sessions", "root_ok",
                  "owner_ok"}
 
@@ -1231,8 +1237,8 @@ class Lane(Scratch):
         os.utime(path, (OLD.timestamp(), OLD.timestamp()))
         return path
 
-    def lane(self, responses, cfg=None, **options):
-        stub = summarize.StubTransport(responses)
+    def lane(self, responses, cfg=None, usage=summarize.STUB_USAGE, **options):
+        stub = summarize.StubTransport(responses, usage)
         return pipeline.run(cfg or self.cfg, self.store, stub, NOW, **options), stub
 
     def card(self, uuid=UUID):
@@ -1316,11 +1322,12 @@ class PipelineTest(Lane):
 
     def test_run_stops_at_cap_after_finishing_session(self):
         self.three_sessions()
-        capped = config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.0001"})
-        done, stub = self.lane([SPOKEN_SUMMARY] * 3, cfg=capped)
-        self.assertEqual(pipeline.journal(done), journal(scanned=3, eligible=3, done=1, windows=1, archived=1, cards=1))
+        capped = config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.01"})
+        done, stub = self.lane([SPOKEN_SUMMARY] * 3, cfg=capped, usage=BIG_USAGE)
+        self.assertEqual(pipeline.journal(done), journal(scanned=3, eligible=3, done=1, windows=1, archived=1, cards=1,
+                                                         usd=f"{summarize.price(BIG_USAGE, 'claude-haiku-5-5'):.2f}"))
         self.assertEqual((done.result, len(stub.calls), self.store.last_run()["result"]), ("capped", 1, "capped"))
-        self.assertGreaterEqual(done.usd, 0.0001)
+        self.assertGreaterEqual(done.usd, 0.01)
         self.assertEqual((names(self.library), self.store.session(UUID)["status"]), ([self.card().name], "done"))
         self.assertEqual((self.store.session(OTHER_UUID), self.store.session(THIRD_UUID)), (None, None))
         done, stub = self.lane([], cfg=config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0"}))
@@ -1420,7 +1427,10 @@ class PipelineTest(Lane):
                          (0, journal(scanned=2, windows=1) + "\n", ""))
         self.assertEqual((tree(self.tmp / "state"), names(self.root), names(self.library)), before)
         self.assertEqual([self.count(table) for table in ("sessions", "runs", "ledger")], [0, 0, 0])
-        self.assertEqual(names(self.cfg.state_dir), ["lock", "state.sqlite3"])
+        self.assertEqual(names(self.cfg.state_dir), ["state.sqlite3"])
+        fresh = {**self.env, "XDG_STATE_HOME": str(self.tmp / "fresh")}
+        self.assertEqual(call("run", "--dry-run", env=fresh), (0, journal(scanned=2, eligible=2, windows=4) + "\n", ""))
+        self.assertFalse((self.tmp / "fresh").exists())
         rc, out, err = call("status", "--json", env=self.env)
         self.assertEqual((rc, err, [json.loads(out)[name] for name in ("last_run", "eligible")]), (0, "", [None, None]))
         rc, out, err = call("run", env={**self.env, "SESSION_ARCHIVE_ROOT": ""})
@@ -1455,6 +1465,66 @@ class PipelineTest(Lane):
         done, stub = self.lane([SPOKEN_SUMMARY])
         self.assertEqual((done.counts["held"], stub.calls, self.store.session(OTHER_UUID)["reason"]),
                          (1, [], "work_error"))
+
+    def test_run_holds_too_large_session_without_calls(self):
+        self.fixture()
+        self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
+        # The fixture projects 4 calls x (60,137 B / 3.5 at 0.10 + 4,000 at 0.50 USD per million) = 0.0149 USD.
+        done, stub = self.lane([SPOKEN_SUMMARY], cfg=config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.01"}))
+        self.assertEqual(pipeline.journal(done),
+                         journal(scanned=2, eligible=2, done=1, held=1, windows=4, archived=1, cards=1))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], len(stub.calls)), ("held", "too_large", 1))
+        self.assertEqual((names(self.work), self.store.session(OTHER_UUID)["status"]), ([], "done"))
+        done, stub = self.lane(FIXTURE_RESPONSES, session=UUID)
+        self.assertEqual((done.counts["done"], len(stub.calls)), (1, 4))
+        # One that fits the cap but not what the run has left waits for the next run, and is not held.
+        self.transcript(spoken(OLD - timedelta(days=1)), uuid=THIRD_UUID)
+        self.fixture(uuid=FOURTH_UUID)
+        done, stub = self.lane([SPOKEN_SUMMARY], cfg=config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.02"}),
+                               usage=BIG_USAGE)
+        self.assertEqual((done.result, done.counts["done"], len(stub.calls), self.store.session(FOURTH_UUID)),
+                         ("capped", 1, 1, None))
+
+    def test_run_finishes_session_in_flight_when_cap_trips_mid_session(self):
+        half = "widget shelf " * 2800
+        self.transcript([said("user", f"first half: {half}"), said("user", f"second half: {half}")])
+        self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
+        cfg = config.load({**self.env, "SESSION_ARCHIVE_RUN_CAP_USD": "0.012"})
+        done, stub = self.lane([SPOKEN_SUMMARY] * 4, cfg=cfg, usage=BIG_USAGE)
+        self.assertEqual((done.result, len(stub.calls), done.counts["done"], done.counts["windows"]),
+                         ("capped", 3, 1, 2))
+        self.assertTrue(stub.calls[2]["user"].startswith("PART 1 of 2\n"))
+        self.assertAlmostEqual(done.usd, 3 * summarize.price(BIG_USAGE, "claude-haiku-5-5"))
+        self.assertEqual((names(self.library), self.store.session(OTHER_UUID)), ([self.card().name], None))
+
+    def test_run_holds_empty_answer(self):
+        self.transcript(spoken())
+        done, _ = self.lane([summary_of(what="  ")])
+        self.assertEqual(pipeline.journal(done), journal(held=1, windows=1))
+        self.assertEqual((self.store.session(UUID)["reason"], names(self.root), names(self.library)),
+                         ("unparsable", [], []))
+
+    def test_run_holds_session_when_a_step_raises(self):
+        self.three_sessions()
+        real_render, real_check = render.render, cite.check
+
+        def rendering(path, *args, **kwargs):
+            if path.stem == UUID:
+                raise ValueError("a renderer bug")
+            return real_render(path, *args, **kwargs)
+
+        def checking(summary, rendered):
+            if rendered.uuid == OTHER_UUID:
+                raise RecursionError("a citation check bug")
+            return real_check(summary, rendered)
+
+        with mock.patch.object(render, "render", rendering), mock.patch.object(cite, "check", checking):
+            done, stub = self.lane([SPOKEN_SUMMARY] * 2)
+        self.assertEqual(pipeline.journal(done),
+                         journal(scanned=3, eligible=3, done=1, held=2, windows=2, archived=1, cards=1))
+        self.assertEqual([self.store.session(uuid)["reason"] for uuid in (UUID, OTHER_UUID)], ["render_error"] * 2)
+        self.assertEqual((len(stub.calls), self.store.session(THIRD_UUID)["status"]), (2, "done"))
 
     def test_archive_copy_is_idempotent_and_never_overwrites(self):
         path = self.transcript(spoken())
@@ -1555,14 +1625,70 @@ class CliRunTest(Lane):
         self.assertEqual((tree(self.cfg.state_dir), names(self.root), names(self.library)), (state, [], []))
         self.assertNotIn("lock", names(self.cfg.state_dir))
 
+    def test_run_refuses_empty_root_after_first_claim(self):
+        self.assertEqual(call("run", env=self.env)[0], 0)
+        claims = self.store.db.execute("SELECT path, machine_id FROM claims ORDER BY path").fetchall()
+        self.assertEqual([tuple(row) for row in claims],
+                         sorted([(str(self.root), "box-a"), (str(self.library), "box-a")]))
+        # The share comes unmounted: its mount point is an empty folder, which is not claimed again.
+        (self.root / ".owner").unlink()
+        self.transcript(spoken())
+        self.assertEqual(call("run", env=self.env), (1, journal() + "\n", "session-archive: the archive root is "
+                                                                         "unreachable: the run took no session\n"))
+        self.assertEqual((names(self.root), self.store.session(UUID), self.store.last_run()["result"]),
+                         ([], None, "root_unreachable"))
+        self.assertIs(self.status()["root_ok"], False)
+        (self.root / ".owner").write_text("box-a\n")
+        (self.library / ".owner").unlink()
+        self.assertEqual(call("run", env=self.env), (1, journal() + "\n", "session-archive: a library is "
+                                                                         "unreachable: the run took no session\n"))
+        self.assertEqual((names(self.library), self.store.session(UUID), self.store.last_run()["result"]),
+                         ([], None, "library_unreachable"))
+        self.assertIs(self.status()["root_ok"], True)
+        (self.library / ".owner").write_text("box-a\n")
+        done, _ = self.lane([SPOKEN_SUMMARY])
+        self.assertEqual((done.result, self.store.session(UUID)["status"]), ("ok", "done"))
+
+    def test_run_holds_in_flight_session_on_sigterm(self):
+        self.transcript(spoken())
+        self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
+        called = self.tmp / "called"
+        script = ("import sys, time, urllib.request\nfrom pathlib import Path\nfrom session_archive import cli\n"
+                  "def blocked(request, timeout=None):\n    Path(sys.argv[1]).touch()\n    time.sleep(60)\n"
+                  "urllib.request.urlopen = blocked\nsys.exit(cli.main(['run']))\n")
+        env = {**self.env, "PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(LIB), "PYTHONDONTWRITEBYTECODE": "1"}
+        child = subprocess.Popen([sys.executable, "-c", script, str(called)], env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 30
+            while not called.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            child.send_signal(signal.SIGTERM)
+            out, err = child.communicate(timeout=30)
+        finally:
+            child.kill()
+        self.assertEqual((child.returncode, out, err), (143, "", ""))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["holds"]), ("held", "timeout", 1))
+        self.assertEqual(names(self.work / UUID), ["rendered.txt", "w1.txt"])
+        self.assertEqual((self.store.session(OTHER_UUID), self.store.last_run()["result"]), (None, "error"))
+
+        class Interrupted:
+            def complete(self, *args, **kwargs):
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            pipeline.run(self.cfg, self.store, Interrupted(), NOW)
+        self.assertEqual((self.store.session(UUID)["reason"], self.store.session(UUID)["holds"]), ("timeout", 2))
+
     def test_lock_second_instance_exits_zero(self):
         self.transcript(spoken())
         with open(self.cfg.state_dir / "lock", "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            for argv in (["run"], ["run", "--dry-run"]):
-                self.assertEqual(call(*argv, env=self.env), (0, "already running\n", ""))
+            self.assertEqual(call("run", env=self.env), (0, "already running\n", ""))
+            # A dry run writes nothing, so it takes no lock and counts beside a run.
+            self.assertEqual(call("run", "--dry-run", env=self.env), (0, journal(windows=1) + "\n", ""))
         self.assertEqual((self.count("runs"), self.count("sessions"), names(self.root)), (0, 0, []))
-        self.assertEqual(call("run", "--dry-run", env=self.env), (0, journal(windows=1) + "\n", ""))
 
     def status(self, human=False, **changes):
         """status --json (or its lines) without a scan: eligible is the last run's count, the state root unread."""

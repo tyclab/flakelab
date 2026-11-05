@@ -621,7 +621,13 @@ in
     };
 
     sessionArchiveEffort = mkOption {
-      type = types.str;
+      type = types.enum [
+        "low"
+        "medium"
+        "high"
+        "xhigh"
+        "max"
+      ];
       default = "low";
       description = "Effort the model is asked for on those calls. Exported as SESSION_ARCHIVE_EFFORT.";
     };

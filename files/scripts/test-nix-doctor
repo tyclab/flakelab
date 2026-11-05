@@ -773,6 +773,14 @@ contains "a multi-line result does not hide the held count" "${out}" "[WARN] 2 h
 contains "nor the root"                   "${out}" "[WARN] the archive root (flakelab.sessionArchiveRoot) is unreachable"
 contains "and reads as one line"          "${out}" "[ OK ] last run 1 h ago (error Traceback, 0.42 USD)"
 
+print -r -- "session archive: a last run that ended in failure warns; ok, capped and one in progress do not"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.last_result = "model_unavailable"')")"
+contains "the failed run's result warns"  "${out}" "[WARN] the session archive's last run ended model_unavailable"
+check    "and nothing else does"          "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+for saCase in '"ok"' '"capped"' null; do
+  lacks "${saCase}: no warning" "$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = ${saCase}")")" "[WARN]"
+done
+
 print -r -- "session archive: with no schedule the run's age is a note, the other findings stay"
 out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status . 50)")"
 contains "a run 50 h ago is shown"        "${out}" "[ OK ] note: last run 50 h ago (ok, 0.42 USD); no schedule (flakelab.sessionArchiveSchedule), so its age is not checked"

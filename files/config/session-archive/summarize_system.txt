@@ -13,10 +13,10 @@ summary; generated, not evidence], tells whose words the text really are. [REDAC
 ## The questions
 
 - `what`: what happened, as one short paragraph.
-- `why`: why: the operator's request, goals, rulings and constraints.
-- `when`: when: the steps that matter, oldest first, each starting with its date or time.
-- `how`: how: approach, commands, files, repositories, MR, PR, issue and job ids, settings changed.
-- `outcome`: the outcome: what was finished, merged, deployed or decided, and what failed.
+- `why`: the operator's request, goals, rulings and constraints.
+- `when`: the steps that matter, oldest first, each starting with its date or time.
+- `how`: the approach, commands, files, repositories, MR, PR, issue and job ids, settings changed.
+- `outcome`: what was finished, merged, deployed or decided, and what failed.
 - `open_ends`: what is still open. `as_of` is the date (YYYY-MM-DD) of the last record that shows it open;
   `tracked_in` names where it is tracked (an issue, an MR, a plan file, a task list) or says `not tracked`.
 - `continue`: what an agent needs to continue the work: paths, ids, branches, commands, and accounts or hosts by name.

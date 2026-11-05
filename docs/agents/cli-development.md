@@ -102,10 +102,13 @@ Read for this topic; paths below are relative to the repository root unless stat
     read at use time from the first readable of `$FLAKELAB_SECRETS_ENV`, the
     sops render and `secrets.env`; never `ANTHROPIC_API_KEY`, which the shell
     exports and which would put every Claude Code session on API billing. A
-    second run while one holds the lock prints `already running` and exits 0;
-    a `.owner` naming another machine in the archive root or a library, an
-    unreachable root (`root_unreachable`) or an unavailable model API
-    (`model_unavailable`, the session in flight not held) exits 1. A run
+    second run while one holds the lock prints `already running` and exits 0,
+    and `--dry-run` takes no lock and writes nothing; a `.owner` naming
+    another machine in the archive root or a library, an unreachable root or
+    library (`root_unreachable`, `library_unreachable`, also a claimed folder
+    that lost its `.owner`) or an unavailable model API (`model_unavailable`,
+    the session in flight not held) exits 1. SIGTERM holds the session in
+    flight (`timeout`) before the run ends. A run
     prints one counts-only journal line, and no message names a path or a
     secret. The doctor reads `status --json`. Its suite is python unittest
     in `lib/test-session-archive.py` with a stub model, run by

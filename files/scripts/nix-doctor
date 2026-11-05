@@ -1166,6 +1166,11 @@ else
       log_ok "${saRun}"
     fi
   fi
+  # ok and capped are a run's normal ends; "no result" is no run yet, or one in progress.
+  if [[ "${saResult}" != ok && "${saResult}" != capped && "${saResult}" != "no result" ]]; then
+    log_warn "the session archive's last run ended ${saResult}"
+    log_hint "journalctl --user -u flakelab-session-archive.service -n 20"
+  fi
   if (( saHeld > 0 )); then
     log_warn "${saHeld} held session(s): each run retries them; after three holds only run --session <uuid> does"
   fi

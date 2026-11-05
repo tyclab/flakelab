@@ -739,29 +739,41 @@ has a new SHA-256, so it gets a new copy and a rewritten card; the lane deletes
 neither, and removing local transcripts stays Claude Code's `cleanupPeriodDays`
 (30, above the quiet days).
 
-A failure of one session holds it — a model error, an unparsable answer, a
-transcript, work file, archive copy or card that cannot be read or written, a
-missing library: the next run retries it, and after three holds of the same
-content only `run --session` does. Two failures belong to the run instead, and both exit 1:
-an unreachable archive root takes no session (`root_unreachable`), and a model
-API that refuses the key or the model, or is still down after the retries,
-stops the run without holding the session in flight (`model_unavailable`). A
-model with no list price in `summarize.py` is refused before any call, since
-the run cap could not count it. Every call is priced into a ledger, and once a
-run reaches `sessionArchiveRunCapUsd` the session in flight finishes and no
-other starts.
+A failure of one session holds it — a model error, an unparsable or empty
+answer, a transcript, work file, archive copy or card that cannot be read,
+rendered or written, a missing library, and a stop (SIGTERM at the unit's
+timeout, Ctrl-C) while it is in flight: the next run retries it, and after
+three holds of the same content only `run --session` does. Before its first
+call a session's cost is projected (every window and the merge at the largest
+window's input, 3.5 bytes a token, plus 4,000 output tokens); one projected
+above `sessionArchiveRunCapUsd` is held as `too_large` without a call (`run
+--session` with a raised `SESSION_ARCHIVE_RUN_CAP_USD` is the way through), and
+one that fits the cap but not what the run has left waits for the next run.
+Three failures belong to the run instead, and all exit 1: an unreachable
+archive root or library takes no session (`root_unreachable`,
+`library_unreachable`), and a model API that refuses the key or the model, or
+is still down after the retries, stops the run without holding the session in
+flight (`model_unavailable`). A model with no list price in `summarize.py` is
+refused before any call, since the run cap could not count it. Every call is
+priced into a ledger, and once a run reaches `sessionArchiveRunCapUsd` the
+session in flight finishes and no other starts.
 
 The state is per box, under `~/.local/state/flakelab/session-archive/`:
-`state.sqlite3` (a row per session, per run and per call), `review.md`,
-`work/<uuid>/` (removed once the session is through unless it is held or the
-run has `--keep`) and `lock`, which keeps one instance (a second one exits 0).
-`status` reads that store and never scans, so its backlog is what the last full
-run counted. A `.owner` file with the machine id claims the archive root and
-each library on the first run that is not a dry run; every marker is read before any is
-written, and one naming another box exits 1, so two boxes never write the same
-archive. The timer's service is a oneshot that activation never restarts, at
-`Nice` 10 with idle I/O and a two-hour timeout; the timer is `Persistent` with
-up to 20 minutes of random delay. Its journal is one line of counts.
+`state.sqlite3` (a row per session, per run, per call and per claimed folder),
+`review.md`, `work/<uuid>/` (removed once the session is through unless it is
+held or the run has `--keep`) and `lock`, which keeps one instance (a second
+one exits 0). A dry run takes no lock and writes nothing, the state database
+included. `status` reads that store and never scans, so its backlog is what
+the last full run counted. A `.owner` file with the machine id claims the
+archive root and each library on the first run that is not a dry run, and the
+store records the claim; every marker is read before any is written, and one
+naming another box exits 1, so two boxes never write the same archive. A
+claimed folder that has lost its `.owner` (an unmounted share's empty mount
+point) counts as unreachable and is not claimed again; to hand the path to a
+new, empty share, write the box's `/etc/machine-id` into its `.owner`. The
+timer's service is a oneshot that activation never restarts, at `Nice` 10 with
+idle I/O and a two-hour timeout; the timer is `Persistent` with up to 20
+minutes of random delay. Its journal is one line of counts.
 
 ## Language runtimes
 

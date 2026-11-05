@@ -15,7 +15,10 @@ FORCED = ("held", "review")
 REVIEW = "review.md"
 UNCLEAR = "unclear_area"
 ROOT_UNREACHABLE = "root_unreachable"
+LIBRARY_UNREACHABLE = "library_unreachable"
 UNAVAILABLE = "model_unavailable"
+BYTES_PER_TOKEN = 3.5
+OUTPUT_TOKENS = 4_000
 # Failures every later call would meet too: the key, the model id, the service or the network, after the retries.
 UNAVAILABLE_ERROR = re.compile(r"http (?:401|403|404|429|5[0-9]{2})|network \w+")
 
@@ -84,18 +87,29 @@ def summarized(transport, cfg, parts, work, charge) -> dict:
     return merged
 
 
+def projected(cfg, parts) -> float:
+    """A conservative price of a session before its first call: every window and the merge priced as the largest window
+    sent (BYTES_PER_TOKEN bytes a token) plus OUTPUT_TOKENS of output."""
+    per_input, per_output = summarize.rates(cfg.model)
+    largest = max(len(part.text.encode()) for part in parts)
+    return (len(parts) + 1) * (largest / BYTES_PER_TOKEN * per_input + OUTPUT_TOKENS * per_output) / 1e6
+
+
+def blank(summary) -> bool:
+    return not summary["what"].strip() and not any(summary[name] for name in cite.LISTS)
+
+
 def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=False, *, now=None) -> Outcome:
-    """One eligible session through the pipeline; a failure after the scan holds it, a dry run counts its windows."""
+    """One eligible session through the pipeline; a failure after the scan holds it, and so does an interrupt (SIGTERM
+    at the unit's timeout, Ctrl-C) as timeout before it ends the run. A dry run counts its windows."""
     c, now = candidate, now or datetime.now(UTC)
-    try:
-        rendered = render.render(c.path)
-    except OSError:
-        rendered = None  # its message names the path: never shown
-    parts = [] if rendered is None else windows.split(rendered)
     if dry_run:
-        return Outcome("skipped", "dry_run", 0.0, None, None, len(parts))
+        try:
+            return Outcome("skipped", "dry_run", 0.0, None, None, len(windows.split(render.render(c.path))))
+        except Exception:
+            return Outcome("skipped", "dry_run", 0.0, None, None)
     stat = {"size": c.size, "mtime": c.mtime, "last_entry": c.last_entry}
-    budget, spent, models = summarize.Budget(store, run_id, cfg.run_cap_usd), [], []
+    budget, spent, models, parts = summarize.Budget(store, run_id, cfg.run_cap_usd), [], [], []
     work = cfg.state_dir / "work" / c.uuid
 
     def charge(done):
@@ -113,44 +127,76 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
             shutil.rmtree(work, ignore_errors=True)
         return outcome
 
-    if not parts:
-        return hold("unreadable")
+    def through() -> Outcome:
+        try:
+            rendered = render.render(c.path)
+            parts.extend(windows.split(rendered))
+        except OSError:
+            return hold("unreadable")  # its message names the path: never shown
+        except Exception:
+            return hold("render_error")
+        if not parts:
+            return hold("unreadable")
+        cost = projected(cfg, parts)
+        if cost > cfg.run_cap_usd:
+            return hold("too_large")
+        if cost > cfg.run_cap_usd - store.run_usd(run_id):
+            return Outcome("skipped", "capped", 0.0, None, None)
+        try:
+            prepare(work, rendered, parts)
+            merged = summarized(transport, cfg, parts, work, charge)
+        except WorkError:
+            return hold("work_error")
+        except (summarize.UnknownModel, OSError):
+            raise
+        except summarize.SummarizeError as error:
+            if UNAVAILABLE_ERROR.fullmatch(error.detail):
+                # The transport failed, not the session: no hold, its row and its earlier card stay as they were.
+                return finished(Outcome("skipped", UNAVAILABLE, sum(spent), None, None, len(parts),
+                                        detail=error.detail))
+            return hold(error.reason)
+        except Exception:
+            return hold("model_error")
+        if blank(merged):
+            return hold("unparsable")
+        try:
+            summary = cite.check(merged, rendered)
+        except Exception:
+            return hold("render_error")
+        area = cfg.areas.get(summary["area"])
+        if area is None:
+            with (cfg.state_dir / REVIEW).open("a", encoding="utf-8") as entries:
+                entries.write(f"- {now.date().isoformat()} {c.uuid} {UNCLEAR}\n")
+            store.record_session(c.uuid, c.slug, c.sha256, "review", UNCLEAR, **stat)
+            return finished(Outcome("review", UNCLEAR, sum(spent), None, None, len(parts)))
+        try:
+            copied, created = archive.copy(cfg.root, c.slug, c.uuid, c.path, c.sha256)
+        except archive.ArchiveError:
+            return hold("archive_error")
+        meta = cards.CardMeta(c.uuid, c.slug, area.name, copied, c.sha256, c.size, c.path, models[-1], cfg.effort,
+                              now.date().isoformat())
+        try:
+            text = cards.render(meta, summary)
+        except Exception:
+            return hold("render_error", copied, created)
+        try:
+            card, card_hash, written = cards.write(area.library, c.uuid, text)
+        except FileNotFoundError:
+            return hold("library_missing", copied, created)
+        except (OSError, UnicodeError):
+            return hold("card_error", copied, created)
+        store.record_session(c.uuid, c.slug, c.sha256, "done", area=area.name, card_hash=card_hash,
+                             archive_path=str(copied), **stat)
+        return finished(Outcome("done", None, sum(spent), card, copied, len(parts), written, created))
+
     try:
-        prepare(work, rendered, parts)
-        merged = summarized(transport, cfg, parts, work, charge)
-    except WorkError:
-        return hold("work_error")
-    except (summarize.UnknownModel, OSError):
-        raise
-    except summarize.SummarizeError as error:
-        if UNAVAILABLE_ERROR.fullmatch(error.detail):
-            # The transport failed, not the session: no hold, its row and its earlier card stay as they were.
-            return finished(Outcome("skipped", UNAVAILABLE, sum(spent), None, None, len(parts), detail=error.detail))
-        return hold(error.reason)
+        return through()
     except Exception:
-        return hold("model_error")
-    summary = cite.check(merged, rendered)
-    area = cfg.areas.get(summary["area"])
-    if area is None:
-        with (cfg.state_dir / REVIEW).open("a", encoding="utf-8") as entries:
-            entries.write(f"- {now.date().isoformat()} {c.uuid} {UNCLEAR}\n")
-        store.record_session(c.uuid, c.slug, c.sha256, "review", UNCLEAR, **stat)
-        return finished(Outcome("review", UNCLEAR, sum(spent), None, None, len(parts)))
-    try:
-        copied, created = archive.copy(cfg.root, c.slug, c.uuid, c.path, c.sha256)
-    except archive.ArchiveError:
-        return hold("archive_error")
-    meta = cards.CardMeta(c.uuid, c.slug, area.name, copied, c.sha256, c.size, c.path, models[-1], cfg.effort,
-                          now.date().isoformat())
-    try:
-        card, card_hash, written = cards.write(area.library, c.uuid, cards.render(meta, summary))
-    except FileNotFoundError:
-        return hold("library_missing", copied, created)
-    except (OSError, UnicodeError):
-        return hold("card_error", copied, created)
-    store.record_session(c.uuid, c.slug, c.sha256, "done", area=area.name, card_hash=card_hash,
-                         archive_path=str(copied), **stat)
-    return finished(Outcome("done", None, sum(spent), card, copied, len(parts), written, created))
+        raise
+    except BaseException:
+        # SystemExit from the SIGTERM handler or KeyboardInterrupt: hold it, so three of them unblock the queue.
+        hold("timeout")
+        raise
 
 
 def forced(store, candidate):
@@ -173,16 +219,25 @@ def tally(counts, outcome):
     counts["cards"] += outcome.card_written
 
 
+def lost(store, folder) -> bool:
+    """A folder this box claimed before that has no .owner now: an unmounted share's bare mount point."""
+    return store.claimed(folder) and archive.owner(folder) is None
+
+
 def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, str | None]:
-    """(result, detail) of the queue's sessions. A box-level failure is the run's, not a session's: an unreachable
-    root takes none, a model API that is unavailable stops the run at the session in flight, which is not held."""
-    if cfg.root is None or not Path(cfg.root).is_dir():
+    """(result, detail) of the queue's sessions. A box-level failure is the run's, not a session's: an unreachable root
+    or library takes none, a model API that is unavailable stops the run at the session in flight, which is not held."""
+    if cfg.root is None or not Path(cfg.root).is_dir() or lost(store, cfg.root):
         return ROOT_UNREACHABLE, None
+    if any(lost(store, area.library) for area in cfg.areas.values()):
+        return LIBRARY_UNREACHABLE, None
     budget = summarize.Budget(store, run_id, cfg.run_cap_usd)
     for c in queue:
         if not budget.allow():
             return "capped", None
         outcome = run_session(cfg, store, transport, c, run_id, keep=keep, now=now)
+        if outcome.reason == "capped":  # it fits the cap, not what this run has left: the next run takes it
+            return "capped", None
         tally(counts, outcome)
         if outcome.reason == UNAVAILABLE:
             return UNAVAILABLE, outcome.detail
@@ -191,8 +246,8 @@ def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, 
 
 def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, keep=False) -> RunSummary:
     """Eligible sessions, oldest first, until run_sessions (or limit) are taken or the run cap is spent; the session in
-    flight always finishes. result: ok, capped, root_unreachable, model_unavailable, or for --session missing or the
-    reason it was not taken."""
+    flight always finishes. result: ok, capped, root_unreachable, library_unreachable, model_unavailable, or for
+    --session missing or the reason it was not taken."""
     summarize.rates(cfg.model)  # an unpriced model is a config error, before any call
     found = sources.scan(cfg, store, now)
     counts = dict.fromkeys(COUNTS, 0) | {"scanned": len(found),

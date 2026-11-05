@@ -1,4 +1,4 @@
-"""Box-local sqlite state: a row per session, a row per run and a ledger row per model call."""
+"""Box-local sqlite state: a row per session, per run, per model call (the ledger) and per folder this box claimed."""
 
 from datetime import UTC, datetime
 import json
@@ -7,7 +7,7 @@ import sqlite3
 from uuid import uuid4
 
 STATUSES = ("done", "held", "review")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA = (
     """CREATE TABLE sessions (
   uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
@@ -18,6 +18,7 @@ SCHEMA = (
   run_id TEXT NOT NULL, uuid TEXT NOT NULL, model_id TEXT NOT NULL, usage TEXT NOT NULL, usd REAL NOT NULL,
   at TEXT NOT NULL)""",
     "CREATE INDEX ledger_run ON ledger (run_id)",
+    "CREATE TABLE claims (path TEXT PRIMARY KEY, machine_id TEXT NOT NULL, claimed_at TEXT NOT NULL)",
     f"PRAGMA user_version = {SCHEMA_VERSION}",
 )
 # area, card_hash and archive_path describe the last card and archive copy, which stay: a hold keeps them.
@@ -128,6 +129,15 @@ class Store:
             if value is not None:
                 return value
         return None
+
+    def claim(self, path, machine_id):
+        """The first claim of a folder (archive root or library) by this box; later ones change nothing."""
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO claims (path, machine_id, claimed_at) VALUES (?, ?, ?)",
+                            (str(path), machine_id, now_iso()))
+
+    def claimed(self, path) -> bool:
+        return self.db.execute("SELECT 1 FROM claims WHERE path = ?", (str(path),)).fetchone() is not None
 
     def held(self):
         return self.by_status("held")

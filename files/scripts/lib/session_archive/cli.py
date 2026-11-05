@@ -13,6 +13,7 @@ import contextlib
 from datetime import UTC, datetime
 import fcntl
 import json
+import signal
 import sqlite3
 import uuid
 
@@ -73,17 +74,36 @@ def reader(cfg):
     return contextlib.closing(store.Store(path, readonly=True)) if path.is_file() else contextlib.nullcontext()
 
 
+def peek(cfg):
+    """A dry run's store: the state database read-only, or an empty one in memory before a run has made it."""
+    path = cfg.state_dir / STATE_DB
+    return contextlib.closing(store.Store(path, readonly=True) if path.is_file() else store.Store(":memory:"))
+
+
 def folders(cfg) -> list:
     """The archive root and every library, each once."""
     return list(dict.fromkeys([*([cfg.root] if cfg.root else []), *(area.library for area in cfg.areas.values())]))
 
 
-def owned(cfg, machine_id, claim) -> bool:
-    """No folder names another box; with claim, every folder without a marker gets this one's. Every marker is read
-    before any is written, so a refusal claims nothing."""
+def refuse_foreign(cfg, machine_id):
+    """Every marker is read before any is written: one naming another box refuses the run and claims nothing."""
     if any(archive.owner(folder) not in (None, machine_id) for folder in folders(cfg)):
-        return False
-    return not claim or all([archive.check_owner(folder, machine_id) for folder in folders(cfg)])
+        raise Failure("the archive root or a library is owned by another box (.owner)")
+
+
+def claim(cfg, db, machine_id):
+    """Marks each folder this box may write and records the first claim. A folder claimed before that lost its marker
+    (an unmounted share's mount point) is not claimed again: the run reports it unreachable."""
+    for folder in folders(cfg):
+        if pipeline.lost(db, folder):
+            continue
+        if archive.check_owner(folder, machine_id) and archive.owner(folder) == machine_id:
+            db.claim(folder, machine_id)
+
+
+def stop(signum, frame):
+    """SIGTERM (the unit's timeout, systemctl stop) as SystemExit, so the session in flight is held first."""
+    raise SystemExit(128 + signum)
 
 
 def transport(env):
@@ -98,21 +118,33 @@ def run(args: argparse.Namespace, env) -> int:
     if cfg.root is None and not args.dry_run:
         raise Failure("SESSION_ARCHIVE_ROOT is not set: a run copies each session into the archive root")
     machine_id = archive.machine_id(env)
-    with single(cfg.state_dir) as ours:
-        if not ours:
-            print("already running")
-            return 0
-        model = None if args.dry_run else transport(env)
-        if not owned(cfg, machine_id, claim=not args.dry_run):
-            raise Failure("the archive root or a library is owned by another box (.owner)")
-        with opened(cfg) as db:
-            done = pipeline.run(cfg, db, model, datetime.now(UTC), limit=args.limit, session=args.session,
-                                dry_run=args.dry_run, keep=args.keep)
+    options = {"limit": args.limit, "session": args.session, "keep": args.keep}
+    if args.dry_run:
+        # It writes nothing, not even the lock or the state database, so it counts beside a run.
+        refuse_foreign(cfg, machine_id)
+        with peek(cfg) as db:
+            done = pipeline.run(cfg, db, None, datetime.now(UTC), dry_run=True, **options)
+    else:
+        previous = signal.signal(signal.SIGTERM, stop)
+        try:
+            with single(cfg.state_dir) as ours:
+                if not ours:
+                    print("already running")
+                    return 0
+                model = transport(env)
+                refuse_foreign(cfg, machine_id)
+                with opened(cfg) as db:
+                    claim(cfg, db, machine_id)
+                    done = pipeline.run(cfg, db, model, datetime.now(UTC), **options)
+        finally:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
     if done.result == "missing":
         raise Failure(f"session {args.session} is not under the configured projects")
     print(pipeline.journal(done))
     if done.result == pipeline.ROOT_UNREACHABLE:
         raise Failure("the archive root is unreachable: the run took no session")
+    if done.result == pipeline.LIBRARY_UNREACHABLE:
+        raise Failure("a library is unreachable: the run took no session")
     if done.result == pipeline.UNAVAILABLE:
         raise Failure(f"the model API is unavailable ({done.detail}): the run stopped, holding no session")
     if args.session and not done.counts["eligible"]:
@@ -125,17 +157,18 @@ def status(args: argparse.Namespace, env) -> int:
     counted, None until one has finished."""
     cfg = config.load(env)
     machine_id = archive.machine_id(env)
-    last, held, review, eligible, usd = None, [], [], None, 0.0
+    last, held, review, eligible, usd, root_lost = None, [], [], None, 0.0, False
     with reader(cfg) as db:
         if db is not None:
             last, held, review, eligible = db.last_run(), db.held(), db.review(), db.last_count("eligible")
             usd = db.run_usd(last["run_id"]) if last else 0.0
+            root_lost = cfg.root is not None and pipeline.lost(db, cfg.root)
     marks = [mark for mark in map(archive.owner, folders(cfg)) if mark is not None]
     report = {
         "last_run": last["started"] if last else None, "last_result": last["result"] if last else None,
         "eligible": eligible, "held": len(held), "review": len(review),
         "last_run_usd": round(usd, 6), "run_sessions": cfg.run_sessions,
-        "root_ok": None if cfg.root is None else cfg.root.is_dir(),
+        "root_ok": None if cfg.root is None else cfg.root.is_dir() and not root_lost,
         "owner_ok": all(mark == machine_id for mark in marks) if marks else None,
     }
     if args.json:
