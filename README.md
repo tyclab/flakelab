@@ -456,17 +456,18 @@ and writes `<overlay>-payload\shared\secrets\secrets.env`. The in-distro
 `~/.config/flakelab/secrets.env` that the shell actually sources is restored from it
 by `flakelab backup --restore`, which `provision` runs for you.
 
-| Key                             | Needed by                                          |
-| ------------------------------- | -------------------------------------------------- |
-| `GITLAB_TOKEN`                  | `flakelab clone` (glab group discovery)            |
-| `GH_TOKEN`                      | `gh` CLI, GitHub repository checks and Nix fetches |
-| `HASS_TOKEN`                    | homeassistant MCP (mapped to `HA_TOKEN`)           |
-| `PROXMOX_TOKEN_ID`              | proxmox MCP                                        |
-| `PROXMOX_TOKEN_SECRET`          | proxmox MCP                                        |
-| `GRAFANA_SERVICE_ACCOUNT_TOKEN` | grafana MCP (covers Grafana + Prometheus + Loki)   |
-| `NTFY_URL`                      | `flakelab notify` (the topic it posts to)          |
-| `NTFY_TOKEN`                    | `flakelab notify` (a protected topic)              |
-| `NOTIFY_WEBHOOK_URL`            | `flakelab notify` (a JSON webhook it posts to)     |
+| Key                                 | Needed by                                                                                        |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `GITLAB_TOKEN`                      | `flakelab clone` (glab group discovery)                                                          |
+| `GH_TOKEN`                          | `gh` CLI, GitHub repository checks and Nix fetches                                               |
+| `HASS_TOKEN`                        | homeassistant MCP (mapped to `HA_TOKEN`)                                                         |
+| `PROXMOX_TOKEN_ID`                  | proxmox MCP                                                                                      |
+| `PROXMOX_TOKEN_SECRET`              | proxmox MCP                                                                                      |
+| `GRAFANA_SERVICE_ACCOUNT_TOKEN`     | grafana MCP (covers Grafana + Prometheus + Loki)                                                 |
+| `NTFY_URL`                          | `flakelab notify` (the topic it posts to)                                                        |
+| `NTFY_TOKEN`                        | `flakelab notify` (a protected topic)                                                            |
+| `NOTIFY_WEBHOOK_URL`                | `flakelab notify` (a JSON webhook it posts to)                                                   |
+| `SESSION_ARCHIVE_ANTHROPIC_API_KEY` | `flakelab session-archive` (never `ANTHROPIC_API_KEY`, which moves Claude Code onto API billing) |
 
 Nix reads `GH_TOKEN` (or `GITHUB_TOKEN`) from the same secrets source through
 `/run/flakelab-nix/access-tokens.conf`, a mode-600 runtime file owned by the login.
