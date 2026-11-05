@@ -624,7 +624,7 @@ the state root has to converge on its own:
   file's size, mtime and inode stand — append-only files placed by rename
   cannot change count otherwise. Deleting the index only costs one full count.
   Claude's missing local sessions are pulled only within `cleanupPeriodDays`
-  (managed at 30 days), measured from the last timestamp in the transcript tail;
+  (`claudeCleanupPeriodDays`, 30), measured from the last timestamp in the transcript tail;
   unknown ages stay eligible. Idle local copies get their own content timestamp
   as mtime, so Claude's cleanup can expire them. Subagents and side files follow
   the parent session. `flakelab backup --fetch-session <uuid>` explicitly recovers
@@ -740,7 +740,7 @@ other content, and the card `session-<uuid>.md` is written atomically to the
 area's library, replaced only when its content changed. A session that grew
 has a new SHA-256, so it gets a new copy and a rewritten card; the lane deletes
 neither, and removing local transcripts stays Claude Code's `cleanupPeriodDays`
-(30, above the quiet days).
+(`claudeCleanupPeriodDays`, 30 by default, above the quiet days).
 
 A failure of one session holds it — a model error, an unparsable or empty
 answer, a transcript, work file, archive copy or card that cannot be read,
