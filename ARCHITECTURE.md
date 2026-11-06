@@ -814,8 +814,12 @@ before anything goes, that the session is the one the lane archived:
 - every `<uuid>.jsonl` under any slug of the state root is a plain file that is
   this version or a prefix of it (one session read under two project
   directories leaves a shorter copy under the other slug), and every `<uuid>/`
-  folder holds only files the subagents archive has with the same bytes; a
-  folder without a recorded archive keeps the session;
+  folder holds only files the subagents archive has with the same bytes. A
+  session taken before the lane packed folders has no recorded archive: the
+  step first packs its `<uuid>/` folder beside its copy for the recorded sha8,
+  records the archive's SHA-256 and size and adds the card's `Subagents:` line,
+  with no model call (`subagents_backfilled`), so it is proven like any other;
+  a folder under another slug without a recorded archive keeps the session;
 - this box's `~/.claude/projects` holds neither `<uuid>.jsonl` nor a `<uuid>/`
   with a file in it, under any slug: state-sync's push copies a local
   transcript or side file whose state-root copy is missing straight back, so
@@ -839,7 +843,7 @@ interrupt or fault during the step leaves the run `error`, and sessions pruned
 before it stay pruned. A pruned session's transcript that comes back with the
 same bytes (another box that still held it pushed it) is deleted again once no
 local copy is left, and counted `repruned`; `status` shows how many sessions
-are pruned and the last full run's `repruned`. A shorter copy that comes back is
+are pruned and the last full run's `repruned` and `kept`. A shorter copy that comes back is
 `pruned` to the scan, never summarized again; a longer one is archived and, past
 the period, pruned in the same run. Nothing in state-sync's bookkeeping names
 the files: the line index drops an entry whose file is gone at its next save,

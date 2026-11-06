@@ -104,7 +104,10 @@ Read for this topic; paths below are relative to the repository root unless stat
     slug and its archive pairs past the period, and retires its card's pointer,
     only while the pair proves them and `~/.claude/projects` holds no copy under
     any slug (the one read there); a returned same-bytes transcript is deleted
-    again. It counts `pruned`, `repruned`, `kept` and `prune_errors`; an
+    again, and a session archived before folders were packed gets its
+    subagents archive first, with no model call. It counts `pruned`,
+    `repruned`, `kept`, `prune_errors` and `subagents_backfilled` (`status`
+    shows `pruned`, `repruned` and `kept`); an
     unreadable file is an error, never absent, and a failed prune exits 1 as
     `prune_error` (`lib/session_archive/retention.py`). Its own state is
     `~/.local/state/flakelab/session-archive/` (`state.sqlite3`, `review.md`,

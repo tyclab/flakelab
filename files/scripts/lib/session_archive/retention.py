@@ -21,7 +21,7 @@ from session_archive.archive import file_sha
 
 ERROR = "prune_error"
 BLOCK = 1 << 20
-FAILURES = (OSError, EOFError, zlib.error, UnicodeError, ValueError, tarfile.TarError)
+FAILURES = (OSError, EOFError, zlib.error, UnicodeError, ValueError, tarfile.TarError, archive.ArchiveError)
 FOLDER = re.compile(sources.UUID_TEXT)
 PAIR = re.compile(rf"({sources.UUID_TEXT})\.[0-9a-f]{{8}}\.(?:jsonl|subagents\.tar)\.gz")
 
@@ -158,6 +158,40 @@ def proven(folder, packed) -> list | None:
     return [(name, info.st_mode, info.st_size, info.st_mtime_ns) for name, info in entries]
 
 
+def folder_digests(folder) -> dict:
+    """name -> SHA-256 of each file under folder, None for a folder: what packing it would archive."""
+    return {name: file_sha(os.path.join(folder, name)) if stat.S_ISREG(info.st_mode) else None
+            for name, info in archive.members(folder)}
+
+
+def backfill(cfg, db, row, found, dry_run) -> str | None:
+    """subagents_backfilled when a done session the lane took before it packed folders gets its subagents archive for
+    the recorded sha8, the row its SHA-256 and size and the card its Subagents line, with no model call; None when it
+    has one, its <uuid>/ folder beside its transcript is absent, or its copy or card is not the lane's."""
+    uuid, slug, sha = row["uuid"], row["slug"], row["sha256"]
+    folder = cfg.state_root / "claude/projects" / slug / uuid
+    if column(row, "subagents_sha256") or folder not in found.folders.get(uuid, []):
+        return None
+    area, copy = cfg.areas.get(row["area"]), cfg.root / slug / f"{uuid}.{sha[:8]}.jsonl.gz"
+    if area is None or row["archive_path"] != str(copy):
+        return None
+    try:
+        text = (area.library / f"session-{uuid}.md").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    planned = copy.with_name(f"{uuid}.{sha[:8]}{archive.SUBAGENTS}")
+    if dry_run:
+        fits = cards.with_subagents(text, copy, (planned, "", 0)) is not None or f"\n{cards.SUBAGENTS}{planned}, " in text
+        return "subagents_backfilled" if fits else None
+    packed = archive.subagents(cfg.root, slug, uuid, sha, folder)
+    card = packed and cards.with_subagents(text, copy, packed[0])
+    if not card:
+        return None
+    _, card_hash, _ = cards.write(area.library, uuid, card)
+    _, digest, size = packed[0]
+    return "subagents_backfilled" if db.record_subagents(uuid, sha, digest, size, card_hash) else None
+
+
 def remove(path):
     try:
         os.unlink(path)
@@ -173,8 +207,11 @@ def prune_done(cfg, db, row, now, found, dry_run) -> str:
     recorded = column(row, "subagents_sha256"), column(row, "subagents_bytes")
     tar = copy.with_name(f"{uuid}.{sha[:8]}{archive.SUBAGENTS}") if recorded[0] else None
     transcripts, folders = found.transcripts.get(uuid, []), found.folders.get(uuid, [])
+    # A dry run counts what the back-fill before it would make provable: its archive packs the folder beside the copy.
+    pending = dry_run and tar is None and backfill(cfg, db, row, found, True) is not None
     # state-sync pushes back a transcript or side file this box still holds.
-    if area is None or row["archive_path"] != str(copy) or uuid in found.local or (folders and tar is None):
+    if area is None or row["archive_path"] != str(copy) or uuid in found.local or (folders and tar is None
+                                                                                 and not pending):
         return "kept"
     try:
         text = (area.library / f"session-{uuid}.md").read_text(encoding="utf-8")
@@ -204,6 +241,8 @@ def prune_done(cfg, db, row, now, found, dry_run) -> str:
         if info is None or not stat.S_ISREG(info.st_mode) or info.st_size != recorded[1] or file_sha(tar) != recorded[0]:
             return "kept"
         members = packed_members(tar)
+    if pending:
+        members = folder_digests(cfg.state_root / "claude/projects" / slug / uuid)
     if folders and members is None:
         return "kept"
     shapes = {}
@@ -256,14 +295,21 @@ def prune_returned(row, found, dry_run) -> str | None:
 
 
 def prune(cfg, db, now, counts, dry_run=False) -> list[str]:
-    """Each done or pruned session past the period, into counts; the kind of each error that stopped one (never a path
-    or transcript text), which the next run retries. A tree that cannot be listed stops the whole step."""
+    """The back-fill of every done session without a subagents archive, then each done or pruned session past the
+    period, into counts; the kind of each error that stopped one (never a path or transcript text), which the next run
+    retries. A tree that cannot be listed stops the whole step."""
     cutoff, errors = now - timedelta(days=cfg.retention_days), []
     try:
         found = find(cfg)
     except FAILURES as error:
         counts["prune_errors"] += 1
         return [type(error).__name__]
+    for row in db.by_status("done"):
+        try:
+            if backfill(cfg, db, row, found, dry_run):
+                counts["subagents_backfilled"] += 1
+        except FAILURES as error:
+            errors.append(type(error).__name__)
     for row in [*db.by_status("done"), *db.by_status(store.PRUNED)]:
         try:
             if last(row) >= cutoff:

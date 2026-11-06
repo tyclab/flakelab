@@ -127,6 +127,15 @@ class Store:
                 "WHERE uuid = ? AND sha256 = ? AND status = 'done'",
                 (PRUNED, card_hash, now_iso(), uuid, sha256)).rowcount == 1
 
+    def record_subagents(self, uuid, sha256, subagents_sha256, subagents_bytes, card_hash) -> bool:
+        """The subagents archive back-filled for the done session at sha256, which had none recorded, and its card's new
+        hash; False when the row is not that any more."""
+        with self.db:
+            return self.db.execute(
+                "UPDATE sessions SET subagents_sha256 = ?, subagents_bytes = ?, card_hash = ?, updated = ? "
+                "WHERE uuid = ? AND sha256 = ? AND status = 'done' AND subagents_sha256 IS NULL",
+                (subagents_sha256, int(subagents_bytes), card_hash, now_iso(), uuid, sha256)).rowcount == 1
+
     def start_run(self) -> str:
         started = now_iso()
         run_id = f"{started.replace('-', '').replace(':', '')}-{uuid4().hex[:8]}"

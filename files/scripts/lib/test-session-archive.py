@@ -1326,17 +1326,18 @@ PER_CALL = summarize.price(summarize.STUB_USAGE, "claude-haiku-5-5")
 BIG_USAGE = {"input_tokens": 100_000, "output_tokens": 10_000, "cache_creation_input_tokens": 0,
              "cache_read_input_tokens": 0}
 FOURTH_UUID = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
-STATUS_FIELDS = {"last_run", "last_result", "eligible", "held", "review", "pruned", "repruned", "last_run_usd",
+STATUS_FIELDS = {"last_run", "last_result", "eligible", "held", "review", "pruned", "repruned", "kept", "last_run_usd",
                  "run_sessions", "root_ok", "owner_ok"}
 
 
 def journal(scanned=1, eligible=1, done=0, held=0, review=0, windows=0, archived=0, cards=0, usd="0.00", pruned=0,
-            repruned=0, kept=0, errors=0, dry=False):
-    """The journal line; a dry run's names what retention would delete."""
-    would = ("would_prune", "would_reprune") if dry else ("pruned", "repruned")
+            repruned=0, kept=0, errors=0, backfilled=0, dry=False):
+    """The journal line; a dry run's names what retention would delete and back-fill."""
+    would = (("would_prune", "would_reprune", "would_backfill_subagents") if dry
+             else ("pruned", "repruned", "subagents_backfilled"))
     return (f"session-archive: scanned={scanned} eligible={eligible} done={done} held={held} review={review} "
             f"windows={windows} usd={usd} archived={archived} cards={cards} {would[0]}={pruned} {would[1]}={repruned} "
-            f"kept={kept} prune_errors={errors}")
+            f"kept={kept} prune_errors={errors} {would[2]}={backfilled}")
 
 
 def names(folder):
@@ -1876,7 +1877,7 @@ class CliRunTest(Lane):
         fresh = str(self.tmp / "fresh")
         self.assertEqual(self.status(XDG_STATE_HOME=fresh), {
             "last_run": None, "last_result": None, "eligible": None, "held": 0, "review": 0, "last_run_usd": 0.0,
-            "run_sessions": 20, "root_ok": True, "owner_ok": None, "pruned": 0, "repruned": None})
+            "run_sessions": 20, "root_ok": True, "owner_ok": None, "pruned": 0, "repruned": None, "kept": None})
         self.assertIn("last run: never\n", self.status(human=True, XDG_STATE_HOME=fresh))
         self.assertEqual(call("review", env={**self.env, "XDG_STATE_HOME": fresh}),
                          (0, "no session waits for review\n", ""))
@@ -1968,7 +1969,7 @@ class CliRunTest(Lane):
     def test_status_json_fields(self):
         self.assertEqual(self.status(), {"last_run": None, "last_result": None, "eligible": None, "held": 0,
                                          "review": 0, "last_run_usd": 0.0, "run_sessions": 20, "root_ok": True,
-                                         "owner_ok": None, "pruned": 0, "repruned": None})
+                                         "owner_ok": None, "pruned": 0, "repruned": None, "kept": None})
         self.assertEqual((self.status(SESSION_ARCHIVE_ROOT="")["root_ok"],
                           self.status(SESSION_ARCHIVE_ROOT=str(self.tmp / "absent"))["root_ok"]), (None, False))
         self.fixture()
@@ -1983,7 +1984,7 @@ class CliRunTest(Lane):
         self.assertAlmostEqual(report.pop("last_run_usd"), 5 * PER_CALL)
         self.assertEqual({**report, "last_run": None}, {
             "last_run": None, "last_result": "ok", "eligible": 3, "held": 1, "review": 1, "run_sessions": 7,
-            "root_ok": True, "owner_ok": True, "pruned": 0, "repruned": 0})
+            "root_ok": True, "owner_ok": True, "pruned": 0, "repruned": 0, "kept": 0})
         (self.library / ".owner").write_text("box-b\n")
         self.assertIs(self.status()["owner_ok"], False)
         out = self.status(human=True)
@@ -2323,11 +2324,33 @@ class RetentionTest(Lane):
         state = self.boxes()
         self.assertEqual((pipeline.journal(self.later()), self.boxes()), (journal(eligible=0, kept=1), state))
         card.write_text(text)
-        # A session whose folder has no recorded archive (one the lane took before it packed folders) is kept.
+
+    def test_retention_backfills_the_subagents_archive_of_a_session_taken_before(self):
+        """A session the lane took before it packed folders: the next run packs its folder, no model call, then the
+        session prunes like any other."""
+        path, folder, packed = self.subagents_archived()
+        card, line = self.card(), f"Subagents: {packed}, SHA-256 {sha256(packed)}, {packed.stat().st_size} bytes, "
+        packed.unlink()
+        card.write_text("".join(part for part in card.read_text().splitlines(keepends=True)
+                                if not part.startswith("Subagents: ")))
         self.store.db.execute("UPDATE sessions SET subagents_sha256 = NULL, subagents_bytes = NULL")
         self.store.db.commit()
         state = self.boxes()
-        self.assertEqual((pipeline.journal(self.later()), self.boxes()), (journal(eligible=0, kept=1), state))
+        done = self.later(dry_run=True)
+        self.assertEqual((pipeline.journal(done), self.boxes()),
+                         (journal(eligible=0, pruned=1, backfilled=1, dry=True), state))
+        stub = summarize.StubTransport([])
+        done = pipeline.run(config.load(self.retained), self.store, stub, WITHIN)
+        self.assertEqual((pipeline.journal(done), done.result, stub.calls), (journal(eligible=0, backfilled=1), "ok", []))
+        row = self.store.session(UUID)
+        self.assertEqual((row["subagents_sha256"], row["subagents_bytes"], row["card_hash"]),
+                         (sha256(packed), packed.stat().st_size, cards.content_hash(card.read_text())))
+        pointer = pointer_of(card.read_text())
+        self.assertEqual((pointer[3], pointer[4].startswith(line)), (f"Fetch: zcat '{self.copy_of(path)}'", True))
+        self.assertEqual(pipeline.journal(self.later(when=WITHIN)), journal(eligible=0))
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), folder.exists(), packed.exists()),
+                         (journal(eligible=0, pruned=1), False, False))
 
     def test_retention_keeps_session_whose_local_subagents_remain(self):
         path, folder, packed = self.subagents_archived()
@@ -2415,13 +2438,15 @@ class RetentionTest(Lane):
         done = self.later(when=LATER + timedelta(days=1))
         self.assertEqual((pipeline.journal(done), [returned.exists() for returned in back]),
                          (journal(eligible=0, kept=1), [True, True]))
+        self.assertEqual(json.loads(call("status", "--json", env=self.retained)[1])["kept"], 1)
+        self.assertIn("\nkept past the retention period at the last full run: 1\n", call("status", env=self.retained)[1])
         local.unlink()
         done = self.later(when=LATER + timedelta(days=2))
         self.assertEqual((pipeline.journal(done), [returned.exists() for returned in back]),
                          (journal(eligible=0, repruned=1), [False, False]))
         self.assertEqual((self.store.session(UUID)["status"], card.read_text()), ("pruned", retired))
         report = json.loads(call("status", "--json", env=self.retained)[1])
-        self.assertEqual((report["pruned"], report["repruned"]), (1, 1))
+        self.assertEqual((report["pruned"], report["repruned"], report["kept"]), (1, 1, 0))
         self.assertIn("\npruned by retention: 1 (1 returned copy deleted again at the last full run)\n",
                       call("status", env=self.retained)[1])
         # A grown copy is a new version: archived again, then pruned again.

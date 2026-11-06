@@ -11,9 +11,9 @@ import shutil
 from session_archive import archive, cards, cite, render, retention, sources, summarize, windows
 
 COUNTS = ("scanned", "eligible", "done", "held", "review", "windows", "archived", "cards", "pruned", "repruned",
-          "kept", "prune_errors")
+          "kept", "prune_errors", "subagents_backfilled")
 # What a --session run does not count: it sees one session, not the backlog, and runs no retention.
-FULL_RUN = ("eligible", "pruned", "repruned", "kept", "prune_errors")
+FULL_RUN = ("eligible", "pruned", "repruned", "kept", "prune_errors", "subagents_backfilled")
 FORCED = ("held", "review")
 REVIEW = "review.md"
 UNCLEAR = "unclear_area"
@@ -51,13 +51,14 @@ class RunSummary:
 
 
 def journal(summary) -> str:
-    """The counts-only line; a dry run's names what retention would delete."""
+    """The counts-only line; a dry run's names what retention would delete and back-fill."""
     c = summary.counts
-    pruned, repruned = ("would_prune", "would_reprune") if summary.result == "dry_run" else ("pruned", "repruned")
+    pruned, repruned, backfilled = (("would_prune", "would_reprune", "would_backfill_subagents")
+                                    if summary.result == "dry_run" else ("pruned", "repruned", "subagents_backfilled"))
     return (f"session-archive: scanned={c['scanned']} eligible={c['eligible']} done={c['done']} held={c['held']} "
             f"review={c['review']} windows={c['windows']} usd={summary.usd:.2f} archived={c['archived']} "
             f"cards={c['cards']} {pruned}={c['pruned']} {repruned}={c['repruned']} kept={c['kept']} "
-            f"prune_errors={c['prune_errors']}")
+            f"prune_errors={c['prune_errors']} {backfilled}={c['subagents_backfilled']}")
 
 
 def save(work, name, value):

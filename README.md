@@ -599,19 +599,25 @@ archive pair proves it:
   `kept` meanwhile;
 - anything that cannot be read is an error (`prune_errors`), never absent.
 
-A transcript that grew is archived again first; held and review sessions are
-never touched. The card is retired first and the archive pair goes last, so a
+A session the lane took before it packed folders, whose `<uuid>/` folder is
+still beside its transcript, first gets its subagents archive and `Subagents:`
+line from the retention step itself, with no model call
+(`subagents_backfilled`), and then prunes like any other. A transcript that
+grew is archived again first; held and review sessions are never touched. The card is retired first and the archive pair goes last, so a
 prune an error cut short (its card already reading `removed`, its state-root
 files or archive copy perhaps gone) is finished by the next run. A pruned
 transcript that comes back with the same bytes (pushed by a box that still held
-it) is deleted again and counted `repruned`, which `status` shows. The journal
-line counts `pruned`, `repruned`, `kept` and `prune_errors`; a prune error ends
+it) is deleted again and counted `repruned`. `status` shows how many sessions are
+pruned and the last full run's `repruned` and `kept` (sessions past the period
+it could not prove, a copy that came back shorter or different among them). The
+journal line counts `pruned`, `repruned`, `kept`, `prune_errors` and
+`subagents_backfilled`; a prune error ends
 the run `prune_error` (exit 1), which the doctor reports.
 
 The first run after setting the option deletes the whole backlog past the
 period at once, with no cap: run `flakelab session-archive run --dry-run`
-first, which takes the same selection read-only and reports `would_prune` and
-`would_reprune`. It needs `sessionArchiveRoot`. The deletion replicates: under
+first, which takes the same selection read-only and reports `would_prune`,
+`would_reprune` and `would_backfill_subagents`. It needs `sessionArchiveRoot`. The deletion replicates: under
 `stateSyncthing` it reaches the hub and every other box, and
 `flakelab backup --fetch-session` can no longer bring the session back.
 

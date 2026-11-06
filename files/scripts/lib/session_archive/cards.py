@@ -70,15 +70,34 @@ def quoted(path) -> str:
     return "'" + str(path).replace("'", "'\\''") + "'"
 
 
+def subagents_line(path, sha256, size) -> str:
+    return f"{SUBAGENTS}{path}, SHA-256 {sha256}, {size} bytes, fetch: tar -xzf {quoted(path)}"
+
+
 def pointer(meta) -> list[str]:
-    packed = []
-    if meta.subagents:
-        path, sha256, size = meta.subagents
-        packed = [f"{SUBAGENTS}{path}, SHA-256 {sha256}, {size} bytes, fetch: tar -xzf {quoted(path)}"]
+    packed = [subagents_line(*meta.subagents)] if meta.subagents else []
     return [f"{ARCHIVE}{meta.archive_path}", f"SHA-256: {meta.sha256}", f"Bytes: {meta.bytes}",
             f"{FETCH}zcat {quoted(meta.archive_path)}", *packed, f"{LOCAL}{meta.local_path}", f"Project: {meta.slug}",
             f"Area: {meta.area}", f"Recipe: {RECIPE}", f"Model: {meta.model_id}/{meta.effort}",
             f"{EXTRACTED}{meta.extracted}"]
+
+
+def with_subagents(text, archive_path, subagents) -> str | None:
+    """The card with a Subagents line for subagents (path, SHA-256, bytes) after its Fetch line, as a back-filled
+    archive needs it: the card as it is when it has that line already, None when its pointer does not name
+    archive_path or names another subagents archive."""
+    head, mark, tail = text.rpartition(f"\n{POINTER}\n")
+    lines = tail.splitlines()
+    line, packs = subagents_line(*subagents), [part for part in lines if part.startswith(SUBAGENTS)]
+    fetch = [number for number, part in enumerate(lines) if part.startswith(FETCH)]
+    if not mark or [part for part in lines if part.startswith(ARCHIVE)] != [f"{ARCHIVE}{archive_path}"]:
+        return None
+    if packs:
+        return text if packs == [line] else None
+    if len(fetch) != 1:
+        return None
+    lines.insert(fetch[0] + 1, line)
+    return head + mark + "\n".join(lines) + "\n"
 
 
 def retire(text, archive_path, date, days, subagents_path=None) -> tuple[str, bool] | None:
