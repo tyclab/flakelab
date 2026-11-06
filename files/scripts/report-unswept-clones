@@ -4,26 +4,23 @@ set -uo pipefail
 
 #
 # report-unswept-clones — name the clones under the repos dir that the clone
-# sweep did not fetch, and the remotes it left alone.
-#
-# The sweep fetches `origin` of each discovered repo at the path it derives
-# from the URL. A clone anywhere else — a second copy, a renamed or moved
-# project, one cloneExclude drops, one cloned by hand — and every remote but
-# `origin` are never fetched, and nothing else says so. Read-only; always
-# exits 0 once its arguments parse.
+# sweep did not fetch, and the remotes it left alone. Read-only; always exits 0
+# once its arguments parse.
 #
 # Usage:
-#   report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>]
+#   report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>] [--skip <dir>]...
 #
 #   --swept       what the sweep fetched: one `url` or `url /absolute/dest` per
 #                 line, the clone-repos stdin format
 #   --discovered  every discovered url before cloneExclude; a url here and not
 #                 in --swept was excluded
+#   --skip        a clone something else keeps current (the overlay checkout)
 #
 
 REPOS_DIR=""
 SWEPT=""
 DISCOVERED=""
+typeset -a SKIP=()
 # GitLab nests up to 20 subgroups: group, subgroups and repo fit with room to spare.
 # The walk stops at every clone, so the depth costs only plain directory trees.
 typeset -i MAX_DEPTH=24
@@ -35,8 +32,9 @@ while (( $# > 0 )); do
     --repos-dir)  _need "$@"; REPOS_DIR="$2"; shift ;;
     --swept)      _need "$@"; SWEPT="$2"; shift ;;
     --discovered) _need "$@"; DISCOVERED="$2"; shift ;;
+    --skip)       _need "$@"; SKIP+=("${2:A}"); shift ;;
     --help|-h)
-      echo "Usage: report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>]"
+      echo "Usage: report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>] [--skip <dir>]..."
       exit 0 ;;
     *)
       print -r -- "Unknown option: $1" >&2; exit 2 ;;
@@ -94,7 +92,7 @@ while IFS= read -r spec || [[ -n "$spec" ]]; do
   url="${spec%% *}"
   dest="$(spec_dest "$spec")"
   key="$(url_key "$url")"
-  swept_dest[$dest]=1
+  swept_dest[$dest]="${key:--}"
   [[ -n "$key" ]] && swept_key[$key]="$dest"
 done < "${SWEPT}"
 
@@ -139,11 +137,26 @@ shown_url() {
   print -r -- "$u"
 }
 
+# A bare `git fetch` takes the remote the checked-out branch tracks, origin without one.
+fetched_remote() {
+  local branch remote=""
+  branch="$(git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null)"
+  [[ -n "$branch" ]] && remote="$(git -C "$1" config "branch.${branch}.remote" 2>/dev/null)"
+  print -r -- "${remote:-origin}"
+}
+
 typeset -a unswept=() remotes=()
-typeset clone origin okey other
+typeset clone origin okey other fetched furl fkey
 for clone in "${clones[@]}"; do
+  (( ${SKIP[(Ie)$clone]} )) && continue
   if [[ -n "${swept_dest[$clone]:-}" ]]; then
-    other="${(j:, :)${(@f)$(git -C "$clone" remote 2>/dev/null | grep -vx origin)}}"
+    fetched="$(fetched_remote "$clone")"
+    furl="$(git -C "$clone" remote get-url "$fetched" 2>/dev/null)"
+    fkey="${furl:+$(url_key "$furl")}"
+    if [[ "${swept_dest[$clone]}" != "-" && "$fkey" != "${swept_dest[$clone]}" ]]; then
+      unswept+=("  ${fetched} is ${${furl:+$(shown_url "$furl")}:-missing}, not ${swept_dest[$clone]}  $(rel "$clone")")
+    fi
+    other="${(j:, :)${(@f)$(git -C "$clone" remote 2>/dev/null | grep -vxF -- "$fetched")}}"
     [[ -n "$other" ]] && remotes+=("  ${other}  $(rel "$clone")")
     continue
   fi
@@ -165,7 +178,7 @@ if (( ${#unswept[@]} > 0 )); then
   printf '%s\n' "${unswept[@]}"
 fi
 if (( ${#remotes[@]} > 0 )); then
-  print -r -- "Remotes the sweep does not fetch, only origin is (${#remotes[@]}):"
+  print -r -- "Remotes the sweep does not fetch (${#remotes[@]}):"
   printf '%s\n' "${remotes[@]}"
 fi
 exit 0

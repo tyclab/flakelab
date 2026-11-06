@@ -3,9 +3,9 @@
 set -uo pipefail
 
 # Offline suite for report-unswept-clones (files/scripts/report-unswept-clones):
-# a throwaway repos dir holding swept clones, a second copy, an excluded and an
-# undiscovered clone, a linked worktree and a hidden directory, checked against
-# swept/discovered lists in the shape nix-clone-repos hands over. No network.
+# a throwaway repos dir of swept, copied, excluded, undiscovered and skipped
+# clones, checked against swept/discovered lists in the shape nix-clone-repos
+# hands over. No network.
 #
 # Usage: files/scripts/test-report-unswept-clones
 
@@ -53,9 +53,14 @@ clone g/a/b/c/d/deep      git@gitlab.com:g/a/b/c/d/deep.git      # six levels do
 mkdir -p "${REPOS}/local/scratch" && git -C "${REPOS}/local/scratch" init -q   # no origin
 git -C "${REPOS}/acme/app" worktree add -q "${REPOS}/worktrees/app-feature" -b feature \
   || { print -ru2 -- "setup: git worktree add failed"; exit 1 }
+# Found only if the walk descends into a linked worktree.
+clone worktrees/app-feature/inner git@gitlab.com:inner/inner.git
+clone acme/moved          git@github.com:other/moved.git         # destination holds another repository
+clone acme/tracks         git@gitlab.com:fork/tracks.git upstream git@gitlab.com:acme/tracks.git
+git -C "${REPOS}/acme/tracks" config branch.main.remote upstream
+clone overlay             git@gitlab.com:me/overlay.git          # kept current by flakelab update
 clone .hidden/cache       git@gitlab.com:hidden/cache.git
 clone acme/app/vendor/dep git@gitlab.com:vendor/dep.git          # nested inside a swept clone
-mkdir -p "${REPOS}/notes"                                        # plain directory
 
 print -r -- "git@gitlab.com:acme/app.git
 git@gitlab.com:acme/sub/lib.git
@@ -64,13 +69,15 @@ git@github.com:Owner/tool.git" > "${BASE}/raw"
 print -r -- "git@gitlab.com:acme/app.git
 git@gitlab.com:acme/sub/lib.git
 git@github.com:Owner/fork.git
-git@gitlab.com:acme/explicit-name.git ${REPOS}/acme/explicit" > "${BASE}/list"
+git@gitlab.com:acme/explicit-name.git ${REPOS}/acme/explicit
+git@gitlab.com:acme/moved.git
+git@gitlab.com:acme/tracks.git" > "${BASE}/list"
 
 print -r -- "== report"
-out="$(zsh "${CMD}" --repos-dir "${REPOS}" --swept "${BASE}/list" --discovered "${BASE}/raw" 2>&1)"
+out="$(zsh "${CMD}" --repos-dir "${REPOS}" --swept "${BASE}/list" --discovered "${BASE}/raw" --skip "${REPOS}/overlay" 2>&1)"
 rc=$?
 check    "exit 0 with findings" "${rc}" "0"
-contains "header counts the unswept clones" "${out}" "Clones the sweep does not fetch (6), under ${REPOS}:"
+contains "header counts the unswept clones" "${out}" "Clones the sweep does not fetch (7), under ${REPOS}:"
 contains "second copy across transport and case" "${out}" "  second copy of acme/app  mirror/app"
 contains "cloneExclude names the excluded clone" "${out}" "  cloneExclude  Owner/tool"
 contains "undiscovered clone names its origin" "${out}" "  not discovered (git@gitlab.com:old/gone.git)  old/gone"
@@ -78,15 +85,18 @@ contains "clone without origin" "${out}" "  no origin remote  local/scratch"
 contains "origin shown without its userinfo" "${out}" "  not discovered (https://gitlab.example.invalid/hand/tok.git)  hand/tok"
 excludes "token never printed" "${out}" "FAKE_TOKEN"
 contains "clone six levels down is found" "${out}" "g/a/b/c/d/deep"
-contains "extra remote of a swept clone" "${out}" "Remotes the sweep does not fetch, only origin is (1):"
+contains "destination holding another repository" "${out}" "  origin is git@github.com:other/moved.git, not gitlab.com/acme/moved  acme/moved"
+contains "extra remotes of swept clones" "${out}" "Remotes the sweep does not fetch (2):"
 contains "extra remote names it and the clone" "${out}" "  upstream  Owner/fork"
+contains "a branch tracking upstream leaves origin unfetched" "${out}" "  origin  acme/tracks"
+excludes "the tracked remote is the fetched one" "${out}" "fork/tracks"
+excludes "--skip leaves the overlay out" "${out}" "overlay"
 excludes "swept clone at its derived path" "${out}" "  acme/app"$'\n'
 excludes "subgroup clone is swept" "${out}" "sub/lib"
 excludes "explicit url-dest spec is swept" "${out}" "acme/explicit"
-excludes "linked worktree skipped" "${out}" "worktrees"
+excludes "no descent into a linked worktree" "${out}" "inner"
 excludes "hidden directory skipped" "${out}" ".hidden"
 excludes "descent stops at a clone" "${out}" "vendor/dep"
-excludes "plain directory skipped" "${out}" "notes"
 
 print -r -- "== deep subgroups"
 DEEP="${BASE}/deep"

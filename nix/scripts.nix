@@ -709,7 +709,9 @@ rec {
           sort -u "$_list" \
             | ${zsh} ${s}/clone-repos --key-file "$_key" --repos-dir "$_repos" --max-jobs 4
           # Before activate-hooks: without groups its exit status is the sweep's.
-          ${zsh} ${s}/report-unswept-clones --repos-dir "$_repos" --swept "$_list" --discovered "$_raw"
+          # flakelab update fetches the overlay checkout itself.
+          ${zsh} ${s}/report-unswept-clones --repos-dir "$_repos" --swept "$_list" --discovered "$_raw" \
+            --skip ${lib.escapeShellArg cfg.repoPath}
           ${zsh} ${s}/activate-hooks --repos-dir "$_repos"
           ${staleBlock}
         ''

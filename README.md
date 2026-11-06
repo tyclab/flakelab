@@ -258,7 +258,7 @@ them all, and the table has the daily ones.
 | -------------------------- | ---------------------------------------------------------------------------- |
 | `flakelab update`          | `sudo nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`              |
 | `flakelab update-all`      | rebuild + clone                                                              |
-| `flakelab clone`           | clone / fetch GitLab group repos                                             |
+| `flakelab clone`           | clone / fetch GitLab group, GitHub owner and extra repos                     |
 | `flakelab doctor`          | diagnose a provisioned distro                                                |
 | `flakelab backup`          | payload + optional shared state root                                         |
 | `flakelab sessions`        | running agent sessions; `--start`/`--attach` host one in tmux                |

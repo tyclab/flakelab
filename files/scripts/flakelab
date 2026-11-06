@@ -111,7 +111,7 @@ _desc=(
   notify          'a push (ntfy, a JSON webhook) when a session waits on you; the Claude and Codex hooks call it'
   web             'the dashboard in a browser: the tycswap logins, sessions, switch and start; token-protected'
   mcp             'MCP accounts shared by Claude and Codex: connect, login, status, import-codex'
-  clone           'discover and clone the configured GitLab groups and repos'
+  clone           'discover and clone the configured GitLab groups, GitHub owners and repos'
   provision       'drive the Windows provisioning script from inside WSL'
   overlay-gen     'scaffold a private flakelab overlay from a user_data.yaml'
   build-distro    'build a THROWAWAY dev distro from this flake (interop-wiping)'

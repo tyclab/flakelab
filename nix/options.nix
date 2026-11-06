@@ -86,7 +86,7 @@ in
 
     cloneExclude = mkOption {
       type = required (types.listOf types.str);
-      description = "Repo names skipped during GitLab group discovery. Explicit `repos` entries bypass it, since naming a repo there is already explicit.";
+      description = "Repo names the clone sweep drops from what GitLab group and GitHub owner discovery return. Explicit `repos` entries bypass it, since naming a repo there is already explicit.";
     };
 
     gitEditor = mkOption {
