@@ -296,6 +296,7 @@ in
   # The hook installer drives `make install-hooks` where a repo has the target.
   activate-hooks = suiteCheckWith [ pkgs.gnumake ] "activate-hooks";
   report-stale-repos = suiteCheck "report-stale-repos";
+  report-unswept-clones = suiteCheck "report-unswept-clones";
   nix-provision = suiteCheck "nix-provision";
   nix-tycswap-tray = suiteCheck "nix-tycswap-tray";
   codex-config =

@@ -646,7 +646,8 @@ rec {
             echo ""
             echo "Clones configured GitLab groups, opt-in GitHub owners, and extra repos under"
             echo "~/git, fetches and rebases the clones already there, installs their"
-            echo "pre-commit hooks, and reports clones whose project is archived or"
+            echo "pre-commit hooks, names the clones and remotes under ~/git it did not"
+            echo "fetch, and reports clones whose project is archived or"
             echo "scheduled for deletion. No options: the groups, the repos and the"
             echo "exclusions come from the overlay. Exits 3, cloning nothing, when"
             echo "GitLab groups are configured and GITLAB_TOKEN is not set."
@@ -707,6 +708,10 @@ rec {
           # Groups overlap, and two clones racing into one destination corrupt it.
           sort -u "$_list" \
             | ${zsh} ${s}/clone-repos --key-file "$_key" --repos-dir "$_repos" --max-jobs 4
+          # Before activate-hooks: without groups its exit status is the sweep's.
+          # flakelab update fetches the overlay checkout itself.
+          ${zsh} ${s}/report-unswept-clones --repos-dir "$_repos" --swept "$_list" --discovered "$_raw" \
+            --skip ${lib.escapeShellArg cfg.repoPath}
           ${zsh} ${s}/activate-hooks --repos-dir "$_repos"
           ${staleBlock}
         ''
