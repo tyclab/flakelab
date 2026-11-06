@@ -884,6 +884,27 @@ in
     assert aborts [ "nodePackages" ];
     pkgs.runCommandLocal "flakelab-check-profile-cli-tools" { } "touch $out";
 
+  # The home python3 imports yaml, it is the only python3 on PATH, and a venv made
+  # from it starts without PyYAML: the library must not leak into project venvs.
+  python3-pyyaml =
+    let
+      sys = self.nixosConfigurations.default.config;
+      pythons = builtins.filter (
+        p: nixpkgs.lib.hasPrefix "python3-" (p.name or "")
+      ) sys.home-manager.users.${sys.flakelab.username}.home.packages;
+      py = builtins.head pythons;
+    in
+    assert builtins.length pythons == 1;
+    pkgs.runCommandLocal "flakelab-check-python3-pyyaml" { } ''
+      ${py}/bin/python3 -c 'import yaml; assert yaml.safe_load("a: 1") == {"a": 1}'
+      ${py}/bin/python3 -m venv --without-pip "$TMPDIR/venv"
+      if "$TMPDIR/venv/bin/python" -c 'import yaml' 2>/dev/null; then
+        echo "a venv made from the home python3 imports yaml" >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
   # The target seam: the two systems must differ exactly as nix/targets/ says,
   # and both must still evaluate.
   targets =
