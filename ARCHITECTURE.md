@@ -630,8 +630,9 @@ the state root has to converge on its own:
   the parent session. `flakelab backup --fetch-session <uuid>` explicitly recovers
   an older session. Automatic sync retains the archive; explicit `--state-gc`
   can still remove a slug no machine claims after local cleanup, and the
-  session archive's `sessionArchiveRetentionDays` removes a parent transcript
-  it archived once no local copy is left to push it back (below).
+  session archive's `sessionArchiveRetentionDays` removes a transcript and its
+  `<uuid>/` folder once it has archived both and no local copy is left to push
+  them back (below).
 - **Session side files** — the tool outputs Claude Code spills to
   `<slug>/<session>/tool-results/`, a subagent's `.meta.json` — travel with the
   transcripts. Write-once, so each is copied only to a side that lacks it,
@@ -739,11 +740,20 @@ those records, exactly or at a `difflib` ratio of 0.85. The model files the
 session under one of `sessionArchiveAreas`; one it cannot place (`unclear`)
 gets a line in `review.md` and no card. Otherwise the transcript is copied to
 `<sessionArchiveRoot>/<slug>/<uuid>.<sha8>.jsonl.gz`, a name never reused for
-other content, and the card `session-<uuid>.md` is written atomically to the
-area's library, replaced only when its content changed. A session that grew
-has a new SHA-256, so it gets a new copy and a rewritten card; only retention
-(below) deletes a copy, never a card, and removing local transcripts stays
-Claude Code's `cleanupPeriodDays` (30, above the quiet days).
+other content. The session's `<uuid>/` folder beside the transcript (subagent
+transcripts, their `.meta.json`, tool results), when there is one, goes beside
+the copy as `<uuid>.<sha8>.subagents.tar.gz`: names relative to the folder in
+name order, each entry's mode and mtime, no owner and a gzip header without a
+timestamp, so the same folder packs to the same bytes and a retried session
+finds its archive as it left it. Its SHA-256 and size go into the session's
+row, and an entry that is neither a file nor a folder, or a folder that cannot
+be read, holds the session as `archive_error`. Then the card
+`session-<uuid>.md` is written atomically to the area's library, replaced only
+when its content changed; its pointer names the copy and, on a `Subagents:`
+line, the folder's archive. A session that grew has a new SHA-256, so it gets a
+new pair and a rewritten card; only retention (below) deletes a pair, never a
+card, and removing local transcripts stays Claude Code's `cleanupPeriodDays`
+(30, above the quiet days).
 
 A failure of one session holds it — a model error, an unparsable or empty
 answer, a transcript, work file, archive copy or card that cannot be read,
@@ -785,34 +795,56 @@ idle I/O and a two-hour timeout; the timer is `Persistent` with up to 20
 minutes of random delay. Its journal is one line of counts.
 
 Retention is opt-in: `sessionArchiveRetentionDays` (null keeps everything)
-adds a last step to every run that is not a dry run and reached the archive
-root and libraries (`retention.py`). It takes each `done` row whose last entry
-(the file's mtime when it has none) is older than the period and proves, before
-anything goes, that the session is the one the lane archived: its area is still
-configured, `archive_path` is `<root>/<slug>/<uuid>.<sha8>.jsonl.gz` for the
-row's SHA-256 and unpacks to it, the card in the area's library names that copy
-in its pointer, and the state-root transcript is absent or still hashes to the
-row's SHA-256. It also needs `~/.claude/projects/<slug>/<uuid>.jsonl` gone:
-state-sync's push copies a local transcript whose state-root copy is missing
-straight back, so pruning while one remains is undone within one sync interval.
+adds a last step to every full run that reached the archive root and libraries
+(`retention.py`); a `--session` run takes none, and a dry run takes it
+read-only, reporting `would_prune` and `would_reprune`, which is how the first
+run's whole backlog is previewed (there is no cap). The step lists the state
+root's project folders, this box's `~/.claude/projects` and the archive root's
+slug folders once; a folder that cannot be listed stops the step as an error,
+since only a missing file counts as absent. It takes each `done` row whose last
+entry (the file's mtime when it has none) is older than the period and proves,
+before anything goes, that the session is the one the lane archived:
+
+- its area is still configured and `archive_path` is
+  `<root>/<slug>/<uuid>.<sha8>.jsonl.gz` for the row's SHA-256;
+- the card names that copy, and the subagents archive the row records, in its
+  pointer;
+- the copy unpacks to the row's SHA-256, and the subagents archive has the
+  recorded SHA-256 and size;
+- every `<uuid>.jsonl` under any slug of the state root is a plain file that is
+  this version or a prefix of it (one session read under two project
+  directories leaves a shorter copy under the other slug), and every `<uuid>/`
+  folder holds only files the subagents archive has with the same bytes; a
+  folder without a recorded archive keeps the session;
+- this box's `~/.claude/projects` holds neither `<uuid>.jsonl` nor a `<uuid>/`
+  with a file in it, under any slug: state-sync's push copies a local
+  transcript or side file whose state-root copy is missing straight back, so
+  pruning while one remains is undone within one sync interval.
+
 A session that fails any of these is counted `kept` and looked at again by the
-next run; a grown transcript is the scan's to archive first. Otherwise the card
-is rewritten first, its `Archive:` line reading `removed <date> after <N>-day
-retention` and its `Fetch:` and `Local` lines gone, so it never names a missing
-file; then every `<uuid>.<sha8>.jsonl.gz` of the session in its slug folder
-goes, the versions it grew past included, then the state-root transcript after
-a second hash check, and the row becomes `pruned` (schema 4; a version 3
-database is marked 4 by the next run, and `status` reads either). A card that
-already reads `removed` marks a prune an error cut short, whose archive copy may
-be gone already; the next run finishes it. An error (an unwritable card, a
-refused delete, a damaged copy) ends an `ok` or `capped` run `prune_error`, exit
-1, which the doctor's failed-run warning covers. A pruned transcript that comes
-back with the same bytes (another box that still holds it pushed it) is
-`pruned` to the scan and stays untouched; subagent transcripts and side files
-under `<slug>/<uuid>/` are never archived, so never pruned. Nothing in
-state-sync's bookkeeping names the file: the line index drops an entry whose
-file is gone at its next save, the slug manifests list slugs, and the gate's
-decisions are keyed by fingerprint and its held list by the local path.
+next run; a longer transcript is the scan's to archive first. Otherwise the card
+is rewritten first, its `Archive:` and `Subagents:` lines reading `removed
+<date> after <N>-day retention` and its `Fetch:` and `Local` lines gone, so it
+never names a missing file. Then the state-root transcripts go, each hashed
+again first, then the folders, each listed again first, then every archive copy
+and subagents archive of the session under any slug folder, the versions it
+grew past included; the row becomes `pruned` (schema 4: a version 3 database
+gets the two subagents columns from the next run, and `status` reads either).
+The archive pair goes last so that a prune an error cut short, whose card
+already reads `removed`, is proven again by what is left and finished by the
+next run; a transcript already gone is no obstacle. An error (an unreadable or
+unwritable file, a refused delete, a damaged copy) ends an `ok` or `capped` run
+`prune_error`, exit 1, which the doctor's failed-run warning covers; an
+interrupt or fault during the step leaves the run `error`, and sessions pruned
+before it stay pruned. A pruned session's transcript that comes back with the
+same bytes (another box that still held it pushed it) is deleted again once no
+local copy is left, and counted `repruned`; `status` shows how many sessions
+are pruned and the last full run's `repruned`. A shorter copy that comes back is
+`pruned` to the scan, never summarized again; a longer one is archived and, past
+the period, pruned in the same run. Nothing in state-sync's bookkeeping names
+the files: the line index drops an entry whose file is gone at its next save,
+the slug manifests list slugs, and the gate's decisions are keyed by
+fingerprint and its held list by the local path.
 
 ## Language runtimes
 

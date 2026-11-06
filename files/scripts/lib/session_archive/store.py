@@ -7,17 +7,19 @@ import sqlite3
 from uuid import uuid4
 
 STATUSES = ("done", "held", "review")
-# A done session whose archive copy and state-root transcript retention removed; set only by mark_pruned.
+# A done session whose archive copies and state-root files retention removed; set only by mark_pruned.
 PRUNED = "pruned"
-# Version 4 is version 3's tables plus the pruned status, which a version 3 lane would read as a review: a run marks
-# a version 3 database 4, and a read-only open takes it as it is.
+# Version 4 is version 3's tables plus the subagents archive's SHA-256 and bytes and the pruned status, which a version
+# 3 lane would read as a review: a run adds the two columns to a version 3 database, and a read-only open takes it as
+# it is (its rows have no subagents archive).
 SCHEMA_VERSION = 4
+TO_4 = ("ALTER TABLE sessions ADD COLUMN subagents_sha256 TEXT", "ALTER TABLE sessions ADD COLUMN subagents_bytes INTEGER")
 READABLE = (3, SCHEMA_VERSION)
 SCHEMA = (
     """CREATE TABLE sessions (
   uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
   last_entry TEXT, status TEXT NOT NULL, reason TEXT, area TEXT, card_hash TEXT, archive_path TEXT,
-  holds INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL)""",
+  holds INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL, subagents_sha256 TEXT, subagents_bytes INTEGER)""",
     """CREATE TABLE runs (run_id TEXT PRIMARY KEY, started TEXT NOT NULL, finished TEXT, result TEXT, counts TEXT,
   stopped_uuid TEXT, stopped_sha TEXT)""",
     """CREATE TABLE ledger (
@@ -27,13 +29,14 @@ SCHEMA = (
     "CREATE TABLE claims (path TEXT PRIMARY KEY, machine_id TEXT NOT NULL, claimed_at TEXT NOT NULL)",
     f"PRAGMA user_version = {SCHEMA_VERSION}",
 )
-# area, card_hash and archive_path describe the last card and archive copy, which stay: a hold keeps them.
-# A new SHA is new input, so the count of holds starts again.
+# area, card_hash, archive_path and the subagents archive describe the last card and archive pair, which stay: a hold
+# keeps them, and only a done version replaces the subagents archive (with none, when its folder is gone). A new SHA is
+# new input, so the count of holds starts again.
 RECORD = """
 INSERT INTO sessions (uuid, slug, sha256, size, mtime, last_entry, status, reason, area, card_hash, archive_path,
-                      holds, updated)
+                      holds, updated, subagents_sha256, subagents_bytes)
 VALUES (:uuid, :slug, :sha256, :size, :mtime, :last_entry, :status, :reason, :area, :card_hash, :archive_path,
-        :holds, :updated)
+        :holds, :updated, :subagents_sha256, :subagents_bytes)
 ON CONFLICT (uuid) DO UPDATE SET
   slug = excluded.slug, sha256 = excluded.sha256, size = excluded.size, mtime = excluded.mtime,
   last_entry = excluded.last_entry, status = excluded.status, reason = excluded.reason,
@@ -42,7 +45,9 @@ ON CONFLICT (uuid) DO UPDATE SET
   holds = CASE WHEN excluded.status = 'done' THEN 0
                WHEN excluded.sha256 = sha256 THEN holds + excluded.holds
                ELSE excluded.holds END,
-  updated = excluded.updated
+  updated = excluded.updated,
+  subagents_sha256 = CASE WHEN excluded.status = 'done' THEN excluded.subagents_sha256 ELSE subagents_sha256 END,
+  subagents_bytes = CASE WHEN excluded.status = 'done' THEN excluded.subagents_bytes ELSE subagents_bytes END
 """
 
 
@@ -75,8 +80,8 @@ class Store:
                              f"{SCHEMA_VERSION}: move the database aside to start a new one")
 
     def schema(self):
-        """Create the tables in an empty database, mark a version 3 one 4; the version of any other. One write lock: a
-        second opener waits."""
+        """Create the tables in an empty database, bring a version 3 one to 4; the version of any other. One write lock:
+        a second opener waits."""
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             version = self.db.execute("PRAGMA user_version").fetchone()[0]
@@ -85,6 +90,8 @@ class Store:
                     self.db.execute(statement)
                 version = SCHEMA_VERSION
             elif version == 3:
+                for statement in TO_4:
+                    self.db.execute(statement)
                 self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 version = SCHEMA_VERSION
         return version
@@ -93,8 +100,9 @@ class Store:
         self.db.close()
 
     def record_session(self, uuid, slug, sha256, status, reason=None, area=None, card_hash=None, archive_path=None,
-                       *, size: int, mtime: float, last_entry: datetime | None):
-        """size, mtime and last_entry are the scan's, taken before sha256 was computed (the Candidate's fields)."""
+                       *, size: int, mtime: float, last_entry: datetime | None, subagents=None):
+        """size, mtime and last_entry are the scan's, taken before sha256 was computed (the Candidate's fields);
+        subagents is a done version's (SHA-256, bytes) of its subagents archive, None without a folder."""
         if status not in STATUSES:
             raise ValueError(f"unknown session status: {status}")
         with self.db:
@@ -102,18 +110,20 @@ class Store:
                 "uuid": uuid, "slug": slug, "sha256": sha256, "size": int(size), "mtime": float(mtime),
                 "last_entry": last_entry.isoformat() if last_entry else None, "status": status, "reason": reason,
                 "area": area, "card_hash": card_hash, "archive_path": archive_path, "holds": int(status == "held"),
-                "updated": now_iso(),
+                "updated": now_iso(), "subagents_sha256": subagents[0] if subagents else None,
+                "subagents_bytes": subagents[1] if subagents else None,
             })
 
     def session(self, uuid):
         return self.db.execute("SELECT * FROM sessions WHERE uuid = ?", (uuid,)).fetchone()
 
     def mark_pruned(self, uuid, sha256, card_hash) -> bool:
-        """The done session at sha256 as pruned, its archive path cleared and its retired card's hash kept; False when
+        """The done session at sha256 as pruned, its archive pair cleared and its retired card's hash kept; False when
         the row is not that any more."""
         with self.db:
             return self.db.execute(
-                "UPDATE sessions SET status = ?, reason = NULL, archive_path = NULL, card_hash = ?, updated = ? "
+                "UPDATE sessions SET status = ?, reason = NULL, archive_path = NULL, subagents_sha256 = NULL, "
+                "subagents_bytes = NULL, card_hash = ?, updated = ? "
                 "WHERE uuid = ? AND sha256 = ? AND status = 'done'",
                 (PRUNED, card_hash, now_iso(), uuid, sha256)).rowcount == 1
 
@@ -175,6 +185,9 @@ class Store:
 
     def review(self):
         return self.by_status("review")
+
+    def count(self, status) -> int:
+        return self.db.execute("SELECT count(*) FROM sessions WHERE status = ?", (status,)).fetchone()[0]
 
     def by_status(self, status):
         return self.db.execute("SELECT * FROM sessions WHERE status = ? ORDER BY updated, uuid", (status,)).fetchall()

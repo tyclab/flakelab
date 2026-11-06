@@ -159,20 +159,21 @@ def run(args: argparse.Namespace, env) -> int:
 
 
 def status(args: argparse.Namespace, env) -> int:
-    """The store's account, without reading the state root: eligible is what the last full run (not --session)
-    counted, None until one has finished."""
+    """The store's account, without reading the state root: eligible and repruned are what the last full run (not
+    --session) counted, None until one has finished; pruned is every session retention pruned."""
     cfg = config.load(env)
     machine_id = archive.machine_id(env)
-    last, held, review, eligible, usd, root_lost = None, [], [], None, 0.0, False
+    last, held, review, eligible, usd, root_lost, pruned, repruned = None, [], [], None, 0.0, False, 0, None
     with reader(cfg) as db:
         if db is not None:
             last, held, review, eligible = db.last_run(), db.held(), db.review(), db.last_count("eligible")
+            pruned, repruned = db.count(store.PRUNED), db.last_count("repruned")
             usd = db.run_usd(last["run_id"]) if last else 0.0
             root_lost = cfg.root is not None and pipeline.lost(db, cfg.root)
     marks = [mark for mark in map(archive.owner, folders(cfg)) if mark is not None]
     report = {
         "last_run": last["started"] if last else None, "last_result": last["result"] if last else None,
-        "eligible": eligible, "held": len(held), "review": len(review),
+        "eligible": eligible, "held": len(held), "review": len(review), "pruned": pruned, "repruned": repruned,
         "last_run_usd": round(usd, 6), "run_sessions": cfg.run_sessions,
         "root_ok": None if cfg.root is None else cfg.root.is_dir() and not root_lost,
         "owner_ok": all(mark == machine_id for mark in marks) if marks else None,
@@ -186,6 +187,8 @@ def status(args: argparse.Namespace, env) -> int:
         f"({cfg.run_sessions} per run)",
         f"held: {len(held)}", *(f"  {row['uuid']} {row['reason']}, {row['holds']} hold(s)" for row in held),
         f"waiting for review: {len(review)}",
+        f"pruned by retention: {pruned}" + (f" ({repruned} returned cop{'y' if repruned == 1 else 'ies'} deleted again "
+                                            "at the last full run)" if repruned else ""),
         f"archive root: {ROOT_STATE[report['root_ok']]}", f"owner: {OWNER_STATE[report['owner_ok']]}",
     ]))
     return 0
@@ -214,8 +217,10 @@ def parser() -> argparse.ArgumentParser:
     )
     commands = top.add_subparsers(dest="command", required=True, metavar="{run,status,review}")
     run_cmd = commands.add_parser("run", help="archive each eligible session and write its card")
-    run_cmd.add_argument("--session", type=session_id, metavar="UUID", help="only this session, past quiet days and holds")
-    run_cmd.add_argument("--dry-run", action="store_true", help="count what a run would do: no model call, no write")
+    run_cmd.add_argument("--session", type=session_id, metavar="UUID",
+                         help="only this session, past quiet days and holds; no retention step")
+    run_cmd.add_argument("--dry-run", action="store_true",
+                         help="count what a run would do, what retention would delete included: no model call, no write")
     run_cmd.add_argument("--limit", type=session_count, metavar="N", help="at most N sessions in this run")
     run_cmd.add_argument("--keep", action="store_true", help="keep each session's work directory after its card")
     run_cmd.set_defaults(handler=run)

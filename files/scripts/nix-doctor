@@ -1112,13 +1112,20 @@ if (( heldCount > 0 )); then
   # A file with a held finding AND no synced copy at all was held back WHOLE —
   # nothing of that session ever reaches the other machines until it is reviewed.
   # Any depth: subagent transcripts and workflow journals sit under the session.
+  # Unless its local file is gone too: Claude Code's cleanup, then the session
+  # archive's retention, removed it everywhere, which is no hold.
   if [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
-    local heldName
-    while IFS= read -r heldName; do
+    local heldName heldPath
+    while IFS=$'\t' read -r heldName heldPath; do
       [[ -n "${heldName}" ]] || continue
       local -a synced=("${FLAKELAB_STATE_ROOT}"/claude/projects/**/"${heldName}"(N))
-      (( ${#synced} == 0 )) && log_warn "held back whole, never synced: ${heldName}"
-    done < <(jq -r 'select(.kind == "transcript") | .file // empty' "${HELD_FILE}" 2>/dev/null | sort -u)
+      (( ${#synced} == 0 )) || continue
+      if [[ -n "${heldPath}" && ! -e "${heldPath}" ]]; then
+        log_ok "note: ${heldName} is gone from this box and the state root (cleanup, or session-archive retention); its finding still waits for review"
+      else
+        log_warn "held back whole, never synced: ${heldName}"
+      fi
+    done < <(jq -r 'select(.kind == "transcript") | [(.file // ""), (.path // "")] | @tsv' "${HELD_FILE}" 2>/dev/null | sort -u)
   fi
   log_hint "review each finding (delete / keep local / allow): flakelab backup --review-secrets"
 elif [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then

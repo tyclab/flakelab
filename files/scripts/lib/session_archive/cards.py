@@ -18,9 +18,9 @@ RECIPE = "session-archive-v1"
 SECTIONS = (("why", "Why"), ("when", "When"), ("how", "How"), ("outcome", "Outcome"), ("open_ends", "Open ends"),
             ("continue", "What an agent needs to continue"))
 POINTER = "## Pointer"
-ARCHIVE, FETCH, LOCAL = "Archive: ", "Fetch: ", "Local (until cleanup): "
+ARCHIVE, FETCH, SUBAGENTS, LOCAL = "Archive: ", "Fetch: ", "Subagents: ", "Local (until cleanup): "
 EXTRACTED = "Extracted: "
-RETIRED = re.compile(r"Archive: removed [0-9]{4}-[0-9]{2}-[0-9]{2} after [0-9]+-day retention")
+RETIRED = re.compile(r"(?:Archive|Subagents): removed [0-9]{4}-[0-9]{2}-[0-9]{2} after [0-9]+-day retention")
 NONE = "None."
 UNTRACKED = ("", "none", "not tracked", "n/a", "-")
 BLOCK = re.compile(r"[#>`~<|*+_-]|[0-9]+[.)]")
@@ -38,6 +38,7 @@ class CardMeta:
     model_id: str
     effort: str
     extracted: str
+    subagents: tuple | None = None  # (path, SHA-256, bytes) of the subagents archive; None without a folder
 
 
 def one_line(text) -> str:
@@ -65,28 +66,41 @@ def bullet(item) -> list[str]:
     return lines
 
 
+def quoted(path) -> str:
+    return "'" + str(path).replace("'", "'\\''") + "'"
+
+
 def pointer(meta) -> list[str]:
-    archive = str(meta.archive_path)
-    fetch = "'" + archive.replace("'", "'\\''") + "'"
-    return [f"{ARCHIVE}{archive}", f"SHA-256: {meta.sha256}", f"Bytes: {meta.bytes}", f"{FETCH}zcat {fetch}",
-            f"{LOCAL}{meta.local_path}", f"Project: {meta.slug}", f"Area: {meta.area}",
-            f"Recipe: {RECIPE}", f"Model: {meta.model_id}/{meta.effort}", f"{EXTRACTED}{meta.extracted}"]
+    packed = []
+    if meta.subagents:
+        path, sha256, size = meta.subagents
+        packed = [f"{SUBAGENTS}{path}, SHA-256 {sha256}, {size} bytes, fetch: tar -xzf {quoted(path)}"]
+    return [f"{ARCHIVE}{meta.archive_path}", f"SHA-256: {meta.sha256}", f"Bytes: {meta.bytes}",
+            f"{FETCH}zcat {quoted(meta.archive_path)}", *packed, f"{LOCAL}{meta.local_path}", f"Project: {meta.slug}",
+            f"Area: {meta.area}", f"Recipe: {RECIPE}", f"Model: {meta.model_id}/{meta.effort}",
+            f"{EXTRACTED}{meta.extracted}"]
 
 
-def retire(text, archive_path, date, days) -> tuple[str, bool] | None:
-    """(card, retired before) once retention removes its session's files: the pointer's Archive line reads `Archive:
-    removed <date> after <days>-day retention` and its Fetch and Local lines go, so it names no missing file. A card
-    retired before keeps its line; None when the pointer names another archive copy or none."""
+def retire(text, archive_path, date, days, subagents_path=None) -> tuple[str, bool] | None:
+    """(card, retired before) once retention removes its session's files: the pointer's Archive line, and its Subagents
+    line when there is one, read `<label>: removed <date> after <days>-day retention`, and its Fetch and Local lines go,
+    so it names no missing file. A line retired before stays as it is. None when the pointer names another copy or
+    subagents archive than these, or lacks one of them."""
     head, mark, tail = text.rpartition(f"\n{POINTER}\n")
     lines = tail.splitlines()
     named = [line for line in lines if line.startswith(ARCHIVE)]
-    if not mark or len(named) != 1:
+    packs = [line for line in lines if line.startswith(SUBAGENTS)]
+    if not mark or len(named) != 1 or len(packs) != (subagents_path is not None):
         return None
     before = RETIRED.fullmatch(named[0]) is not None
     if not before and named[0] != f"{ARCHIVE}{archive_path}":
         return None
-    line = named[0] if before else f"{ARCHIVE}removed {date} after {days}-day retention"
-    kept = [line if part.startswith(ARCHIVE) else part for part in lines if not part.startswith((FETCH, LOCAL))]
+    if packs and not RETIRED.fullmatch(packs[0]) and not packs[0].startswith(f"{SUBAGENTS}{subagents_path}, "):
+        return None
+    removed = f"removed {date} after {days}-day retention"
+    kept = [part if RETIRED.fullmatch(part) or not part.startswith((ARCHIVE, SUBAGENTS))
+            else part[:part.index(": ") + 2] + removed
+            for part in lines if not part.startswith((FETCH, LOCAL))]
     return head + mark + "\n".join(kept) + "\n", before
 
 

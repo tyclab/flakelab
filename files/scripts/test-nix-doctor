@@ -695,18 +695,25 @@ mkdir -p "${GATE}" "${SROOT}/claude/projects/slug/sess/subagents/workflows/wf_1"
   print -r -- '{"kind":"transcript","file":"agent-a1.jsonl"}'
   print -r -- '{"kind":"transcript","file":"journal.jsonl"}'
   print -r -- '{"kind":"transcript","file":"never.jsonl"}'
+  print -r -- "{\"kind\":\"transcript\",\"file\":\"here.jsonl\",\"path\":\"${BASE}/home/here.jsonl\"}"
+  print -r -- "{\"kind\":\"transcript\",\"file\":\"pruned.jsonl\",\"path\":\"${BASE}/home/pruned.jsonl\"}"
 } > "${GATE}/held.jsonl"
+: > "${BASE}/home/here.jsonl"
 : > "${SROOT}/claude/projects/slug/top.jsonl"
 : > "${SROOT}/claude/projects/slug/sess/subagents/agent-a1.jsonl"
 : > "${SROOT}/claude/projects/slug/sess/subagents/workflows/wf_1/journal.jsonl"
 
 print -r -- "shared state: a held file is never synced only when the state root has no copy at any depth"
 out="$(shared_state "${SROOT}")"
-contains "counts the held findings"                 "${out}" "[WARN] 4 secret finding(s) held back from the state root"
+contains "counts the held findings"                 "${out}" "[WARN] 6 secret finding(s) held back from the state root"
 contains "a file with no copy anywhere is named"    "${out}" "held back whole, never synced: never.jsonl"
+contains "and so is one still on this box"          "${out}" "held back whole, never synced: here.jsonl"
 lacks    "a session transcript with a copy is not"  "${out}" "never synced: top.jsonl"
 lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agent-a1.jsonl"
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
+lacks    "one gone from the box too is no hold"     "${out}" "never synced: pruned.jsonl"
+contains "but a note that says where it went"       "${out}" "[ OK ] note: pruned.jsonl is gone from this box and the state root (cleanup, or session-archive retention); its finding still waits for review"
+rm -f "${BASE}/home/here.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
 # archive_section [VAR=value...]: the doctor's "Session archive" section with areas and a schedule configured

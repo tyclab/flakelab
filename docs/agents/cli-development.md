@@ -96,12 +96,17 @@ Read for this topic; paths below are relative to the repository root unless stat
     `files/config/session-archive/`): `run` (`--session UUID`, `--dry-run`,
     `--limit N`, `--keep`), `status` (`--json`), `review`. It reads the state
     root's redacted transcripts (`FLAKELAB_STATE_ROOT`) and writes nothing
-    there; with `SESSION_ARCHIVE_RETENTION_DAYS` (`sessionArchiveRetentionDays`)
-    a run's last step deletes an archived session's state-root transcript and
-    archive copies past the period and retires its card's pointer, only after
-    checking that `~/.claude/projects` no longer holds it (the one read there),
-    counting `pruned` and `kept`, and a failed prune exits 1 as `prune_error`
-    (`lib/session_archive/retention.py`). Its own state is
+    there; it archives a session's `<uuid>/` folder beside its gzip copy as
+    `<uuid>.<sha8>.subagents.tar.gz`. With `SESSION_ARCHIVE_RETENTION_DAYS`
+    (`sessionArchiveRetentionDays`) a full run's last step (`--dry-run`:
+    read-only, `would_prune`/`would_reprune`; `--session`: none) deletes an
+    archived session's transcripts and `<uuid>/` folders under every state-root
+    slug and its archive pairs past the period, and retires its card's pointer,
+    only while the pair proves them and `~/.claude/projects` holds no copy under
+    any slug (the one read there); a returned same-bytes transcript is deleted
+    again. It counts `pruned`, `repruned`, `kept` and `prune_errors`; an
+    unreadable file is an error, never absent, and a failed prune exits 1 as
+    `prune_error` (`lib/session_archive/retention.py`). Its own state is
     `~/.local/state/flakelab/session-archive/` (`state.sqlite3`, `review.md`,
     `work/<uuid>/`, `lock`). The key is `SESSION_ARCHIVE_ANTHROPIC_API_KEY`,
     read at use time from the first readable of `$FLAKELAB_SECRETS_ENV`, the

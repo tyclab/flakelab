@@ -10,8 +10,10 @@ import shutil
 
 from session_archive import archive, cards, cite, render, retention, sources, summarize, windows
 
-COUNTS = ("scanned", "eligible", "done", "held", "review", "windows", "archived", "cards", "pruned", "kept",
-          "prune_errors")
+COUNTS = ("scanned", "eligible", "done", "held", "review", "windows", "archived", "cards", "pruned", "repruned",
+          "kept", "prune_errors")
+# What a --session run does not count: it sees one session, not the backlog, and runs no retention.
+FULL_RUN = ("eligible", "pruned", "repruned", "kept", "prune_errors")
 FORCED = ("held", "review")
 REVIEW = "review.md"
 UNCLEAR = "unclear_area"
@@ -49,10 +51,13 @@ class RunSummary:
 
 
 def journal(summary) -> str:
+    """The counts-only line; a dry run's names what retention would delete."""
     c = summary.counts
+    pruned, repruned = ("would_prune", "would_reprune") if summary.result == "dry_run" else ("pruned", "repruned")
     return (f"session-archive: scanned={c['scanned']} eligible={c['eligible']} done={c['done']} held={c['held']} "
             f"review={c['review']} windows={c['windows']} usd={summary.usd:.2f} archived={c['archived']} "
-            f"cards={c['cards']} pruned={c['pruned']} kept={c['kept']}")
+            f"cards={c['cards']} {pruned}={c['pruned']} {repruned}={c['repruned']} kept={c['kept']} "
+            f"prune_errors={c['prune_errors']}")
 
 
 def save(work, name, value):
@@ -178,8 +183,13 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
             copied, created = archive.copy(cfg.root, c.slug, c.uuid, c.path, c.sha256)
         except archive.ArchiveError:
             return hold("archive_error")
+        try:
+            packed = archive.subagents(cfg.root, c.slug, c.uuid, c.sha256, c.path.parent / c.uuid)
+        except archive.ArchiveError:
+            return hold("archive_error", copied, created)
+        subagents = packed[0] if packed else None
         meta = cards.CardMeta(c.uuid, c.slug, area.name, copied, c.sha256, c.size, c.path, models[-1], cfg.effort,
-                              now.date().isoformat())
+                              now.date().isoformat(), subagents)
         try:
             text = cards.render(meta, summary)
         except Exception:
@@ -191,7 +201,7 @@ def run_session(cfg, store, transport, candidate, run_id, dry_run=False, keep=Fa
         except (OSError, UnicodeError):
             return hold("card_error", copied, created)
         store.record_session(c.uuid, c.slug, c.sha256, "done", area=area.name, card_hash=card_hash,
-                             archive_path=str(copied), **stat)
+                             archive_path=str(copied), subagents=subagents[1:] if subagents else None, **stat)
         return finished(Outcome("done", None, sum(spent), card, copied, len(parts), written, created))
 
     try:
@@ -213,7 +223,7 @@ def forced(store, candidate):
         except OSError:
             return replace(c, reason="unreadable")
         c = replace(c, sha256=sha256,
-                    reason=sources.verdict(store.session(c.uuid), sha256) if spoke else "no_operator_text")
+                    reason=sources.verdict(store.session(c.uuid), sha256, c.size) if spoke else "no_operator_text")
     return replace(c, reason="eligible") if c.reason in FORCED else c
 
 
@@ -229,14 +239,22 @@ def lost(store, folder) -> bool:
     return store.claimed(folder) and archive.owner(folder) is None
 
 
+def unreachable(cfg, store) -> str | None:
+    """root_unreachable or library_unreachable when the archive root or a library is absent or lost, else None."""
+    if cfg.root is None or not Path(cfg.root).is_dir() or lost(store, cfg.root):
+        return ROOT_UNREACHABLE
+    if any(lost(store, area.library) for area in cfg.areas.values()):
+        return LIBRARY_UNREACHABLE
+    return None
+
+
 def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, str | None]:
     """(result, detail) of the queue's sessions. A box-level failure is the run's, not a session's: an unreachable root
     or library takes none, a model API that is unavailable stops the run at the session in flight, which is not held
     unless the run before stopped on the same content too (then it is held and the queue goes on)."""
-    if cfg.root is None or not Path(cfg.root).is_dir() or lost(store, cfg.root):
-        return ROOT_UNREACHABLE, None
-    if any(lost(store, area.library) for area in cfg.areas.values()):
-        return LIBRARY_UNREACHABLE, None
+    failure = unreachable(cfg, store)
+    if failure:
+        return failure, None
     budget, repeat = summarize.Budget(store, run_id, cfg.run_cap_usd), store.stopped_before(run_id)
     for c in queue:
         if not budget.allow():
@@ -253,9 +271,10 @@ def take(cfg, store, transport, queue, run_id, counts, keep, now) -> tuple[str, 
 
 def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, keep=False) -> RunSummary:
     """Eligible sessions, oldest first, until run_sessions (or limit) are taken or the run cap is spent; the session in
-    flight always finishes. Then, with a retention period and a reachable archive, the retention step, whose error turns
-    an ok or capped result into prune_error. result: ok, capped, root_unreachable, library_unreachable,
-    model_unavailable, prune_error, or for --session missing or the reason it was not taken."""
+    flight always finishes. Then a full run with a retention period and a reachable archive takes the retention step,
+    whose error turns an ok or capped result into prune_error; a dry run takes it read-only, a --session run not at all.
+    result: ok, capped, root_unreachable, library_unreachable, model_unavailable, prune_error, error (an interrupt or
+    a fault), dry_run, or for --session missing or the reason it was not taken."""
     summarize.rates(cfg.model)  # an unpriced model is a config error, before any call
     found = sources.scan(cfg, store, now)
     counts = dict.fromkeys(COUNTS, 0) | {"scanned": len(found),
@@ -269,19 +288,23 @@ def run(cfg, store, transport, now, limit=None, session=None, dry_run=False, kee
     queue = queue[:min(limit or cfg.run_sessions, cfg.run_sessions)]
     if session is not None and not queue:
         return RunSummary(counts, 0.0, ([c.reason for c in found if c.reason != "artifact"] or ["artifact"])[0])
+    retained = cfg.retention_days is not None and session is None
     if dry_run:
         for c in queue:
             tally(counts, run_session(cfg, store, transport, c, None, dry_run=True))
+        if retained and unreachable(cfg, store) is None:
+            retention.prune(cfg, store, now, counts, dry_run=True)
         return RunSummary(counts, 0.0, "dry_run")
     run_id, result, detail = store.start_run(), "error", None
     try:
-        result, detail = take(cfg, store, transport, queue, run_id, counts, keep, now)
-        if cfg.retention_days is not None and result not in (ROOT_UNREACHABLE, LIBRARY_UNREACHABLE):
+        ended, detail = take(cfg, store, transport, queue, run_id, counts, keep, now)
+        # result stays "error" until the step ends: an interrupt or a fault in it never records the run ok.
+        if retained and ended not in (ROOT_UNREACHABLE, LIBRARY_UNREACHABLE):
             errors = retention.prune(cfg, store, now, counts)
-            if errors and result in ("ok", "capped"):
-                result, detail = retention.ERROR, errors[0]
+            if errors and ended in ("ok", "capped"):
+                ended, detail = retention.ERROR, errors[0]
+        result = ended
     finally:
-        # A --session run sees one session, not the backlog: it records no eligible count, so status keeps the last
-        # full run's.
-        store.finish_run(run_id, result, counts if session is None else {**counts, "eligible": None})
+        # status keeps the last full run's counts of what a --session run does not count.
+        store.finish_run(run_id, result, counts if session is None else {**counts, **dict.fromkeys(FULL_RUN, None)})
     return RunSummary(counts, store.run_usd(run_id), result, detail)

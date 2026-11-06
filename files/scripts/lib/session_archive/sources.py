@@ -105,15 +105,17 @@ def digest(path):
     return sha.hexdigest(), spoke
 
 
-def verdict(row, sha256):
+def verdict(row, sha256, size=None):
     if row is None:
         return "eligible"
+    # A pruned session's transcript back with its bytes, or shorter (another slug's copy of a prefix), adds nothing
+    # its card lacks; only a longer one is a version to archive.
+    if row["status"] == "pruned" and (row["sha256"] == sha256 or (size is not None and size <= row["size"])):
+        return "pruned"
     if row["sha256"] != sha256:
         return "eligible"
     if row["status"] == "held":
         return "held" if row["holds"] >= MAX_HOLDS else "eligible"
-    if row["status"] == "pruned":
-        return "pruned"
     return "unchanged" if row["status"] == "done" else "review"
 
 
@@ -139,7 +141,7 @@ def judge(cfg, store, now, uuid, slug, path, stat):
         sha256, spoke = digest(path)
     except OSError:
         return candidate("unreadable")
-    return candidate(verdict(row, sha256) if spoke else "no_operator_text", sha256, last)
+    return candidate(verdict(row, sha256, stat.st_size) if spoke else "no_operator_text", sha256, last)
 
 
 def scan(cfg, store, now):

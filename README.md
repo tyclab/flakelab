@@ -557,7 +557,12 @@ for `sessionArchiveQuietDays`, copies it gzipped into `sessionArchiveRoot`, and
 writes one card, `session-<uuid>.md`, into its area's library: what, why, when,
 how, outcome, open ends and what an agent needs to continue, with `@L<line>`
 anchors and quotes checked against the transcript, then a pointer to the
-archive copy (path, SHA-256, the `zcat` that reads it). Each
+archive copy (path, SHA-256, the `zcat` that reads it). A session's `<uuid>/`
+folder of subagent transcripts and tool results, when it has one, is archived
+beside the copy as `<uuid>.<sha8>.subagents.tar.gz` (names relative to the
+folder, mtimes kept), and the pointer's `Subagents:` line gives its path,
+SHA-256, size and the `tar -xzf` that unpacks it; a folder that cannot be packed
+holds the session (`archive_error`). Each
 `sessionArchiveAreas` entry is a one-sentence description, a library folder and
 the project slugs to read; a session the model cannot place gets no card and is
 listed by `flakelab session-archive review`. The calls (`sessionArchiveModel`
@@ -575,21 +580,40 @@ write.
 #### Transcript retention
 
 `sessionArchiveRetentionDays` (null by default, which keeps everything) ends
-each run that is not a dry run with a retention step: a session the lane
-archived whose last entry is older than that many days loses its archive copies
-and its transcript in the state root, and its card's pointer then reads
-`Archive: removed <date> after <N>-day retention`, without the `Fetch:` and
-`Local` lines. The card stays. A session is pruned only while its archive copy,
-its card and its state-root transcript still match the SHA-256 the lane
-recorded, and only once `~/.claude/projects` on the box no longer holds it:
-state-sync would push a local copy straight back, so the step waits for Claude
-Code's `cleanupPeriodDays` and counts the session as `kept` meanwhile. A
-transcript that grew is archived again first; held and review sessions and
-subagent transcripts are never touched. The journal line counts `pruned` and
-`kept`; a prune that fails ends the run `prune_error` (exit 1), which the doctor
-reports, and the next run finishes it. It needs `sessionArchiveRoot`. The
-deletion replicates: under `stateSyncthing` it reaches the hub and every other
-box, and `flakelab backup --fetch-session` can no longer bring the session back.
+each full run with a retention step; `run --session` takes none. A session the
+lane archived whose last entry is older than that many days loses, under every
+project slug, its transcript and its `<uuid>/` folder in the state root and its
+archive copies and subagents archives, and its card's pointer then reads
+`Archive: removed <date> after <N>-day retention` (and `Subagents: removed …`),
+without the `Fetch:` and `Local` lines. The card stays. Nothing goes unless the
+archive pair proves it:
+
+- the archive copy and the subagents archive exist with the SHA-256 the lane
+  recorded, and the card names them;
+- each state-root transcript is that version or a prefix of it (a shorter copy
+  under another slug), and each folder's files are all in the subagents
+  archive; a transcript already gone from the state root is no obstacle;
+- `~/.claude/projects` holds neither the transcript nor a `<uuid>/` folder with
+  a file in it, under any slug: state-sync would push them straight back, so the
+  step waits for Claude Code's `cleanupPeriodDays` and counts the session as
+  `kept` meanwhile;
+- anything that cannot be read is an error (`prune_errors`), never absent.
+
+A transcript that grew is archived again first; held and review sessions are
+never touched. The card is retired first and the archive pair goes last, so a
+prune an error cut short (its card already reading `removed`, its state-root
+files or archive copy perhaps gone) is finished by the next run. A pruned
+transcript that comes back with the same bytes (pushed by a box that still held
+it) is deleted again and counted `repruned`, which `status` shows. The journal
+line counts `pruned`, `repruned`, `kept` and `prune_errors`; a prune error ends
+the run `prune_error` (exit 1), which the doctor reports.
+
+The first run after setting the option deletes the whole backlog past the
+period at once, with no cap: run `flakelab session-archive run --dry-run`
+first, which takes the same selection read-only and reports `would_prune` and
+`would_reprune`. It needs `sessionArchiveRoot`. The deletion replicates: under
+`stateSyncthing` it reaches the hub and every other box, and
+`flakelab backup --fetch-session` can no longer bring the session back.
 
 ### Account switcher
 

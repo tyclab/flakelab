@@ -18,13 +18,15 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
 from unittest import mock
 import urllib.error
 
-from session_archive import archive, cards, cite, cli, config, pipeline, render, sources, store, summarize, windows
+from session_archive import (archive, cards, cite, cli, config, pipeline, render, retention, sources, store, summarize,
+                             windows)
 from session_archive import secrets as lane_secrets
 
 LIB = Path(__file__).resolve().parent
@@ -220,10 +222,15 @@ class StoreTest(Scratch):
             self.assertNotIn(str(self.tmp), str(caught.exception))
 
     def test_store_takes_schema_3_as_it_is(self):
-        """Version 4 adds the pruned status to version 3's tables: status reads a version 3 database, a run marks it 4."""
+        """Version 4 adds the subagents columns and the pruned status: status reads a version 3 database, a run brings
+        it to 4 in place."""
         path = self.tmp / "three.sqlite3"
         db = sqlite3.connect(path)
-        for statement in store.SCHEMA[:-1]:
+        db.execute("""CREATE TABLE sessions (
+  uuid TEXT PRIMARY KEY, slug TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, mtime REAL NOT NULL,
+  last_entry TEXT, status TEXT NOT NULL, reason TEXT, area TEXT, card_hash TEXT, archive_path TEXT,
+  holds INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL)""")
+        for statement in store.SCHEMA[1:-1]:
             db.execute(statement)
         db.execute("PRAGMA user_version = 3")
         db.execute("INSERT INTO sessions (uuid, slug, sha256, size, mtime, status, updated) "
@@ -235,8 +242,9 @@ class StoreTest(Scratch):
                          ("done", 3))
         reading.close()
         writing = store.Store(path)
-        self.assertEqual((writing.session(UUID)["status"], writing.db.execute("PRAGMA user_version").fetchone()[0]),
-                         ("done", 4))
+        row = writing.session(UUID)
+        self.assertEqual((row["status"], row["subagents_sha256"], row["subagents_bytes"],
+                          writing.db.execute("PRAGMA user_version").fetchone()[0]), ("done", None, None, 4))
         writing.close()
 
 
@@ -342,7 +350,10 @@ class ScanTest(Scratch):
         row = self.store.session(UUID)
         self.assertEqual((row["status"], row["archive_path"], row["card_hash"]), ("pruned", None, "c2"))
         self.assertEqual((self.scan()[UUID].reason, self.store.review(), self.store.held()), ("pruned", [], []))
-        self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
+        # A shorter copy (one a second slug kept) adds nothing the card lacks: taking it would summarize a prefix.
+        self.transcript(spoken()[:1])
+        self.assertEqual(self.scan()[UUID].reason, "pruned")
+        self.transcript(spoken() + spoken(OLD + timedelta(hours=1)))
         self.assertEqual(self.scan()[UUID].reason, "eligible")
 
     def test_scan_skips_no_operator_text(self):
@@ -1165,6 +1176,14 @@ class CardTest(unittest.TestCase):
             "Extracted: 2026-01-20"])
         fetch = next(line for line in card.splitlines() if line.startswith("Fetch: "))
         self.assertEqual(shlex.split(fetch.removeprefix("Fetch: ")), ["zcat", odd])
+        packed = "/srv/archive/it's here/one.subagents.tar.gz"
+        card = cards.render(dataclasses.replace(CARD_META, archive_path=odd, subagents=(Path(packed), "cd" * 32, 512)),
+                            CARD_SUMMARY)
+        line = (f"Subagents: {packed}, SHA-256 {'cd' * 32}, 512 bytes, fetch: tar -xzf "
+                "'/srv/archive/it'\\''s here/one.subagents.tar.gz'")
+        self.assertEqual(card.split("\n## Pointer\n\n")[1].splitlines()[3:6],
+                         [fetch, line, f"Local (until cleanup): {LOCAL}"])
+        self.assertEqual(shlex.split(line.split(", fetch: ")[1]), ["tar", "-xzf", packed])
 
     def test_card_unverified_suffix(self):
         for entry, line in (
@@ -1307,14 +1326,17 @@ PER_CALL = summarize.price(summarize.STUB_USAGE, "claude-haiku-5-5")
 BIG_USAGE = {"input_tokens": 100_000, "output_tokens": 10_000, "cache_creation_input_tokens": 0,
              "cache_read_input_tokens": 0}
 FOURTH_UUID = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"
-STATUS_FIELDS = {"last_run", "last_result", "eligible", "held", "review", "last_run_usd", "run_sessions", "root_ok",
-                 "owner_ok"}
+STATUS_FIELDS = {"last_run", "last_result", "eligible", "held", "review", "pruned", "repruned", "last_run_usd",
+                 "run_sessions", "root_ok", "owner_ok"}
 
 
 def journal(scanned=1, eligible=1, done=0, held=0, review=0, windows=0, archived=0, cards=0, usd="0.00", pruned=0,
-            kept=0):
+            repruned=0, kept=0, errors=0, dry=False):
+    """The journal line; a dry run's names what retention would delete."""
+    would = ("would_prune", "would_reprune") if dry else ("pruned", "repruned")
     return (f"session-archive: scanned={scanned} eligible={eligible} done={done} held={held} review={review} "
-            f"windows={windows} usd={usd} archived={archived} cards={cards} pruned={pruned} kept={kept}")
+            f"windows={windows} usd={usd} archived={archived} cards={cards} {would[0]}={pruned} {would[1]}={repruned} "
+            f"kept={kept} prune_errors={errors}")
 
 
 def names(folder):
@@ -1534,18 +1556,18 @@ class PipelineTest(Lane):
         self.transcript(spoken(OLD + timedelta(days=1)), uuid=OTHER_UUID)
         before = (tree(self.tmp / "state"), names(self.root), names(self.library))
         done, stub = self.lane([], dry_run=True)
-        self.assertEqual((pipeline.journal(done), stub.calls), (journal(scanned=2, eligible=2, windows=4), []))
+        self.assertEqual((pipeline.journal(done), stub.calls), (journal(scanned=2, eligible=2, windows=4, dry=True), []))
         done = pipeline.run(self.cfg, self.store, None, NOW, dry_run=True, limit=1)
-        self.assertEqual(pipeline.journal(done), journal(scanned=2, eligible=2, windows=3))
+        self.assertEqual(pipeline.journal(done), journal(scanned=2, eligible=2, windows=3, dry=True))
         self.assertEqual(call("run", "--dry-run", env=self.env),
-                         (0, journal(scanned=2, eligible=2, windows=4) + "\n", ""))
+                         (0, journal(scanned=2, eligible=2, windows=4, dry=True) + "\n", ""))
         self.assertEqual(call("run", "--dry-run", "--session", OTHER_UUID, env=self.env),
-                         (0, journal(scanned=2, windows=1) + "\n", ""))
+                         (0, journal(scanned=2, windows=1, dry=True) + "\n", ""))
         self.assertEqual((tree(self.tmp / "state"), names(self.root), names(self.library)), before)
         self.assertEqual([self.count(table) for table in ("sessions", "runs", "ledger")], [0, 0, 0])
         self.assertEqual(names(self.cfg.state_dir), ["state.sqlite3"])
         fresh = {**self.env, "XDG_STATE_HOME": str(self.tmp / "fresh")}
-        self.assertEqual(call("run", "--dry-run", env=fresh), (0, journal(scanned=2, eligible=2, windows=4) + "\n", ""))
+        self.assertEqual(call("run", "--dry-run", env=fresh), (0, journal(scanned=2, eligible=2, windows=4, dry=True) + "\n", ""))
         self.assertFalse((self.tmp / "fresh").exists())
         rc, out, err = call("status", "--json", env=self.env)
         self.assertEqual((rc, err, [json.loads(out)[name] for name in ("last_run", "eligible")]), (0, "", [None, None]))
@@ -1663,6 +1685,87 @@ class PipelineTest(Lane):
         self.assertFalse((self.tmp / "absent").exists())
 
 
+def subagent_folder(state, uuid=UUID, slug=SLUG):
+    """A session's <uuid>/ folder as state-sync fills it: a subagent transcript, its .meta.json and a tool result."""
+    folder = state / "claude/projects" / slug / uuid
+    (folder / "subagents").mkdir(parents=True)
+    (folder / "tool-results").mkdir()
+    (folder / "subagents/agent-1a2b3c4d.jsonl").write_text(json.dumps(said("user", "sub task")) + "\n")
+    (folder / "subagents/agent-1a2b3c4d.meta.json").write_text('{"agentType": "explore"}\n')
+    (folder / "tool-results/toolu_01.txt").write_text("3 widgets\n")
+    for path in [*folder.rglob("*"), folder]:
+        os.utime(path, (OLD.timestamp(), OLD.timestamp()))
+    return folder
+
+
+SUBAGENT_MEMBERS = ["subagents", "subagents/agent-1a2b3c4d.jsonl", "subagents/agent-1a2b3c4d.meta.json",
+                    "tool-results", "tool-results/toolu_01.txt"]
+
+
+class SubagentsArchiveTest(Lane):
+    def packed(self, path, uuid=UUID, slug=SLUG):
+        return self.root / slug / f"{uuid}.{sha256(path)[:8]}.subagents.tar.gz"
+
+    def test_run_archives_the_subagents_folder_beside_the_copy(self):
+        path = self.transcript(spoken())
+        folder = subagent_folder(self.tmp / "state")
+        done, _ = self.lane([SPOKEN_SUMMARY])
+        self.assertEqual(pipeline.journal(done), journal(done=1, windows=1, archived=1, cards=1))
+        packed, copy = self.packed(path), self.copy_of(path)
+        self.assertEqual(names(self.root / SLUG), sorted([copy.name, packed.name]))
+        with tarfile.open(packed, "r:gz") as tar:
+            members = tar.getmembers()
+            self.assertEqual([m.name for m in members], SUBAGENT_MEMBERS)
+            self.assertEqual({m.mtime for m in members}, {OLD.timestamp()})
+            self.assertEqual({(m.uid, m.gid, m.uname, m.gname) for m in members}, {(0, 0, "", "")})
+            self.assertEqual(tar.extractfile("tool-results/toolu_01.txt").read(), b"3 widgets\n")
+        row = self.store.session(UUID)
+        self.assertEqual((row["subagents_sha256"], row["subagents_bytes"]), (sha256(packed), packed.stat().st_size))
+        pointer = self.card().read_text().split("\n## Pointer\n\n")[1].splitlines()
+        self.assertEqual(pointer[3:5], [f"Fetch: zcat '{copy}'", f"Subagents: {packed}, SHA-256 {sha256(packed)}, "
+                                                                 f"{packed.stat().st_size} bytes, fetch: tar -xzf '{packed}'"])
+        # The same folder packs to the same bytes, so a retried session finds its archive as it left it.
+        recorded = (packed, sha256(packed), packed.stat().st_size)
+        (self.tmp / "again").mkdir()
+        again, created = archive.subagents(self.tmp / "again", SLUG, UUID, sha256(path), folder)
+        self.assertEqual((sha256(again[0]), again[1:], created), (recorded[1], recorded[1:], True))
+        self.assertEqual(archive.subagents(self.root, SLUG, UUID, sha256(path), folder), (recorded, False))
+
+    def test_run_writes_no_subagents_archive_without_a_folder(self):
+        path = self.transcript(spoken())
+        self.lane([SPOKEN_SUMMARY])
+        row = self.store.session(UUID)
+        self.assertEqual((names(self.root / SLUG), row["subagents_sha256"], row["subagents_bytes"]),
+                         ([self.copy_of(path).name], None, None))
+        self.assertNotIn("\nSubagents: ", self.card().read_text())
+
+    def test_run_archives_the_folder_again_when_the_session_grew(self):
+        path = self.transcript(spoken())
+        folder = subagent_folder(self.tmp / "state")
+        self.lane([SPOKEN_SUMMARY])
+        first = self.packed(path)
+        self.transcript(spoken(OLD + timedelta(hours=1)), append=True)
+        (folder / "tool-results/toolu_02.txt").write_text("4 widgets\n")
+        self.lane([SPOKEN_SUMMARY])
+        second = self.packed(path)
+        self.assertNotEqual(first, second)
+        self.assertEqual((first.exists(), second.exists()), (True, True))
+        with tarfile.open(second, "r:gz") as tar:
+            self.assertIn("tool-results/toolu_02.txt", tar.getnames())
+        self.assertEqual(self.store.session(UUID)["subagents_sha256"], sha256(second))
+        self.assertIn(f"\nSubagents: {second}, ", self.card().read_text())
+
+    def test_run_holds_a_session_whose_folder_cannot_be_packed(self):
+        path = self.transcript(spoken())
+        folder = subagent_folder(self.tmp / "state")
+        (folder / "subagents/linked.jsonl").symlink_to(path)
+        done, _ = self.lane([SPOKEN_SUMMARY])
+        self.assertEqual(pipeline.journal(done), journal(held=1, windows=1, archived=1))
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["reason"], row["subagents_sha256"]), ("held", "archive_error", None))
+        self.assertEqual((names(self.root / SLUG), self.card().exists()), ([self.copy_of(path).name], False))
+
+
 class CliRunTest(Lane):
     def setUp(self):
         super().setUp()
@@ -1773,7 +1876,7 @@ class CliRunTest(Lane):
         fresh = str(self.tmp / "fresh")
         self.assertEqual(self.status(XDG_STATE_HOME=fresh), {
             "last_run": None, "last_result": None, "eligible": None, "held": 0, "review": 0, "last_run_usd": 0.0,
-            "run_sessions": 20, "root_ok": True, "owner_ok": None})
+            "run_sessions": 20, "root_ok": True, "owner_ok": None, "pruned": 0, "repruned": None})
         self.assertIn("last run: never\n", self.status(human=True, XDG_STATE_HOME=fresh))
         self.assertEqual(call("review", env={**self.env, "XDG_STATE_HOME": fresh}),
                          (0, "no session waits for review\n", ""))
@@ -1848,7 +1951,7 @@ class CliRunTest(Lane):
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.assertEqual(call("run", env=self.env), (0, "already running\n", ""))
             # A dry run writes nothing, so it takes no lock and counts beside a run.
-            self.assertEqual(call("run", "--dry-run", env=self.env), (0, journal(windows=1) + "\n", ""))
+            self.assertEqual(call("run", "--dry-run", env=self.env), (0, journal(windows=1, dry=True) + "\n", ""))
         self.assertEqual((self.count("runs"), self.count("sessions"), names(self.root)), (0, 0, []))
 
     def status(self, human=False, **changes):
@@ -1865,7 +1968,7 @@ class CliRunTest(Lane):
     def test_status_json_fields(self):
         self.assertEqual(self.status(), {"last_run": None, "last_result": None, "eligible": None, "held": 0,
                                          "review": 0, "last_run_usd": 0.0, "run_sessions": 20, "root_ok": True,
-                                         "owner_ok": None})
+                                         "owner_ok": None, "pruned": 0, "repruned": None})
         self.assertEqual((self.status(SESSION_ARCHIVE_ROOT="")["root_ok"],
                           self.status(SESSION_ARCHIVE_ROOT=str(self.tmp / "absent"))["root_ok"]), (None, False))
         self.fixture()
@@ -1880,7 +1983,7 @@ class CliRunTest(Lane):
         self.assertAlmostEqual(report.pop("last_run_usd"), 5 * PER_CALL)
         self.assertEqual({**report, "last_run": None}, {
             "last_run": None, "last_result": "ok", "eligible": 3, "held": 1, "review": 1, "run_sessions": 7,
-            "root_ok": True, "owner_ok": True})
+            "root_ok": True, "owner_ok": True, "pruned": 0, "repruned": 0})
         (self.library / ".owner").write_text("box-b\n")
         self.assertIs(self.status()["owner_ok"], False)
         out = self.status(human=True)
@@ -1927,23 +2030,37 @@ class RetentionTest(Lane):
         cfg = cfg or config.load(self.retained)
         return pipeline.run(cfg, self.store, summarize.StubTransport(list(responses)), when, **options)
 
-    def archived(self):
-        """A spoken session through the lane: its archive copy, its card and a done row."""
-        path = self.transcript(spoken())
-        self.lane([SPOKEN_SUMMARY])
-        self.assertEqual(self.store.session(UUID)["status"], "done")
+    def archived(self, *others):
+        """UUID and each of others (an hour apart) as spoken sessions through the lane: copy, card and done row."""
+        uuids = (UUID, *others)
+        for hours, uuid in enumerate(uuids):
+            self.transcript(spoken(OLD + timedelta(hours=hours)), uuid=uuid)
+        self.lane([SPOKEN_SUMMARY] * len(uuids))
+        self.assertEqual([self.store.session(uuid)["status"] for uuid in uuids], ["done"] * len(uuids))
+        return self.transcript_path()
+
+    def local(self, uuid=UUID, slug=SLUG):
+        """A copy of the session in this box's ~/.claude/projects, as Claude Code keeps it until its cleanup."""
+        path = self.tmp / "home/.claude/projects" / slug / f"{uuid}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(said("user", "please sort the widget list")) + "\n")
         return path
+
+    def retire_card(self, path, uuid=UUID):
+        """The card as a prune that an error cut short left it."""
+        card = self.card(uuid)
+        card.write_text(cards.retire(card.read_text(), self.copy_of(path, uuid=uuid), "2026-04-11", 90)[0])
 
     def boxes(self):
         """The archive root, the library and the state root, byte for byte."""
         return tree(self.root), tree(self.library), tree(self.tmp / "state")
 
-    def refusing(self, path):
-        """os.unlink that refuses path, as a read-only share would."""
+    def refusing(self, *paths):
+        """os.unlink that refuses paths, as a read-only share would."""
         real = os.unlink
 
         def unlink(target, *args, **kwargs):
-            if Path(target) == path:
+            if Path(target) in paths:
                 raise PermissionError(13, "Permission denied", str(target))
             return real(target, *args, **kwargs)
 
@@ -1953,12 +2070,14 @@ class RetentionTest(Lane):
         path = self.fixture()
         self.lane(FIXTURE_RESPONSES)
         copy, sha, size, before = self.copy_of(path), sha256(path), path.stat().st_size, self.card().read_text()
-        earlier = self.root / SLUG / f"{UUID}.0badc0de.jsonl.gz"  # the copy of a version the session grew past
-        earlier.write_bytes(gzip.compress(b'{"n":1}\n'))
+        # Copies of versions the session grew past, one of them filed under a slug it was read from before.
+        earlier = [self.root / SLUG / f"{UUID}.0badc0de.jsonl.gz", self.root / OTHER_SLUG / f"{UUID}.0ddba11a.jsonl.gz"]
+        earlier[1].parent.mkdir()
+        for old in earlier:
+            old.write_bytes(gzip.compress(b'{"n":1}\n'))
         done = self.later()
         self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, pruned=1), "ok"))
-        self.assertEqual((copy.exists(), earlier.exists(), path.exists(), names(self.root / SLUG)),
-                         (False, False, False, []))
+        self.assertEqual([p.exists() for p in (copy, *earlier, path)], [False] * 4)
         card = self.card().read_text()
         self.assertEqual(card.split("\n## Pointer\n")[0], before.split("\n## Pointer\n")[0])
         self.assertEqual(pointer_of(card), [RETIRED, f"SHA-256: {sha}", f"Bytes: {size}", f"Project: {SLUG}",
@@ -1968,13 +2087,9 @@ class RetentionTest(Lane):
         self.assertEqual((row["status"], row["sha256"], row["archive_path"], row["card_hash"]),
                          ("pruned", sha, None, cards.content_hash(card)))
         self.assertEqual(json.loads(self.store.last_run()["counts"])["pruned"], 1)
-        # Done once: the same bytes pushed back from another box are neither taken nor pruned again.
-        shutil.copyfile(FIXTURE, path)
-        os.utime(path, (OLD.timestamp(), OLD.timestamp()))
         state = self.boxes()
         done = self.later(when=LATER + timedelta(days=30))
-        self.assertEqual(pipeline.journal(done), journal(eligible=0))
-        self.assertEqual((self.boxes(), self.store.session(UUID)["status"]), (state, "pruned"))
+        self.assertEqual((pipeline.journal(done), self.boxes()), (journal(scanned=0, eligible=0), state))
 
     def test_retention_keeps_session_inside_period(self):
         self.archived()
@@ -2019,53 +2134,345 @@ class RetentionTest(Lane):
         self.assertIn("\nFetch: zcat ", self.card().read_text())
 
     def test_dry_run_prunes_nothing(self):
-        self.archived()
-        state, row = self.boxes(), dict(self.store.session(UUID))
+        """A dry run makes the whole selection read-only and names what a run would delete."""
+        self.archived(OTHER_UUID)
+        self.local(OTHER_UUID)
+        state, rows, runs = self.boxes(), [dict(row) for row in self.store.by_status("done")], self.count("runs")
         done = self.later(dry_run=True)
-        self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0), "dry_run"))
+        preview = journal(scanned=2, eligible=0, pruned=1, kept=1, dry=True)
+        self.assertEqual((pipeline.journal(done), done.result), (preview, "dry_run"))
         # The command reads today's clock, long past the 90 days of a January session.
-        self.assertEqual(call("run", "--dry-run", env=self.retained), (0, journal(eligible=0) + "\n", ""))
-        self.assertEqual((self.boxes(), dict(self.store.session(UUID))), (state, row))
+        self.assertEqual(call("run", "--dry-run", env=self.retained), (0, preview + "\n", ""))
+        self.assertEqual((self.boxes(), [dict(row) for row in self.store.by_status("done")], self.count("runs")),
+                         (state, rows, runs))
+        done = self.later()
+        self.assertEqual(pipeline.journal(done), journal(scanned=2, eligible=0, pruned=1, kept=1))
+
+    def test_session_run_prunes_nothing(self):
+        path = self.archived()
+        self.transcript(spoken(OLD + timedelta(days=5)), uuid=OTHER_UUID)
+        state = self.boxes()
+        self.assertEqual(call("run", "--dry-run", "--session", OTHER_UUID, env=self.retained),
+                         (0, journal(scanned=2, windows=1, dry=True) + "\n", ""))
+        done = self.later(session=OTHER_UUID, responses=[SPOKEN_SUMMARY])
+        self.assertEqual((pipeline.journal(done), done.result),
+                         (journal(scanned=2, done=1, windows=1, archived=1, cards=1), "ok"))
+        self.assertEqual((path.exists(), self.copy_of(path).exists(), self.store.session(UUID)["status"]),
+                         (True, True, "done"))
+        self.assertEqual(self.boxes()[2], state[2])
+
+    def test_retention_keeps_session_whose_archive_copy_is_missing_or_other(self):
+        path = self.archived()
+        copy, card = self.copy_of(path), self.card().read_text()
+        packed = copy.read_bytes()
+        for name, damage in (("missing", copy.unlink),
+                             ("other content", lambda: copy.write_bytes(gzip.compress(b'{"other":1}\n')))):
+            with self.subTest(copy=name):
+                damage()
+                state = self.boxes()
+                done = self.later()
+                self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, kept=1), "ok"))
+                self.assertEqual((self.boxes(), self.store.session(UUID)["status"]), (state, "done"))
+                copy.write_bytes(packed)
+        # A copy that cannot be unpacked is an error, found before the card is touched.
+        copy.write_bytes(packed[:20])
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), done.result, done.detail),
+                         (journal(eligible=0, errors=1), "prune_error", "EOFError"))
+        self.assertEqual((self.card().read_text(), path.exists()), (card, True))
+        # A card that a cut-short prune retired still needs a present copy to be the recorded one.
+        self.retire_card(path)
+        copy.write_bytes(gzip.compress(b'{"other":1}\n'))
+        state = self.boxes()
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), self.boxes()), (journal(eligible=0, kept=1), state))
+
+    def test_retention_deletes_only_this_sessions_files(self):
+        path = self.archived()
+        copy = self.copy_of(path)
+        neighbour = self.transcript(spoken(OLD + timedelta(days=5)), uuid=OTHER_UUID)  # 86 days old at LATER
+        self.lane([SPOKEN_SUMMARY])
+        folder = self.tmp / "state/claude/projects" / SLUG
+        others = [neighbour, self.copy_of(neighbour, uuid=OTHER_UUID), self.card(OTHER_UUID),
+                  self.root / SLUG / "notes.txt", self.root / SLUG / f"{UUID}.notes.txt",
+                  folder / f"{UUID}.jsonl.bak", folder / f"{UUID}_box_20260110_Conflict.jsonl"]
+        for other in others[3:]:
+            other.write_text("not a copy of the session\n")
+        kept = {other: other.read_bytes() for other in others}
+        done = self.later()
+        self.assertEqual(pipeline.journal(done), journal(scanned=3, eligible=0, pruned=1))  # the conflict copy counts
+        self.assertEqual(({other: other.read_bytes() for other in others}, path.exists(), copy.exists()),
+                         (kept, False, False))
+
+    def test_retention_ages_a_session_without_a_last_entry_by_its_mtime(self):
+        path = self.archived()
+        for days, journaled in ((10, journal(eligible=0)), (100, journal(eligible=0, pruned=1))):
+            self.store.db.execute("UPDATE sessions SET last_entry = NULL, mtime = ?",
+                                  ((LATER - timedelta(days=days)).timestamp(),))
+            self.store.db.commit()
+            done = self.later()
+            self.assertEqual((pipeline.journal(done), path.exists()), (journaled, days < 90))
+
+    def test_retention_skips_an_unreachable_root_or_library(self):
+        """An unmounted share's empty mount point would pass for a prune whose copies are already gone."""
+        path = self.archived()
+        copy = self.copy_of(path)
+        packed = copy.read_bytes()
+        self.retire_card(path)
+        copy.unlink()
+        self.store.claim(self.root, "box-a")  # claimed before, its .owner gone: the share is not mounted
+        state = self.boxes()
+        for options, result in (({}, "root_unreachable"), ({"dry_run": True}, "dry_run")):
+            done = self.later(**options)
+            self.assertEqual((done.result, done.counts["pruned"], self.boxes()), (result, 0, state))
+        (self.root / ".owner").write_text("box-a\n")
+        copy.write_bytes(packed)
+        self.store.claim(self.library, "box-a")
+        state = self.boxes()
+        done = self.later()
+        self.assertEqual((done.result, done.counts["pruned"], self.boxes()), ("library_unreachable", 0, state))
+        (self.library / ".owner").write_text("box-a\n")
+        done = self.later()
+        self.assertEqual((done.result, done.counts["pruned"], path.exists(), copy.exists()), ("ok", 1, False, False))
+
+    def test_retention_keeps_what_it_cannot_prove(self):
+        path = self.archived()
+        card = self.card()
+        text = card.read_text()
+        # The card names another copy, as after sessionArchiveRoot moved.
+        card.write_text(text.replace(f"Archive: {self.copy_of(path)}", "Archive: /srv/elsewhere/copy.jsonl.gz"))
+        # The area is gone from the configuration, and with it the card's library.
+        areas = json.dumps({"home": {"description": "Home.", "library": str(self.library), "projects": [SLUG]}})
+        for cfg in (None, config.load({**self.retained, "SESSION_ARCHIVE_AREAS": areas})):
+            state = self.boxes()
+            done = self.later(cfg=cfg)
+            self.assertEqual((pipeline.journal(done), done.result, self.boxes()), (journal(eligible=0, kept=1), "ok",
+                                                                                   state))
+            card.write_text(text)
+        # The state root holds a link, not a file.
+        target = self.tmp / "elsewhere.jsonl"
+        shutil.copyfile(path, target)
+        path.unlink()
+        path.symlink_to(target)
+        state = self.boxes()
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), self.boxes()), (journal(scanned=0, eligible=0, kept=1), state))
+
+    def test_retention_prunes_every_copy_of_a_session_under_any_slug(self):
+        """One session under two slugs: every copy goes, or none, and the card keeps the larger one's summary."""
+        larger = self.transcript(spoken() + spoken(OLD + timedelta(hours=1)))
+        shorter = self.transcript(spoken(), slug=OTHER_SLUG)
+        stray = self.transcript(spoken()[:1], slug="-work-gamma")  # under a slug no area reads
+        # A second session whose shorter copy under the other slug is not a prefix of the archived one.
+        self.transcript(spoken(OLD + timedelta(hours=2)), uuid=OTHER_UUID)
+        fork = self.transcript([said("user", "rename the widget file", OLD)], uuid=OTHER_UUID, slug=OTHER_SLUG)
+        self.lane([SPOKEN_SUMMARY] * 2)
+        self.assertEqual(self.store.session(UUID)["sha256"], sha256(larger))
+        card = self.card().read_text()
+        elsewhere = self.local(slug="-elsewhere")  # still held here, under another project directory
+        state = self.boxes()
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), self.boxes()), (journal(scanned=2, eligible=0, kept=2), state))
+        elsewhere.unlink()
+        done = self.later()
+        self.assertEqual(pipeline.journal(done), journal(scanned=2, eligible=0, pruned=1, kept=1))
+        self.assertEqual([p.exists() for p in (larger, shorter, stray, fork)], [False, False, False, True])
+        self.assertEqual(self.card().read_text().split("\n## Pointer\n")[0], card.split("\n## Pointer\n")[0])
+        done = self.later(when=LATER + timedelta(days=1))
+        self.assertEqual((pipeline.journal(done), self.store.session(UUID)["status"]),
+                         (journal(eligible=0, kept=1), "pruned"))
+
+    def subagents_archived(self):
+        path = self.transcript(spoken())
+        folder = subagent_folder(self.tmp / "state")
+        self.lane([SPOKEN_SUMMARY])
+        return path, folder, self.root / SLUG / f"{UUID}.{sha256(path)[:8]}.subagents.tar.gz"
+
+    def test_retention_prunes_the_subagents_folder_with_its_session(self):
+        path, folder, packed = self.subagents_archived()
+        copy = self.copy_of(path)
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, pruned=1), "ok"))
+        self.assertEqual([p.exists() for p in (path, folder, copy, packed)], [False] * 4)
+        self.assertEqual((names(self.root / SLUG), names(path.parent)), ([], []))
+        pointer = pointer_of(self.card().read_text())
+        self.assertEqual((pointer[0], pointer[3]), (RETIRED, "Subagents: removed 2026-04-11 after 90-day retention"))
+        self.assertEqual([line for line in pointer if line.startswith(("Fetch: ", "Local "))], [])
+        row = self.store.session(UUID)
+        self.assertEqual((row["status"], row["subagents_sha256"], row["subagents_bytes"]), ("pruned", None, None))
+
+    def test_retention_keeps_a_session_whose_subagents_archive_is_missing_or_other(self):
+        path, folder, packed = self.subagents_archived()
+        original = packed.read_bytes()
+        late = folder / "tool-results/toolu_09.txt"
+        for name, damage, repair in (
+                ("missing", packed.unlink, lambda: packed.write_bytes(original)),
+                ("other bytes", lambda: packed.write_bytes(original + b"\0"), lambda: packed.write_bytes(original)),
+                ("a file the archive lacks", lambda: late.write_text("pushed later\n"), late.unlink)):
+            with self.subTest(tar=name):
+                damage()
+                state = self.boxes()
+                done = self.later()
+                self.assertEqual((pipeline.journal(done), done.result, self.boxes()),
+                                 (journal(eligible=0, kept=1), "ok", state))
+                repair()
+        # A card whose Subagents line names another archive.
+        card = self.card()
+        text = card.read_text()
+        card.write_text(text.replace(f"Subagents: {packed}, ", "Subagents: /srv/elsewhere/one.subagents.tar.gz, "))
+        state = self.boxes()
+        self.assertEqual((pipeline.journal(self.later()), self.boxes()), (journal(eligible=0, kept=1), state))
+        card.write_text(text)
+        # A session whose folder has no recorded archive (one the lane took before it packed folders) is kept.
+        self.store.db.execute("UPDATE sessions SET subagents_sha256 = NULL, subagents_bytes = NULL")
+        self.store.db.commit()
+        state = self.boxes()
+        self.assertEqual((pipeline.journal(self.later()), self.boxes()), (journal(eligible=0, kept=1), state))
+
+    def test_retention_keeps_session_whose_local_subagents_remain(self):
+        path, folder, packed = self.subagents_archived()
+        local = self.tmp / "home/.claude/projects/-elsewhere" / UUID
+        (local / "subagents").mkdir(parents=True)
+        (local / "subagents/agent-1a2b3c4d.jsonl").write_text("{}\n")
+        state = self.boxes()
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), self.boxes()), (journal(eligible=0, kept=1), state))
+        # An empty folder holds nothing state-sync could push back.
+        (local / "subagents/agent-1a2b3c4d.jsonl").unlink()
+        done = self.later()
+        self.assertEqual((pipeline.journal(done), folder.exists(), packed.exists()),
+                         (journal(eligible=0, pruned=1), False, False))
+
+    def test_retention_stops_when_a_file_changes_mid_prune(self):
+        """What changes after it was proven (a push landing while the card is retired) is not deleted."""
+        path, folder, packed = self.subagents_archived()
+        other = self.transcript(spoken(OLD + timedelta(hours=1)), uuid=OTHER_UUID)
+        self.lane([SPOKEN_SUMMARY])
+        late, real, other_copy = folder / "tool-results/toolu_09.txt", cards.write, self.copy_of(other, uuid=OTHER_UUID)
+
+        def landing(library, uuid, text):
+            if uuid == UUID:
+                late.write_text("pushed meanwhile\n")
+            else:
+                self.transcript(spoken(OLD + timedelta(hours=2)), uuid=OTHER_UUID, append=True)
+            return real(library, uuid, text)
+
+        with mock.patch.object(cards, "write", landing):
+            done = self.later()
+        self.assertEqual((done.counts["pruned"], done.counts["kept"]), (0, 2))
+        self.assertEqual((late.exists(), packed.exists(), other.exists(), other_copy.exists()), (True, True, True, True))
+        self.assertEqual([self.store.session(uuid)["status"] for uuid in (UUID, OTHER_UUID)], ["done", "done"])
+
+    def test_retention_fails_closed_on_what_it_cannot_read(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads what mode 000 locks")
+        path = self.archived()
+        projects = self.tmp / "home/.claude/projects"
+        projects.mkdir(parents=True)
+        for locked in (path.parent, projects, path):
+            with self.subTest(locked=locked.name):
+                state, mode = self.boxes(), locked.stat().st_mode
+                locked.chmod(0)
+                try:
+                    done = self.later()
+                finally:
+                    locked.chmod(mode)
+                self.assertEqual((done.result, done.detail, done.counts["prune_errors"], done.counts["pruned"]),
+                                 ("prune_error", "PermissionError", 1, 0))
+                self.assertEqual((self.boxes(), self.store.session(UUID)["status"]), (state, "done"))
+
+    def test_retention_interrupted_leaves_the_run_failed(self):
+        self.archived(OTHER_UUID)
+        second = self.transcript_path(OTHER_UUID)
+        real = retention.file_sha
+
+        def stopped(path):
+            if Path(path) == second:
+                raise SystemExit(143)  # the unit's timeout, as cli.stop raises it
+            return real(path)
+
+        with mock.patch.object(retention, "file_sha", stopped), self.assertRaises(SystemExit):
+            self.later()
+        self.assertEqual(self.store.last_run()["result"], "error")
+        self.assertEqual([self.store.session(uuid)["status"] for uuid in (UUID, OTHER_UUID)], ["pruned", "done"])
+        self.assertEqual((second.exists(), self.copy_of(second, uuid=OTHER_UUID).exists()), (True, True))
+        self.assertIn("\nFetch: zcat ", self.card(OTHER_UUID).read_text())
+        done = self.later(when=LATER + timedelta(days=1))
+        self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, pruned=1), "ok"))
+
+    def test_retention_deletes_a_returned_copy_again(self):
+        path = self.archived()
+        packed, card = path.read_bytes(), self.card()
+        self.later()
+        retired = card.read_text()
+        # Another box that still held the session pushes the same bytes back, under its slug and another.
+        back = [path, self.tmp / "state/claude/projects" / OTHER_SLUG / path.name]
+        for returned in back:
+            returned.parent.mkdir(exist_ok=True)
+            returned.write_bytes(packed)
+            os.utime(returned, (OLD.timestamp(), OLD.timestamp()))
+        local = self.local()
+        done = self.later(when=LATER + timedelta(days=1))
+        self.assertEqual((pipeline.journal(done), [returned.exists() for returned in back]),
+                         (journal(eligible=0, kept=1), [True, True]))
+        local.unlink()
+        done = self.later(when=LATER + timedelta(days=2))
+        self.assertEqual((pipeline.journal(done), [returned.exists() for returned in back]),
+                         (journal(eligible=0, repruned=1), [False, False]))
+        self.assertEqual((self.store.session(UUID)["status"], card.read_text()), ("pruned", retired))
+        report = json.loads(call("status", "--json", env=self.retained)[1])
+        self.assertEqual((report["pruned"], report["repruned"]), (1, 1))
+        self.assertIn("\npruned by retention: 1 (1 returned copy deleted again at the last full run)\n",
+                      call("status", env=self.retained)[1])
+        # A grown copy is a new version: archived again, then pruned again.
+        self.transcript(spoken() + spoken(OLD + timedelta(hours=1)))
+        done = self.later(when=LATER + timedelta(days=3), responses=[SPOKEN_SUMMARY])
+        self.assertEqual(pipeline.journal(done), journal(done=1, windows=1, archived=1, cards=1, pruned=1))
+        self.assertEqual((path.exists(), self.store.session(UUID)["status"], self.store.session(UUID)["size"]),
+                         (False, "pruned", len(packed) + len("".join(json.dumps(r) + "\n" for r in spoken(
+                             OLD + timedelta(hours=1))))))
 
     def test_retention_keeps_session_whose_local_copy_remains(self):
         """state-sync pushes a local transcript whose state-root copy is gone straight back: no prune while one is."""
         path = self.archived()
-        local = self.tmp / "home/.claude/projects" / SLUG / path.name
-        local.parent.mkdir(parents=True)
-        shutil.copyfile(path, local)
-        state = self.boxes()
-        done = self.later()
-        self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, kept=1), "ok"))
-        self.assertEqual((self.boxes(), self.store.session(UUID)["status"]), (state, "done"))
-        local.unlink()
+        for slug in (SLUG, "-elsewhere"):
+            local = self.local(slug=slug)
+            state = self.boxes()
+            done = self.later()
+            self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, kept=1), "ok"))
+            self.assertEqual((self.boxes(), self.store.session(UUID)["status"]), (state, "done"))
+            local.unlink()
         done = self.later(when=LATER + timedelta(days=1))
         self.assertEqual(pipeline.journal(done), journal(eligible=0, pruned=1))
         self.assertEqual((path.exists(), self.store.session(UUID)["status"]), (False, "pruned"))
         self.assertEqual(pointer_of(self.card().read_text())[0], "Archive: removed 2026-04-12 after 90-day retention")
 
     def test_retention_finishes_a_prune_that_failed_part_way(self):
-        path = self.archived()
-        copy = self.copy_of(path)
-        with self.refusing(path):
+        path = self.archived(OTHER_UUID)
+        other = self.transcript_path(OTHER_UUID)
+        copies = [self.copy_of(path), self.copy_of(other, uuid=OTHER_UUID)]
+        # UUID stops at its transcript, OTHER_UUID after it, at its archive copy.
+        with self.refusing(path, copies[1]):
             done = self.later()
-        self.assertEqual((pipeline.journal(done), done.result, done.detail, done.counts["prune_errors"]),
-                         (journal(eligible=0), "prune_error", "PermissionError", 1))
-        # The card was retired before anything went, so it never names a missing file.
-        self.assertEqual((pointer_of(self.card().read_text())[0], copy.exists(), path.exists()), (RETIRED, False, True))
-        self.assertEqual((self.store.session(UUID)["status"], self.store.last_run()["result"]), ("done", "prune_error"))
+        self.assertEqual((pipeline.journal(done), done.result, done.detail),
+                         (journal(scanned=2, eligible=0, errors=2), "prune_error", "PermissionError"))
+        # Each card was retired before anything went, so it never names a missing file.
+        self.assertEqual([pointer_of(self.card(uuid).read_text())[0] for uuid in (UUID, OTHER_UUID)], [RETIRED] * 2)
+        self.assertEqual([p.exists() for p in (path, copies[0], other, copies[1])], [True, True, False, True])
+        self.assertEqual([self.store.session(uuid)["status"] for uuid in (UUID, OTHER_UUID)], ["done", "done"])
         done = self.later(when=LATER + timedelta(days=1))
-        self.assertEqual((pipeline.journal(done), done.result), (journal(eligible=0, pruned=1), "ok"))
-        self.assertEqual((pointer_of(self.card().read_text())[0], path.exists()), (RETIRED, False))
-        self.assertEqual(self.store.session(UUID)["status"], "pruned")
+        self.assertEqual((pipeline.journal(done), done.result), (journal(scanned=1, eligible=0, pruned=2), "ok"))
+        self.assertEqual([p.exists() for p in (path, *copies)], [False, False, False])
+        self.assertEqual([pointer_of(self.card(uuid).read_text())[0] for uuid in (UUID, OTHER_UUID)], [RETIRED] * 2)
 
     def test_run_exits_1_when_a_prune_fails(self):
         path = self.archived()
         (self.tmp / "secrets.env").write_text(f"{LANE_KEY}=lane-test-key\n")
         env = {**self.retained, "FLAKELAB_SECRETS_ENV": str(self.tmp / "secrets.env")}
         with self.refusing(path), mock.patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
-            self.assertEqual(call("run", env=env), (1, journal(eligible=0) + "\n", "session-archive: retention could "
-                                                    "not prune 1 session(s) (PermissionError): the next run retries\n"))
-            self.assertEqual(call("status", "--json", env=env)[0], 0)
+            self.assertEqual(call("run", env=env), (1, journal(eligible=0, errors=1) + "\n", "session-archive: "
+                                                    "retention could not prune 1 session(s) (PermissionError): the "
+                                                    "next run retries\n"))
         self.assertEqual(json.loads(call("status", "--json", env=env)[1])["last_result"], "prune_error")
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
             self.assertEqual(call("run", env=env), (0, journal(eligible=0, pruned=1) + "\n", ""))
