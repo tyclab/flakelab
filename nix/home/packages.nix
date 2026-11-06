@@ -73,9 +73,9 @@ in
       bun
       uv
       # Interpreter for `#!/usr/bin/env python3` hooks; `uv` above installs Python tooling.
-      # PyYAML because agents read YAML with `python3 -c 'import yaml'`; a venv made from
-      # this interpreter still starts without it.
-      (python3.withPackages (ps: [ ps.pyyaml ]))
+      # PyYAML because agents `import yaml`; venvs made from it start without PyYAML. Low
+      # priority: an overlay's own python3 replaces it instead of colliding on bin/python3.
+      (lib.lowPrio (python3.withPackages (ps: [ ps.pyyaml ])))
       glab
       gh
       awscli2
