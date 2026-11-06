@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- The home `python3` is built with PyYAML (`python3.withPackages`), still the one `python3` in the home packages. Agents read YAML with `python3 -c 'import yaml'`, and on the bare interpreter every such call failed with `No module named 'yaml'`: the interpreter has no `pip` and is marked externally managed, so nothing could add it. It is installed at low priority, so an overlay that lists its own `python3` replaces it instead of failing the build on a `bin/python3` collision. A venv made from it (`python3 -m venv`, `uv venv`) still starts without PyYAML. `checks.python3-pyyaml` covers the import, the overlay's `python3` beside it, and both venvs.
 - Nix garbage collection keeps generations for two days instead of thirty (`nix.gc.options = "--delete-older-than 2d"`). Generations are not the rollback this repo relies on (that is `flakelab backup`'s payload snapshots), and on a WSL image the 30 days held 11.5 GB of old closures beside an 8.5 GB current system (58 generations, TycbookElite, 2026-11-02); the image only gives that back at the next compact.
 - The managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` blocks tell an agent never to ask for a secret's value, and to name the key instead.
 - Shared Claude/Codex instructions keep environment and safety rules concise; CLI manuals and repeated question-tool explanations stay in their reference documentation.

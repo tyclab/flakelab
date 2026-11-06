@@ -788,8 +788,11 @@ minutes of random delay. Its journal is one line of counts.
 `python3` with `uv` and `pyright`. The Python interpreter is there for
 `#!/usr/bin/env python3` scripts — without it every such script dies with "no
 such file or directory", and the Claude marketplace's PreToolUse guard hooks are
-exactly that. There is deliberately **no `pip`**: `uv` is the installer for
-Python tooling.
+exactly that. It carries one library, PyYAML, because agents read YAML with
+`python3 -c 'import yaml'`; a venv made from the interpreter starts without the
+library (`checks.python3-pyyaml`). It is installed at low priority, so an
+overlay's own `python3` replaces it instead of colliding. There is deliberately
+**no `pip`**: `uv` is the installer for Python tooling.
 
 ## Packaging notes
 

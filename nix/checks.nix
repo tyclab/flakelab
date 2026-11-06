@@ -884,6 +884,43 @@ in
     assert aborts [ "nodePackages" ];
     pkgs.runCommandLocal "flakelab-check-profile-cli-tools" { } "touch $out";
 
+  # The home python3 imports yaml, it is the only python3 in the home packages, an
+  # overlay's own pkgs.python3 beside it does not collide, and a venv made from it
+  # (venv, uv venv) starts without PyYAML: the library must not leak into project venvs.
+  python3-pyyaml =
+    let
+      system = self.nixosConfigurations.default;
+      sys = system.config;
+      pythons = builtins.filter (
+        p: nixpkgs.lib.hasPrefix "python3-" (p.name or "")
+      ) sys.home-manager.users.${sys.flakelab.username}.home.packages;
+      py = builtins.head pythons;
+      # home.path is this buildEnv; building it is the collision test.
+      beside = pkgs.buildEnv {
+        name = "flakelab-check-python3-beside";
+        paths = [
+          py
+          system.pkgs.python3
+        ];
+      };
+    in
+    assert builtins.length pythons == 1;
+    pkgs.runCommandLocal "flakelab-check-python3-pyyaml" { nativeBuildInputs = [ pkgs.uv ]; } ''
+      test -x ${beside}/bin/python3
+      ${py}/bin/python3 -c 'import yaml; assert yaml.safe_load("a: 1") == {"a": 1}'
+      ${py}/bin/python3 -m venv --without-pip "$TMPDIR/venv"
+      HOME="$TMPDIR" UV_CACHE_DIR="$TMPDIR/uv-cache" UV_PYTHON_DOWNLOADS=never \
+        uv venv -q --python ${py}/bin/python3 "$TMPDIR/uv-venv"
+      # The probe must run and find no yaml: a venv that cannot start fails too.
+      for v in venv uv-venv; do
+        "$TMPDIR/$v/bin/python" -c 'import importlib.util as u, sys; sys.exit(u.find_spec("yaml") is not None)' || {
+          echo "a $v made from the home python3 imports yaml, or does not start" >&2
+          exit 1
+        }
+      done
+      touch $out
+    '';
+
   # The target seam: the two systems must differ exactly as nix/targets/ says,
   # and both must still evaluate.
   targets =
