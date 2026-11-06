@@ -1,0 +1,143 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for report-unswept-clones (files/scripts/report-unswept-clones):
+# a throwaway repos dir holding swept clones, a second copy, an excluded and an
+# undiscovered clone, a linked worktree and a hidden directory, checked against
+# swept/discovered lists in the shape nix-clone-repos hands over. No network.
+#
+# Usage: files/scripts/test-report-unswept-clones
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/report-unswept-clones"
+typeset -i PASS=0 FAIL=0
+
+# Both end in `return 0`: `(( PASS++ ))` yields the pre-increment value, so an
+# `&& ok || bad` chain would run both arms on the first call.
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+export HOME="${BASE}/home"
+REPOS="${BASE}/git"
+mkdir -p "${HOME}" "${REPOS}"
+git config --global init.defaultBranch main
+git config --global user.name "test-report-unswept-clones"
+git config --global user.email "unswept@example.invalid"
+
+# clone <path under REPOS> <origin url> [<extra remote name> <url>]
+clone() {
+  local dir="${REPOS}/$1"
+  mkdir -p "${dir}"
+  git -C "${dir}" init -q
+  git -C "${dir}" commit -q --allow-empty -m init
+  git -C "${dir}" remote add origin "$2"
+  (( $# > 3 )) && git -C "${dir}" remote add "$3" "$4"
+  return 0
+}
+
+clone acme/app            git@gitlab.com:acme/app.git
+clone acme/sub/lib        git@gitlab.com:acme/sub/lib.git
+clone Owner/fork          git@github.com:Owner/fork.git upstream https://github.com/up/fork.git
+clone acme/explicit       git@gitlab.com:acme/explicit-name.git
+clone mirror/app          https://gitlab.com/ACME/app            # second copy, other transport and case
+clone Owner/tool          git@github.com:Owner/tool.git          # dropped by cloneExclude
+clone old/gone            git@gitlab.com:old/gone.git            # no longer discovered
+clone hand/tok            https://alice:FAKE_TOKEN@gitlab.example.invalid/hand/tok.git
+clone g/a/b/c/d/deep      git@gitlab.com:g/a/b/c/d/deep.git      # six levels down
+mkdir -p "${REPOS}/local/scratch" && git -C "${REPOS}/local/scratch" init -q   # no origin
+git -C "${REPOS}/acme/app" worktree add -q "${REPOS}/worktrees/app-feature" -b feature \
+  || { print -ru2 -- "setup: git worktree add failed"; exit 1 }
+clone .hidden/cache       git@gitlab.com:hidden/cache.git
+clone acme/app/vendor/dep git@gitlab.com:vendor/dep.git          # nested inside a swept clone
+mkdir -p "${REPOS}/notes"                                        # plain directory
+
+print -r -- "git@gitlab.com:acme/app.git
+git@gitlab.com:acme/sub/lib.git
+git@github.com:Owner/fork.git
+git@github.com:Owner/tool.git" > "${BASE}/raw"
+print -r -- "git@gitlab.com:acme/app.git
+git@gitlab.com:acme/sub/lib.git
+git@github.com:Owner/fork.git
+git@gitlab.com:acme/explicit-name.git ${REPOS}/acme/explicit" > "${BASE}/list"
+
+print -r -- "== report"
+out="$(zsh "${CMD}" --repos-dir "${REPOS}" --swept "${BASE}/list" --discovered "${BASE}/raw" 2>&1)"
+rc=$?
+check    "exit 0 with findings" "${rc}" "0"
+contains "header counts the unswept clones" "${out}" "Clones the sweep does not fetch (6), under ${REPOS}:"
+contains "second copy across transport and case" "${out}" "  second copy of acme/app  mirror/app"
+contains "cloneExclude names the excluded clone" "${out}" "  cloneExclude  Owner/tool"
+contains "undiscovered clone names its origin" "${out}" "  not discovered (git@gitlab.com:old/gone.git)  old/gone"
+contains "clone without origin" "${out}" "  no origin remote  local/scratch"
+contains "origin shown without its userinfo" "${out}" "  not discovered (https://gitlab.example.invalid/hand/tok.git)  hand/tok"
+excludes "token never printed" "${out}" "FAKE_TOKEN"
+contains "clone six levels down is found" "${out}" "g/a/b/c/d/deep"
+contains "extra remote of a swept clone" "${out}" "Remotes the sweep does not fetch, only origin is (1):"
+contains "extra remote names it and the clone" "${out}" "  upstream  Owner/fork"
+excludes "swept clone at its derived path" "${out}" "  acme/app"$'\n'
+excludes "subgroup clone is swept" "${out}" "sub/lib"
+excludes "explicit url-dest spec is swept" "${out}" "acme/explicit"
+excludes "linked worktree skipped" "${out}" "worktrees"
+excludes "hidden directory skipped" "${out}" ".hidden"
+excludes "descent stops at a clone" "${out}" "vendor/dep"
+excludes "plain directory skipped" "${out}" "notes"
+
+print -r -- "== deep subgroups"
+DEEP="${BASE}/deep"
+mkdir -p "${DEEP}/n1/n2/n3/n4/n5/n6/lib" "${DEEP}/n1/n2/n3/n4/n5/n6/copy"
+git -C "${DEEP}/n1/n2/n3/n4/n5/n6/lib" init -q
+git -C "${DEEP}/n1/n2/n3/n4/n5/n6/lib" remote add origin git@gitlab.com:n1/n2/n3/n4/n5/n6/lib.git
+git -C "${DEEP}/n1/n2/n3/n4/n5/n6/copy" init -q
+git -C "${DEEP}/n1/n2/n3/n4/n5/n6/copy" remote add origin git@gitlab.com:n1/n2/n3/n4/n5/n6/lib.git
+print -r -- "git@gitlab.com:n1/n2/n3/n4/n5/n6/lib.git" > "${BASE}/deeplist"
+out="$(zsh "${CMD}" --repos-dir "${DEEP}" --swept "${BASE}/deeplist" 2>&1)"
+check "copy beside a seven-level clone" "${out}" "Clones the sweep does not fetch (1), under ${DEEP:A}:
+  second copy of n1/n2/n3/n4/n5/n6/lib  n1/n2/n3/n4/n5/n6/copy"
+
+print -r -- "== symlinked namespace folder"
+LINKED="${BASE}/linked"
+mkdir -p "${LINKED}/real-acme/app"
+ln -s real-acme "${LINKED}/acme"
+git -C "${LINKED}/real-acme/app" init -q
+git -C "${LINKED}/real-acme/app" remote add origin git@gitlab.com:acme/app.git
+out="$(zsh "${CMD}" --repos-dir "${LINKED}" --swept "${BASE}/list" 2>&1)"
+check "clone behind a symlink is the swept one" "${out}" ""
+
+print -r -- "== without --discovered"
+out="$(zsh "${CMD}" --repos-dir "${REPOS}" --swept "${BASE}/list" 2>&1)"
+contains "excluded clone reads as undiscovered" "${out}" "  not discovered (git@github.com:Owner/tool.git)  Owner/tool"
+
+print -r -- "== all swept"
+CLEAN="${BASE}/clean"
+mkdir -p "${CLEAN}/acme/app"
+git -C "${CLEAN}/acme/app" init -q
+git -C "${CLEAN}/acme/app" remote add origin git@gitlab.com:acme/app.git
+out="$(zsh "${CMD}" --repos-dir "${CLEAN}" --swept "${BASE}/list" 2>&1)"
+rc=$?
+check "silent when every clone is swept" "${out}" ""
+check "exit 0 when silent" "${rc}" "0"
+out="$(zsh "${CMD}" --repos-dir "${BASE}/missing" --swept "${BASE}/list" 2>&1)"
+rc=$?
+check "missing repos dir is silent" "${out}:${rc}" ":0"
+
+print -r -- "== usage"
+zsh "${CMD}" --repos-dir "${REPOS}" >/dev/null 2>&1; rc=$?
+check "--swept required" "${rc}" "2"
+zsh "${CMD}" --repos-dir "${REPOS}" --swept >/dev/null 2>&1; rc=$?
+check "flag without value" "${rc}" "2"
+zsh "${CMD}" --repos-dir "${REPOS}" --swept "${BASE}/nope" >/dev/null 2>&1; rc=$?
+check "unreadable list" "${rc}" "2"
+zsh "${CMD}" --bogus >/dev/null 2>&1; rc=$?
+check "unknown option" "${rc}" "2"
+out="$(zsh "${CMD}" --help)"
+contains "--help prints usage" "${out}" "Usage: report-unswept-clones"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

@@ -1,0 +1,171 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# report-unswept-clones — name the clones under the repos dir that the clone
+# sweep did not fetch, and the remotes it left alone.
+#
+# The sweep fetches `origin` of each discovered repo at the path it derives
+# from the URL. A clone anywhere else — a second copy, a renamed or moved
+# project, one cloneExclude drops, one cloned by hand — and every remote but
+# `origin` are never fetched, and nothing else says so. Read-only; always
+# exits 0 once its arguments parse.
+#
+# Usage:
+#   report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>]
+#
+#   --swept       what the sweep fetched: one `url` or `url /absolute/dest` per
+#                 line, the clone-repos stdin format
+#   --discovered  every discovered url before cloneExclude; a url here and not
+#                 in --swept was excluded
+#
+
+REPOS_DIR=""
+SWEPT=""
+DISCOVERED=""
+# GitLab nests up to 20 subgroups: group, subgroups and repo fit with room to spare.
+# The walk stops at every clone, so the depth costs only plain directory trees.
+typeset -i MAX_DEPTH=24
+
+# _need "$@": a flag last on the line, without its value, is a usage error (exit 2), not set -u's exit 1.
+_need() { (( $# > 1 )) || { print -r -- "$1 needs a value" >&2; exit 2 } }
+while (( $# > 0 )); do
+  case $1 in
+    --repos-dir)  _need "$@"; REPOS_DIR="$2"; shift ;;
+    --swept)      _need "$@"; SWEPT="$2"; shift ;;
+    --discovered) _need "$@"; DISCOVERED="$2"; shift ;;
+    --help|-h)
+      echo "Usage: report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>]"
+      exit 0 ;;
+    *)
+      print -r -- "Unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ -z "${REPOS_DIR}" || -z "${SWEPT}" ]]; then
+  echo "Error: --repos-dir and --swept are required" >&2
+  exit 2
+fi
+for f in "${SWEPT}" ${DISCOVERED:+"${DISCOVERED}"}; do
+  [[ -r "$f" ]] || { print -r -- "Error: cannot read $f" >&2; exit 2 }
+done
+[[ -d "${REPOS_DIR}" ]] || exit 0
+REPOS_DIR="${REPOS_DIR:A}"
+
+# One key per repository whatever the transport: git@host:path, ssh://[user@]host[:port]/path
+# and https://[user@]host/path all become host/path, lowercased (both forges match paths
+# case-insensitively), without .git or a trailing slash.
+url_key() {
+  local u="$1" host path
+  if [[ "$u" == *://* ]]; then
+    u="${u#*://}"
+    host="${${u%%/*}##*@}"
+    host="${host%%:*}"
+    path="${u#*/}"
+  elif [[ "$u" == *:* ]]; then
+    host="${${u%%:*}##*@}"
+    path="${u#*:}"
+  else
+    print -r -- ""
+    return
+  fi
+  path="${${path%/}%.git}"
+  print -r -- "${(L)host}/${(L)path}"
+}
+
+# The destination clone-repos derives for a spec line.
+# Resolved like the walk's paths, so a symlinked namespace folder still matches.
+spec_dest() {
+  local spec="$1" url="${1%% *}" d
+  if [[ "$spec" == *" "* ]]; then
+    d="${spec#* }"
+  else
+    d="${REPOS_DIR}/${${url#*:}%.git}"
+  fi
+  print -r -- "${d:A}"
+}
+
+typeset -A swept_dest=() swept_key=() excluded_key=()
+typeset spec url key dest
+while IFS= read -r spec || [[ -n "$spec" ]]; do
+  [[ -z "$spec" ]] && continue
+  url="${spec%% *}"
+  dest="$(spec_dest "$spec")"
+  key="$(url_key "$url")"
+  swept_dest[$dest]=1
+  [[ -n "$key" ]] && swept_key[$key]="$dest"
+done < "${SWEPT}"
+
+if [[ -n "${DISCOVERED}" ]]; then
+  while IFS= read -r url || [[ -n "$url" ]]; do
+    url="${url%% *}"
+    [[ -z "$url" ]] && continue
+    key="$(url_key "$url")"
+    [[ -n "$key" && -z "${swept_key[$key]:-}" ]] && excluded_key[$key]=1
+  done < "${DISCOVERED}"
+fi
+
+# Repositories only: descent stops at a clone, and a `.git` file (a linked worktree
+# or a submodule) belongs to a repository found elsewhere. Hidden directories are skipped.
+typeset -a clones=()
+walk() {
+  local dir="$1" depth="$2" sub
+  if [[ -d "$dir/.git" ]]; then
+    clones+=("$dir")
+    return
+  fi
+  [[ -e "$dir/.git" ]] && return
+  (( depth >= MAX_DEPTH )) && return
+  for sub in "$dir"/*(N/); do
+    walk "$sub" $(( depth + 1 ))
+  done
+}
+for sub in "${REPOS_DIR}"/*(N/); do
+  walk "$sub" 1
+done
+
+rel() { print -r -- "${1#${REPOS_DIR}/}" }
+
+# A hand clone's https origin can carry user:token@; only the host and path are shown.
+shown_url() {
+  local u="$1" rest auth
+  if [[ "$u" == *://* ]]; then
+    rest="${u#*://}"
+    auth="${rest%%/*}"
+    [[ "$auth" == *@* ]] && u="${u%%://*}://${auth##*@}${rest:${#auth}}"
+  fi
+  print -r -- "$u"
+}
+
+typeset -a unswept=() remotes=()
+typeset clone origin okey other
+for clone in "${clones[@]}"; do
+  if [[ -n "${swept_dest[$clone]:-}" ]]; then
+    other="${(j:, :)${(@f)$(git -C "$clone" remote 2>/dev/null | grep -vx origin)}}"
+    [[ -n "$other" ]] && remotes+=("  ${other}  $(rel "$clone")")
+    continue
+  fi
+  origin="$(git -C "$clone" remote get-url origin 2>/dev/null)"
+  okey="${origin:+$(url_key "$origin")}"
+  if [[ -z "$origin" ]]; then
+    unswept+=("  no origin remote  $(rel "$clone")")
+  elif [[ -n "${excluded_key[$okey]:-}" ]]; then
+    unswept+=("  cloneExclude  $(rel "$clone")")
+  elif [[ -n "$okey" && -n "${swept_key[$okey]:-}" ]]; then
+    unswept+=("  second copy of $(rel "${swept_key[$okey]}")  $(rel "$clone")")
+  else
+    unswept+=("  not discovered ($(shown_url "$origin"))  $(rel "$clone")")
+  fi
+done
+
+if (( ${#unswept[@]} > 0 )); then
+  print -r -- "Clones the sweep does not fetch (${#unswept[@]}), under ${REPOS_DIR}:"
+  printf '%s\n' "${unswept[@]}"
+fi
+if (( ${#remotes[@]} > 0 )); then
+  print -r -- "Remotes the sweep does not fetch, only origin is (${#remotes[@]}):"
+  printf '%s\n' "${remotes[@]}"
+fi
+exit 0

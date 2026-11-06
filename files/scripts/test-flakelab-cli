@@ -353,6 +353,7 @@ typeset -A VALUE_FLAGS=(
   nix-provision        '--repo'
   notify               '--codex --title --message --priority --tags'
   report-stale-repos   '--repos-dir --group'
+  report-unswept-clones '--repos-dir --swept --discovered'
   switch-result        '--rc --carry'
   test-provision-nix   '--tarball'
   web                  '--bind --port --token-file --terminal-socket --logo'

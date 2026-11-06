@@ -103,7 +103,7 @@ _file=(
 
 _desc=(
   update          'rebuild THIS distro from the configured flake + overlay'
-  update-all      'update, then re-run the GitLab clone sweep'
+  update-all      'update, then re-run the clone sweep (GitLab groups, GitHub owners, repos)'
   doctor          'diagnose this distro and print what to run next'
   backup          'back up home-dir data to the backup root (--restore to read it back)'
   sessions        'the running agent sessions; --start/--attach host one in tmux, --save before a restart, --open after'
