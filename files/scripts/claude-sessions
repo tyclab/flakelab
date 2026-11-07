@@ -83,7 +83,6 @@ REGISTRY="${HOME}/.claude/sessions"
 TYCSWAP_ROOT="${FLAKELAB_TYCSWAP_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/tycswap}"
 TYCSWAP_PROFILES="${TYCSWAP_ROOT}/sessions"
 TYCSWAP_GROUPS="${TYCSWAP_ROOT}/groups"
-GROUP=""
 # The tmux session every --start window lands in, and the prefix of the view
 # sessions --attach and --open create on it.
 TMUX_SESSION="${FLAKELAB_TMUX_SESSION:-agents}"
@@ -107,7 +106,7 @@ typeset -A TOOL_CMD=(claude claude codex codex)
 
 usage() {
   cat <<'USAGE'
-Usage: flakelab sessions [--start <tool> [--group fable|opus] [dir] [--detach] [-- args...]]
+Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
                          [--attach [id|window]] [--save [file]] [--resume [file]]
                          [--open [file]] [--autosave] [--recent [hours]] [--json]
 
@@ -117,15 +116,12 @@ Usage: flakelab sessions [--start <tool> [--group fable|opus] [dir] [--detach] [
                     window of the `agents` tmux session, and attach to it —
                     unless --detach, or there is no terminal. At a terminal,
                     with no tool, the tool and the directory are asked for
-  --group fable|opus
-                    choose a Claude rotation group for --start, --resume or
-                    --open; saved group sessions retain their group by default
   --attach [id|window]
                     attach this terminal to the window holding session id, or
                     to the window named; with neither, to the whole server —
                     at a terminal, picked from a list of the windows first
   --save [file]     list, and save tool, directory and actual session id;
-                    profile sessions also store group/profile in JSON lines
+                    profile sessions also store their profile in JSON lines
   --resume [file]   print the resume commands, one per terminal, from file
                     (default: this box's newest save, else the live sessions)
   --open [file]     open each of those sessions in its own Windows Terminal
@@ -153,8 +149,8 @@ while (( $# > 0 )); do
       fi
       ;;
     --group)
-      [[ "${2:-}" == fable || "${2:-}" == opus ]] || { print -ru2 -- "Error: --group needs fable|opus"; exit 2 }
-      GROUP="$2"; shift ;;
+      # tycswap retired its session groups: the default login follows the model.
+      print -ru2 -- "Error: --group is retired; plain claude switches accounts by model"; exit 2 ;;
     --detach) START_DETACH=true ;;
     --attach) MODE=attach; [[ "${2:-}" == -* || -z "${2:-}" ]] || { ATTACH_TARGET="$2"; shift } ;;
     --save)   MODE=save;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
@@ -174,10 +170,6 @@ while (( $# > 0 )); do
   esac
   shift
 done
-
-if [[ -n "$GROUP" && "$MODE" != start && "$MODE" != resume && "$MODE" != open ]]; then
-  print -ru2 -- "Error: --group is for --start, --resume or --open"; exit 2
-fi
 
 save_dir() {
   if [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
@@ -664,16 +656,13 @@ collect_pairs() {
 
 # The tool's own resume command for a session id.
 typeset -a RESUME_ARGS=()
+# A retired tycswap group's history is copied into ~/.claude when the group
+# retires, so its sessions resume on the default login; until then, in the
+# group's own profile.
 resume_args() {
-  local tool="$1" sid="$2" group="${3:-}" profile="${4:-}" f
-  [[ "$tool" == claude ]] && group="${GROUP:-$group}"
-  if [[ "$tool" == claude && -n "$group" ]]; then
-    if [[ -n "$GROUP" && "$(profile_group "$profile")" != "$GROUP" ]]; then
-      for f in "${profile:-${HOME}/.claude}"/projects/*/${sid}.jsonl(N); do
-        sid="$f"; break
-      done
-    fi
-    RESUME_ARGS=(tycswap run --group "$group" --resume "$sid")
+  local tool="$1" sid="$2" group="${3:-}" profile="${4:-}"
+  if [[ "$tool" == claude && -n "$group" ]] && default_copy "$sid"; then
+    RESUME_ARGS=(claude --resume "$sid")
   elif [[ "$tool" == claude && -n "$profile" ]]; then
     RESUME_ARGS=(env "CLAUDE_CONFIG_DIR=${profile}" claude --resume "$sid")
   elif [[ "$tool" == claude ]]; then
@@ -681,6 +670,11 @@ resume_args() {
   else
     RESUME_ARGS=(codex resume "$sid")
   fi
+}
+
+default_copy() {
+  local -a copies=("${HOME}"/.claude/projects/*/${1}.jsonl(N))
+  (( ${#copies} > 0 ))
 }
 
 resume_cmd() {
@@ -801,6 +795,8 @@ print_recent() {
     sid="${f:t:r}"
     profile="${${f:A}:h:h:h}"
     [[ "$profile" == "${HOME}/.claude" ]] && profile=""
+    # A retired group's copy in ~/.claude is the one listed.
+    [[ -n "$(profile_group "$profile")" ]] && default_copy "$sid" && continue
     [[ -n "${live[claude${US}${sid}${US}${profile}]:-}" || -n "${seen[claude${US}${sid}${US}${profile}]:-}" ]] && continue
     seen[claude${US}${sid}${US}${profile}]=1
     cwd="$(tail -n 50 "$f" | jq -R -r 'fromjson? | .cwd? // empty' 2>/dev/null | tail -n 1)"
@@ -877,13 +873,7 @@ start_session() {
   [[ -d "$dir" ]] || { print -ru2 -- "Error: no such directory: ${dir}"; return 2 }
   dir="${dir:A}"
   name="$(window_name "$START_TOOL" "$dir")"
-  if [[ -n "$GROUP" ]]; then
-    [[ "$START_TOOL" == claude ]] || { print -ru2 -- "Error: --group only supports claude"; return 2 }
-    command -v tycswap >/dev/null 2>&1 || { print -ru2 -- "Error: --group needs tycswap on PATH"; return 2 }
-    cmd="tycswap run --group ${GROUP} --${START_ARGS:+ ${(j: :)${(@q)START_ARGS}}}"
-  else
-    cmd="$(tool_command "$START_TOOL" "${START_ARGS[@]}")"
-  fi
+  cmd="$(tool_command "$START_TOOL" "${START_ARGS[@]}")"
   wid="$(new_window "$name" "$dir" "$cmd")" || { print -ru2 -- "Error: tmux could not start the window"; return 1 }
   print -ru2 -- "started ${START_TOOL} in ${dir} as ${TMUX_SESSION}:${name} (${wid})"
   if $START_DETACH || [[ ! -t 0 || ! -t 1 ]]; then

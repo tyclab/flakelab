@@ -86,6 +86,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Removed
 
+- `flakelab sessions --group` and `session-groups.md`: tycswap retired its session groups, and plain `claude` follows the session's model on the default login. `--group` now exits 2 saying so; a saved or listed session from a former group resumes with `claude --resume` once retirement has copied its history into `~/.claude`, and in the group's own profile until then. Pair this with the tycswap release that retires the groups.
 - The Synology MCP: `SYNOLOGY_PASSWORD` and `SYNOLOGY_DEVICE_ID` are no longer asked for or harvested (`setup-wsl-nix.ps1` lists them as retired, and the overlay generator still keeps them out of the store), and the examples drop every `SYNOLOGY_*` key.
 - The wslkube migration path: `setup-wsl-nix.ps1 migrate`, `-WslkubeDistro`, `-WslkubeInstance`, the sibling wslkube checkout as the default `-Config`, the private-key pull from a running wslkube distro, and the `.migrated-from-wslkube` marker; `flakelab overlay-gen --wslkube` and its `variables.yaml` layering; `flakelab backup --restore --from` reading a `files/config/` layout (a payload root with `shared/` or `instances/` still works). `-Config` now defaults to `<overlay>-payload\user_data.yaml` only. The v0.4.0 tag keeps the old path for a box that still needs it.
 - `dockerautostart` and `extra_task_files` are no longer config keys: a config carrying one is told it maps to nothing, like any other unmapped key.
