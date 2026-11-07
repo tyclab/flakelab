@@ -1865,7 +1865,8 @@ in
 
   # The Codex cleanup timer exists only with codexCleanupPeriodDays, which needs the
   # transcripts in a state root to measure against; its service hands the script the
-  # window and the root, with zstd and jq on the pinned PATH.
+  # window and the root, with zstd and jq on the pinned PATH. nix-backup gets the same
+  # window for the Codex pull leg, and none without the option.
   codex-cleanup-timer =
     let
       inherit (nixpkgs) lib;
@@ -1881,6 +1882,16 @@ in
         codexCleanupPeriodDays = 7;
         stateRoot = "/tmp/flakelab-check-state";
       };
+      noWindow = ext {
+        stateRoot = "/tmp/flakelab-check-state";
+        stateTranscripts = true;
+      };
+      backupOf =
+        sys:
+        (import ./scripts.nix {
+          inherit (sys) pkgs;
+          cfg = sys.config.flakelab;
+        }).nix-backup;
       timer = (hmOf on).systemd.user.timers.flakelab-codex-cleanup;
       service = (hmOf on).systemd.user.services.flakelab-codex-cleanup;
       wrapper = builtins.head service.Service.ExecStart;
@@ -1904,6 +1915,11 @@ in
       grep -q -- '-zstd-[^/:]*/bin' ${wrapper}
       grep -q -- '-jq-[^/:]*/bin' ${wrapper}
       grep -q -- '-scripts/codex-cleanup "\$@"$' ${wrapper}
+      grep -q '^ *export CODEX_CLEANUP_PERIOD_DAYS=7$' ${backupOf on}/bin/nix-backup
+      if grep -q CODEX_CLEANUP_PERIOD_DAYS ${backupOf noWindow}/bin/nix-backup; then
+        echo "nix-backup exports a Codex pull window without codexCleanupPeriodDays" >&2
+        exit 1
+      fi
       touch $out
     '';
 

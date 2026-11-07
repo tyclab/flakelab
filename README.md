@@ -538,9 +538,11 @@ daily `flakelab-codex-cleanup` timer deletes a rollout in `~/.codex/sessions`
 or `~/.codex/archived_sessions`, compressed or not, whose last entry is older
 than that many days, once its copy in the state root holds at least its plain
 bytes. A rollout without such a copy, or one a running process holds open,
-stays. It needs `stateRoot` and `stateTranscripts`; each run logs one line of
-counts (`codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N`).
-Unset (the default), nothing is deleted.
+stays. Automatic pulls and restores then leave a missing rollout older than
+the window in the state root, so a deleted one stays gone. It needs
+`stateRoot` and `stateTranscripts`; each run logs one line of counts
+(`codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N`). Unset
+(the default), nothing is deleted and every rollout is pulled, as before.
 
 `stateSyncthing = { hubDeviceId = "…"; hubName = "hub"; passwordEnvKey = "STATE_PASSWORD"; };`
 makes the box its own sync client: Syncthing with one folder, the state root,

@@ -1,7 +1,9 @@
 # flakelab-codex-cleanup: the user timer behind codexCleanupPeriodDays. A local Codex
 # rollout past the window goes once its state-root copy is complete
 # (files/scripts/codex-cleanup); while a box keeps one, the state sync's push leg
-# puts it back into a state root that pruned it. Off while null.
+# puts it back into a state root that pruned it. The nix-backup wrapper
+# (nix/scripts.nix) carries the same window, so the pull does not bring a deleted
+# one back. Off while null.
 {
   lib,
   pkgs,

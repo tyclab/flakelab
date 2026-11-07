@@ -6,6 +6,8 @@ set -euo pipefail
 #   FLAKELAB_BACKUP_ROOT  the provisioning payload — secrets, keys, per-host config
 #   FLAKELAB_STATE_ROOT   optional shareable state — merged history, Claude and Codex
 #                         memory, opt-in transcripts — in a folder a sync client replicates
+# CODEX_CLEANUP_PERIOD_DAYS (codexCleanupPeriodDays) is the Codex pull window: a
+# missing rollout older than it stays in the state root, as codex-cleanup left it.
 # Exit status is non-zero when any file failed to copy or failed verification.
 
 if [[ -n "${FLAKELAB_BACKUP_ROOT:-}" ]]; then

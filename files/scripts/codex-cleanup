@@ -6,7 +6,8 @@ set -uo pipefail
 # codex-cleanup — the daily cleanup behind codexCleanupPeriodDays (the
 # flakelab-codex-cleanup user timer). While a box keeps a rollout, the state
 # sync's push leg puts it back into a state root that pruned it, so the local
-# copy has to go first. A local rollout
+# copy has to go first; nix-backup gets the same window, so its pull leaves
+# what is older in the state root instead of bringing it back. A local rollout
 #   ~/.codex/sessions/**/rollout-*.jsonl{,.zst}
 #   ~/.codex/archived_sessions/**/*.jsonl{,.zst}
 # is deleted when its last entry is older than CODEX_CLEANUP_PERIOD_DAYS days

@@ -147,7 +147,11 @@ Read for this topic; paths below are relative to the repository root unless stat
   unmeasurable copy as `kept_unsynced`. One stdout line, counts only, never a
   path. No state root (unset or not a directory) or a failed delete exits 1; a
   bad window or any argument but `--help` exits 2. `FLAKELAB_HOME_DIR` and
-  `FLAKELAB_PROC_ROOT` are its suite's seams (`test-codex-cleanup`).
+  `FLAKELAB_PROC_ROOT` are its suite's seams (`test-codex-cleanup`). The
+  `nix-backup` wrapper exports the same `CODEX_CLEANUP_PERIOD_DAYS`, and the
+  Codex pull leg (`transcript_window`, `transcript_age_skip`) leaves a missing
+  rollout older than it in the state root; unset, it pulls every one. Keep the
+  two on one window, or a deleted rollout is pulled straight back.
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
   stdout, abort included. In gitchecker's document a linked worktree's row

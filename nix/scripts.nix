@@ -481,6 +481,13 @@ rec {
       ${lib.optionalString cfg.stateTranscripts ''
         export FLAKELAB_STATE_TRANSCRIPTS=1
         export FLAKELAB_STATE_TRANSCRIPT_SECRETS=${cfg.stateTranscriptSecrets}
+        ${
+          # The Codex pull window, the one flakelab-codex-cleanup deletes by: without
+          # it a deleted rollout is pulled straight back. Unset, every one is pulled.
+          lib.optionalString (
+            cfg.codexCleanupPeriodDays != null
+          ) "export CODEX_CLEANUP_PERIOD_DAYS=${toString cfg.codexCleanupPeriodDays}"
+        }
       ''}
     ''}
     # As a store path, so the gate scans with the same rules on every machine.
