@@ -590,11 +590,12 @@ cooldown are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
 by `flakelab backup` (`tycswap/`) and read by `flakelab doctor` (`Switcher`),
 `flakelab web` and `flakelab sessions`.
 
-Claude sessions can use independent Fable and Opus/other rotation groups.
-`flakelab sessions --start claude --group fable /path/to/work` selects a group;
-`--save`, `--resume` and `--open` retain its profile and actual continuation id.
-See [session-groups.md](session-groups.md) for starting work and moving an old
-conversation when you choose to restart it.
+Plain `claude` needs no group or launcher: the status line feeds
+`tycswap auto --observe`, so the live login follows the model each session
+runs. tycswap retired its Fable and Opus/other session groups; a former group's
+conversations are copied into `~/.claude` when it retires, so `flakelab
+sessions --resume` resumes them with `claude --resume` (in the group's own
+profile until that copy exists).
 
 A distro has no tray, so `flakelab.tycswapAppPort = 7337;` runs `tycswap app
 --headless --port 7337` as the user service `flakelab-tycswap-app`, and the

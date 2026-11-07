@@ -653,18 +653,15 @@ check "FLAKELAB_TYCSWAP_ROOT points the scan at another store" \
 
 # ---------------------------------------------------------------------------
 print -r -- ""
-print -r -- "managed groups: launcher, actual ids, profiles and opt-in migration"
-print -rl -- '#!/usr/bin/env zsh' 'exit 0' > "${STUBS}/tycswap"
-chmod +x "${STUBS}/tycswap"
+print -r -- "retired tycswap groups: no launcher, live profiles listed, plain resumes"
 : > "${TMUX_LOG}"
 run_tmux --start claude --group fable "${WORK}" --detach -- --model fable
-check "a grouped start accepts the directory after --group" "$RC" 0
-contains "a grouped start delegates model args to tycswap" "$(<"${TMUX_LOG}")" "-c ${WORK} tycswap run --group fable -- --model fable"
-run_tmux --start codex --group opus --detach
-check "a Claude group refuses Codex" "$RC" 2
+check "--group is retired" "$RC" 2
+contains "and says plain claude switches by model" "$ERR" "--group is retired"
+excludes "a retired group starts nothing" "$(<"${TMUX_LOG}")" new-window
 : > "$TMUX_LOG"
 HANDOVER_DIGEST="$(printf '%064d' 0)"
-TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" FAKE_TMUX_HAS=1 run_tmux --start claude --group fable "$WORK" --detach
+TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" FAKE_TMUX_HAS=1 run_tmux --start claude "$WORK" --detach
 check "an attested handover starts on an existing tmux server" "$RC" 0
 contains "the new window receives exactly the handover directory and digest" "$(<"$TMUX_LOG")" "-e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
 : > "$TMUX_LOG"
@@ -681,10 +678,8 @@ TYCSWAP_HANDOVER_CWD=relative TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" run_tmu
 check "a relative handover directory refuses the window" "$RC" 1
 TYCSWAP_HANDOVER_CWD="$WORK" run_tmux --start codex "$WORK" --detach
 check "a partial handover pair refuses the window" "$RC" 1
-run --resume --group unknown
-check "an unknown group is a usage error" "$RC" 2
-run --json --group fable
-check "a group on an unrelated action is a usage error" "$RC" 2
+run --resume --group fable
+check "a retired group on --resume is a usage error" "$RC" 2
 
 GROUP_ROOT="${HOME}/.local/share/tycswap/groups"
 FABLE_PROFILE="${GROUP_ROOT}/fable/profile"
@@ -711,32 +706,33 @@ check "Opus keeps its own profile" "$(print -r -- "$OUT" | jq -r '.[] | select(.
 excludes "listing never reads profile credentials" "$OUT" DO-NOT-EXPOSE-CREDENTIAL
 run --save "${BASE}/groups.txt"
 check "saved metadata contains the actual migrated id and profile" "$(jq -Rr --arg id "$SID_M" 'fromjson? | select(.session == $id) | [.group,.profile] | join("|")' "${BASE}/groups.txt")" "fable|${FABLE_PROFILE}"
+# Fable's history is already in ~/.claude (retired); Opus's is not yet.
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_M}.jsonl"
 run --resume "${BASE}/groups.txt"
-contains "group resumes retain the migrated Fable id" "$OUT" "tycswap run --group fable --resume ${SID_M}"
-contains "group resumes retain the independent Opus id" "$OUT" "tycswap run --group opus --resume ${SID_N}"
-excludes "unmanaged sessions remain unmanaged without an explicit group" "$(print -r -- "$OUT" | grep "$SID_A")" 'tycswap run'
+contains "a retired group's session resumes on the default login" "$OUT" "&& claude --resume ${SID_M}"
+contains "a group not yet retired resumes in its own profile" "$OUT" "env CLAUDE_CONFIG_DIR=${OPUS_PROFILE} claude --resume ${SID_N}"
+excludes "no resume goes through tycswap" "$OUT" 'tycswap run'
 export WSL_DISTRO_NAME=flakelab
 : > "$WT_LOG"
 FAKE_PGREP_NONE=1 with_stopped 310 320 -- run --open "${BASE}/groups.txt"
-contains "direct tabs resume in the saved group" "$(<"$WT_LOG")" "-- tycswap run --group fable --resume ${SID_M}"
+contains "direct tabs resume a group session on the default login" "$(<"$WT_LOG")" "-- claude --resume ${SID_M}"
 : > "$TMUX_LOG"
 FAKE_PGREP_NONE=1 with_stopped 310 320 -- run_tmux --open "${BASE}/groups.txt"
-contains "tmux tabs resume in the saved group" "$(<"$TMUX_LOG")" "tycswap run --group opus --resume ${SID_N}"
+contains "tmux tabs resume a group session on the default login" "$(<"$TMUX_LOG")" "claude --resume ${SID_N}"
 unset WSL_DISTRO_NAME
 
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_A}.jsonl"
-run --resume "${BASE}/old-shape.txt" --group fable
-contains "explicit migration sends the source transcript path" "$OUT" "tycswap run --group fable --resume ${HOME}/.claude/projects/-work/${SID_A}.jsonl"
+run --resume "${BASE}/old-shape.txt"
 contains "the Codex line in a mixed old snapshot keeps its tool" "$OUT" "codex resume ${SID_B}"
-export WSL_DISTRO_NAME=flakelab
-: > "$WT_LOG"
-FAKE_PGREP_NONE=1 run --open "${BASE}/old-shape.txt" --group opus
-contains "explicit group choice also migrates old Windows Terminal tabs" "$(<"$WT_LOG")" "-- tycswap run --group opus --resume ${HOME}/.claude/projects/-work/${SID_A}.jsonl"
-unset WSL_DISTRO_NAME
+# A group's history before retirement resumes in the group's profile; once
+# retirement copied it into ~/.claude, only that copy is listed.
 print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${FABLE_PROFILE}/projects/-work/${SID_N}.jsonl"
 run --recent
-contains "stopped group history resumes with its profile's group" "$OUT" "tycswap run --group fable --resume ${SID_N}"
-excludes "a session active in Opus does not hide Fable's distinct copy" "$ERR" 'no stopped session'
+contains "a stopped group session not yet retired resumes in its profile" "$OUT" "env CLAUDE_CONFIG_DIR=${FABLE_PROFILE} claude --resume ${SID_N}"
+print -r -- "{\"type\":\"user\",\"cwd\":\"${WORK}\"}" > "${HOME}/.claude/projects/-work/${SID_N}.jsonl"
+run --recent
+contains "a retired group's copied history resumes on the default login" "$OUT" "&& claude --resume ${SID_N}"
+check "and is listed once" "$(print -r -- "$OUT" | grep -c -- "--resume ${SID_N}")" "1"
 run --autosave
 AUTO_GROUP="${HOME}/.local/state/flakelab/sessions/${BOX}-autosave-$(tr -d '-' < /proc/sys/kernel/random/boot_id | cut -c1-12).txt"
 contains "autosave stores group ownership and the actual id" "$(<"$AUTO_GROUP")" "\"session\":\"${SID_M}\",\"group\":\"fable\""
@@ -744,7 +740,7 @@ print -r -- '{"tool":"claude","cwd":"/tmp","session":"x","group":"bogus","profil
 run --resume "${BASE}/bad-group.txt"
 check "corrupt group metadata fails before launching" "$RC" 1
 rm -rf "${PROC}/310" "${PROC}/320" "$GROUP_ROOT"
-rm "${HOME}/.claude/sessions/310.json" "${HOME}/.claude/projects/-work/${SID_A}.jsonl"
+rm "${HOME}/.claude/sessions/310.json" "${HOME}/.claude/projects/-work/${SID_A}.jsonl" "${HOME}/.claude/projects/-work/${SID_N}.jsonl" "${HOME}/.claude/projects/-work/${SID_M}.jsonl"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
