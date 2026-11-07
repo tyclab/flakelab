@@ -78,8 +78,7 @@ let
   );
 in
 # `rec`, because wrappers pin sibling wrappers: nix-update and nix-update-all pin
-# nix-clone-repos (the CLI keeps it off PATH under its own name, so a bare `--all`
-# would trip its guard) and switch-result; web pins accounts and claude-sessions.
+# switch-result; web pins accounts and claude-sessions.
 rec {
   mcp = (import ./mcp-clients.nix { inherit pkgs cfg; }).launcher;
 
@@ -415,8 +414,6 @@ rec {
 
   # Update THIS distro. The repo to rebuild is repoPath, which a store path cannot
   # derive from $0, and FLAKELAB_FLAKE_ATTR names which box in it to switch into.
-  # `nix-clone-repos` is pinned, because the script calls it by bare name for --all
-  # and the CLI no longer puts it on PATH under that name.
   # No pkgs.openssh: the sibling sweep tools leave ssh to $PATH, so pinning one here
   # would change which ssh this uses.
   nix-update = pkgs.writeShellScriptBin "nix-update" ''
@@ -435,7 +432,6 @@ rec {
         pkgs.git
         pkgs.coreutils
         pkgs.findutils
-        nix-clone-repos
         switch-result
         nix-access-tokens
       ]
@@ -460,7 +456,6 @@ rec {
         pkgs.git
         pkgs.coreutils
         pkgs.findutils
-        nix-clone-repos
         switch-result
         nix-access-tokens
       ]

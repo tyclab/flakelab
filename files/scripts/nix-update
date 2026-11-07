@@ -625,9 +625,11 @@ fi
 
 (( _run_clone )) || _finish "${_result_rc}"
 
-if ! command -v nix-clone-repos > /dev/null 2>&1; then
-  _say red "✗ --all: flakelab clone is not available (its wrapper nix-clone-repos is not on PATH) — the switch is applied, the clone sweep did not run"
+# The sweep follows the switch like the tray: a sweep pinned into this script would
+# be the generation the switch just replaced.
+if ! command -v flakelab > /dev/null 2>&1; then
+  _say red "✗ --all: flakelab is not on PATH — the switch is applied, the clone sweep did not run; from a new shell: flakelab clone"
   _finish 1
 fi
-nix-clone-repos || _finish $?
+flakelab clone || _finish $?
 _finish "${_result_rc}"
