@@ -561,7 +561,8 @@ archive copy (path, SHA-256, the `zcat` that reads it). A session's `<uuid>/`
 folder of subagent transcripts and tool results, when it has one, is archived
 beside the copy as `<uuid>.<sha8>.subagents.tar.gz` (names relative to the
 folder, mtimes kept), and the pointer's `Subagents:` line gives its path,
-SHA-256, size and the `tar -xzf` that unpacks it; a folder that cannot be packed
+SHA-256, size and the `tar -xzf … -C <uuid>` that unpacks it into a folder named
+after the session; a folder that cannot be packed
 holds the session (`archive_error`). Each
 `sessionArchiveAreas` entry is a one-sentence description, a library folder and
 the project slugs to read; a session the model cannot place gets no card and is
@@ -592,27 +593,31 @@ archive pair proves it:
   recorded, and the card names them;
 - each state-root transcript is that version or a prefix of it (a shorter copy
   under another slug), and each folder's files are all in the subagents
-  archive; a transcript already gone from the state root is no obstacle;
+  archive (a link or file named after the session is refused); a transcript
+  already gone from the state root is no obstacle;
 - `~/.claude/projects` holds neither the transcript nor a `<uuid>/` folder with
   a file in it, under any slug: state-sync would push them straight back, so the
   step waits for Claude Code's `cleanupPeriodDays` and counts the session as
   `kept` meanwhile;
 - anything that cannot be read is an error (`prune_errors`), never absent.
 
-A session the lane took before it packed folders, whose `<uuid>/` folder is
-still beside its transcript, first gets its subagents archive and `Subagents:`
-line from the retention step itself, with no model call
-(`subagents_backfilled`), and then prunes like any other. A transcript that
-grew is archived again first; held and review sessions are never touched. The card is retired first and the archive pair goes last, so a
-prune an error cut short (its card already reading `removed`, its state-root
-files or archive copy perhaps gone) is finished by the next run. A pruned
-transcript that comes back with the same bytes (pushed by a box that still held
-it) is deleted again and counted `repruned`. `status` shows how many sessions are
-pruned and the last full run's `repruned` and `kept` (sessions past the period
-it could not prove, a copy that came back shorter or different among them). The
-journal line counts `pruned`, `repruned`, `kept`, `prune_errors` and
-`subagents_backfilled`; a prune error ends
-the run `prune_error` (exit 1), which the doctor reports.
+Two cases stay `kept` for good, since nothing proves their files: a `<uuid>/`
+folder under a second slug whose content differs from the archived one, and a
+file that landed in the folder after its archive was written while the
+transcript did not grow. A session the lane took before it packed folders, whose
+`<uuid>/` folder is still beside its transcript, first gets its subagents
+archive and `Subagents:` line from the retention step itself, with no model call
+(`subagents_backfilled`), and then prunes like any other. A transcript that grew
+is archived again first; held and review sessions are never touched. The card is
+retired first and the archive pair goes last, so a prune an error cut short (its
+card already reading `removed`, its state-root files or archive copy perhaps
+gone) is finished by the next run. A pruned transcript that comes back with the
+same bytes (pushed by a box that still held it) is deleted again and counted
+`repruned`. `status` shows how many sessions are pruned and the last full run's
+`repruned` and `kept` (sessions past the period it could not prove, a copy that
+came back shorter or different among them). The journal line counts `pruned`,
+`repruned`, `kept`, `prune_errors` and `subagents_backfilled`; a prune error
+ends the run `prune_error` (exit 1), which the doctor reports.
 
 The first run after setting the option deletes the whole backlog past the
 period at once, with no cap: run `flakelab session-archive run --dry-run`

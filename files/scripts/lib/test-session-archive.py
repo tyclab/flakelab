@@ -1179,11 +1179,12 @@ class CardTest(unittest.TestCase):
         packed = "/srv/archive/it's here/one.subagents.tar.gz"
         card = cards.render(dataclasses.replace(CARD_META, archive_path=odd, subagents=(Path(packed), "cd" * 32, 512)),
                             CARD_SUMMARY)
-        line = (f"Subagents: {packed}, SHA-256 {'cd' * 32}, 512 bytes, fetch: tar -xzf "
-                "'/srv/archive/it'\\''s here/one.subagents.tar.gz'")
+        line = (f"Subagents: {packed}, SHA-256 {'cd' * 32}, 512 bytes, fetch: mkdir -p {UUID} && tar -xzf "
+                f"'/srv/archive/it'\\''s here/one.subagents.tar.gz' -C {UUID}")
         self.assertEqual(card.split("\n## Pointer\n\n")[1].splitlines()[3:6],
                          [fetch, line, f"Local (until cleanup): {LOCAL}"])
-        self.assertEqual(shlex.split(line.split(", fetch: ")[1]), ["tar", "-xzf", packed])
+        self.assertEqual(shlex.split(line.split(", fetch: ")[1]),
+                         ["mkdir", "-p", UUID, "&&", "tar", "-xzf", packed, "-C", UUID])
 
     def test_card_unverified_suffix(self):
         for entry, line in (
@@ -1724,7 +1725,8 @@ class SubagentsArchiveTest(Lane):
         self.assertEqual((row["subagents_sha256"], row["subagents_bytes"]), (sha256(packed), packed.stat().st_size))
         pointer = self.card().read_text().split("\n## Pointer\n\n")[1].splitlines()
         self.assertEqual(pointer[3:5], [f"Fetch: zcat '{copy}'", f"Subagents: {packed}, SHA-256 {sha256(packed)}, "
-                                                                 f"{packed.stat().st_size} bytes, fetch: tar -xzf '{packed}'"])
+                                                                 f"{packed.stat().st_size} bytes, fetch: mkdir -p {UUID} && "
+                                                                 f"tar -xzf '{packed}' -C {UUID}"])
         # The same folder packs to the same bytes, so a retried session finds its archive as it left it.
         recorded = (packed, sha256(packed), packed.stat().st_size)
         (self.tmp / "again").mkdir()
@@ -2352,6 +2354,38 @@ class RetentionTest(Lane):
         self.assertEqual((pipeline.journal(done), folder.exists(), packed.exists()),
                          (journal(eligible=0, pruned=1), False, False))
 
+    def test_retention_backfill_packs_nothing_for_a_card_it_cannot_extend(self):
+        """A card that names another copy gets no Subagents line, so no archive is packed, then or on later runs."""
+        path, folder, packed = self.subagents_archived()
+        packed.unlink()
+        card = self.card()
+        card.write_text("".join(part for part in card.read_text().splitlines(keepends=True)
+                                if not part.startswith("Subagents: ")).replace(
+            f"Archive: {self.copy_of(path)}", "Archive: /srv/elsewhere/copy.jsonl.gz"))
+        self.store.db.execute("UPDATE sessions SET subagents_sha256 = NULL, subagents_bytes = NULL")
+        self.store.db.commit()
+        state = self.boxes()
+        for _ in range(2):
+            done = self.later(when=WITHIN)
+            self.assertEqual((pipeline.journal(done), self.boxes()), (journal(eligible=0), state))
+
+    def test_retention_refuses_a_link_named_after_the_session(self):
+        """A <uuid> in the state root that is a link or a file is refused before the card is retired."""
+        path, folder, packed = self.subagents_archived()
+        moved = self.tmp / "moved"
+        shutil.copytree(folder, moved, symlinks=True)
+        shutil.rmtree(folder)
+        card = self.card().read_text()
+        for name, make in (("link to a folder", lambda: folder.symlink_to(moved, target_is_directory=True)),
+                           ("file", lambda: folder.write_text("not a folder\n"))):
+            with self.subTest(entry=name):
+                make()
+                state = self.boxes()
+                done = self.later()
+                self.assertEqual((pipeline.journal(done), done.result, self.boxes(), self.card().read_text()),
+                                 (journal(eligible=0, kept=1), "ok", state, card))
+                folder.unlink()
+
     def test_retention_keeps_session_whose_local_subagents_remain(self):
         path, folder, packed = self.subagents_archived()
         local = self.tmp / "home/.claude/projects/-elsewhere" / UUID
@@ -2392,14 +2426,15 @@ class RetentionTest(Lane):
         path = self.archived()
         projects = self.tmp / "home/.claude/projects"
         projects.mkdir(parents=True)
-        for locked in (path.parent, projects, path):
-            with self.subTest(locked=locked.name):
-                state, mode = self.boxes(), locked.stat().st_mode
-                locked.chmod(0)
+        # The slug folder readable but not searchable lists its names and refuses each one's stat.
+        for locked, mode in ((path.parent, 0), (path.parent, 0o444), (projects, 0), (path, 0)):
+            with self.subTest(locked=locked.name, mode=oct(mode)):
+                state, was = self.boxes(), locked.stat().st_mode
+                locked.chmod(mode)
                 try:
                     done = self.later()
                 finally:
-                    locked.chmod(mode)
+                    locked.chmod(was)
                 self.assertEqual((done.result, done.detail, done.counts["prune_errors"], done.counts["pruned"]),
                                  ("prune_error", "PermissionError", 1, 0))
                 self.assertEqual((self.boxes(), self.store.session(UUID)["status"]), (state, "done"))

@@ -814,9 +814,13 @@ before anything goes, that the session is the one the lane archived:
 - every `<uuid>.jsonl` under any slug of the state root is a plain file that is
   this version or a prefix of it (one session read under two project
   directories leaves a shorter copy under the other slug), and every `<uuid>/`
-  folder holds only files the subagents archive has with the same bytes. A
+  is a real folder (a link or a file of that name is refused before the card is
+  touched) holding only files the subagents archive has with the same bytes,
+  so a folder under a second slug with other content, or a file that landed
+  after the archive while the transcript did not grow, keeps the session. A
   session taken before the lane packed folders has no recorded archive: the
-  step first packs its `<uuid>/` folder beside its copy for the recorded sha8,
+  step first checks the card can take the line, then packs its `<uuid>/`
+  folder beside its copy for the recorded sha8,
   records the archive's SHA-256 and size and adds the card's `Subagents:` line,
   with no model call (`subagents_backfilled`), so it is proven like any other;
   a folder under another slug without a recorded archive keeps the session;

@@ -180,11 +180,16 @@ def backfill(cfg, db, row, found, dry_run) -> str | None:
     except FileNotFoundError:
         return None
     planned = copy.with_name(f"{uuid}.{sha[:8]}{archive.SUBAGENTS}")
+    # Everything is checked before anything is packed: a card that cannot take the line leaves no archive behind.
+    info = lstat(folder)
+    fits = (cards.with_subagents(text, copy, uuid, (planned, "", 0)) is not None
+            or f"\n{cards.SUBAGENTS}{planned}, " in text)
+    if info is None or not stat.S_ISDIR(info.st_mode) or not fits:
+        return None
     if dry_run:
-        fits = cards.with_subagents(text, copy, (planned, "", 0)) is not None or f"\n{cards.SUBAGENTS}{planned}, " in text
-        return "subagents_backfilled" if fits else None
+        return "subagents_backfilled"
     packed = archive.subagents(cfg.root, slug, uuid, sha, folder)
-    card = packed and cards.with_subagents(text, copy, packed[0])
+    card = packed and cards.with_subagents(text, copy, uuid, packed[0])
     if not card:
         return None
     _, card_hash, _ = cards.write(area.library, uuid, card)
@@ -209,6 +214,11 @@ def prune_done(cfg, db, row, now, found, dry_run) -> str:
     transcripts, folders = found.transcripts.get(uuid, []), found.folders.get(uuid, [])
     # A dry run counts what the back-fill before it would make provable: its archive packs the folder beside the copy.
     pending = dry_run and tar is None and backfill(cfg, db, row, found, True) is not None
+    # A <uuid> that is a link or a file is no folder the archive can prove; refused before the card is touched.
+    for folder in folders:
+        info = lstat(folder)
+        if info is not None and not stat.S_ISDIR(info.st_mode):
+            return "kept"
     # state-sync pushes back a transcript or side file this box still holds.
     if area is None or row["archive_path"] != str(copy) or uuid in found.local or (folders and tar is None
                                                                                  and not pending):
