@@ -134,6 +134,20 @@ Read for this topic; paths below are relative to the repository root unless stat
     flags; a prompt a person needs is never something to script around, and
     `FLAKELAB_NO_PROMPT=1` turns them off. Every `[y/N]` goes through
     `prompt_confirm`/`prompt_keys`, never a bare `read`.
+- `codex-cleanup` is no verb: only the `flakelab-codex-cleanup` timer
+  (`nix/home/codex-cleanup.nix`, `codexCleanupPeriodDays`) runs it, with
+  `CODEX_CLEANUP_PERIOD_DAYS` and `FLAKELAB_STATE_ROOT` from its wrapper. It
+  deletes a local rollout (`~/.codex/sessions/**/rollout-*.jsonl{,.zst}`,
+  `~/.codex/archived_sessions/**/*.jsonl{,.zst}`) only when both hold: its last
+  entry is older than the window by `transcript_epoch`, the tail rule it sources
+  from `lib/state-sync.zsh` (a `.zst` read through `zstd -dc`), and the
+  state-root copy of the same name anywhere under `codex/sessions/` has at least
+  its plain length. An unreadable age, a rollout open in `/proc/*/fd` or one
+  that changed while measured counts as `kept_young`; a missing, shorter or
+  unmeasurable copy as `kept_unsynced`. One stdout line, counts only, never a
+  path. No state root (unset or not a directory) or a failed delete exits 1; a
+  bad window or any argument but `--help` exits 2. `FLAKELAB_HOME_DIR` and
+  `FLAKELAB_PROC_ROOT` are its suite's seams (`test-codex-cleanup`).
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
   stdout, abort included. In gitchecker's document a linked worktree's row

@@ -1,0 +1,149 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# codex-cleanup — the daily cleanup behind codexCleanupPeriodDays (the
+# flakelab-codex-cleanup user timer). While a box keeps a rollout, the state
+# sync's push leg puts it back into a state root that pruned it, so the local
+# copy has to go first. A local rollout
+#   ~/.codex/sessions/**/rollout-*.jsonl{,.zst}
+#   ~/.codex/archived_sessions/**/*.jsonl{,.zst}
+# is deleted when its last entry is older than CODEX_CLEANUP_PERIOD_DAYS days
+# AND its state-root copy, <FLAKELAB_STATE_ROOT>/codex/sessions/**/<name without
+# .zst>, holds at least as many bytes as the plain rollout: the copy is
+# grow-only, so a shorter one is missing lines. Everything else stays and is
+# counted: an age that cannot be read, or a rollout a running process holds
+# open or wrote to during the check, as young; a copy that is missing, shorter
+# or cannot be measured, as unsynced. One line out, counts only:
+#   codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N
+#
+# Environment: CODEX_CLEANUP_PERIOD_DAYS and FLAKELAB_STATE_ROOT (the timer's
+# wrapper sets both); FLAKELAB_HOME_DIR and FLAKELAB_PROC_ROOT are test seams.
+# Exit: 0 done, 1 no state root or a delete failed, 2 a usage error.
+#
+
+usage() {
+  print -r -- "Usage: codex-cleanup"
+  print -r -- ""
+  print -r -- "Deletes local Codex rollouts older than CODEX_CLEANUP_PERIOD_DAYS days whose"
+  print -r -- "copy in FLAKELAB_STATE_ROOT is complete. No options: the flakelab-codex-cleanup"
+  print -r -- "timer runs it with both set from codexCleanupPeriodDays and stateRoot."
+}
+case "${1:-}" in
+  "") ;;
+  -h | --help) usage; exit 0 ;;
+  *) print -r -u2 -- "codex-cleanup: takes no arguments (got '$1'); see --help"; exit 2 ;;
+esac
+
+DAYS="${CODEX_CLEANUP_PERIOD_DAYS:-}"
+if [[ "${DAYS}" != <1-> ]]; then
+  print -r -u2 -- "codex-cleanup: CODEX_CLEANUP_PERIOD_DAYS must be a positive number of days"
+  exit 2
+fi
+HOME_DIR="${FLAKELAB_HOME_DIR:-${HOME}}"
+STATE_ROOT="${FLAKELAB_STATE_ROOT:-}"
+PROC_ROOT="${FLAKELAB_PROC_ROOT:-/proc}"
+if [[ -z "${STATE_ROOT}" ]]; then
+  print -r -u2 -- "codex-cleanup: FLAKELAB_STATE_ROOT is not set; nothing deleted"
+  exit 1
+fi
+# An unmounted share would read as "no copy" for every rollout: say so instead.
+if [[ ! -d "${STATE_ROOT}" ]]; then
+  print -r -u2 -- "codex-cleanup: the state root is unreachable; nothing deleted"
+  exit 1
+fi
+
+# transcript_epoch (the tail rule) and transcripts_for (the two trees): the
+# state sync's own, so the age and the paths are the ones its legs use.
+source "${0:A:h}/lib/state-sync.zsh" || exit 1
+transcripts_for codex
+
+if ! NOW="$(date +%s)"; then
+  print -r -u2 -- "codex-cleanup: could not read the clock; nothing deleted"
+  exit 1
+fi
+typeset -i WINDOW=$(( DAYS * 86400 ))
+
+# The state-root copies by name: an archived rollout's copy sits in the dated
+# folder the push leg found it in, not beside anything local.
+typeset -A COPY=()
+for f in "${TX_STATE}"/**/*.jsonl(N.); do
+  COPY[${f:t}]="${f}"
+done
+
+# Every file a process holds open, once: deleting an open rollout would send the
+# session's next lines to an unlinked inode that no sync reads.
+typeset -A OPEN=()
+for pid in "${PROC_ROOT}"/<->(N/); do
+  for f in "${(@f)$(readlink -- "${pid}"/fd/*(N@) 2> /dev/null)}"; do
+    [[ -n "${f}" ]] && OPEN[${f}]=1
+  done
+done
+
+# plain_bytes <rollout>: REPLY = its length uncompressed.
+plain_bytes() {
+  local n
+  if [[ "$1" == *.zst ]]; then
+    n="$(zstd -dcq -- "$1" | wc -c)" || return 1
+  else
+    n="$(stat -c %s -- "$1")" || return 1
+  fi
+  REPLY=$(( n ))
+}
+
+# rollout_epoch <rollout>: REPLY = its last entry's epoch, a .zst read uncompressed.
+rollout_epoch() {
+  if [[ "$1" == *.zst ]]; then
+    transcript_epoch <(zstd -dcq -- "$1" 2> /dev/null)
+  else
+    transcript_epoch "$1"
+  fi
+}
+
+typeset -i scanned=0 deleted=0 kept_unsynced=0 kept_young=0 failed=0
+local_rollouts=(
+  "${TX_HOME}"/**/rollout-*.jsonl(|.zst)(N.)
+  "${HOME_DIR}"/.codex/archived_sessions/**/*.jsonl(|.zst)(N.)
+)
+for f in "${local_rollouts[@]}"; do
+  scanned+=1
+  if [[ -n "${OPEN[${f:A}]:-}" ]]; then
+    kept_young+=1
+    continue
+  fi
+  before="$(stat -c '%d:%i:%s:%Y' -- "${f}" 2> /dev/null)" || { kept_young+=1; continue }
+  if ! rollout_epoch "${f}" || (( NOW - REPLY <= WINDOW )); then
+    kept_young+=1
+    continue
+  fi
+  copy="${COPY[${${f:t}%.zst}]:-}"
+  local_bytes=-1
+  copy_bytes=-1
+  if [[ -n "${copy}" ]] && plain_bytes "${f}"; then
+    local_bytes="${REPLY}"
+    plain_bytes "${copy}" && copy_bytes="${REPLY}"
+  fi
+  if (( local_bytes < 0 || copy_bytes < local_bytes )); then
+    kept_unsynced+=1
+    continue
+  fi
+  # A session resumed while it was measured carries on in this file.
+  after="$(stat -c '%d:%i:%s:%Y' -- "${f}" 2> /dev/null)"
+  if [[ "${after}" != "${before}" ]]; then
+    kept_young+=1
+    continue
+  fi
+  if rm -f -- "${f}" 2> /dev/null && [[ ! -e "${f}" ]]; then
+    deleted+=1
+  else
+    failed+=1
+  fi
+done
+
+print -r -- "codex-cleanup: scanned=${scanned} deleted=${deleted} kept_unsynced=${kept_unsynced} kept_young=${kept_young}"
+if (( failed > 0 )); then
+  print -r -u2 -- "codex-cleanup: ${failed} rollout(s) could not be deleted"
+  exit 1
+fi
+exit 0

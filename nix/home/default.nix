@@ -160,6 +160,7 @@ in
     ./claude.nix
     ./codex.nix
     ./prune.nix
+    ./codex-cleanup.nix
     ./tycswap.nix
     ./web.nix
     ./tooling.nix

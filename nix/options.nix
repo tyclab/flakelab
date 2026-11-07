@@ -330,6 +330,13 @@ in
       description = "Days Claude Code keeps an idle local transcript before its own cleanup deletes it: asserted into settings.json as cleanupPeriodDays. The state sync pulls a missing local session back only within this window, so a box whose transcripts live on in the state root (stateTranscripts) can set it low.";
     };
 
+    codexCleanupPeriodDays = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      example = 7;
+      description = "Days a local Codex rollout (~/.codex/sessions/**/rollout-*.jsonl, ~/.codex/archived_sessions/**/*.jsonl, either one compressed to .zst) stays after its last entry: the daily user timer flakelab-codex-cleanup deletes one that is older, measured from the timestamp in its tail, once its copy in stateRoot (stateTranscripts) holds at least its plain bytes. A rollout with no such copy, or one a running process holds open, stays whatever its age. Each run logs one line of counts. null schedules none. Needs stateRoot and stateTranscripts.";
+    };
+
     claudeOutputStyle = mkOption {
       type = types.nullOr types.str;
       default = null;

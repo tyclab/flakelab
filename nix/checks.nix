@@ -284,6 +284,8 @@ in
     pkgs.curl
   ] "web";
   session-archive = suiteCheckWith [ pkgs.python3 ] "session-archive";
+  # The compressed-rollout cases make and read .zst files; stdenv has no zstd.
+  codex-cleanup = suiteCheckWith [ pkgs.zstd ] "codex-cleanup";
   # The input report reads the lock with `nix eval`, which is under test too.
   nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
   nix-access-tokens = suiteCheckWith [ pkgs.nix ] "nix-access-tokens";
@@ -1859,6 +1861,50 @@ in
       expect "$(ls "$p/c/releases")" "1" "a dangling current link"
       expect "$(ls "$p/d/releases" | tr '\n' ' ')" "1 3 " "a release a process still runs"
       touch "$out"
+    '';
+
+  # The Codex cleanup timer exists only with codexCleanupPeriodDays, which needs the
+  # transcripts in a state root to measure against; its service hands the script the
+  # window and the root, with zstd and jq on the pinned PATH.
+  codex-cleanup-timer =
+    let
+      inherit (nixpkgs) lib;
+      ext =
+        attrs: self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; };
+      hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
+      on = ext {
+        codexCleanupPeriodDays = 7;
+        stateRoot = "/tmp/flakelab-check-state";
+        stateTranscripts = true;
+      };
+      noTranscripts = ext {
+        codexCleanupPeriodDays = 7;
+        stateRoot = "/tmp/flakelab-check-state";
+      };
+      timer = (hmOf on).systemd.user.timers.flakelab-codex-cleanup;
+      service = (hmOf on).systemd.user.services.flakelab-codex-cleanup;
+      wrapper = builtins.head service.Service.ExecStart;
+    in
+    assert (hmOf on).systemd.user.timers ? flakelab-codex-cleanup;
+    assert !((hmOf self.nixosConfigurations.default).systemd.user.timers ? flakelab-codex-cleanup);
+    assert !((hmOf self.nixosConfigurations.default).systemd.user.services ? flakelab-codex-cleanup);
+    assert timer.Timer.OnCalendar == "daily";
+    assert timer.Timer.Persistent;
+    assert timer.Timer.RandomizedDelaySec == "1h";
+    assert service.Service.Type == "oneshot";
+    assert service.Unit."X-RestartIfChanged" == false;
+    assert lib.any (
+      a: !a.assertion && lib.hasInfix "codexCleanupPeriodDays" a.message
+    ) (hmOf noTranscripts).assertions;
+    assert lib.all (a: a.assertion || !lib.hasInfix "codexCleanupPeriodDays" a.message)
+      (hmOf on).assertions;
+    pkgs.runCommandLocal "flakelab-check-codex-cleanup-timer" { } ''
+      grep -q '^export CODEX_CLEANUP_PERIOD_DAYS=7$' ${wrapper}
+      grep -q '^export FLAKELAB_STATE_ROOT=/tmp/flakelab-check-state$' ${wrapper}
+      grep -q -- '-zstd-[^/:]*/bin' ${wrapper}
+      grep -q -- '-jq-[^/:]*/bin' ${wrapper}
+      grep -q -- '-scripts/codex-cleanup "\$@"$' ${wrapper}
+      touch $out
     '';
 
   # `gh auth login` and `glab auth login` cannot write their credential helper

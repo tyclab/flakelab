@@ -1,0 +1,329 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for codex-cleanup (files/scripts/codex-cleanup): rollouts in a
+# fixture home, their copies in a fixture state root, each aged by the
+# timestamp its last line carries, and a fake /proc tree for a running Codex
+# that holds its rollout open. Every case checks what is left on disk and the
+# one counts line the run prints.
+#
+# Usage: files/scripts/test-codex-cleanup
+
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/codex-cleanup"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+present()  { [[ -e "$2" ]] && ok "$1" || bad "$1 (gone: ${2:t})" }
+absent()   { [[ ! -e "$2" ]] && ok "$1" || bad "$1 (still there: ${2:t})" }
+
+BASE="$(mktemp -d)"
+trap 'chmod -R u+w "${BASE}" 2> /dev/null; rm -rf "${BASE}"' EXIT
+
+NOW="$(date +%s)"
+# stamp <days>: a rollout timestamp that many days ago, in Codex's own format.
+stamp() { date -u -d "@$(( NOW - $1 * 86400 ))" +%Y-%m-%dT%H:%M:%S.000Z }
+FIRST="$(stamp 40)"
+OLD="$(stamp 30)"
+YOUNG="$(stamp 1)"
+
+# fresh: an empty home, state root and /proc for the next case.
+fresh() {
+  rm -rf "${BASE}/case"
+  H="${BASE}/case/home"
+  S="${BASE}/case/state"
+  P="${BASE}/case/proc"
+  CX="${H}/.codex"
+  ST="${S}/codex/sessions"
+  mkdir -p "${CX}/sessions" "${CX}/archived_sessions" "${ST}" "${P}"
+}
+
+# rollout <file> <last timestamp>: a rollout whose last line carries that timestamp.
+rollout() {
+  mkdir -p "${1:h}"
+  {
+    print -r -- "{\"timestamp\":\"${FIRST}\",\"type\":\"session_meta\",\"payload\":{\"id\":\"fixture\"}}"
+    print -r -- "{\"timestamp\":\"${FIRST}\",\"type\":\"response_item\",\"payload\":{\"text\":\"a line of the session\"}}"
+    print -r -- "{\"timestamp\":\"$2\",\"type\":\"response_item\",\"payload\":{\"text\":\"the last line\"}}"
+  } > "$1"
+}
+
+# synced <plain rollout> <dated dir>: its state-root copy, byte for byte, as the
+# push leg leaves it under <stateRoot>/codex/sessions/<dated dir>/.
+synced() {
+  mkdir -p "${ST}/$2"
+  cp -- "$1" "${ST}/$2/${1:t}"
+}
+
+# zst <plain rollout>: compress it in place to <name>.zst, the way Codex does.
+zst() { zstd -q --rm -- "$1" }
+
+run() {
+  OUT="$(env FLAKELAB_HOME_DIR="${H}" FLAKELAB_STATE_ROOT="${S}" FLAKELAB_PROC_ROOT="${P}" \
+    CODEX_CLEANUP_PERIOD_DAYS="${DAYS}" "${CMD}" "$@" 2> "${BASE}/err")"
+  RC=$?
+  ERR="$(< "${BASE}/err")"
+}
+DAYS=7
+
+# ---------------------------------------------------------------------------
+print -r -- "an old rollout whose state-root copy is complete is deleted"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-aaaa.jsonl"
+rollout "${R}" "${OLD}"
+synced "${R}" 2026/09/01
+run
+check   "the run exits 0"                 "${RC}" "0"
+absent  "the local rollout is deleted"    "${R}"
+present "its state-root copy stays"       "${ST}/2026/09/01/${R:t}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+check   "nothing on stderr"               "${ERR}" ""
+
+print -r -- "an old rollout without a state-root copy stays"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-bbbb.jsonl"
+rollout "${R}" "${OLD}"
+run
+check   "the run exits 0"                 "${RC}" "0"
+present "the local rollout stays"         "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
+
+print -r -- "an old rollout whose state-root copy is shorter stays"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-cccc.jsonl"
+rollout "${R}" "${OLD}"
+mkdir -p "${ST}/2026/09/01"
+head -n 2 -- "${R}" > "${ST}/2026/09/01/${R:t}"
+run
+check   "the run exits 0"                 "${RC}" "0"
+present "the local rollout stays"         "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
+
+print -r -- "a longer state-root copy is complete: a redaction can lengthen a line"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-dddd.jsonl"
+rollout "${R}" "${OLD}"
+synced "${R}" 2026/09/01
+print -r -- '{"note":"[REDACTED:generic-api-key]"}' >> "${ST}/2026/09/01/${R:t}"
+run
+absent  "the local rollout is deleted"    "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+
+print -r -- "a young rollout stays, synced or not"
+fresh
+R="${CX}/sessions/2026/11/06/rollout-2026-11-06T10-00-00-eeee.jsonl"
+rollout "${R}" "${YOUNG}"
+synced "${R}" 2026/11/06
+run
+check   "the run exits 0"                 "${RC}" "0"
+present "the local rollout stays"         "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=0 kept_young=1"
+
+print -r -- "the window is CODEX_CLEANUP_PERIOD_DAYS"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-ffff.jsonl"
+rollout "${R}" "${OLD}"
+synced "${R}" 2026/09/01
+DAYS=31 run
+present "30 days old is young in a 31-day window" "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=0 kept_young=1"
+DAYS=29 run
+absent  "and old in a 29-day one"         "${R}"
+
+print -r -- "a rollout whose age cannot be read stays"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-0000.jsonl"
+mkdir -p "${R:h}"
+print -r -- '{"type":"session_meta","payload":{"id":"no timestamp"}}' > "${R}"
+synced "${R}" 2026/09/01
+run
+present "the local rollout stays"         "${R}"
+check   "it counts as young"              "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=0 kept_young=1"
+
+print -r -- "a rollout a running Codex holds open stays, whatever its last line says"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-1111.jsonl"
+OTHER="${CX}/sessions/2026/09/01/rollout-2026-09-01T11-00-00-2222.jsonl"
+rollout "${R}" "${OLD}"
+rollout "${OTHER}" "${OLD}"
+synced "${R}" 2026/09/01
+synced "${OTHER}" 2026/09/01
+mkdir -p "${P}/4242/fd"
+# The kernel names the resolved path, as an fd link does.
+ln -s "${R:A}" "${P}/4242/fd/7"
+ln -s /dev/null "${P}/4242/fd/0"
+run
+check   "the run exits 0"                 "${RC}" "0"
+present "the open rollout stays"          "${R}"
+absent  "a closed one beside it goes"     "${OTHER}"
+check   "the open one counts as young"    "${OUT}" "codex-cleanup: scanned=2 deleted=1 kept_unsynced=0 kept_young=1"
+
+print -r -- "only rollouts are scanned"
+fresh
+mkdir -p "${CX}/sessions/2026/09/01"
+for f in notes.jsonl rollout-2026-09-01T10-00-00-3333.json; do
+  rollout "${CX}/sessions/2026/09/01/${f}" "${OLD}"
+  synced "${CX}/sessions/2026/09/01/${f}" 2026/09/01
+done
+run
+present "a non-rollout .jsonl stays"      "${CX}/sessions/2026/09/01/notes.jsonl"
+present "a rollout-*.json stays"          "${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-3333.json"
+check   "neither is scanned"              "${OUT}" "codex-cleanup: scanned=0 deleted=0 kept_unsynced=0 kept_young=0"
+
+if command -v zstd > /dev/null 2>&1; then
+  print -r -- "an old compressed rollout in archived_sessions goes once its copy is complete"
+  fresh
+  R="${CX}/archived_sessions/rollout-2026-09-02T10-00-00-4444.jsonl"
+  rollout "${R}" "${OLD}"
+  synced "${R}" 2026/09/02
+  zst "${R}"
+  run
+  check   "the run exits 0"               "${RC}" "0"
+  absent  "the .zst is deleted"           "${R}.zst"
+  present "its state-root copy stays"     "${ST}/2026/09/02/${R:t}"
+  check   "the counts"                    "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+
+  print -r -- "a compressed rollout is measured by its plain length"
+  fresh
+  R="${CX}/sessions/2026/09/03/rollout-2026-09-03T10-00-00-5555.jsonl"
+  mkdir -p "${R:h}"
+  {
+    repeat 200 print -r -- "{\"timestamp\":\"${FIRST}\",\"type\":\"response_item\",\"payload\":{\"text\":\"the same line again\"}}"
+    print -r -- "{\"timestamp\":\"${OLD}\",\"type\":\"response_item\",\"payload\":{\"text\":\"the last line\"}}"
+  } > "${R}"
+  mkdir -p "${ST}/2026/09/03"
+  # Missing its last line: longer than the .zst, shorter than the rollout.
+  head -n 200 -- "${R}" > "${ST}/2026/09/03/${R:t}"
+  zst "${R}"
+  if (( $(stat -c %s -- "${ST}/2026/09/03/${R:t}") > $(stat -c %s -- "${R}.zst") )); then
+    ok "the fixture's copy is longer than the compressed file"
+  else
+    bad "the fixture's copy is longer than the compressed file"
+  fi
+  run
+  present "the .zst stays"                "${R}.zst"
+  check   "the counts"                    "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
+
+  print -r -- "a compressed rollout's age is read from its plain tail"
+  fresh
+  R="${CX}/sessions/2026/11/06/rollout-2026-11-06T10-00-00-6666.jsonl"
+  rollout "${R}" "${YOUNG}"
+  synced "${R}" 2026/11/06
+  zst "${R}"
+  run
+  present "the young .zst stays"          "${R}.zst"
+  check   "the counts"                    "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=0 kept_young=1"
+
+  print -r -- "a .zst that does not decompress stays"
+  fresh
+  R="${CX}/archived_sessions/rollout-2026-09-04T10-00-00-7777.jsonl"
+  rollout "${R}" "${OLD}"
+  synced "${R}" 2026/09/04
+  zst "${R}"
+  truncate -s 20 -- "${R}.zst"
+  run
+  present "the damaged .zst stays"        "${R}.zst"
+  excludes "it is not deleted"            "${OUT}" "deleted=1"
+
+  print -r -- "a rollout written to while it is measured stays"
+  fresh
+  R="${CX}/archived_sessions/rollout-2026-09-06T10-00-00-aaab.jsonl"
+  rollout "${R}" "${OLD}"
+  synced "${R}" 2026/09/06
+  zst "${R}"
+  # A zstd that moves the file's mtime after every read, as a resumed session's append would.
+  mkdir -p "${BASE}/stubs"
+  cat > "${BASE}/stubs/zstd" <<'STUB'
+#!/usr/bin/env zsh
+"${REAL_ZSTD}" "$@"
+rc=$?
+touch -c -m -d '+1 hour' -- "${TOUCHED}"
+exit ${rc}
+STUB
+  chmod +x "${BASE}/stubs/zstd"
+  export REAL_ZSTD="$(command -v zstd)" TOUCHED="${R}.zst"
+  PATH="${BASE}/stubs:${PATH}" run
+  unset REAL_ZSTD TOUCHED
+  present "the .zst stays"                "${R}.zst"
+  check   "it counts as young"            "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=0 kept_young=1"
+
+  print -r -- "one run over every case: one counts line, no path"
+  fresh
+  rollout "${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-a1.jsonl" "${OLD}"
+  synced  "${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-a1.jsonl" 2026/09/01
+  rollout "${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-b2.jsonl" "${OLD}"
+  rollout "${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-c3.jsonl" "${OLD}"
+  mkdir -p "${ST}/2026/09/01"
+  head -n 1 -- "${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-c3.jsonl" \
+    > "${ST}/2026/09/01/rollout-2026-09-01T10-00-00-c3.jsonl"
+  rollout "${CX}/sessions/2026/11/06/rollout-2026-11-06T10-00-00-d4.jsonl" "${YOUNG}"
+  rollout "${CX}/archived_sessions/2026/rollout-2026-09-02T10-00-00-e5.jsonl" "${OLD}"
+  synced  "${CX}/archived_sessions/2026/rollout-2026-09-02T10-00-00-e5.jsonl" 2026/09/02
+  zst     "${CX}/archived_sessions/2026/rollout-2026-09-02T10-00-00-e5.jsonl"
+  rollout "${CX}/archived_sessions/rollout-2026-09-05T10-00-00-f6.jsonl" "${OLD}"
+  synced  "${CX}/archived_sessions/rollout-2026-09-05T10-00-00-f6.jsonl" 2026/09/05
+  run
+  check    "the run exits 0"              "${RC}" "0"
+  check    "the counts"                   "${OUT}" "codex-cleanup: scanned=6 deleted=3 kept_unsynced=2 kept_young=1"
+  excludes "stdout names no path"         "${OUT}" "/"
+  check    "nothing on stderr"            "${ERR}" ""
+  run
+  check    "a second run finds what stayed" "${OUT}" "codex-cleanup: scanned=3 deleted=0 kept_unsynced=2 kept_young=1"
+else
+  print -r -- "  skip (no zstd: the compressed-rollout cases)"
+fi
+
+print -r -- "a delete that fails exits 1 and names no path"
+if (( EUID == 0 )); then
+  print -r -- "  skip (running as root: a read-only directory is still writable)"
+else
+  fresh
+  R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-8888.jsonl"
+  rollout "${R}" "${OLD}"
+  synced "${R}" 2026/09/01
+  chmod a-w "${R:h}"
+  run
+  chmod u+w "${R:h}"
+  check    "the run exits 1"              "${RC}" "1"
+  present  "the rollout is still there"   "${R}"
+  check    "the counts"                   "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=0 kept_young=0"
+  check    "the error is a count"         "${ERR}" "codex-cleanup: 1 rollout(s) could not be deleted"
+fi
+
+print -r -- "nothing is deleted without a state root or a window"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-9999.jsonl"
+rollout "${R}" "${OLD}"
+synced "${R}" 2026/09/01
+OUT="$(env -u FLAKELAB_STATE_ROOT FLAKELAB_HOME_DIR="${H}" FLAKELAB_PROC_ROOT="${P}" \
+  CODEX_CLEANUP_PERIOD_DAYS=7 "${CMD}" 2> "${BASE}/err")"
+RC=$?
+check   "an unset state root exits 1"     "${RC}" "1"
+check   "and prints no counts"            "${OUT}" ""
+present "the rollout stays"               "${R}"
+OUT="$(env FLAKELAB_STATE_ROOT="${BASE}/case/unmounted" FLAKELAB_HOME_DIR="${H}" FLAKELAB_PROC_ROOT="${P}" \
+  CODEX_CLEANUP_PERIOD_DAYS=7 "${CMD}" 2> "${BASE}/err")"
+RC=$?
+check   "an unreachable state root exits 1" "${RC}" "1"
+excludes "the message names no path"      "$(< "${BASE}/err")" "${BASE}"
+present "the rollout stays"               "${R}"
+for days in "" 0 -3 seven; do
+  DAYS="${days}" run
+  check "CODEX_CLEANUP_PERIOD_DAYS='${days}' is a usage error" "${RC}" "2"
+done
+DAYS=7
+present "the rollout stays"               "${R}"
+
+run --help
+check "--help exits 0"                    "${RC}" "0"
+run --bogus
+check "an unknown argument exits 2"       "${RC}" "2"
+present "neither deletes"                 "${R}"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))
