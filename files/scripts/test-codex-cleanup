@@ -4,7 +4,7 @@ set -uo pipefail
 
 # Offline suite for codex-cleanup (files/scripts/codex-cleanup): rollouts in a
 # fixture home, their copies in a fixture state root, each aged by the
-# timestamp its last line carries, and a fake /proc tree for a running Codex
+# last timestamp its tail carries, and a fake /proc tree for a running Codex
 # that holds its rollout open. Every case checks what is left on disk and the
 # one counts line the run prints.
 #
@@ -148,15 +148,47 @@ run
 present "the local rollout stays"         "${R}"
 check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
 
-print -r -- "a local last line without a top-level timestamp proves no copy complete"
+print -r -- "a local last line without a top-level timestamp is proven at the stamped line before it"
 fresh
 R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-deee.jsonl"
 rollout "${R}" "${OLD}"
 print -r -- "{\"type\":\"event_msg\",\"payload\":{\"timestamp\":\"${OLD}\"}}" >> "${R}"
 synced "${R}" 2026/09/01
 run
+absent  "the local rollout is deleted"    "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+check   "nothing on stderr"               "${ERR}" ""
+
+print -r -- "a local last line cut mid-JSON is proven at the stamped line before it"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-def0.jsonl"
+rollout "${R}" "${OLD}"
+# A write cut short: half a line, no newline.
+print -rn -- "{\"timestamp\":\"${OLD}\",\"type\":\"response_item\",\"payload\":{\"text\":\"cut mid-wr" >> "${R}"
+synced "${R}" 2026/09/01
+run
+check   "the run exits 0"                 "${RC}" "0"
+absent  "the local rollout is deleted"    "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+check   "nothing on stderr"               "${ERR}" ""
+
+print -r -- "a copy whose line at the local last stamped one carries another timestamp stays"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-def1.jsonl"
+rollout "${R}" "${OLD}"
+print -rn -- "{\"timestamp\":\"${OLD}\",\"type\":\"response_item\",\"payload\":{\"text\":\"cut mid-wr" >> "${R}"
+mkdir -p "${ST}/2026/09/01"
+# Every local line and one more, but shifted: the copy's line 3 is not the local line 3.
+{
+  head -n 2 -- "${R}"
+  print -r -- "{\"timestamp\":\"$(stamp 31)\",\"type\":\"response_item\",\"payload\":{\"text\":\"another line\"}}"
+  tail -n 2 -- "${R}"
+} > "${ST}/2026/09/01/${R:t}"
+run
+check   "the run exits 0"                 "${RC}" "0"
 present "the local rollout stays"         "${R}"
 check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
+check   "nothing on stderr"               "${ERR}" ""
 
 print -r -- "a young rollout stays, synced or not"
 fresh

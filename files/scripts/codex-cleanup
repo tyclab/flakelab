@@ -13,13 +13,15 @@ set -uo pipefail
 # is deleted when its last entry is older than CODEX_CLEANUP_PERIOD_DAYS days
 # AND its state-root copy, <FLAKELAB_STATE_ROOT>/codex/sessions/**/<name without
 # .zst>, is complete: at least as many lines as the rollout unpacked, and at the
-# rollout's last line number a line with the same top-level `timestamp` as its
-# last line. Bytes prove nothing: the gate writes [REDACTED:<rule>] in place of
-# a secret, so a complete copy is often shorter, and a redaction never touches
-# a timestamp. Everything else stays and is counted: an age that cannot be read,
+# number of the rollout's last line with a top-level `timestamp` (the line the
+# state sync's tail rule reads its age from) a line with the same timestamp.
+# A last line cut mid-write or without a timestamp is covered by the count.
+# Bytes prove nothing: the gate writes [REDACTED:<rule>] in place of a secret,
+# so a complete copy is often shorter, and a redaction never touches a
+# timestamp. Everything else stays and is counted: an age that cannot be read,
 # or a rollout a running process holds open or wrote to during the check, as
-# young; a copy that is missing, short, on another branch or unreadable, and a
-# last line without a timestamp, as unsynced. One line out, counts only:
+# young; a copy that is missing, short, on another branch or unreadable, as
+# unsynced. One line out, counts only:
 #   codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N
 # Nothing else reaches stdout or stderr: a tool's message would name a path.
 #
@@ -95,15 +97,13 @@ unpacked() {
   fi
 }
 
-# line_count <file> [<n>]: REPLY = its line count, LINE = line <n> (its last
-# line without <n>, empty past the end). One pass; fails when it cannot be
-# read whole.
+# line_count <file> <n>: REPLY = its line count, LINE = line <n> (empty past
+# the end). One pass; fails when it cannot be read whole.
 line_count() {
   local out
-  out="$(unpacked "$1" | awk -v n="${2:-0}" '
+  out="$(unpacked "$1" | awk -v n="$2" '
     NR == n { at = $0 }
-    { last = $0 }
-    END { print (n > 0 ? at : last); print NR }
+    END { print at; print NR }
   ')" || return 1
   REPLY="${out##*$'\n'}"
   LINE="${out%$'\n'*}"
@@ -116,13 +116,36 @@ line_stamp() {
   [[ -n "${REPLY}" ]]
 }
 
-# copy_complete <rollout> <copy>: whether the copy holds every line of the rollout.
+# tail_stamp <file>: REPLY = its line count, STAMP_AT = the number of its last
+# line with a top-level timestamp, STAMP = that timestamp: transcript_epoch's
+# tail rule, so the line found is the one the age was read from. One pass;
+# fails when it cannot be read whole or its last 64 lines carry no timestamp.
+tail_stamp() {
+  local out
+  out="$(unpacked "$1" | awk '
+    { kept[NR % 64] = $0 }
+    END { print NR; for (i = (NR > 64 ? NR - 63 : 1); i <= NR; i++) print kept[i % 64] }
+  ' | jq -Rrn '
+    (input | tonumber) as $count | [inputs] | ($count - length) as $skip
+    | [to_entries[] | (.value | fromjson? | objects | .timestamp? | strings | select(length > 0)) as $stamp
+       | [$skip + .key + 1, $stamp]]
+    | last // empty | "\($count)\n\(.[0])\n\(.[1])"
+  ' 2> /dev/null)" || return 1
+  REPLY="${out%%$'\n'*}"
+  out="${out#*$'\n'}"
+  STAMP_AT="${out%%$'\n'*}"
+  STAMP="${out#*$'\n'}"
+  [[ "${REPLY}" == <-> && "${STAMP_AT}" == <1-> && -n "${STAMP}" ]]
+}
+
+# copy_complete <rollout> <copy>: whether the copy holds every line of the
+# rollout: at least as many lines, and at the rollout's last stamped line
+# number a line with the same timestamp.
 copy_complete() {
-  local -i lines
+  local -i lines at
   local stamp
-  line_count "$1" && lines="${REPLY}" && (( lines > 0 )) || return 1
-  line_stamp "${LINE}" && stamp="${REPLY}" || return 1
-  line_count "$2" "${lines}" && (( REPLY >= lines )) || return 1
+  tail_stamp "$1" && lines="${REPLY}" && at="${STAMP_AT}" && stamp="${STAMP}" || return 1
+  line_count "$2" "${at}" && (( REPLY >= lines )) || return 1
   line_stamp "${LINE}" && [[ "${REPLY}" == "${stamp}" ]]
 }
 

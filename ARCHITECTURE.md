@@ -651,12 +651,16 @@ the state root has to converge on its own:
   pulled, whatever its age. With it, the daily `flakelab-codex-cleanup` timer
   deletes a local rollout (archived and compressed ones included) older than
   that many days once its state-root copy is complete: at least as many lines
-  as the rollout unpacked, and at its last line number a line with the same
-  top-level `timestamp` as its last line. Lines, not bytes, here too: a
-  redaction changes a line's length and never its timestamp. The pull and the
-  restore leave a missing rollout older than the same window in the state
-  root, measured by the same tail timestamp (unknown ages stay eligible): a
-  deleted rollout stays gone, so a prune of the state root holds.
+  as the rollout unpacked, and at the number of its last line with a top-level
+  `timestamp` (the tail line its age is read from, so a last line cut
+  mid-write is covered by the count) a line with the same timestamp. Lines,
+  not bytes, here too: a redaction changes a line's length and never its
+  timestamp. The pull and the restore leave a missing rollout older than the
+  same window in the state root, measured by the same tail timestamp (unknown
+  ages stay eligible): a deleted rollout stays gone, so a prune of the state
+  root holds, as long as every box sharing the state root sets the option. A
+  box left at the default pulls old rollouts back, and its push re-creates
+  copies pruned from the state root.
   A child rollout is a file of its own and ages by its own tail.
   `codex resume <id>` finds a pulled session by id: Codex falls back
   to the files when its SQLite state does not know the thread. Side files, the
