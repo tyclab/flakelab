@@ -56,6 +56,13 @@ while (( $# )); do
       print -r -- ""
       print -r -- "  FLAKELAB_STALE_OK=1  rebuild the checkout as it is: behind, dirty, unverified,"
       print -r -- "                       or a plain directory that is to stay one"
+      print -r -- ""
+      print -r -- "  Before the re-lock, GH_TOKEN is rendered for nix (flakelab-nix-access-tokens), so"
+      print -r -- "  nix asks GitHub with it; without one nix asks anonymously, and says so."
+      print -r -- ""
+      print -r -- "  Exit status: 0 switched; 1 failed, including a switch that kept the flakelab"
+      print -r -- "  input it had because Nix could not ask the repo for a newer one; 2 usage;"
+      print -r -- "  4 switched with units not running; other codes are the switch's own."
       exit 0
       ;;
     *)
@@ -325,6 +332,41 @@ _fl_commits() {
   return 1
 }
 
+# Set when Nix kept its cached answer for the flakelab input: said at the re-lock, said again after
+# the switch has scrolled it away, and the run exits 1.
+_input_unchecked=""
+
+# _fl_unchecked <nix output> <its last unable-to-download line> <rev kept>: why the lookup failed and
+# what fixes it. GitHub refuses with 401 (the token) or 403/429 (a rate limit, or no access).
+_fl_unchecked() {
+  local _out="$1" _line="$2" _kept="flakelab input not checked: " _where="${FLAKELAB_SECRETS_NAME:-the secrets the shell sources}"
+  local _code="" _msg="" _m _cached="kept its last cached answer${3:+ (${3[1,7]})}, which may be behind the branch"
+  [[ "${_line}" =~ 'HTTP error ([0-9]+)' ]] && _code="${match[1]}"
+  # GitHub's answer is JSON after Nix's line; its message names the cause.
+  for _m in ${(f)_out}; do
+    [[ "${_m}" == *'"message":'* ]] || continue
+    _msg="${${_m#*\"message\":*\"}%%\"*}"
+    break
+  done
+  [[ "${_msg:l}" == *"rate limit"* ]] && _msg="API rate limit exceeded"
+  _msg="${_msg[1,100]}"
+  case "${_code}" in
+    401)
+      print -r -- "${_kept}GitHub rejected the token nix sent (HTTP 401${_msg:+: ${_msg}}), so Nix ${_cached} — check GH_TOKEN in ${_where} and any access-tokens override, then flakelab update"
+      ;;
+    403 | 429)
+      if [[ -s "${FLAKELAB_NIX_TOKENS_FILE:-}" ]]; then
+        print -r -- "${_kept}GitHub refused nix's lookup while GH_TOKEN is rendered (HTTP ${_code}${_msg:+: ${_msg}}), so Nix ${_cached} — check the token's access and its rate limit (gh api rate_limit), and any access-tokens override, then flakelab update"
+      else
+        print -r -- "${_kept}GitHub refused nix's lookup without a flakelab token render (HTTP ${_code}${_msg:+: ${_msg}}), so Nix ${_cached} — without another configured token nix shares GitHub's 60 requests an hour per IP: add GH_TOKEN to ${_where}, then flakelab update"
+      fi
+      ;;
+    *)
+      print -r -- "${_kept}Nix could not reach the repo and ${_cached}; rerun the update once it answers"
+      ;;
+  esac
+}
+
 # A `path:` input's lock entry is not mutable: without a re-lock the switch silently builds the old flakelab.
 _nix_relock_flakelab() {
   local _lock="${_repo}/flake.lock" _out
@@ -351,7 +393,8 @@ _nix_relock_flakelab() {
       # A rev in the input's URL: `nix flake update` can never move it.
       _say yellow "⚠ flakelab input unchanged (${_a[6][1,7]}): inputs.flakelab.url in ${_repo}/flake.nix names that rev, so update cannot move it; drop the rev from the URL"
     elif (( ${#_dl} )); then
-      _say yellow "⚠ flakelab input not checked: Nix could not reach the repo and kept its last cached answer${_rev1:+ (${_rev1[1,7]})}, which may be behind the branch; rerun the update once it answers"
+      _input_unchecked="$(_fl_unchecked "${_out}" "${_dl[-1]}" "${_rev1}")"
+      _say red "✗ ${_input_unchecked}"
       print -r -- "  ${_dl[-1]#warning: }"
     elif [[ -z "${_id1}" || "${_rev0:-${_nar0}}" == "${_id1}" ]]; then
       _say cyan "ℹ flakelab input unchanged${_rev1:+ (${_rev1[1,7]})}"
@@ -388,6 +431,13 @@ _nix_reclaim_lock() {
   print -r -- "  fix: sudo chown $(id -u):$(id -g) ${(qq)_lock}"
   return 1
 }
+# nix sends GitHub the token in the file nix.conf includes, which every boot and switch renders. Rendered
+# again here, so the re-lock uses the GH_TOKEN the secrets hold now and says when there is none; a
+# generation from before the render has no renderer to run.
+if command -v flakelab-nix-access-tokens > /dev/null 2>&1; then
+  flakelab-nix-access-tokens || exit 1
+fi
+
 _nix_reclaim_lock
 _nix_relock_flakelab || exit 1
 
@@ -421,6 +471,17 @@ rm -f -- "${_fetched_log}"
 # `path:`, not a bare path: `git+file:` sees only tracked files and rewrites the lock as root.
 # The lock is taken back afterwards, failed or not: nix locks before it evaluates.
 # sudo and nixos-rebuild resolve from the caller's PATH: the running system's nixos-rebuild. Only the path is encoded.
+# The run's end once the switch has run: an input Nix could not check is said again below the
+# switch's output, and is a failure unless the switch's own status already is one.
+_finish() {
+  local -i _rc="$1"
+  if [[ -n "${_input_unchecked}" ]]; then
+    _say red "✗ ${_input_unchecked}"
+    (( _rc )) || _rc=1
+  fi
+  exit "${_rc}"
+}
+
 _switch_rc=0
 sudo nixos-rebuild switch --flake "path:$(_url_path "${_repo}")#${FLAKELAB_FLAKE_ATTR:-default}" || _switch_rc=$?
 _nix_reclaim_lock
@@ -434,7 +495,7 @@ else
   _result=""
   if (( _switch_rc != 0 )); then
     _say red "✗ the switch exited ${_switch_rc}, and without flakelab-switch-result on PATH that cannot be told apart from a failed activation"
-    exit "${_switch_rc}"
+    _finish "${_switch_rc}"
   fi
 fi
 case "${_result_rc}" in
@@ -446,7 +507,7 @@ case "${_result_rc}" in
     done
     _say yellow "⚠ the switch activated its generation, but units are not running: ${_failed:-none named still failed, see the switch output above} — carrying on, then exiting 4. Inspect: systemctl status <unit>"
     ;;
-  *) exit "${_result_rc}" ;;
+  *) _finish "${_result_rc}" ;;
 esac
 
 # What activation could not do is never fatal and never printed by the switch, so
@@ -562,11 +623,13 @@ if command -v claude > /dev/null 2>&1 && [ -d "${_claude_marketplaces}" ]; then
   fi
 fi
 
-(( _run_clone )) || exit "${_result_rc}"
+(( _run_clone )) || _finish "${_result_rc}"
 
-if ! command -v nix-clone-repos > /dev/null 2>&1; then
-  _say red "✗ --all: flakelab clone is not available (its wrapper nix-clone-repos is not on PATH) — the switch is applied, the clone sweep did not run"
-  exit 1
+# The sweep follows the switch like the tray: a sweep pinned into this script would
+# be the generation the switch just replaced.
+if ! command -v flakelab > /dev/null 2>&1; then
+  _say red "✗ --all: flakelab is not on PATH — the switch is applied, the clone sweep did not run; from a new shell: flakelab clone"
+  _finish 1
 fi
-nix-clone-repos || exit $?
-exit "${_result_rc}"
+flakelab clone || _finish $?
+_finish "${_result_rc}"

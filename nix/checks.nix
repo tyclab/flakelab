@@ -283,8 +283,10 @@ in
     pkgs.python3
     pkgs.curl
   ] "web";
+  session-archive = suiteCheckWith [ pkgs.python3 ] "session-archive";
   # The input report reads the lock with `nix eval`, which is under test too.
   nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
+  nix-access-tokens = suiteCheckWith [ pkgs.nix ] "nix-access-tokens";
   claude-plugin-orphans = suiteCheck "claude-plugin-orphans";
   # The native MCP section runs lib/mcp.py, a python3 program.
   nix-doctor = suiteCheckWith [ pkgs.python3 ] "nix-doctor";
@@ -294,6 +296,7 @@ in
   # The hook installer drives `make install-hooks` where a repo has the target.
   activate-hooks = suiteCheckWith [ pkgs.gnumake ] "activate-hooks";
   report-stale-repos = suiteCheck "report-stale-repos";
+  report-unswept-clones = suiteCheck "report-unswept-clones";
   nix-provision = suiteCheck "nix-provision";
   nix-tycswap-tray = suiteCheck "nix-tycswap-tray";
   codex-config =
@@ -573,9 +576,13 @@ in
       observing = earlier.extendModules {
         modules = [ { flakelab.tycswapAutoSwitchInterval = "2min"; } ];
       };
+      shortCleanup = later.extendModules {
+        modules = [ { flakelab.claudeCleanupPeriodDays = 7; } ];
+      };
       entryEarlier = entry "claude-settings-earlier-activation" earlier;
       entryObserving = entry "claude-settings-observing-activation" observing;
       entryLater = entry "claude-settings-later-activation" later;
+      entryShortCleanup = entry "claude-settings-short-cleanup-activation" shortCleanup;
     in
     pkgs.runCommandLocal "flakelab-check-claude-settings-prune"
       {
@@ -603,6 +610,12 @@ in
         jq -e '.cleanupPeriodDays == 30' "$settings" > /dev/null
         jq -e '.env | .WHATSAPP_MCP_DIR == "/earlier" and .MY_VAR == "mine"' "$settings" > /dev/null
         jq -e --argjson b "$base" '. == $b' "$record" > /dev/null
+
+        echo "claudeCleanupPeriodDays sets cleanupPeriodDays"
+        fresh short-cleanup
+        printf '{}' > "$settings"
+        bash -euo pipefail ${entryShortCleanup}
+        jq -e '.cleanupPeriodDays == 7' "$settings" > /dev/null
 
         echo "env keys and the statusline one generation rendered and the next does not are removed, the user's survive both"
         fresh generations
@@ -871,6 +884,43 @@ in
     assert aborts [ "path" ];
     assert aborts [ "nodePackages" ];
     pkgs.runCommandLocal "flakelab-check-profile-cli-tools" { } "touch $out";
+
+  # The home python3 imports yaml, it is the only python3 in the home packages, an
+  # overlay's own pkgs.python3 beside it does not collide, and a venv made from it
+  # (venv, uv venv) starts without PyYAML: the library must not leak into project venvs.
+  python3-pyyaml =
+    let
+      system = self.nixosConfigurations.default;
+      sys = system.config;
+      pythons = builtins.filter (
+        p: nixpkgs.lib.hasPrefix "python3-" (p.name or "")
+      ) sys.home-manager.users.${sys.flakelab.username}.home.packages;
+      py = builtins.head pythons;
+      # home.path is this buildEnv; building it is the collision test.
+      beside = pkgs.buildEnv {
+        name = "flakelab-check-python3-beside";
+        paths = [
+          py
+          system.pkgs.python3
+        ];
+      };
+    in
+    assert builtins.length pythons == 1;
+    pkgs.runCommandLocal "flakelab-check-python3-pyyaml" { nativeBuildInputs = [ pkgs.uv ]; } ''
+      test -x ${beside}/bin/python3
+      ${py}/bin/python3 -c 'import yaml; assert yaml.safe_load("a: 1") == {"a": 1}'
+      ${py}/bin/python3 -m venv --without-pip "$TMPDIR/venv"
+      HOME="$TMPDIR" UV_CACHE_DIR="$TMPDIR/uv-cache" UV_PYTHON_DOWNLOADS=never \
+        uv venv -q --python ${py}/bin/python3 "$TMPDIR/uv-venv"
+      # The probe must run and find no yaml: a venv that cannot start fails too.
+      for v in venv uv-venv; do
+        "$TMPDIR/$v/bin/python" -c 'import importlib.util as u, sys; sys.exit(u.find_spec("yaml") is not None)' || {
+          echo "a $v made from the home python3 imports yaml, or does not start" >&2
+          exit 1
+        }
+      done
+      touch $out
+    '';
 
   # The target seam: the two systems must differ exactly as nix/targets/ says,
   # and both must still evaluate.
@@ -1805,8 +1855,17 @@ in
     assert forced.config.sops.gnupg.home == null;
     assert forced.config.sops.useSystemdActivation;
     assert self.nixosConfigurations.default.config.sops.secrets == { };
-    # A key file is re-split on every render and never exported.
-    assert secret.restartUnits == [ "flakelab-sops-key-files.service" ];
+    # Secret rotation refreshes both runtime consumers.
+    assert
+      secret.restartUnits == [
+        "flakelab-nix-access-tokens.service"
+        "flakelab-sops-key-files.service"
+      ];
+    assert forced.config.systemd.services.flakelab-nix-access-tokens.serviceConfig.User == secret.owner;
+    assert forced.config.systemd.services.flakelab-nix-access-tokens.serviceConfig.UMask == "0077";
+    assert builtins.elem "sops-install-secrets.service"
+      forced.config.systemd.services.flakelab-nix-access-tokens.after;
+    assert hasInfix "!include /run/flakelab-nix/access-tokens.conf" forced.config.nix.extraOptions;
     assert hasInfix "FIXTURE_KEY" forced.config.systemd.services.flakelab-sops-key-files.script;
     assert !hasInfix "FIXTURE_ENV_ONLY" forced.config.systemd.services.flakelab-sops-key-files.script;
     assert hasInfix "grep -vE '^(FIXTURE_ENV_ONLY|FIXTURE_KEY)='" zshOn;

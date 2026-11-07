@@ -31,7 +31,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|flakelab-switch-result|*.exe|wslpath|xdg-open) continue ;;
+    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|session-archive|flakelab-switch-result|flakelab-nix-access-tokens|*.exe|wslpath|xdg-open) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -137,6 +137,13 @@ cgroup_section() {
   section 'systemd cgroup' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET="$1" \
     FLAKELAB_PROC_ROOT="${BASE}/proc" FLAKELAB_CGROUP_ROOT="${CGT}" \
     FLAKELAB_INIT_CGROUP_RECORD="${CGREC}" FLAKELAB_BOOTED_SYSTEM="${BASE}/booted"
+}
+
+BINFMT="${BASE}/binfmt"
+mkdir -p "${BINFMT}"
+interop_section() {
+  section 'WSL interop' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=wsl \
+    FLAKELAB_BINFMT_ROOT="${BINFMT}" "$@"
 }
 
 # stub <name> <exit status>: a <name> in ${UMT}, the tools beside it, that exits as
@@ -355,6 +362,55 @@ rc=0
 env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" zsh "${DOCTOR}" --strct > /dev/null 2>&1 || rc=$?
 [[ "${rc}" == 2 ]] && ok "an unknown option exits 2" || bad "an unknown option exits 2 (got ${rc})"
 
+print -r -- "WSL interop: missing registry remains a failure with host verification guidance"
+out="$(interop_section)"
+contains "fails for the missing registry" "${out}" "[FAIL] binfmt_misc register is not visible"
+contains "requires host evidence"        "${out}" "outside any sandbox"
+lacks    "does not prescribe shutdown"   "${out}" "wsl --shutdown"
+
+print -r -- "WSL interop: missing handler remains a failure without an unconditional shutdown remedy"
+touch "${BINFMT}/register"
+out="$(interop_section)"
+contains "fails for the missing handler" "${out}" "[FAIL] WSLInterop handler missing"
+contains "requires host evidence"        "${out}" "outside any sandbox"
+contains "preserves WSL protection"      "${out}" "Do not replace WSL's handler or disable its protection"
+lacks    "does not prescribe shutdown"   "${out}" "wsl --shutdown"
+lacks    "does not claim only one fix"   "${out}" "The only fix"
+
+print -r -- "WSL interop: either registered spelling passes"
+for handler in WSLInterop WSLInterop-late; do
+  touch "${BINFMT}/${handler}"
+  out="$(interop_section)"
+  contains "${handler} is accepted" "${out}" "[ OK ] WSLInterop handler registered"
+  lacks "${handler} is not reported missing" "${out}" "handler missing"
+  rm -f "${BINFMT}/${handler}"
+done
+touch "${BINFMT}/WSLInterop"
+
+print -r -- "WSL interop: socket presence is separate from registry and execution health"
+python3 - "${BASE}/interop.sock" <<'PY'
+import socket, sys
+with socket.socket(socket.AF_UNIX) as sock:
+    sock.bind(sys.argv[1])
+PY
+out="$(interop_section WSL_INTEROP="${BASE}/interop.sock")"
+contains "reports the socket only"       "${out}" "inherited WSL_INTEROP socket exists"
+contains "leaves execution unverified"   "${out}" "Windows execution unverified"
+lacks    "an existing socket adds no warning" "${out}" "[WARN]"
+rm -f "${BINFMT}/WSLInterop"
+out="$(interop_section WSL_INTEROP="${BASE}/interop.sock")"
+contains "an existing socket does not hide the missing handler" "${out}" "[FAIL] WSLInterop handler missing"
+contains "the socket observation remains independent" "${out}" "inherited WSL_INTEROP socket exists"
+touch "${BINFMT}/WSLInterop"
+for socket_path in "${BASE}/missing.sock" "${BINFMT}/register"; do
+  out="$(interop_section WSL_INTEROP="${socket_path}")"
+  contains "missing or nonsocket path warns" "${out}" "[WARN] inherited WSL_INTEROP socket is missing or not a socket"
+  contains "a registered handler still passes" "${out}" "[ OK ] WSLInterop handler registered"
+done
+out="$(interop_section)"
+contains "unset is a note" "${out}" "WSL_INTEROP is unset; no inherited socket to inspect"
+lacks    "unset adds no warning" "${out}" "[WARN]"
+
 print -r -- "activation: a skip-healthcheck marker left behind warns"
 MARKER="${BASE}/home/.local/state/flakelab/skip-healthcheck"
 mkdir -p "${MARKER:h}"
@@ -462,9 +518,22 @@ lacks    "and no hint"                                "${out}" "flakelab tray   
 out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT=$'tray: exe: tycswap 0.8.2 at C:\\x\\tycswap.exe\ntray: off: register the logon task io.github.tyclab.tycswap.remote (it is not registered)\ntray: off: start the tray (none running)')"
 contains "an off line is a warning"                   "${out}" "[WARN] tray: register the logon task io.github.tyclab.tycswap.remote"
 contains "each of them"                               "${out}" "[WARN] tray: start the tray (none running)"
+check    "two independent tray findings are two warnings" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "2"
 contains "and the hint names the fix"                 "${out}" "flakelab tray   # installs the pinned exe"
 out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT='powershell.exe not found - is /mnt/c mounted?')"
 contains "a line that is not a tray fact is a warning too" "${out}" "[WARN] tray: powershell.exe not found"
+out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=1 FAKE_TRAY_OUT=$'WSLInterop handler is missing\nCheck Windows executable access from a host terminal\nReview known-issues.md')"
+check    "one multiline failure is one warning" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+contains "the first line names the failure" "${out}" "[WARN] tray: WSLInterop handler is missing"
+contains "the first follow-up stays visible" "${out}" "Check Windows executable access from a host terminal"
+contains "the second follow-up stays visible" "${out}" "Review known-issues.md"
+lacks    "the first follow-up is not another warning" "${out}" "[WARN] tray: Check Windows executable access"
+lacks    "the second follow-up is not another warning" "${out}" "[WARN] tray: Review known-issues.md"
+for tray_output in '' 'tray: running: pid 7'; do
+  out="$(switcher_section FLAKELAB_TARGET=wsl FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_RC=7 FAKE_TRAY_OUT="${tray_output}")"
+  contains "a failed status cannot disappear behind empty or OK output" "${out}" "[WARN] tray status failed (exit 7)"
+  check "the status failure is counted once" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+done
 out="$(section Switcher PATH="${NOTRAY}" HOME="${BASE}/home" FLAKELAB_TARGET=wsl FLAKELAB_INSTALL_TYCSWAP=true FLAKELAB_TYCSWAP_APP_PORT=7337)"
 contains "no nix-tycswap-tray on PATH warns"          "${out}" "[WARN] tycswapAppPort is set, but nix-tycswap-tray is not on PATH"
 out="$(switcher_section FLAKELAB_TYCSWAP_APP_PORT=7337 FAKE_TRAY_OUT='tray: off: start the tray (none running)' FAKE_TRAY_RC=1)"
@@ -479,16 +548,32 @@ lacks    "no port: no tray line at all"               "${out}" "tray"
 # process to read).
 PROCT="${BASE}/proc-web"
 dashboard_section() {
-  print -rl -- '#!/bin/sh' 'case "$*" in *"show flakelab-web.service"*) printf "%s\n" "${FAKE_WEB_SHOW:-}" ;; esac' 'exit 0' > "${UMT}/systemctl"
+  print -rl -- '#!/bin/sh' 'case "$*" in *"show flakelab-web.service"*) printf "%s\n" "${FAKE_WEB_SHOW:-}"; exit "${FAKE_WEB_SHOW_RC:-0}" ;; esac' 'exit 0' > "${UMT}/systemctl"
   chmod +x "${UMT}/systemctl"
   rm -rf "${PROCT}"; mkdir -p "${PROCT}/4242"
   (( $# > 1 )) && printf '%s\0' "${@:2}" > "${PROCT}/4242/cmdline"
-  section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_PROC_ROOT="${PROCT}" FAKE_WEB_SHOW="$1"
+  section Dashboard PATH="${UMT}" HOME="${BASE}/home" FLAKELAB_TARGET=other FLAKELAB_PROC_ROOT="${PROCT}" FAKE_WEB_SHOW="$1" FAKE_WEB_SHOW_RC="${FAKE_WEB_SHOW_RC:-0}"
 }
 WEB_HERE="${DOCTOR:A:h}/lib/web.py"
 
 print -r -- "dashboard: no unit"
 contains "is a note" "$(dashboard_section $'LoadState=not-found\nActiveState=inactive\nMainPID=0')" "[ OK ] note: no dashboard unit (flakelab.web.enable runs flakelab-web)"
+out="$(FAKE_WEB_SHOW_RC=1 dashboard_section $'LoadState=not-found\nActiveState=inactive\nMainPID=0')"
+contains "systemd's nonzero not-found result is still a note" "${out}" "[ OK ] note: no dashboard unit"
+lacks "not-found adds no warning" "${out}" "[WARN]"
+
+print -r -- "dashboard: failed or incomplete inspection is never a missing-unit success"
+for web_show in '' $'LoadState=loaded\nActiveState=active\nMainPID=4242'; do
+  out="$(FAKE_WEB_SHOW_RC=1 dashboard_section "${web_show}" python3 "${WEB_HERE}")"
+  contains "failed inspection warns even with partial output" "${out}" "[WARN] cannot inspect flakelab-web.service"
+  lacks "failed inspection does not claim no unit" "${out}" "[ OK ] note: no dashboard unit"
+  lacks "failed inspection does not claim current code" "${out}" "[ OK ] dashboard runs this generation"
+done
+for web_show in '' $'ActiveState=active\nMainPID=4242'; do
+  out="$(dashboard_section "${web_show}" python3 "${WEB_HERE}")"
+  contains "successful but incomplete inspection warns" "${out}" "[WARN] cannot inspect flakelab-web.service"
+  lacks "incomplete inspection does not claim no unit" "${out}" "[ OK ] note: no dashboard unit"
+done
 
 print -r -- "dashboard: the unit is loaded but down"
 out="$(dashboard_section $'LoadState=loaded\nActiveState=failed\nMainPID=0')"
@@ -502,6 +587,7 @@ print -r -- "dashboard: running a previous generation's web.py"
 out="$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242' python3 /nix/store/00000000000000000000000000000000-scripts/lib/web.py)"
 contains "warns"             "${out}" "[WARN] the dashboard runs a previous generation's code; activation never restarts it"
 contains "names the restart" "${out}" "systemctl --user restart flakelab-web.service"
+contains "explains the active-terminal impact" "${out}" "disconnects browser terminals; reopen them from the dashboard"
 
 print -r -- "dashboard: a process that cannot be read"
 contains "warns, naming the pid" "$(dashboard_section $'LoadState=loaded\nActiveState=active\nMainPID=4242')" "[WARN] the dashboard's process (4242) cannot be read"
@@ -623,6 +709,105 @@ lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agen
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
+# archive_section [VAR=value...]: the doctor's "Session archive" section with areas and a schedule configured
+# and a session-archive on PATH whose `status --json` prints FAKE_SA_STATUS and exits FAKE_SA_RC.
+SA_TOOLS="${BASE}/sa-tools"
+mkdir -p "${SA_TOOLS}"
+cat > "${SA_TOOLS}/session-archive" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$*" == "status --json" ]] || exit 2
+print -r -- "${FAKE_SA_STATUS:-}"
+exit "${FAKE_SA_RC:-0}"
+STUB
+chmod +x "${SA_TOOLS}/session-archive"
+SA_AREAS='{"work":{"description":"d","library":"/srv/cards","projects":["p"]}}'
+archive_section() {
+  section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" \
+    SESSION_ARCHIVE_SCHEDULED=true "$@"
+}
+# archive_status [<jq edit>]: a healthy status --json answer, its last run <hours> (1) ago, edited as given.
+archive_status() {
+  jq -cn --arg t "$(date -u -d "${2:-1} hours ago" +%Y-%m-%dT%H:%M:%S+00:00)" \
+    '{last_run: $t, last_result: "ok", eligible: 3, held: 0, review: 0, last_run_usd: 0.42, run_sessions: 20, root_ok: true, owner_ok: true} | '"${1:-.}"
+}
+
+print -r -- "session archive: test_doctor_section_warns_on_held_sessions"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 2')")"
+contains "held sessions warn with their count" "${out}" "[WARN] 2 held"
+check    "and nothing else does"               "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+
+print -r -- "session archive: a recent run with nothing held, in review or backed up passes"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status)")"
+contains "the run, its result and cost" "${out}" "[ OK ] last run 1 h ago (ok, 0.42 USD)"
+contains "the counts"                   "${out}" "[ OK ] 3 eligible (20 per run), none held, none waiting for review"
+contains "the root"                     "${out}" "[ OK ] archive root reachable"
+lacks    "no warning"                   "${out}" "[WARN]"
+
+print -r -- "session archive: each finding is its own warning"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.review = 1')")"
+contains "review names the count"   "${out}" "[WARN] 1 session(s) waiting for review"
+contains "and the command"          "${out}" "flakelab session-archive review"
+contains "a run 50 h ago is stale"  "$(archive_section FAKE_SA_STATUS="$(archive_status . 50)")" "[WARN] the session archive last ran 50 h ago, over 48 h"
+lacks    "47 h is not"              "$(archive_section FAKE_SA_STATUS="$(archive_status . 47)")" "[WARN]"
+contains "no run at all warns"      "$(archive_section FAKE_SA_STATUS="$(archive_status '.last_run = null | .last_result = null')")" "[WARN] the session archive has never run"
+contains "an unreadable time warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.last_run = "yesterday-ish"')")" "[WARN] cannot read the time of the session archive's last run"
+contains "a backlog over twice a run warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = 41')")" "[WARN] 41 sessions eligible, more than twice the 20 a run takes"
+lacks    "twice a run does not"     "$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = 40')")" "[WARN]"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = null')")"
+lacks    "no counted backlog yet is no finding" "${out}" "[WARN]"
+contains "and the counts say so"     "${out}" "[ OK ] none held, none waiting for review; no backlog count until a full run finishes"
+lacks    "never printed as null"     "${out}" "null"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = null | .held = 1')")"
+check    "held still warns, alone"   "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+lacks    "with no all-clear"         "${out}" "none held"
+contains "an unreachable root warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.root_ok = false')")" "[WARN] the archive root (flakelab.sessionArchiveRoot) is unreachable"
+contains "another box's claim warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.owner_ok = false')")" "[WARN] the archive root or a library is claimed by another box"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.root_ok = null | .owner_ok = null')")"
+lacks    "an unchecked root is no finding" "${out}" "[WARN]"
+lacks    "nor called reachable"            "${out}" "archive root reachable"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 1 | .review = 2 | .root_ok = false')")"
+check    "three findings, three warnings" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "3"
+lacks    "and no all-clear for the counts" "${out}" "none held"
+out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 2 | .root_ok = false | .last_result = "error\nTraceback"')")"
+contains "a multi-line result does not hide the held count" "${out}" "[WARN] 2 held"
+contains "nor the root"                   "${out}" "[WARN] the archive root (flakelab.sessionArchiveRoot) is unreachable"
+contains "and reads as one line"          "${out}" "[ OK ] last run 1 h ago (error Traceback, 0.42 USD)"
+
+print -r -- "session archive: a last run that ended in failure warns; ok, capped and one in progress do not"
+for saCase in model_unavailable root_unreachable library_unreachable error; do
+  out="$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = \"${saCase}\"")")"
+  contains "${saCase}: the failed run's result warns" "${out}" "[WARN] the session archive's last run ended ${saCase}"
+  check    "${saCase}: and nothing else does"         "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+done
+for saCase in '"ok"' '"capped"' null; do
+  lacks "${saCase}: no warning" "$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = ${saCase}")")" "[WARN]"
+done
+
+print -r -- "session archive: with no schedule the run's age is a note, the other findings stay"
+out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status . 50)")"
+contains "a run 50 h ago is shown"        "${out}" "[ OK ] note: last run 50 h ago (ok, 0.42 USD); no schedule (flakelab.sessionArchiveSchedule), so its age is not checked"
+lacks    "and not warned about"           "${out}" "[WARN]"
+out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status '.last_run = null | .last_result = null | .held = 2')")"
+contains "no run at all is a note"        "${out}" "[ OK ] note: the session archive has never run; no schedule"
+check    "held still warns, alone"        "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
+contains "it is the held count"           "${out}" "[WARN] 2 held"
+contains "the wrapper variable absent reads as no schedule" "$(section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" FAKE_SA_STATUS="$(archive_status . 50)")" "[ OK ] note: last run 50 h ago"
+
+print -r -- "session archive: an answer it cannot use warns"
+contains "a failing status"   "$(archive_section FAKE_SA_RC=1)" "[WARN] session-archive status --json gave no usable answer"
+contains "a stub's silence"   "$(archive_section)" "[WARN] session-archive status --json gave no usable answer"
+contains "a missing count"    "$(archive_section FAKE_SA_STATUS="$(archive_status 'del(.held)')")" "[WARN] session-archive status --json gave no usable answer"
+contains "no session-archive" "$(section 'Session archive' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}")" "[WARN] session-archive is not on PATH"
+
+print -r -- "session archive: no area configured is a note, and the archive is not asked"
+for areas in unset '' '{}'; do
+  local -a env=(PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FAKE_SA_RC=1)
+  [[ "${areas}" == unset ]] || env+=(SESSION_ARCHIVE_AREAS="${areas}")
+  out="$(section 'Session archive' "${env[@]}")"
+  contains "${areas:-empty}: a note" "${out}" "[ OK ] note: no session-archive area configured (flakelab.sessionArchiveAreas)"
+  lacks    "${areas:-empty}: no warning" "${out}" "[WARN]"
+done
+
 print -r -- "secrets: the old ~/.config/tyc is named with the move, its absence is not"
 secrets() { section Secrets PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other }
 mkdir -p "${BASE}/home/.config/tyc"
@@ -638,6 +823,43 @@ lacks    "with no mv to fail on"      "${out}" "mv -n ~/.config/tyc"
 rm -rf "${BASE}/home/.config/tyc"
 lacks    "no old directory, no warning" "$(secrets)" "~/.config/tyc"
 rm -rf "${BASE}/home/.config"
+
+print -r -- "nix token: report render state and permissions without revealing the token"
+TOKEN_TOOLS="${BASE}/token-tools"
+TOKEN_CONF="${BASE}/token-conf"
+TOKEN_FILE="${BASE}/access-tokens.conf"
+mkdir -p "${TOKEN_TOOLS}" "${TOKEN_CONF}"
+cat > "${TOKEN_TOOLS}/flakelab-nix-access-tokens" <<'STUB'
+#!/usr/bin/env zsh
+[[ "$1" == --status ]] || exit 2
+print -r -- "${FAKE_NIX_TOKEN_STATE:-current}"
+STUB
+cat > "${TOKEN_TOOLS}/nix" <<'STUB'
+#!/usr/bin/env zsh
+[[ "${FAKE_NIX_EMPTY:-0}" == 1 ]] || print -r -- 'github.com=fixture_do_not_print'
+exit 0
+STUB
+chmod +x "${TOKEN_TOOLS}"/*
+print -r -- 'extra-access-tokens = github.com=fixture_do_not_print' > "${TOKEN_FILE}"
+chmod 600 "${TOKEN_FILE}"
+token_section() {
+  section 'Nix GitHub token' PATH="${TOKEN_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other \
+    FLAKELAB_NIX_TOKENS_FILE="${TOKEN_FILE}" NIX_CONF_DIR="${TOKEN_CONF}" "$@"
+}
+out="$(token_section)"
+contains "missing include is named" "${out}" "token render is not configured"
+lacks "another configured token is not ruled out" "${out}" "fetches GitHub anonymously"
+print -r -- "!include ${TOKEN_FILE}" > "${TOKEN_CONF}/nix.conf"
+out="$(token_section)"
+contains "matching render is reported" "${out}" "rendered GitHub token matches"
+contains "effective Nix configuration is checked" "${out}" "nix reads a github.com access token"
+lacks "the token is never printed" "${out}" "fixture_do_not_print"
+contains "rotation is reported" "$(token_section FAKE_NIX_TOKEN_STATE=stale)" "rotated after the last render"
+contains "withdrawal is reported" "$(token_section FAKE_NIX_TOKEN_STATE=withdrawn)" "no longer holds"
+contains "an effective override is reported" "$(token_section FAKE_NIX_EMPTY=1)" "nix reads no github.com access token"
+chmod 644 "${TOKEN_FILE}"
+contains "readable token file is a failure" "$(token_section)" "[FAIL] ${TOKEN_FILE} is mode 644"
+rm -rf "${TOKEN_TOOLS}" "${TOKEN_CONF}" "${TOKEN_FILE}"
 
 # on_tty <redirect> [<VAR=value>...]: a whole doctor run on a pseudo-terminal
 # (util-linux script) with TERM=xterm and that environment, <redirect> (`> file`,

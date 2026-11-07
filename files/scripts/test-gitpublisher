@@ -87,6 +87,13 @@ set_hook() {
   git -C "${FIXTURE_REPO}" config core.hooksPath "${FIXTURE_DIR}/hooks"
 }
 
+set_push_hook() {
+  mkdir -p "${FIXTURE_DIR}/hooks"
+  { print -r -- "#!/usr/bin/env zsh"; print -r -- "$1" } > "${FIXTURE_DIR}/hooks/pre-push"
+  chmod +x "${FIXTURE_DIR}/hooks/pre-push"
+  git -C "${FIXTURE_REPO}" config core.hooksPath "${FIXTURE_DIR}/hooks"
+}
+
 remote_has() { git -C "${BASE}/$1/remote.git" rev-parse --verify -q "refs/heads/$2" >/dev/null 2>&1 && print -r -- yes || print -r -- no }
 
 print -r -- "── the default branch is refused, not branched from silently ─────"
@@ -123,6 +130,66 @@ contains "glab is asked from inside the repo" "${LOG}" "cwd=${FIXTURE_REPO:A} gl
 excludes "no squash flag ever" "${LOG}" "squash"
 excludes "no remove-source-branch flag ever" "${LOG}" "remove-source-branch"
 excludes "no merge subcommand ever" "${LOG}" "mr merge"
+
+print -r -- "── a slow pre-push gate outlives the network-attempt timeout ─────"
+# Accelerate the unchanged 30-second fetch/API watchdog to one second. A real
+# pre-push hook lasts two seconds, so the old push wrapper kills it and retries;
+# the new path must let it finish once while fetch and API still use the timer.
+export GITPUB_REAL_TIMEOUT="$(command -v timeout || command -v gtimeout)"
+cat > "${BASE}/bin/timeout" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "timeout $*" >> "${GITPUB_STUB_LOG}"
+[[ "${1-} ${2-} ${3-}" == '-k 5 30' ]] || exit 99
+shift 3
+exec "${GITPUB_REAL_TIMEOUT}" -k 1 1 "$@"
+STUB
+chmod +x "${BASE}/bin/timeout"
+build_fixture slowpush
+print -r -- change > "${FIXTURE_REPO}/f"
+set_push_hook "print -r -- attempt >> ${FIXTURE_DIR}/count; sleep 2; print -r -- passed >> ${FIXTURE_DIR}/completed"
+OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: slow" --branch feat/slow --json 2>/dev/null)"; RC=$?
+check "the slow hook completes and publication succeeds" "${RC}" "0"
+check "the pre-push hook ran once" "$(wc -l < "${FIXTURE_DIR}/count" | tr -d ' ')" "1"
+check "the hook reached its successful end" "$(cat "${FIXTURE_DIR}/completed" 2>/dev/null)" "passed"
+check "the verified branch reached the remote" "$(remote_has slowpush feat/slow)" "yes"
+LOG="$(<"${STUB_LOG}")"
+contains "fetch still has its 30-second watchdog" "${LOG}" "timeout -k 5 30 git -C ${FIXTURE_REPO} fetch origin"
+contains "forge reads still have their watchdog" "${LOG}" "timeout -k 5 30 glab mr list"
+excludes "the watchdog never wraps push" "${LOG}" "push -u origin HEAD"
+
+for hook_rc in 1 124; do
+  print -r -- "── a pre-push failure (${hook_rc}) stops without a second attempt ─────"
+  build_fixture "pushfail${hook_rc}"
+  print -r -- change > "${FIXTURE_REPO}/f"
+  set_push_hook "print -r -- attempt >> ${FIXTURE_DIR}/count; print -r -- 'validation refused' >&2; exit ${hook_rc}"
+  OUT="$(zsh "${PUBLISHER}" --repo "${FIXTURE_REPO}" --title "feat: refused" --branch feat/refused --json 2>/dev/null)"; RC=$?
+  check "a failed push exits at a gate" "${RC}" "1"
+  check "the gate is push" "$(print -r -- "${OUT}" | jq -r '.gate.name')" "push"
+  contains "the original validation report survives" "$(print -r -- "${OUT}" | jq -r '.gate.output')" "validation refused"
+  check "validation is never retried" "$(wc -l < "${FIXTURE_DIR}/count" | tr -d ' ')" "1"
+  check "the rejected branch stays local" "$(remote_has "pushfail${hook_rc}" feat/refused)" "no"
+  excludes "no MR is created after a failed gate" "$(<"${STUB_LOG}")" "mr create"
+done
+rm "${BASE}/bin/timeout"
+
+print -r -- "── transport defaults preserve explicit SSH and HTTP settings ────"
+cat > "${BASE}/transport" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "${GIT_TERMINAL_PROMPT-}|${GIT_SSH_COMMAND-}|${GIT_SSH-}|${GIT_HTTP_LOW_SPEED_LIMIT-}|${GIT_HTTP_LOW_SPEED_TIME-}"
+STUB
+chmod +x "${BASE}/transport"
+transport_probe() {
+  env -u GIT_SSH_COMMAND -u GIT_SSH -u GIT_HTTP_LOW_SPEED_LIMIT -u GIT_HTTP_LOW_SPEED_TIME "$@" \
+    zsh -c 'source "$1"; gitnet_push_once "$2"; print -r -- "$GITNET_OUT"' \
+    zsh "${SCRIPT_DIR}/lib/git-net.zsh" "${BASE}/transport"
+}
+check "default transports are bounded without a terminal prompt" "$(transport_probe)" \
+  "0|ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3||1|30"
+check "an explicit SSH command and HTTP limits survive" \
+  "$(transport_probe GIT_SSH_COMMAND='ssh -F fixture-config' GIT_HTTP_LOW_SPEED_LIMIT=2 GIT_HTTP_LOW_SPEED_TIME=60)" \
+  "0|ssh -F fixture-config||2|60"
+check "an explicit GIT_SSH helper is not masked by a default command" \
+  "$(transport_probe GIT_SSH=fixture-ssh)" "0||fixture-ssh|1|30"
 
 print -r -- "── a formatter failure gets exactly one restage-and-retry ────────"
 build_fixture fixer

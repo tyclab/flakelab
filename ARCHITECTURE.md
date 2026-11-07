@@ -624,7 +624,7 @@ the state root has to converge on its own:
   file's size, mtime and inode stand — append-only files placed by rename
   cannot change count otherwise. Deleting the index only costs one full count.
   Claude's missing local sessions are pulled only within `cleanupPeriodDays`
-  (managed at 30 days), measured from the last timestamp in the transcript tail;
+  (`claudeCleanupPeriodDays`, 30), measured from the last timestamp in the transcript tail;
   unknown ages stay eligible. Idle local copies get their own content timestamp
   as mtime, so Claude's cleanup can expire them. Subagents and side files follow
   the parent session. `flakelab backup --fetch-session <uuid>` explicitly recovers
@@ -709,6 +709,78 @@ not mounted) skips the state categories with a recorded failure rather than
 silently writing them somewhere else. On a Windows drive POSIX modes are lost —
 one more reason the seed stays out.
 
+### The session archive
+
+`flakelab session-archive` keeps two tiers of each quiet Claude Code session: a
+card that answers the fixed questions (what, why, when, how, outcome, open ends,
+what an agent needs to continue) and a gzipped copy of the whole transcript,
+which the card's Pointer block names, so an agent reads the card first and
+fetches the transcript only for the detail. It reads the transcripts that
+passed the secret gate above,
+`<stateRoot>/claude/projects/<slug>/<uuid>.jsonl` for the slugs the areas name,
+never `~/.claude/projects`, and writes nothing into the state root. Only parent
+transcripts count, read once per uuid (the largest copy when one sits under
+two slugs); a sync conflict copy, a file written in the last ten minutes, a
+transcript whose last `timestamp` (not its mtime) is less than
+`sessionArchiveQuietDays` old, and one with no operator text are left out.
+
+Each session is rendered whole with `@L<line>` anchors and redaction (only a
+record longer than a window is cut, and marked), split into 60,000-byte windows
+of whole records and summarized one call per window. With more than one window
+the summaries are merged in rounds: consecutive ones whose input stays under
+about 40,000 tokens go into one call, then the answers the same way until one
+remains. A merge of three parts or more that hits its 32,000-token answer limit
+is retried once as two halves; a pair that does holds the session. The citation check then keeps the anchors that name a
+record and marks an item `(unverified)` when none does or a quote is in none of
+those records, exactly or at a `difflib` ratio of 0.85. The model files the
+session under one of `sessionArchiveAreas`; one it cannot place (`unclear`)
+gets a line in `review.md` and no card. Otherwise the transcript is copied to
+`<sessionArchiveRoot>/<slug>/<uuid>.<sha8>.jsonl.gz`, a name never reused for
+other content, and the card `session-<uuid>.md` is written atomically to the
+area's library, replaced only when its content changed. A session that grew
+has a new SHA-256, so it gets a new copy and a rewritten card; the lane deletes
+neither, and removing local transcripts stays Claude Code's `cleanupPeriodDays`
+(`claudeCleanupPeriodDays`, 30 by default, above the quiet days).
+
+A failure of one session holds it — a model error, an unparsable or empty
+answer, a transcript, work file, archive copy or card that cannot be read,
+rendered or written, a missing library, and a stop (SIGTERM at the unit's
+timeout, Ctrl-C) while it is in flight: the next run retries it, and after
+three holds of the same content only `run --session` does. Before its first
+call a session's cost is projected (every window at the largest window's input,
+3.5 bytes a token, plus 4,000 output tokens, and each merge call the rounds
+need at 40,000 tokens in and 6,000 out); one projected
+above `sessionArchiveRunCapUsd` is held as `too_large` without a call (`run
+--session` with a raised `SESSION_ARCHIVE_RUN_CAP_USD` is the way through), and
+one that fits the cap but not what the run has left waits for the next run.
+Three failures belong to the run instead, and all exit 1: an unreachable
+archive root or library takes no session (`root_unreachable`,
+`library_unreachable`), and a model API that refuses the key or the model, or
+is still down after the retries, stops the run without holding the session in
+flight (`model_unavailable`); when the same content stops the next run too,
+the failure is that session's, so it is held as a model error and the queue
+goes on. A model with no list price in `summarize.py` is refused before any
+call, since the run cap could not count it. Every call is
+priced into a ledger, and once a run reaches `sessionArchiveRunCapUsd` the
+session in flight finishes and no other starts.
+
+The state is per box, under `~/.local/state/flakelab/session-archive/`:
+`state.sqlite3` (a row per session, per run, per call and per claimed folder),
+`review.md`, `work/<uuid>/` (removed once the session is through unless it is
+held or the run has `--keep`) and `lock`, which keeps one instance (a second
+one exits 0). A dry run takes no lock and writes nothing, the state database
+included. `status` reads that store and never scans, so its backlog is what
+the last full run counted. A `.owner` file with the machine id claims the
+archive root and each library on the first run that is not a dry run, and the
+store records the claim; every marker is read before any is written, and one
+naming another box exits 1, so two boxes never write the same archive. A
+claimed folder that has lost its `.owner` (an unmounted share's empty mount
+point) counts as unreachable and is not claimed again; to hand the path to a
+new, empty share, write the box's `/etc/machine-id` into its `.owner`. The
+timer's service is a oneshot that activation never restarts, at `Nice` 10 with
+idle I/O and a two-hour timeout; the timer is `Persistent` with up to 20
+minutes of random delay. Its journal is one line of counts.
+
 ## Language runtimes
 
 `nix/home/packages.nix` ships Go (`gopls`), Node 24 (`nodeenv`, `bun`,
@@ -716,8 +788,11 @@ one more reason the seed stays out.
 `python3` with `uv` and `pyright`. The Python interpreter is there for
 `#!/usr/bin/env python3` scripts — without it every such script dies with "no
 such file or directory", and the Claude marketplace's PreToolUse guard hooks are
-exactly that. There is deliberately **no `pip`**: `uv` is the installer for
-Python tooling.
+exactly that. It carries one library, PyYAML, because agents read YAML with
+`python3 -c 'import yaml'`; a venv made from the interpreter starts without the
+library (`checks.python3-pyyaml`). It is installed at low priority, so an
+overlay's own `python3` replaces it instead of colliding. There is deliberately
+**no `pip`**: `uv` is the installer for Python tooling.
 
 ## Packaging notes
 

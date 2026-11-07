@@ -44,8 +44,9 @@ gitscan_abs_roots() {
   done
 }
 
-# gitscan_timeouts — bound every network attempt when a timeout binary resolves;
-# absent one, attempts are unbounded. An array, because zsh does not word-split.
+# gitscan_timeouts — bound fetch/API attempts when a timeout binary resolves;
+# absent one, attempts are unbounded. Push uses gitnet_push_once so this timer
+# cannot kill its local hooks. An array, because zsh does not word-split.
 gitscan_timeouts() {
   local bin
   bin="$(command -v timeout || command -v gtimeout || true)"

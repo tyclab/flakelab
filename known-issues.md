@@ -331,7 +331,8 @@ aside, strip the NULs from `.git/logs/**`, point the branch back at its last
 intact commit with `git update-ref`, then `git read-tree HEAD`. Compare with a
 clone on another machine before recommitting. An empty stray `.git` directory
 above the checkouts (`~/git/.git`, left by a tool that used `~/git` as its
-session root) breaks `gitchecker` too; remove it once it is confirmed empty.
+session root) shows in `gitchecker` as `skipped: not a git repository`;
+remove it once it is confirmed empty.
 
 ## A checkout inside a sync client's folder corrupts `.git`
 

@@ -40,12 +40,64 @@ let
       lib.throwIf (cfg.backupRoot == cfg.repoPath || lib.hasPrefix "${cfg.repoPath}/" cfg.backupRoot)
         "flakelab.backupRoot (${cfg.backupRoot}) is inside repoPath (${cfg.repoPath}): nix copies the overlay directory whole into the world-readable store, so the payload - keys, cleartext secrets - must live outside it. Leave it null for ${cfg.repoPath}-payload."
         cfg.backupRoot;
+  # The secrets file the shell sources, as zsh.nix picks it: exactly one, no fallback.
+  # $HOME expands in the wrapper, so a moved home is followed.
+  secretsSource =
+    if cfg.sopsSecretsFile != null then
+      "/run/secrets/flakelab-env"
+    else
+      ''"$HOME/.config/flakelab/secrets.env"'';
+  # Where a key is added, for messages: the render is not edited, its ciphertext is.
+  secretsName =
+    if cfg.sopsSecretsFile != null then
+      lib.escapeShellArg "the overlay's sops secrets (sopsSecretsFile)"
+    else
+      secretsSource;
+  sessionArchiveAreas = builtins.toJSON cfg.sessionArchiveAreas;
+  # The overlay's values unless the caller set one: a measurement run passes its
+  # own model, effort, scratch root and libraries on the command line.
+  sessionArchiveEnv = lib.concatStrings (
+    lib.mapAttrsToList
+      (name: value: ''
+        [ -n "''${${name}:-}" ] || ${name}=${lib.escapeShellArg value}
+        export ${name}
+      '')
+      (
+        {
+          SESSION_ARCHIVE_AREAS = sessionArchiveAreas;
+          SESSION_ARCHIVE_MODEL = cfg.sessionArchiveModel;
+          SESSION_ARCHIVE_EFFORT = cfg.sessionArchiveEffort;
+          SESSION_ARCHIVE_QUIET_DAYS = toString cfg.sessionArchiveQuietDays;
+          SESSION_ARCHIVE_RUN_CAP_USD = builtins.toJSON cfg.sessionArchiveRunCapUsd;
+          SESSION_ARCHIVE_RUN_SESSIONS = toString cfg.sessionArchiveRunSessions;
+        }
+        // lib.optionalAttrs (cfg.sessionArchiveRoot != null) {
+          SESSION_ARCHIVE_ROOT = cfg.sessionArchiveRoot;
+        }
+      )
+  );
 in
 # `rec`, because wrappers pin sibling wrappers: nix-update and nix-update-all pin
-# nix-clone-repos (the CLI keeps it off PATH under its own name, so a bare `--all`
-# would trip its guard) and switch-result; web pins accounts and claude-sessions.
+# switch-result; web pins accounts and claude-sessions.
 rec {
   mcp = (import ./mcp-clients.nix { inherit pkgs cfg; }).launcher;
+
+  # The file nix.conf `!include`s for GitHub's access token (nix/nix-access-tokens.nix). Only
+  # this path is in the store; the token is rendered into it at run time.
+  nixAccessTokensFile = "/run/flakelab-nix/access-tokens.conf";
+
+  # Not a `flakelab` subcommand: run as the login by flakelab-nix-access-tokens.service and by
+  # nix-update, which pin it. Its PATH is pinned whole, as the unit has none worth inheriting.
+  nix-access-tokens = pkgs.writeShellScriptBin "flakelab-nix-access-tokens" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+      ]
+    }
+    export FLAKELAB_SECRETS_NAME=${secretsName}
+    exec ${zsh} ${s}/nix-access-tokens --source ${secretsSource} --out ${nixAccessTokensFile} "$@"
+  '';
 
   clone-repos = pkgs.writeShellScriptBin "clone-repos" ''
     export PATH=${
@@ -207,6 +259,25 @@ rec {
     exec ${zsh} ${s}/web "$@"
   '';
 
+  # python3 runs lib/session_archive/ (stdlib only); util-linux brings flock.
+  # FLAKELAB_STATE_ROOT is the source: the redacted transcript copies. The
+  # prompts come from the store, as `s` holds files/scripts alone.
+  session-archive = pkgs.writeShellScriptBin "session-archive" ''
+    ${lib.optionalString (cfg.stateRoot != null) ''
+      export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
+    ''}
+    ${sessionArchiveEnv}
+    export SESSION_ARCHIVE_PROMPTS=${../files/config/session-archive}
+    export PATH=${
+      bin [
+        pkgs.python3
+        pkgs.util-linux
+        pkgs.jq
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/session-archive "$@"
+  '';
+
   report-stale-repos = pkgs.writeShellScriptBin "report-stale-repos" ''
     export PATH=${
       bin [
@@ -343,8 +414,6 @@ rec {
 
   # Update THIS distro. The repo to rebuild is repoPath, which a store path cannot
   # derive from $0, and FLAKELAB_FLAKE_ATTR names which box in it to switch into.
-  # `nix-clone-repos` is pinned, because the script calls it by bare name for --all
-  # and the CLI no longer puts it on PATH under that name.
   # No pkgs.openssh: the sibling sweep tools leave ssh to $PATH, so pinning one here
   # would change which ssh this uses.
   nix-update = pkgs.writeShellScriptBin "nix-update" ''
@@ -355,14 +424,16 @@ rec {
     export FLAKELAB_CLAUDE_MARKETPLACES=${
       lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
     }
+    export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
+    export FLAKELAB_SECRETS_NAME=${secretsName}
     export PATH=${
       bin [
         pkgs.zsh
         pkgs.git
         pkgs.coreutils
         pkgs.findutils
-        nix-clone-repos
         switch-result
+        nix-access-tokens
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-update "$@"
@@ -377,14 +448,16 @@ rec {
     export FLAKELAB_CLAUDE_MARKETPLACES=${
       lib.escapeShellArg (lib.concatMapStringsSep " " (m: m.name) cfg.claudePluginMarketplaces)
     }
+    export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
+    export FLAKELAB_SECRETS_NAME=${secretsName}
     export PATH=${
       bin [
         pkgs.zsh
         pkgs.git
         pkgs.coreutils
         pkgs.findutils
-        nix-clone-repos
         switch-result
+        nix-access-tokens
       ]
     }:$PATH
     exec ${zsh} ${s}/nix-update --all "$@"
@@ -469,12 +542,19 @@ rec {
     ${trayEnv}
     # Which secrets file the shell sources, decided on the same option as zsh.nix.
     export FLAKELAB_SOPS_RENDER=${if cfg.sopsSecretsFile != null then "1" else "0"}
+    export FLAKELAB_NIX_TOKENS_FILE=${nixAccessTokensFile}
     export FLAKELAB_CLAUDE_REMOTE_CONTROL=${lib.boolToString cfg.claudeRemoteControl}
     export FLAKELAB_CLAUDE_UPDATE_CHANNEL=${cfg.claudeAutoUpdatesChannel}
+    # The "Session archive" section asks the pinned session-archive only when areas are
+    # set, and holds the last run's age against 48 h only when a timer runs it.
+    export SESSION_ARCHIVE_AREAS=${lib.escapeShellArg sessionArchiveAreas}
+    export SESSION_ARCHIVE_SCHEDULED=${lib.boolToString (cfg.sessionArchiveSchedule != null)}
     export PATH=${
       bin [
         pkgs.zsh
         nix-tycswap-tray
+        nix-access-tokens
+        session-archive
         pkgs.git
         pkgs.openssh
         pkgs.glab
@@ -561,7 +641,8 @@ rec {
             echo ""
             echo "Clones configured GitLab groups, opt-in GitHub owners, and extra repos under"
             echo "~/git, fetches and rebases the clones already there, installs their"
-            echo "pre-commit hooks, and reports clones whose project is archived or"
+            echo "pre-commit hooks, names the clones and remotes under ~/git it did not"
+            echo "fetch, and reports clones whose project is archived or"
             echo "scheduled for deletion. No options: the groups, the repos and the"
             echo "exclusions come from the overlay. Exits 3, cloning nothing, when"
             echo "GitLab groups are configured and GITLAB_TOKEN is not set."
@@ -622,6 +703,10 @@ rec {
           # Groups overlap, and two clones racing into one destination corrupt it.
           sort -u "$_list" \
             | ${zsh} ${s}/clone-repos --key-file "$_key" --repos-dir "$_repos" --max-jobs 4
+          # Before activate-hooks: without groups its exit status is the sweep's.
+          # flakelab update fetches the overlay checkout itself.
+          ${zsh} ${s}/report-unswept-clones --repos-dir "$_repos" --swept "$_list" --discovered "$_raw" \
+            --skip ${lib.escapeShellArg cfg.repoPath}
           ${zsh} ${s}/activate-hooks --repos-dir "$_repos"
           ${staleBlock}
         ''
