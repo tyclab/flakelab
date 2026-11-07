@@ -538,6 +538,9 @@ shared with an untrusted hub that holds it Receive Encrypted under a password
 read from the sops render, so the hub never sees plaintext. It needs a Linux
 `stateRoot` (not a `/mnt` mount) and `sopsSecretsFile`; `nix/options.nix` has
 the rest (`hubAddresses`, `folderId`, `configDir`, `guiAddress`).
+`trustedHub = { deviceId = "…"; addresses = [ … ]; }` adds a second device that
+gets the folder without the password: a processing replica that holds plaintext,
+so it belongs on a disk you trust as much as the box's own.
 
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
 snapshots the running agent sessions (Claude Code, Codex) every

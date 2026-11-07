@@ -503,7 +503,8 @@ a NAS client or nothing at all is outside this repo's knowledge, with one
 exception: `stateSyncthing` (`nix/state-syncthing.nix`) runs Syncthing on the
 box with the state root as its only folder, shared with one always-on hub that
 holds it Receive Encrypted. The folder password comes from the sops render, so
-the hub and its disk only ever see ciphertext.
+the hub and its disk only ever see ciphertext. An optional `trustedHub` is a second
+device that gets the folder without the password: a plaintext replica for processing.
 
 A box that leaves `stateTranscripts` off never reads the transcript trees, so it
 does not take them from the folder either: syncthing-init writes

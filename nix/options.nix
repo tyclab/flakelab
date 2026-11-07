@@ -695,6 +695,30 @@ in
               default = "127.0.0.1:8384";
               description = "Where this box's Syncthing GUI and REST API listen. Keep it on loopback: the box's GUI carries no login.";
             };
+            trustedHub = mkOption {
+              type = types.nullOr (
+                types.submodule {
+                  options = {
+                    name = mkOption {
+                      type = types.str;
+                      default = "trusted-hub";
+                      description = "Local name of the trusted device in this box's Syncthing config; it must differ from hubName.";
+                    };
+                    deviceId = mkOption {
+                      type = types.str;
+                      description = "Full device ID of the trusted device; it must differ from hubDeviceId.";
+                    };
+                    addresses = mkOption {
+                      type = types.listOf types.str;
+                      default = [ "dynamic" ];
+                      description = "Where this box dials the trusted device, e.g. [ \"tcp://hub2.example:22000\" \"dynamic\" ].";
+                    };
+                  };
+                }
+              );
+              default = null;
+              description = "A second device beside the hub that gets the state root in plaintext. The hub is the backup: it holds the folder Receive Encrypted and never gets the password. The trusted device is the processing replica: the folder is shared with it without an encryption password, so it stores plaintext and must sit on a disk you trust as much as the box's own. null adds no device and leaves the hub the folder's only peer.";
+            };
           };
         }
       );

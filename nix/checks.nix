@@ -1377,6 +1377,38 @@ in
       transcripts = box.extendModules {
         modules = [ { flakelab.stateTranscripts = true; } ];
       };
+      # A trusted second device beside the encrypted hub: it takes the folder in plaintext.
+      trusted = box.extendModules {
+        modules = [
+          {
+            flakelab.stateSyncthing.trustedHub = {
+              name = "hub2";
+              deviceId = "HHHHHHH-GGGGGGG-FFFFFFF-EEEEEEE-DDDDDDD-CCCCCCC-BBBBBBB-AAAAAAA";
+              addresses = [
+                "tcp://hub2.example:22000"
+                "dynamic"
+              ];
+            };
+          }
+        ];
+      };
+      trustedFolder = trusted.config.services.syncthing.settings.folders.flakelab-state;
+      # A trusted device under the hub's name or ID would mix into the encrypted hub's entry.
+      clash = trusted.extendModules {
+        modules = [ { flakelab.stateSyncthing.trustedHub.name = nixpkgs.lib.mkForce "hub"; } ];
+      };
+      clashId = trusted.extendModules {
+        modules = [
+          {
+            flakelab.stateSyncthing.trustedHub.deviceId = nixpkgs.lib.mkForce box.config.flakelab.stateSyncthing.hubDeviceId;
+          }
+        ];
+      };
+      refused =
+        sys:
+        nixpkgs.lib.any (
+          a: !a.assertion && nixpkgs.lib.hasInfix "trustedHub" a.message
+        ) sys.config.assertions;
       inherit (box.config.services) syncthing;
       folder = syncthing.settings.folders.flakelab-state;
       pw = box.config.systemd.services.flakelab-syncthing-password;
@@ -1407,6 +1439,33 @@ in
       offHome.config.systemd.services.syncthing.unitConfig.RequiresMountsFor;
     assert !box.config.flakelab.stateTranscripts;
     assert transcripts.config.services.syncthing.settings.folders.flakelab-state.ignorePatterns == [ ];
+    # Unset, the hub is the only device; set, the trusted one joins without the password.
+    assert builtins.attrNames syncthing.settings.devices == [ "hub" ];
+    assert builtins.length folder.devices == 1;
+    assert
+      builtins.attrNames trusted.config.services.syncthing.settings.devices == [
+        "hub"
+        "hub2"
+      ];
+    assert
+      trusted.config.services.syncthing.settings.devices.hub2.addresses == [
+        "tcp://hub2.example:22000"
+        "dynamic"
+      ];
+    assert
+      map (d: d.name or d) trustedFolder.devices == [
+        "hub"
+        "hub2"
+      ];
+    # A bare device name: an attrset entry would get the submodule's
+    # encryptionPasswordFile = null, which syncthing-init cannot render.
+    assert builtins.isString (builtins.elemAt trustedFolder.devices 1);
+    assert
+      (builtins.head trustedFolder.devices).encryptionPasswordFile
+      == "/run/flakelab-syncthing/flakelab-state.password";
+    assert !(refused trusted);
+    assert refused clash;
+    assert refused clashId;
     # The reader the unit runs, against a render shaped like sops writes it:
     # CRLF endings, a key that is a prefix of the wanted one, two definitions.
     # Then the ignore list each syncthing-init posts, through a real Syncthing
@@ -1422,6 +1481,7 @@ in
         ];
         initOff = initScript box;
         initOn = initScript transcripts;
+        initTrusted = initScript trusted;
       }
       ''
         reader="$(grep -o '/nix/store/[^ ]*-flakelab-syncthing-password-read' "$scriptPath" | head -n 1)"
@@ -1435,6 +1495,13 @@ in
         on="$(posted "$initOn")"
         test -n "$off"
         test "$on" = '{"ignore":[]}'
+
+        # The folder syncthing-init posts with trustedHub: the hub's entry carries the
+        # password file, which jq swaps for the password; the trusted device's is its
+        # ID alone, so Syncthing shares the folder with it in plaintext.
+        folder="$(grep -o '/nix/store/[^ ]*-dirs-flakelab-state-conf-pre-secrets.json' "$initTrusted" | head -n 1)"
+        test "$(jq -c '[.devices[] | keys]' "$folder")" = '[["deviceId","encryptionPasswordFile","name"],["deviceId"]]'
+        test "$(jq -r '.devices[1].deviceId' "$folder")" = HHHHHHH-GGGGGGG-FFFFFFF-EEEEEEE-DDDDDDD-CCCCCCC-BBBBBBB-AAAAAAA
 
         root="$TMPDIR/root" slug=-home-check-git-x sid=0b5c2a4e-1d2f-4a3b-9c8d-7e6f5a4b3c2d
         kept=(
