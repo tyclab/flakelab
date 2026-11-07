@@ -141,11 +141,15 @@ Read for this topic; paths below are relative to the repository root unless stat
   `~/.codex/archived_sessions/**/*.jsonl{,.zst}`) only when both hold: its last
   entry is older than the window by `transcript_epoch`, the tail rule it sources
   from `lib/state-sync.zsh` (a `.zst` read through `zstd -dc`), and the
-  state-root copy of the same name anywhere under `codex/sessions/` has at least
-  its plain length. An unreadable age, a rollout open in `/proc/*/fd` or one
-  that changed while measured counts as `kept_young`; a missing, shorter or
-  unmeasurable copy as `kept_unsynced`. One stdout line, counts only, never a
-  path. No state root (unset or not a directory) or a failed delete exits 1; a
+  state-root copy of the same name anywhere under `codex/sessions/` is
+  complete: at least the rollout's line count (unpacked), and at its last line
+  number the same top-level `timestamp` as its last line. Never bytes: the
+  gate's `[REDACTED:<rule>]` makes a complete copy shorter. An unreadable age, a
+  rollout open in `/proc/*/fd` or one that changed while measured counts as
+  `kept_young`; a missing, short, diverged or unreadable copy, or a last line
+  without a timestamp, as `kept_unsynced`. One stdout line, counts only, and
+  every tool's stderr goes to `/dev/null`: zstd and stat name the path. No
+  state root (unset or not a directory) or a failed delete exits 1; a
   bad window or any argument but `--help` exits 2. `FLAKELAB_HOME_DIR` and
   `FLAKELAB_PROC_ROOT` are its suite's seams (`test-codex-cleanup`). The
   `nix-backup` wrapper exports the same `CODEX_CLEANUP_PERIOD_DAYS`, and the

@@ -92,7 +92,7 @@ check   "the run exits 0"                 "${RC}" "0"
 present "the local rollout stays"         "${R}"
 check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
 
-print -r -- "an old rollout whose state-root copy is shorter stays"
+print -r -- "an old rollout whose state-root copy has fewer lines stays"
 fresh
 R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-cccc.jsonl"
 rollout "${R}" "${OLD}"
@@ -103,15 +103,60 @@ check   "the run exits 0"                 "${RC}" "0"
 present "the local rollout stays"         "${R}"
 check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
 
-print -r -- "a longer state-root copy is complete: a redaction can lengthen a line"
+print -r -- "a copy with more lines is complete when its line at the local last one has that timestamp"
 fresh
 R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-dddd.jsonl"
 rollout "${R}" "${OLD}"
 synced "${R}" 2026/09/01
-print -r -- '{"note":"[REDACTED:generic-api-key]"}' >> "${ST}/2026/09/01/${R:t}"
+print -r -- "{\"timestamp\":\"${YOUNG}\",\"type\":\"response_item\",\"payload\":{\"text\":\"carried on elsewhere\"}}" \
+  >> "${ST}/2026/09/01/${R:t}"
 run
 absent  "the local rollout is deleted"    "${R}"
 check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+
+print -r -- "a redacted copy, fewer bytes but the same lines and last timestamp, is complete"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-dded.jsonl"
+mkdir -p "${R:h}" "${ST}/2026/09/01"
+SECRET="sk-0123456789abcdefghijklmnopqrstuvwxyzAB"
+for f in "${R}" "${ST}/2026/09/01/${R:t}"; do
+  [[ "${f}" == "${R}" ]] && shown="${SECRET}" || shown="[REDACTED:generic-api-key]"
+  {
+    print -r -- "{\"timestamp\":\"${FIRST}\",\"type\":\"session_meta\",\"payload\":{\"id\":\"fixture\"}}"
+    print -r -- "{\"timestamp\":\"${OLD}\",\"type\":\"response_item\",\"payload\":{\"text\":\"key ${shown}\"}}"
+  } > "${f}"
+done
+if (( $(stat -c %s -- "${ST}/2026/09/01/${R:t}") < $(stat -c %s -- "${R}") )); then
+  ok "the fixture's redacted copy is shorter in bytes"
+else
+  bad "the fixture's redacted copy is shorter in bytes"
+fi
+run
+absent  "the local rollout is deleted"    "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
+
+print -r -- "a copy with as many lines but another last timestamp stays"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-dedd.jsonl"
+rollout "${R}" "${OLD}"
+mkdir -p "${ST}/2026/09/01"
+{
+  head -n 2 -- "${R}"
+  print -r -- "{\"timestamp\":\"$(stamp 31)\",\"type\":\"response_item\",\"payload\":{\"text\":\"the last line\"}}"
+} > "${ST}/2026/09/01/${R:t}"
+run
+present "the local rollout stays"         "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
+
+print -r -- "a local last line without a top-level timestamp proves no copy complete"
+fresh
+R="${CX}/sessions/2026/09/01/rollout-2026-09-01T10-00-00-deee.jsonl"
+rollout "${R}" "${OLD}"
+print -r -- "{\"type\":\"event_msg\",\"payload\":{\"timestamp\":\"${OLD}\"}}" >> "${R}"
+synced "${R}" 2026/09/01
+run
+present "the local rollout stays"         "${R}"
+check   "the counts"                      "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
 
 print -r -- "a young rollout stays, synced or not"
 fresh
@@ -187,7 +232,7 @@ if command -v zstd > /dev/null 2>&1; then
   present "its state-root copy stays"     "${ST}/2026/09/02/${R:t}"
   check   "the counts"                    "${OUT}" "codex-cleanup: scanned=1 deleted=1 kept_unsynced=0 kept_young=0"
 
-  print -r -- "a compressed rollout is measured by its plain length"
+  print -r -- "a compressed rollout whose copy misses its last line stays"
   fresh
   R="${CX}/sessions/2026/09/03/rollout-2026-09-03T10-00-00-5555.jsonl"
   mkdir -p "${R:h}"
@@ -196,14 +241,8 @@ if command -v zstd > /dev/null 2>&1; then
     print -r -- "{\"timestamp\":\"${OLD}\",\"type\":\"response_item\",\"payload\":{\"text\":\"the last line\"}}"
   } > "${R}"
   mkdir -p "${ST}/2026/09/03"
-  # Missing its last line: longer than the .zst, shorter than the rollout.
   head -n 200 -- "${R}" > "${ST}/2026/09/03/${R:t}"
   zst "${R}"
-  if (( $(stat -c %s -- "${ST}/2026/09/03/${R:t}") > $(stat -c %s -- "${R}.zst") )); then
-    ok "the fixture's copy is longer than the compressed file"
-  else
-    bad "the fixture's copy is longer than the compressed file"
-  fi
   run
   present "the .zst stays"                "${R}.zst"
   check   "the counts"                    "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
@@ -228,6 +267,26 @@ if command -v zstd > /dev/null 2>&1; then
   run
   present "the damaged .zst stays"        "${R}.zst"
   excludes "it is not deleted"            "${OUT}" "deleted=1"
+  check   "nothing on stderr"             "${ERR}" ""
+
+  print -r -- "a .zst cut at the end whose tail still unpacks stays, and stderr names no path"
+  fresh
+  R="${CX}/archived_sessions/rollout-2026-09-04T10-00-00-7778.jsonl"
+  rollout "${R}" "${OLD}"
+  synced "${R}" 2026/09/04
+  zst "${R}"
+  # Without the 4-byte checksum zstd writes every line, then fails: premature end.
+  truncate -s -4 -- "${R}.zst"
+  if [[ "$(zstd -dcq -- "${R}.zst" 2> /dev/null | tail -n 1)" == *"the last line"* ]]; then
+    ok "the fixture's tail still unpacks"
+  else
+    bad "the fixture's tail still unpacks"
+  fi
+  run
+  check   "the run exits 0"               "${RC}" "0"
+  present "the cut .zst stays"            "${R}.zst"
+  check   "it counts as unsynced"         "${OUT}" "codex-cleanup: scanned=1 deleted=0 kept_unsynced=1 kept_young=0"
+  check   "nothing on stderr"             "${ERR}" ""
 
   print -r -- "a rollout written to while it is measured stays"
   fresh

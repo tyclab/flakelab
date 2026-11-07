@@ -1865,7 +1865,7 @@ in
 
   # The Codex cleanup timer exists only with codexCleanupPeriodDays, which needs the
   # transcripts in a state root to measure against; its service hands the script the
-  # window and the root, with zstd and jq on the pinned PATH. nix-backup gets the same
+  # window and the root, with zstd, jq and gawk on the pinned PATH. nix-backup gets the same
   # window for the Codex pull leg, and none without the option.
   codex-cleanup-timer =
     let
@@ -1914,6 +1914,7 @@ in
       grep -q '^export FLAKELAB_STATE_ROOT=/tmp/flakelab-check-state$' ${wrapper}
       grep -q -- '-zstd-[^/:]*/bin' ${wrapper}
       grep -q -- '-jq-[^/:]*/bin' ${wrapper}
+      grep -q -- '-gawk-[^/:]*/bin' ${wrapper}
       grep -q -- '-scripts/codex-cleanup "\$@"$' ${wrapper}
       grep -q '^ *export CODEX_CLEANUP_PERIOD_DAYS=7$' ${backupOf on}/bin/nix-backup
       if grep -q CODEX_CLEANUP_PERIOD_DAYS ${backupOf noWindow}/bin/nix-backup; then

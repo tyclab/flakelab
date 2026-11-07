@@ -334,7 +334,7 @@ in
       type = types.nullOr types.ints.positive;
       default = null;
       example = 7;
-      description = "Days a local Codex rollout (~/.codex/sessions/**/rollout-*.jsonl, ~/.codex/archived_sessions/**/*.jsonl, either one compressed to .zst) stays after its last entry: the daily user timer flakelab-codex-cleanup deletes one that is older, measured from the timestamp in its tail, once its copy in stateRoot (stateTranscripts) holds at least its plain bytes. A rollout with no such copy, or one a running process holds open, stays whatever its age. Each run logs one line of counts. The state sync's pull and restore follow the same window: a missing rollout older than it stays in stateRoot, so a deleted one is not pulled back. null schedules none and pulls every rollout. Needs stateRoot and stateTranscripts.";
+      description = "Days a local Codex rollout (~/.codex/sessions/**/rollout-*.jsonl, ~/.codex/archived_sessions/**/*.jsonl, either one compressed to .zst) stays after its last entry: the daily user timer flakelab-codex-cleanup deletes one that is older, measured from the timestamp in its tail, once its copy in stateRoot (stateTranscripts) is complete: at least as many lines as the rollout (unpacked), and at its last line number a line with the same top-level timestamp as its last line. Bytes are not compared, since a redacted copy is shorter. A rollout with no such copy, or one a running process holds open, stays whatever its age. Each run logs one line of counts. The state sync's pull and restore follow the same window: a missing rollout older than it stays in stateRoot, so a deleted one is not pulled back. null schedules none and pulls every rollout. Needs stateRoot and stateTranscripts.";
     };
 
     claudeOutputStyle = mkOption {

@@ -26,9 +26,11 @@ let
       lib.makeBinPath [
         pkgs.zsh
         pkgs.coreutils
-        # transcript_epoch reads a rollout's tail through jq.
+        # transcript_epoch reads a rollout's tail through jq, and the
+        # completeness check a line's timestamp; awk counts the lines.
         pkgs.jq
-        # A compressed rollout's age and plain length are read through zstd -dc.
+        pkgs.gawk
+        # A compressed rollout's age and lines are read through zstd -dc.
         pkgs.zstd
       ]
     }

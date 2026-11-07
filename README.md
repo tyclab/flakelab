@@ -536,10 +536,12 @@ the secret gate.
 `codexCleanupPeriodDays = 7;` gives Codex rollouts a local window too: the
 daily `flakelab-codex-cleanup` timer deletes a rollout in `~/.codex/sessions`
 or `~/.codex/archived_sessions`, compressed or not, whose last entry is older
-than that many days, once its copy in the state root holds at least its plain
-bytes. A rollout without such a copy, or one a running process holds open,
-stays. Automatic pulls and restores then leave a missing rollout older than
-the window in the state root, so a deleted one stays gone. It needs
+than that many days, once its copy in the state root is complete: as many
+lines or more, and the same timestamp on the line where the rollout ends (a
+redaction changes a copy's length, so bytes are not compared). A rollout
+without such a copy, or one a running process holds open, stays. Automatic
+pulls and restores then leave a missing rollout older than the window in the
+state root, so a deleted one stays gone. It needs
 `stateRoot` and `stateTranscripts`; each run logs one line of counts
 (`codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N`). Unset
 (the default), nothing is deleted and every rollout is pulled, as before.

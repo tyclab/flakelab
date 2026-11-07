@@ -12,12 +12,16 @@ set -uo pipefail
 #   ~/.codex/archived_sessions/**/*.jsonl{,.zst}
 # is deleted when its last entry is older than CODEX_CLEANUP_PERIOD_DAYS days
 # AND its state-root copy, <FLAKELAB_STATE_ROOT>/codex/sessions/**/<name without
-# .zst>, holds at least as many bytes as the plain rollout: the copy is
-# grow-only, so a shorter one is missing lines. Everything else stays and is
-# counted: an age that cannot be read, or a rollout a running process holds
-# open or wrote to during the check, as young; a copy that is missing, shorter
-# or cannot be measured, as unsynced. One line out, counts only:
+# .zst>, is complete: at least as many lines as the rollout unpacked, and at the
+# rollout's last line number a line with the same top-level `timestamp` as its
+# last line. Bytes prove nothing: the gate writes [REDACTED:<rule>] in place of
+# a secret, so a complete copy is often shorter, and a redaction never touches
+# a timestamp. Everything else stays and is counted: an age that cannot be read,
+# or a rollout a running process holds open or wrote to during the check, as
+# young; a copy that is missing, short, on another branch or unreadable, and a
+# last line without a timestamp, as unsynced. One line out, counts only:
 #   codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N
+# Nothing else reaches stdout or stderr: a tool's message would name a path.
 #
 # Environment: CODEX_CLEANUP_PERIOD_DAYS and FLAKELAB_STATE_ROOT (the timer's
 # wrapper sets both); FLAKELAB_HOME_DIR and FLAKELAB_PROC_ROOT are test seams.
@@ -82,15 +86,44 @@ for pid in "${PROC_ROOT}"/<->(N/); do
   done
 done
 
-# plain_bytes <rollout>: REPLY = its length uncompressed.
-plain_bytes() {
-  local n
+# unpacked <file>: the file's lines, a .zst decompressed; fails on a read error.
+unpacked() {
   if [[ "$1" == *.zst ]]; then
-    n="$(zstd -dcq -- "$1" | wc -c)" || return 1
+    zstd -dcq -- "$1" 2> /dev/null
   else
-    n="$(stat -c %s -- "$1")" || return 1
+    cat -- "$1" 2> /dev/null
   fi
-  REPLY=$(( n ))
+}
+
+# line_count <file> [<n>]: REPLY = its line count, LINE = line <n> (its last
+# line without <n>, empty past the end). One pass; fails when it cannot be
+# read whole.
+line_count() {
+  local out
+  out="$(unpacked "$1" | awk -v n="${2:-0}" '
+    NR == n { at = $0 }
+    { last = $0 }
+    END { print (n > 0 ? at : last); print NR }
+  ')" || return 1
+  REPLY="${out##*$'\n'}"
+  LINE="${out%$'\n'*}"
+  [[ "${REPLY}" == <-> ]]
+}
+
+# line_stamp <line>: REPLY = its top-level timestamp; fails without one.
+line_stamp() {
+  REPLY="$(print -r -- "$1" | jq -Rr 'fromjson? | objects | .timestamp? | strings' 2> /dev/null)"
+  [[ -n "${REPLY}" ]]
+}
+
+# copy_complete <rollout> <copy>: whether the copy holds every line of the rollout.
+copy_complete() {
+  local -i lines
+  local stamp
+  line_count "$1" && lines="${REPLY}" && (( lines > 0 )) || return 1
+  line_stamp "${LINE}" && stamp="${REPLY}" || return 1
+  line_count "$2" "${lines}" && (( REPLY >= lines )) || return 1
+  line_stamp "${LINE}" && [[ "${REPLY}" == "${stamp}" ]]
 }
 
 # rollout_epoch <rollout>: REPLY = its last entry's epoch, a .zst read uncompressed.
@@ -119,13 +152,7 @@ for f in "${local_rollouts[@]}"; do
     continue
   fi
   copy="${COPY[${${f:t}%.zst}]:-}"
-  local_bytes=-1
-  copy_bytes=-1
-  if [[ -n "${copy}" ]] && plain_bytes "${f}"; then
-    local_bytes="${REPLY}"
-    plain_bytes "${copy}" && copy_bytes="${REPLY}"
-  fi
-  if (( local_bytes < 0 || copy_bytes < local_bytes )); then
+  if [[ -z "${copy}" ]] || ! copy_complete "${f}" "${copy}"; then
     kept_unsynced+=1
     continue
   fi
