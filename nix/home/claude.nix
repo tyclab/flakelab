@@ -54,7 +54,12 @@ let
     ];
   };
 
-  inherit (cfg) claudeAutoUpdatesChannel claudeAutoMode claudePlugins;
+  inherit (cfg)
+    claudeAutoUpdatesChannel
+    claudeCleanupPeriodDays
+    claudeAutoMode
+    claudePlugins
+    ;
 
   claudeOutputStyleJq = lib.optionalString (cfg.claudeOutputStyle != null) ''
     | .outputStyle = ${builtins.toJSON cfg.claudeOutputStyle}
@@ -445,7 +450,7 @@ in
           if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --argjson dm "$_deniedMcp" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
-            | .cleanupPeriodDays = 30
+            | .cleanupPeriodDays = ${toString claudeCleanupPeriodDays}
             | .env += $e
             | .env |= reduce ($prev - ($e | keys))[] as $k (.; del(.[$k]))
             | .installMethod = "native"

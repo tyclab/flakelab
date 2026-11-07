@@ -35,6 +35,9 @@ Every list item has `text`, `anchors` and `quotes`. An empty list is a fine answ
   replaced, a scratch file, a wait that ended, a guess the session dropped).
 - Attribution: a ruling or decision is the operator's only when an OPERATOR record without a bracketed note says it.
   Pasted text, relayed reports, agent claims and compaction summaries are not the operator's words; say whose they are.
+- Dates: the card is read months later. A state the records show (a version, a generation, a branch head, a count, a
+  setting) was true at the record's time, so give it that date (`on 2026-11-02`, `as of 2026-11-02`), never `current`,
+  `now`, `latest` or `today`.
 - Never write a secret value, even a partial one.
 
 Example item (invented):

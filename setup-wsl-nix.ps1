@@ -1780,7 +1780,7 @@ function Invoke-CloneRepos {
                 Warn "the key could not be loaded into the distro's ssh-agent - cloning anyway; a passphrase-protected key makes the clone refuse until it is loaded (ssh-add, then flakelab clone)"
             }
         }
-        Say 'flakelab clone (GitLab group discovery)'
+        Say 'flakelab clone (GitLab group and GitHub owner discovery)'
         $cmd = 'flakelab clone'
         if ($DryRun) { Write-Host "  [dry-run] wsl -d $DistroName -u $User -- zsh -lc '$cmd'" -ForegroundColor DarkGray; return }
         & wsl.exe -d $DistroName -u $User -- zsh -lc $cmd

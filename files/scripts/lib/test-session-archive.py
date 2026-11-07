@@ -558,8 +558,9 @@ class RedactTest(unittest.TestCase):
             ('curl -H "Authorization: Bearer ' + "b" * 24 + '"', 'curl -H "Authorization: Bearer [REDACTED:bearer]"'),
             ('-H "Authorization: Basic ' + "Y" * 16 + '=="', '-H "Authorization: Basic [REDACTED:basic]"'),
             ('{"Authorization": "token ' + "f" * 40 + '"}', '{"Authorization": "token [REDACTED:auth-token]"}'),
+            # Both strings split: a secret scanner reads any user:password@host as a credential.
             ("git clone https://deploy:" + "s" * 12 + "@git.example.invalid/w.git",
-             "git clone https://deploy:[REDACTED:url]@git.example.invalid/w.git"),
+             "git clone https://deploy:" + "[REDACTED:url]" + "@git.example.invalid/w.git"),
             ("widgetctl login --password " + "p" * 9 + " --token '" + "t" * 8 + "'",
              "widgetctl login --password [REDACTED:flag] --token '[REDACTED:flag]'"),
             ("password=" + "p" * 12, "password=[REDACTED:assign]"),

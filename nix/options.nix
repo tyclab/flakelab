@@ -86,7 +86,7 @@ in
 
     cloneExclude = mkOption {
       type = required (types.listOf types.str);
-      description = "Repo names skipped during GitLab group discovery. Explicit `repos` entries bypass it, since naming a repo there is already explicit.";
+      description = "Repo names the clone sweep drops from what GitLab group and GitHub owner discovery return. Explicit `repos` entries bypass it, since naming a repo there is already explicit.";
     };
 
     gitEditor = mkOption {
@@ -322,6 +322,12 @@ in
       ];
       default = "stable";
       description = "Release channel Claude Code's first install starts on and its self-updater follows. Claude Code is the one tool this flake deliberately does not pin, so this is the only control over what lands unreviewed on every box.";
+    };
+
+    claudeCleanupPeriodDays = mkOption {
+      type = types.ints.positive;
+      default = 30;
+      description = "Days Claude Code keeps an idle local transcript before its own cleanup deletes it: asserted into settings.json as cleanupPeriodDays. The state sync pulls a missing local session back only within this window, so a box whose transcripts live on in the state root (stateTranscripts) can set it low.";
     };
 
     claudeOutputStyle = mkOption {

@@ -624,7 +624,7 @@ the state root has to converge on its own:
   file's size, mtime and inode stand — append-only files placed by rename
   cannot change count otherwise. Deleting the index only costs one full count.
   Claude's missing local sessions are pulled only within `cleanupPeriodDays`
-  (managed at 30 days), measured from the last timestamp in the transcript tail;
+  (`claudeCleanupPeriodDays`, 30), measured from the last timestamp in the transcript tail;
   unknown ages stay eligible. Idle local copies get their own content timestamp
   as mtime, so Claude's cleanup can expire them. Subagents and side files follow
   the parent session. `flakelab backup --fetch-session <uuid>` explicitly recovers
@@ -753,7 +753,7 @@ when its content changed; its pointer names the copy and, on a `Subagents:`
 line, the folder's archive. A session that grew has a new SHA-256, so it gets a
 new pair and a rewritten card; only retention (below) deletes a pair, never a
 card, and removing local transcripts stays Claude Code's `cleanupPeriodDays`
-(30, above the quiet days).
+(`claudeCleanupPeriodDays`, 30 by default, above the quiet days).
 
 A failure of one session holds it — a model error, an unparsable or empty
 answer, a transcript, work file, archive copy or card that cannot be read,
@@ -861,8 +861,11 @@ fingerprint and its held list by the local path.
 `python3` with `uv` and `pyright`. The Python interpreter is there for
 `#!/usr/bin/env python3` scripts — without it every such script dies with "no
 such file or directory", and the Claude marketplace's PreToolUse guard hooks are
-exactly that. There is deliberately **no `pip`**: `uv` is the installer for
-Python tooling.
+exactly that. It carries one library, PyYAML, because agents read YAML with
+`python3 -c 'import yaml'`; a venv made from the interpreter starts without the
+library (`checks.python3-pyyaml`). It is installed at low priority, so an
+overlay's own `python3` replaces it instead of colliding. There is deliberately
+**no `pip`**: `uv` is the installer for Python tooling.
 
 ## Packaging notes
 
