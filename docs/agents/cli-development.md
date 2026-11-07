@@ -134,6 +134,30 @@ Read for this topic; paths below are relative to the repository root unless stat
     flags; a prompt a person needs is never something to script around, and
     `FLAKELAB_NO_PROMPT=1` turns them off. Every `[y/N]` goes through
     `prompt_confirm`/`prompt_keys`, never a bare `read`.
+- `codex-cleanup` is no verb: only the `flakelab-codex-cleanup` timer
+  (`nix/home/codex-cleanup.nix`, `codexCleanupPeriodDays`) runs it, with
+  `CODEX_CLEANUP_PERIOD_DAYS` and `FLAKELAB_STATE_ROOT` from its wrapper. It
+  deletes a local rollout (`~/.codex/sessions/**/rollout-*.jsonl{,.zst}`,
+  `~/.codex/archived_sessions/**/*.jsonl{,.zst}`) only when both hold: its last
+  entry is older than the window by `transcript_epoch`, the tail rule it sources
+  from `lib/state-sync.zsh` (a `.zst` read through `zstd -dc`), and the
+  state-root copy of the same name anywhere under `codex/sessions/` is
+  complete: at least the rollout's line count (unpacked), and the same
+  top-level `timestamp` at the number of its last line that has one
+  (`tail_stamp`: the line `transcript_epoch` dated it by, so a last line cut
+  mid-write is covered by the count). Never bytes: the
+  gate's `[REDACTED:<rule>]` makes a complete copy shorter. An unreadable age, a
+  rollout open in `/proc/*/fd` or one that changed while measured counts as
+  `kept_young`; a missing, short, diverged or unreadable copy as
+  `kept_unsynced`. One stdout line, counts only, and
+  every tool's stderr goes to `/dev/null`: zstd and stat name the path. No
+  state root (unset or not a directory) or a failed delete exits 1; a
+  bad window or any argument but `--help` exits 2. `FLAKELAB_HOME_DIR` and
+  `FLAKELAB_PROC_ROOT` are its suite's seams (`test-codex-cleanup`). The
+  `nix-backup` wrapper exports the same `CODEX_CLEANUP_PERIOD_DAYS`, and the
+  Codex pull leg (`transcript_window`, `transcript_age_skip`) leaves a missing
+  rollout older than it in the state root; unset, it pulls every one. Keep the
+  two on one window, or a deleted rollout is pulled straight back.
 - `gitchecker` (report) and `gitcleaner` (delete) both take `--repo <path>` and
   `--json`, so use those rather than parsing the human report: one document on
   stdout, abort included. In gitchecker's document a linked worktree's row

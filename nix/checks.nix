@@ -284,6 +284,8 @@ in
     pkgs.curl
   ] "web";
   session-archive = suiteCheckWith [ pkgs.python3 ] "session-archive";
+  # The compressed-rollout cases make and read .zst files; stdenv has no zstd.
+  codex-cleanup = suiteCheckWith [ pkgs.zstd ] "codex-cleanup";
   # The input report reads the lock with `nix eval`, which is under test too.
   nix-update = suiteCheckWith [ pkgs.nix ] "nix-update";
   nix-access-tokens = suiteCheckWith [ pkgs.nix ] "nix-access-tokens";
@@ -1377,6 +1379,38 @@ in
       transcripts = box.extendModules {
         modules = [ { flakelab.stateTranscripts = true; } ];
       };
+      # A trusted second device beside the encrypted hub: it takes the folder in plaintext.
+      trusted = box.extendModules {
+        modules = [
+          {
+            flakelab.stateSyncthing.trustedHub = {
+              name = "hub2";
+              deviceId = "HHHHHHH-GGGGGGG-FFFFFFF-EEEEEEE-DDDDDDD-CCCCCCC-BBBBBBB-AAAAAAA";
+              addresses = [
+                "tcp://hub2.example:22000"
+                "dynamic"
+              ];
+            };
+          }
+        ];
+      };
+      trustedFolder = trusted.config.services.syncthing.settings.folders.flakelab-state;
+      # A trusted device under the hub's name or ID would mix into the encrypted hub's entry.
+      clash = trusted.extendModules {
+        modules = [ { flakelab.stateSyncthing.trustedHub.name = nixpkgs.lib.mkForce "hub"; } ];
+      };
+      clashId = trusted.extendModules {
+        modules = [
+          {
+            flakelab.stateSyncthing.trustedHub.deviceId = nixpkgs.lib.mkForce box.config.flakelab.stateSyncthing.hubDeviceId;
+          }
+        ];
+      };
+      refused =
+        sys:
+        nixpkgs.lib.any (
+          a: !a.assertion && nixpkgs.lib.hasInfix "trustedHub" a.message
+        ) sys.config.assertions;
       inherit (box.config.services) syncthing;
       folder = syncthing.settings.folders.flakelab-state;
       pw = box.config.systemd.services.flakelab-syncthing-password;
@@ -1407,6 +1441,33 @@ in
       offHome.config.systemd.services.syncthing.unitConfig.RequiresMountsFor;
     assert !box.config.flakelab.stateTranscripts;
     assert transcripts.config.services.syncthing.settings.folders.flakelab-state.ignorePatterns == [ ];
+    # Unset, the hub is the only device; set, the trusted one joins without the password.
+    assert builtins.attrNames syncthing.settings.devices == [ "hub" ];
+    assert builtins.length folder.devices == 1;
+    assert
+      builtins.attrNames trusted.config.services.syncthing.settings.devices == [
+        "hub"
+        "hub2"
+      ];
+    assert
+      trusted.config.services.syncthing.settings.devices.hub2.addresses == [
+        "tcp://hub2.example:22000"
+        "dynamic"
+      ];
+    assert
+      map (d: d.name or d) trustedFolder.devices == [
+        "hub"
+        "hub2"
+      ];
+    # A bare device name: an attrset entry would get the submodule's
+    # encryptionPasswordFile = null, which syncthing-init cannot render.
+    assert builtins.isString (builtins.elemAt trustedFolder.devices 1);
+    assert
+      (builtins.head trustedFolder.devices).encryptionPasswordFile
+      == "/run/flakelab-syncthing/flakelab-state.password";
+    assert !(refused trusted);
+    assert refused clash;
+    assert refused clashId;
     # The reader the unit runs, against a render shaped like sops writes it:
     # CRLF endings, a key that is a prefix of the wanted one, two definitions.
     # Then the ignore list each syncthing-init posts, through a real Syncthing
@@ -1422,6 +1483,7 @@ in
         ];
         initOff = initScript box;
         initOn = initScript transcripts;
+        initTrusted = initScript trusted;
       }
       ''
         reader="$(grep -o '/nix/store/[^ ]*-flakelab-syncthing-password-read' "$scriptPath" | head -n 1)"
@@ -1435,6 +1497,13 @@ in
         on="$(posted "$initOn")"
         test -n "$off"
         test "$on" = '{"ignore":[]}'
+
+        # The folder syncthing-init posts with trustedHub: the hub's entry carries the
+        # password file, which jq swaps for the password; the trusted device's is its
+        # ID alone, so Syncthing shares the folder with it in plaintext.
+        folder="$(grep -o '/nix/store/[^ ]*-dirs-flakelab-state-conf-pre-secrets.json' "$initTrusted" | head -n 1)"
+        test "$(jq -c '[.devices[] | keys]' "$folder")" = '[["deviceId","encryptionPasswordFile","name"],["deviceId"]]'
+        test "$(jq -r '.devices[1].deviceId' "$folder")" = HHHHHHH-GGGGGGG-FFFFFFF-EEEEEEE-DDDDDDD-CCCCCCC-BBBBBBB-AAAAAAA
 
         root="$TMPDIR/root" slug=-home-check-git-x sid=0b5c2a4e-1d2f-4a3b-9c8d-7e6f5a4b3c2d
         kept=(
@@ -1792,6 +1861,67 @@ in
       expect "$(ls "$p/c/releases")" "1" "a dangling current link"
       expect "$(ls "$p/d/releases" | tr '\n' ' ')" "1 3 " "a release a process still runs"
       touch "$out"
+    '';
+
+  # The Codex cleanup timer exists only with codexCleanupPeriodDays, which needs the
+  # transcripts in a state root to measure against; its service hands the script the
+  # window and the root, with zstd, jq and gawk on the pinned PATH. nix-backup gets the same
+  # window for the Codex pull leg, and none without the option.
+  codex-cleanup-timer =
+    let
+      inherit (nixpkgs) lib;
+      ext =
+        attrs: self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; };
+      hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
+      on = ext {
+        codexCleanupPeriodDays = 7;
+        stateRoot = "/tmp/flakelab-check-state";
+        stateTranscripts = true;
+      };
+      noTranscripts = ext {
+        codexCleanupPeriodDays = 7;
+        stateRoot = "/tmp/flakelab-check-state";
+      };
+      noWindow = ext {
+        stateRoot = "/tmp/flakelab-check-state";
+        stateTranscripts = true;
+      };
+      backupOf =
+        sys:
+        (import ./scripts.nix {
+          inherit (sys) pkgs;
+          cfg = sys.config.flakelab;
+        }).nix-backup;
+      timer = (hmOf on).systemd.user.timers.flakelab-codex-cleanup;
+      service = (hmOf on).systemd.user.services.flakelab-codex-cleanup;
+      wrapper = builtins.head service.Service.ExecStart;
+    in
+    assert (hmOf on).systemd.user.timers ? flakelab-codex-cleanup;
+    assert !((hmOf self.nixosConfigurations.default).systemd.user.timers ? flakelab-codex-cleanup);
+    assert !((hmOf self.nixosConfigurations.default).systemd.user.services ? flakelab-codex-cleanup);
+    assert timer.Timer.OnCalendar == "daily";
+    assert timer.Timer.Persistent;
+    assert timer.Timer.RandomizedDelaySec == "1h";
+    assert service.Service.Type == "oneshot";
+    assert service.Unit."X-RestartIfChanged" == false;
+    assert lib.any (
+      a: !a.assertion && lib.hasInfix "codexCleanupPeriodDays" a.message
+    ) (hmOf noTranscripts).assertions;
+    assert lib.all (a: a.assertion || !lib.hasInfix "codexCleanupPeriodDays" a.message)
+      (hmOf on).assertions;
+    pkgs.runCommandLocal "flakelab-check-codex-cleanup-timer" { } ''
+      grep -q '^export CODEX_CLEANUP_PERIOD_DAYS=7$' ${wrapper}
+      grep -q '^export FLAKELAB_STATE_ROOT=/tmp/flakelab-check-state$' ${wrapper}
+      grep -q -- '-zstd-[^/:]*/bin' ${wrapper}
+      grep -q -- '-jq-[^/:]*/bin' ${wrapper}
+      grep -q -- '-gawk-[^/:]*/bin' ${wrapper}
+      grep -q -- '-scripts/codex-cleanup "\$@"$' ${wrapper}
+      grep -q '^ *export CODEX_CLEANUP_PERIOD_DAYS=7$' ${backupOf on}/bin/nix-backup
+      if grep -q CODEX_CLEANUP_PERIOD_DAYS ${backupOf noWindow}/bin/nix-backup; then
+        echo "nix-backup exports a Codex pull window without codexCleanupPeriodDays" >&2
+        exit 1
+      fi
+      touch $out
     '';
 
   # `gh auth login` and `glab auth login` cannot write their credential helper

@@ -1,6 +1,7 @@
 # The state root replicated by Syncthing through one untrusted hub (options.nix
 # stateSyncthing). Null contributes nothing. The box holds plaintext; the hub
-# holds the folder Receive Encrypted, so it never gets the password.
+# holds the folder Receive Encrypted, so it never gets the password. An optional
+# trustedHub gets the folder without the password, so it holds plaintext too.
 {
   config,
   lib,
@@ -10,6 +11,7 @@
 let
   cfg = config.flakelab;
   st = cfg.stateSyncthing;
+  trusted = st.trustedHub;
   home = config.users.users.${cfg.username}.home;
   secretDir = "/run/flakelab-syncthing";
   passwordFile = "${secretDir}/${st.folderId}.password";
@@ -47,6 +49,10 @@ in
         assertion = cfg.sopsSecretsFile != null;
         message = "flakelab.stateSyncthing reads the folder password from the sops render: set sopsSecretsFile.";
       }
+      {
+        assertion = trusted == null || (trusted.name != st.hubName && trusted.deviceId != st.hubDeviceId);
+        message = "flakelab.stateSyncthing.trustedHub needs a name and device ID other than the hub's (hubName, hubDeviceId): the plaintext replica must be a device of its own.";
+      }
     ];
 
     services.syncthing = {
@@ -66,18 +72,30 @@ in
       overrideFolders = true;
       settings = {
         options.urAccepted = -1;
-        devices.${st.hubName} = {
-          id = st.hubDeviceId;
-          addresses = st.hubAddresses;
+        devices = {
+          ${st.hubName} = {
+            id = st.hubDeviceId;
+            addresses = st.hubAddresses;
+          };
+        }
+        // lib.optionalAttrs (trusted != null) {
+          ${trusted.name} = {
+            id = trusted.deviceId;
+            inherit (trusted) addresses;
+          };
         };
         folders.${st.folderId} = {
           path = cfg.stateRoot;
+          # The hub gets ciphertext under the password. The trusted device gets plaintext
+          # and goes in as a bare name: an attrset entry would carry the submodule's
+          # encryptionPasswordFile = null, which syncthing-init fails to render.
           devices = [
             {
               name = st.hubName;
               encryptionPasswordFile = passwordFile;
             }
-          ];
+          ]
+          ++ lib.optional (trusted != null) trusted.name;
           # A box without stateTranscripts never reads the transcript trees, so they
           # stay off its disk. Never null, which syncthing-init would skip: with
           # transcripts on it posts an empty list, and Syncthing deletes .stignore.

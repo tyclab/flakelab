@@ -680,8 +680,19 @@ transcript_epoch() {
   REPLY="$(date -d "${stamp}" +%s 2> /dev/null)" || return 1
 }
 
+# The pull window in seconds: Claude's cleanupPeriodDays (30 when unset or not a
+# whole positive number), Codex's codexCleanupPeriodDays from
+# CODEX_CLEANUP_PERIOD_DAYS. Codex without one has no window (REPLY empty) and
+# every rollout is pulled: nothing deletes its local copies, so nothing churns.
+# With one, codex-cleanup deletes what is older and this keeps it gone.
 transcript_window() {
   local days
+  if [[ "${TX_KIND}" == codex ]]; then
+    REPLY=""
+    days="${CODEX_CLEANUP_PERIOD_DAYS:-}"
+    [[ "${days}" == <1-> ]] && REPLY=$(( days * 86400 ))
+    return 0
+  fi
   days="$(jq -er '.cleanupPeriodDays | select(type == "number" and . > 0 and . == floor)' \
     "${HOME_DIR}/.claude/settings.json" 2> /dev/null)" || days=30
   REPLY=$(( days * 86400 ))
@@ -711,15 +722,20 @@ claude_session_present() {
   [[ -f "$1" ]] || { ${DRY_RUN} && [[ -n "${CLAUDE_PULL_PLANNED[$1]:-}" ]] }
 }
 
+# Whether the pull leaves out a state-root transcript this box lacks: older than
+# the window by its tail. A Codex child rollout is a file of its own and ages by
+# its own tail; a Claude subagent follows its parent.
 transcript_age_skip() {
   local rel="$1" now="$2" window="$3"
-  [[ "${TX_KIND}" == claude ]] || return 1
+  [[ -n "${window}" ]] || return 1
   [[ -f "${TX_HOME}/${rel}" ]] && return 1
-  local -a segs=("${(@s:/:)rel}")
-  if (( ${#segs} > 2 )); then
-    # Missing subagents follow their parent, including old resumed-session context.
-    claude_session_present "${TX_HOME}/${segs[1]}/${segs[2]}.jsonl" && return 1
-    return 0
+  if [[ "${TX_KIND}" == claude ]]; then
+    local -a segs=("${(@s:/:)rel}")
+    if (( ${#segs} > 2 )); then
+      # Missing subagents follow their parent, including old resumed-session context.
+      claude_session_present "${TX_HOME}/${segs[1]}/${segs[2]}.jsonl" && return 1
+      return 0
+    fi
   fi
   transcript_epoch "${TX_STATE}/${rel}" || return 1
   (( now - REPLY > window ))

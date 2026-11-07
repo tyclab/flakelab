@@ -224,6 +224,7 @@ fixture() {
   FIX_DECISIONS="${FIX_STATE}/.flakelab-state-gate/decisions.jsonl"
   STATE=""
   TRANSCRIPTS=""
+  CODEX_DAYS=""
   TRANSCRIPT_SECRETS=""
   SOPS=""
   FAKE_SECRET=""
@@ -286,6 +287,7 @@ run_backup() {
   OUT="$(FLAKELAB_BACKUP_ROOT="${FIX_ROOT}" FLAKELAB_HOME_DIR="${FIX_HOME}" \
     FLAKELAB_STATE_ROOT="${STATE}" FLAKELAB_STATE_TRANSCRIPTS="${TRANSCRIPTS}" \
     FLAKELAB_STATE_TRANSCRIPT_SECRETS="${TRANSCRIPT_SECRETS}" FLAKELAB_SOPS_RENDER="${SOPS}" \
+    CODEX_CLEANUP_PERIOD_DAYS="${CODEX_DAYS}" \
     PATH="${run_path}" \
     FAKE_GITLEAKS_SECRET="${FAKE_SECRET}" FAKE_GITLEAKS_BROKEN="${FAKE_BROKEN}" \
     FAKE_GITLEAKS_SECRET2="${FAKE_SECRET2}" FAKE_GITLEAKS_SPAN="${FAKE_SPAN}" \
@@ -4017,6 +4019,41 @@ run_restore
 check   "the restore exits clean"                "${RC}" "0"
 absent  "a restore skips the archived one too"   "${CX}/sessions/2026/09/20/rollout-c.jsonl"
 absent  "and the compressed one"                 "${CX}/sessions/2026/09/20/rollout-d.jsonl"
+
+print -r -- "with codexCleanupPeriodDays the Codex pull leaves an old rollout this box lacks in the state root"
+state_fixture codex-pull-window
+TRANSCRIPTS=1
+codex_home
+CODEX_DAYS=7
+CXS="${FIX_STATE}/codex/sessions"
+mkdir -p "${CXS}/2026/09/01" "${CXS}/2026/11/06" "${CX}/sessions/2026/09/02" "${CXS}/2026/09/02"
+jq -cn --arg ts "${old_stamp}" '{timestamp:$ts,type:"session_meta"}' > "${CXS}/2026/09/01/rollout-old.jsonl"
+jq -cn --arg ts "${fresh_stamp}" '{timestamp:$ts,type:"session_meta"}' > "${CXS}/2026/11/06/rollout-young.jsonl"
+# A child rollout is a file of its own: young beside an old parent, it ages by its own tail.
+jq -cn --arg ts "${fresh_stamp}" '{timestamp:$ts,type:"session_meta"}' > "${CXS}/2026/09/01/rollout-child.jsonl"
+print -r -- '{"type":"session_meta"}' > "${CXS}/2026/09/01/rollout-unknown.jsonl"
+# An old rollout still here, its state copy one line longer: the pull grows it as before.
+jq -cn --arg ts "${old_stamp}" '{timestamp:$ts,n:1}' > "${CX}/sessions/2026/09/02/rollout-here.jsonl"
+cp "${CX}/sessions/2026/09/02/rollout-here.jsonl" "${CXS}/2026/09/02/rollout-here.jsonl"
+jq -cn --arg ts "${old_stamp}" '{timestamp:$ts,n:2}' >> "${CXS}/2026/09/02/rollout-here.jsonl"
+touch -d '1 hour ago' "${CX}/sessions/2026/09/02/rollout-here.jsonl"
+run_backup --state-only --force
+check    "the run exits clean"                         "${RC}" "0"
+absent   "an old rollout this box lacks is not pulled" "${CX}/sessions/2026/09/01/rollout-old.jsonl"
+is_file  "its state-root copy stays"                   "${CXS}/2026/09/01/rollout-old.jsonl"
+is_file  "a young one is pulled"                       "${CX}/sessions/2026/11/06/rollout-young.jsonl"
+is_file  "a young child beside an old parent is pulled" "${CX}/sessions/2026/09/01/rollout-child.jsonl"
+is_file  "an unknown age stays eligible"               "${CX}/sessions/2026/09/01/rollout-unknown.jsonl"
+check    "an old local copy still grows from a longer state copy" \
+  "$(wc -l < "${CX}/sessions/2026/09/02/rollout-here.jsonl")" "2"
+contains "the skip is reported"                        "${OUT}" "Transcripts: 1 skipped by age"
+run_restore
+check    "the restore exits clean"                     "${RC}" "0"
+absent   "a restore leaves the old one out too"        "${CX}/sessions/2026/09/01/rollout-old.jsonl"
+CODEX_DAYS=""
+run_backup --state-only --force
+check    "the run without a window exits clean"        "${RC}" "0"
+is_file  "without codexCleanupPeriodDays it is pulled as before" "${CX}/sessions/2026/09/01/rollout-old.jsonl"
 
 print -r -- "a longer Codex session that forks the local one parks the local branch first"
 state_fixture codex-fork

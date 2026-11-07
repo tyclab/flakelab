@@ -521,10 +521,11 @@ timer. It needs `stateRoot` but not `backupAutostart`, so a box that should not
 run the daily payload pass still converges its state, and while it is scheduled
 a closing Claude Code session is pushed at once.
 
-Claude's local transcript cleanup window is pinned to 30 days. Automatic pulls
-and restores leave absent sessions older than that window in the archive;
-the archive retains their contents. To bring one back, including its subagents
-and tool-result files, run `flakelab backup --fetch-session <session-uuid>`, then
+Claude's local transcript cleanup window is `claudeCleanupPeriodDays` (30 days
+by default). Automatic pulls and restores leave absent sessions older than that
+window in the archive; the archive retains their contents. To bring one back,
+including its subagents and tool-result files, run
+`flakelab backup --fetch-session <session-uuid>`, then
 `claude --resume <session-uuid>`. Fetch requires `stateRoot` and
 `stateTranscripts`, preserves active local transcripts, and supports `--dry-run`.
 Fetched transcripts keep their last-entry age, so resume promptly before the
@@ -532,12 +533,34 @@ next Claude cleanup; fetch again if that sweep removes them. Always resume the
 local copy; resuming a path inside the state root would send raw appends past
 the secret gate.
 
+`codexCleanupPeriodDays = 7;` gives Codex rollouts a local window too: the
+daily `flakelab-codex-cleanup` timer deletes a rollout in `~/.codex/sessions`
+or `~/.codex/archived_sessions`, compressed or not, whose last entry is older
+than that many days, once its copy in the state root is complete: as many
+lines or more, and the same timestamp on the rollout's last timestamped line
+(a redaction changes a copy's length, so bytes are not compared). A rollout
+without such a copy, or one a running process holds open, stays. Automatic
+pulls and restores then leave a missing rollout older than the window in the
+state root, so a deleted one stays gone, but only when every box sharing the
+state root sets the option: a box left at the default pulls old rollouts back,
+and its push re-creates copies pruned from the state root. To bring a cleaned
+rollout back, copy it from `<stateRoot>/codex/sessions/<yyyy>/<mm>/<dd>/` into
+`~/.codex/sessions/<yyyy>/<mm>/<dd>/` and resume that local copy before the
+next daily run deletes it again; never resume it in place in the state root,
+which would send raw appends past the secret gate, as with Claude. It needs
+`stateRoot` and `stateTranscripts`; each run logs one line of counts
+(`codex-cleanup: scanned=N deleted=N kept_unsynced=N kept_young=N`). Unset
+(the default), nothing is deleted and every rollout is pulled, as before.
+
 `stateSyncthing = { hubDeviceId = "…"; hubName = "hub"; passwordEnvKey = "STATE_PASSWORD"; };`
 makes the box its own sync client: Syncthing with one folder, the state root,
 shared with an untrusted hub that holds it Receive Encrypted under a password
 read from the sops render, so the hub never sees plaintext. It needs a Linux
 `stateRoot` (not a `/mnt` mount) and `sopsSecretsFile`; `nix/options.nix` has
 the rest (`hubAddresses`, `folderId`, `configDir`, `guiAddress`).
+`trustedHub = { deviceId = "…"; addresses = [ … ]; }` adds a second device that
+gets the folder without the password: a processing replica that holds plaintext,
+so it belongs on a disk you trust as much as the box's own.
 
 Crash recovery needs no state root at all: `flakelab-sessions-autosave`
 snapshots the running agent sessions (Claude Code, Codex) every

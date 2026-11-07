@@ -503,7 +503,8 @@ a NAS client or nothing at all is outside this repo's knowledge, with one
 exception: `stateSyncthing` (`nix/state-syncthing.nix`) runs Syncthing on the
 box with the state root as its only folder, shared with one always-on hub that
 holds it Receive Encrypted. The folder password comes from the sops render, so
-the hub and its disk only ever see ciphertext.
+the hub and its disk only ever see ciphertext. An optional `trustedHub` is a second
+device that gets the folder without the password: a plaintext replica for processing.
 
 A box that leaves `stateTranscripts` off never reads the transcript trees, so it
 does not take them from the folder either: syncthing-init writes
@@ -646,7 +647,22 @@ the state root has to converge on its own:
   `<stateRoot>/codex/diverged/` or `…/diverged/codex/`. The pull leaves a
   session alone that this box archived (`archived_sessions/`) or compressed
   (`<name>.zst` beside it), since the plain copy would undo the one or shadow
-  the other. `codex resume <id>` finds a pulled session by id: Codex falls back
+  the other. Without `codexCleanupPeriodDays` every rollout this box lacks is
+  pulled, whatever its age. With it, the daily `flakelab-codex-cleanup` timer
+  deletes a local rollout (archived and compressed ones included) older than
+  that many days once its state-root copy is complete: at least as many lines
+  as the rollout unpacked, and at the number of its last line with a top-level
+  `timestamp` (the tail line its age is read from, so a last line cut
+  mid-write is covered by the count) a line with the same timestamp. Lines,
+  not bytes, here too: a redaction changes a line's length and never its
+  timestamp. The pull and the restore leave a missing rollout older than the
+  same window in the state root, measured by the same tail timestamp (unknown
+  ages stay eligible): a deleted rollout stays gone, so a prune of the state
+  root holds, as long as every box sharing the state root sets the option. A
+  box left at the default pulls old rollouts back, and its push re-creates
+  copies pruned from the state root.
+  A child rollout is a file of its own and ages by its own tail.
+  `codex resume <id>` finds a pulled session by id: Codex falls back
   to the files when its SQLite state does not know the thread. Side files, the
   manifest and `--state-gc` stay Claude's: sessions live in dated folders, not
   per-checkout slugs.

@@ -330,6 +330,13 @@ in
       description = "Days Claude Code keeps an idle local transcript before its own cleanup deletes it: asserted into settings.json as cleanupPeriodDays. The state sync pulls a missing local session back only within this window, so a box whose transcripts live on in the state root (stateTranscripts) can set it low.";
     };
 
+    codexCleanupPeriodDays = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      example = 7;
+      description = "Days a local Codex rollout (~/.codex/sessions/**/rollout-*.jsonl, ~/.codex/archived_sessions/**/*.jsonl, either one compressed to .zst) stays after its last entry: the daily user timer flakelab-codex-cleanup deletes one that is older, measured from the timestamp in its tail, once its copy in stateRoot (stateTranscripts) is complete: at least as many lines as the rollout (unpacked), and at the number of its last line with a top-level timestamp (the tail line its age is read from) a line with the same timestamp. Bytes are not compared, since a redacted copy is shorter. A rollout with no such copy, or one a running process holds open, stays whatever its age. Each run logs one line of counts. The state sync's pull and restore follow the same window: a missing rollout older than it stays in stateRoot, so a deleted one is not pulled back. That holds only when every box sharing the stateRoot sets this option: a box left at null pulls old rollouts back, and its push re-creates copies pruned from stateRoot. null schedules none and pulls every rollout. Needs stateRoot and stateTranscripts.";
+    };
+
     claudeOutputStyle = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -694,6 +701,30 @@ in
               type = types.str;
               default = "127.0.0.1:8384";
               description = "Where this box's Syncthing GUI and REST API listen. Keep it on loopback: the box's GUI carries no login.";
+            };
+            trustedHub = mkOption {
+              type = types.nullOr (
+                types.submodule {
+                  options = {
+                    name = mkOption {
+                      type = types.str;
+                      default = "trusted-hub";
+                      description = "Local name of the trusted device in this box's Syncthing config; it must differ from hubName.";
+                    };
+                    deviceId = mkOption {
+                      type = types.str;
+                      description = "Full device ID of the trusted device; it must differ from hubDeviceId.";
+                    };
+                    addresses = mkOption {
+                      type = types.listOf types.str;
+                      default = [ "dynamic" ];
+                      description = "Where this box dials the trusted device, e.g. [ \"tcp://hub2.example:22000\" \"dynamic\" ].";
+                    };
+                  };
+                }
+              );
+              default = null;
+              description = "A second device beside the hub that gets the state root in plaintext. The hub is the backup: it holds the folder Receive Encrypted and never gets the password. The trusted device is the processing replica: the folder is shared with it without an encryption password, so it stores plaintext and must sit on a disk you trust as much as the box's own. null adds no device and leaves the hub the folder's only peer.";
             };
           };
         }
