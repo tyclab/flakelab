@@ -521,8 +521,8 @@ a closing Claude Code session is pushed at once.
 
 Claude's local transcript cleanup window is `claudeCleanupPeriodDays` (30 days
 by default). Automatic pulls and restores leave absent sessions older than that
-window in the archive; the archive retains their contents. To bring one back,
-including its subagents and tool-result files, run
+window in the state root. To bring one back, including its subagents and
+tool-result files, run
 `flakelab backup --fetch-session <session-uuid>`, then
 `claude --resume <session-uuid>`. Fetch requires `stateRoot` and
 `stateTranscripts`, preserves active local transcripts, and supports `--dry-run`.
@@ -530,6 +530,13 @@ Fetched transcripts keep their last-entry age, so resume promptly before the
 next Claude cleanup; fetch again if that sweep removes them. Always resume the
 local copy; resuming a path inside the state root would send raw appends past
 the secret gate.
+
+Where a hub archives the state root (as its `stateSyncthing.trustedHub`, below),
+the state root holds a session for 90 days after its last entry;
+`--fetch-session` serves those 90 days. After that, and for 180 days in all, the
+full transcript is a cold copy on the Drive folder the hub archives to
+(`<uuid>.<sha8>.jsonl.gz`, its subagents beside it), found through the session's
+card, which lives as long as the copy. After 180 days the session is gone.
 
 `codexCleanupPeriodDays = 7;` gives Codex rollouts a local window too: the
 daily `flakelab-codex-cleanup` timer deletes a rollout in `~/.codex/sessions`
