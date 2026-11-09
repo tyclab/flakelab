@@ -155,7 +155,6 @@ in
     ./packages.nix
     ./zsh.nix
     ./backup.nix
-    ./session-archive.nix
     ./git-ssh.nix
     ./claude.nix
     ./codex.nix

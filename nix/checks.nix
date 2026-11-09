@@ -283,7 +283,6 @@ in
     pkgs.python3
     pkgs.curl
   ] "web";
-  session-archive = suiteCheckWith [ pkgs.python3 ] "session-archive";
   # The compressed-rollout cases make and read .zst files; stdenv has no zstd.
   codex-cleanup = suiteCheckWith [ pkgs.zstd ] "codex-cleanup";
   # The input report reads the lock with `nix eval`, which is under test too.

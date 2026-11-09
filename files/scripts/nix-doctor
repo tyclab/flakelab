@@ -53,11 +53,8 @@ while (( $# > 0 )); do
       echo "run-time overrides of the auto-switch settings, Claude plugins installed,"
       echo "a claude in ~/.npm-global/bin that shadows the native one (reported, never"
       echo "removed), the Claude update blockers, a local flakelab checkout that is"
-      echo "dirty, behind its tracking ref or missing, the secret-gate findings held"
-      echo "back from the shared state root (with the transcripts held back whole), and,"
-      echo "with session-archive areas configured, a last archive run over 48 h ago or"
-      echo "never (only with a schedule), held or review sessions, a backlog over twice"
-      echo "a run, and an archive root that is unreachable or claimed by another box."
+      echo "dirty, behind its tracking ref or missing, and the secret-gate findings held"
+      echo "back from the shared state root (with the transcripts held back whole)."
       echo ""
       echo "The update blockers, in the environment and in ~/.claude/settings.json:"
       echo "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, which stops Claude Code's"
@@ -1125,78 +1122,6 @@ elif [[ -n "${FLAKELAB_STATE_ROOT:-}" ]]; then
   log_ok "no secret findings held back from the state root"
 else
   log_ok "no state root configured for this user — nothing for the gate to hold"
-fi
-
-# The archive's own account (session-archive status --json, pinned by the wrapper):
-# counts and times only, never a path or transcript text.
-log_head "Session archive"
-if [[ -z "${SESSION_ARCHIVE_AREAS:-}" || "${SESSION_ARCHIVE_AREAS}" == "{}" ]]; then
-  log_ok "note: no session-archive area configured (flakelab.sessionArchiveAreas)"
-elif ! (( $+commands[session-archive] )); then
-  log_warn "session-archive is not on PATH"
-elif ! saJson="$(session-archive status --json 2> /dev/null)" \
-    || ! saFields="$(jq -er 'select(all(.held, .review, .last_run_usd, .run_sessions; type == "number")
-          and (.eligible | . == null or type == "number"))
-        | [.last_run, .last_result, .eligible, .held, .review, .last_run_usd, .run_sessions, .root_ok, .owner_ok]
-        | map(tostring | gsub("[\n\r\u001f]"; " ")) | join("\u001f")' <<< "${saJson}" 2> /dev/null)"; then
-  log_warn "session-archive status --json gave no usable answer"
-  log_hint "flakelab session-archive status"
-else
-  local saLast saResult saEligible saHeld saReview saUsd saPerRun saRootOk saOwnerOk saEpoch saAge saRun
-  IFS=$'\x1f' read -r saLast saResult saEligible saHeld saReview saUsd saPerRun saRootOk saOwnerOk <<< "${saFields}"
-  [[ "${saResult}" == null ]] && saResult="no result"
-  # The age catches a broken timer: with no schedule (the wrapper says) runs are by hand, and it is only shown.
-  local saUnscheduled="no schedule (flakelab.sessionArchiveSchedule), so its age is not checked"
-  if [[ "${saLast}" == null && "${SESSION_ARCHIVE_SCHEDULED:-}" != true ]]; then
-    log_ok "note: the session archive has never run; ${saUnscheduled}"
-  elif [[ "${saLast}" == null ]]; then
-    log_warn "the session archive has never run"
-    log_hint "the timer's first slot may be ahead (systemctl --user list-timers); flakelab session-archive run starts one now"
-  elif ! saEpoch="$(date -d "${saLast}" +%s 2> /dev/null)"; then
-    log_warn "cannot read the time of the session archive's last run"
-  else
-    saAge=$(( $(date +%s) - saEpoch ))
-    saRun="last run $(( saAge / 3600 )) h ago (${saResult}, $(printf '%.2f' "${saUsd}") USD)"
-    if [[ "${SESSION_ARCHIVE_SCHEDULED:-}" != true ]]; then
-      log_ok "note: ${saRun}; ${saUnscheduled}"
-    elif (( saAge >= 48 * 3600 )); then
-      log_warn "the session archive last ran $(( saAge / 3600 )) h ago, over 48 h"
-      log_hint "systemctl --user status flakelab-session-archive.timer flakelab-session-archive.service"
-    else
-      log_ok "${saRun}"
-    fi
-  fi
-  # ok and capped are a run's normal ends; "no result" is no run yet, or one in progress.
-  if [[ "${saResult}" != ok && "${saResult}" != capped && "${saResult}" != "no result" ]]; then
-    log_warn "the session archive's last run ended ${saResult}"
-    log_hint "journalctl --user -u flakelab-session-archive.service -n 20"
-  fi
-  if (( saHeld > 0 )); then
-    log_warn "${saHeld} held session(s): each run retries them; after three holds only run --session <uuid> does"
-  fi
-  if (( saReview > 0 )); then
-    log_warn "${saReview} session(s) waiting for review, with no card"
-    log_hint "flakelab session-archive review"
-  fi
-  # eligible is the last full run's count (status never scans; --session runs count none); null before one finished.
-  if [[ "${saEligible}" != null ]] && (( saEligible > 2 * saPerRun )); then
-    log_warn "${saEligible} sessions eligible, more than twice the ${saPerRun} a run takes"
-    log_hint "raise flakelab.sessionArchiveRunSessions, or run flakelab session-archive run by hand"
-  fi
-  if (( saHeld == 0 && saReview == 0 )) && [[ "${saEligible}" == null ]]; then
-    log_ok "none held, none waiting for review; no backlog count until a full run finishes"
-  elif (( saHeld == 0 && saReview == 0 && saEligible <= 2 * saPerRun )); then
-    log_ok "${saEligible} eligible (${saPerRun} per run), none held, none waiting for review"
-  fi
-  if [[ "${saRootOk}" == false ]]; then
-    log_warn "the archive root (flakelab.sessionArchiveRoot) is unreachable: a run takes no session until it is back"
-  fi
-  if [[ "${saOwnerOk}" == false ]]; then
-    log_warn "the archive root or a library is claimed by another box (.owner): a run exits 1"
-  fi
-  if [[ "${saRootOk}" == true && "${saOwnerOk}" != false ]]; then
-    log_ok "archive root reachable"
-  fi
 fi
 
 echo ""
