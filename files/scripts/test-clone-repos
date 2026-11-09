@@ -136,6 +136,30 @@ check    "it exits clean"                   "${RC}" "0"
 contains "the branch is reported stranded"  "${OUT}" "upstream gone"
 check    "but main is current"              "$(sha gone main)" "$(sha gone origin/main)"
 
+print -r -- "a branch pushed without -u is reported as pushed, not never pushed"
+mk_up pushed
+clone_into pushed
+git -C "${BASE}/repos/pushed" switch -q -c work
+print -r -- work >> "${BASE}/repos/pushed/f"
+git -C "${BASE}/repos/pushed" commit -qam work
+git -C "${BASE}/repos/pushed" push -q origin work
+push_to pushed main after-push
+run_sweep "$(spec pushed)"
+check    "it exits clean"                   "${RC}" "0"
+contains "the branch is reported pushed"    "${OUT}" "pushed, no upstream set"
+contains "naming the remote that has it"    "${OUT}" "work (on origin)"
+excludes "and not as never pushed"          "${OUT}" "never pushed"
+check    "and main is current"              "$(sha pushed main)" "$(sha pushed origin/main)"
+
+print -r -- "a branch no remote has is reported never pushed"
+mk_up local
+clone_into local
+git -C "${BASE}/repos/local" switch -q -c scratch
+run_sweep "$(spec local)"
+check    "it exits clean"                   "${RC}" "0"
+contains "the branch is reported local-only" "${OUT}" "never pushed"
+excludes "and not as pushed"                "${OUT}" "pushed, no upstream set"
+
 print -r -- "a dirty tree blocks the rebase but not the default branch"
 mk_up dirty
 clone_into dirty
