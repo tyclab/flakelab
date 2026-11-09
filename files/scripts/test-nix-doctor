@@ -31,7 +31,7 @@ TOOLS="${BASE}/tools"
 mkdir -p "${TOOLS}"
 for f in ${^path}/*(N-*); do
   case "${f:t}" in
-    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|session-archive|flakelab-switch-result|flakelab-nix-access-tokens|*.exe|wslpath|xdg-open) continue ;;
+    systemctl|loginctl|ssh|ssh-add|glab|gh|bw|claude|codex|tycswap|cswap|flakelab-switch-result|flakelab-nix-access-tokens|*.exe|wslpath|xdg-open) continue ;;
   esac
   [[ -e "${TOOLS}/${f:t}" ]] || ln -s "${f}" "${TOOLS}/${f:t}"
 done
@@ -709,104 +709,8 @@ lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agen
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
-# archive_section [VAR=value...]: the doctor's "Session archive" section with areas and a schedule configured
-# and a session-archive on PATH whose `status --json` prints FAKE_SA_STATUS and exits FAKE_SA_RC.
-SA_TOOLS="${BASE}/sa-tools"
-mkdir -p "${SA_TOOLS}"
-cat > "${SA_TOOLS}/session-archive" <<'STUB'
-#!/usr/bin/env zsh
-[[ "$*" == "status --json" ]] || exit 2
-print -r -- "${FAKE_SA_STATUS:-}"
-exit "${FAKE_SA_RC:-0}"
-STUB
-chmod +x "${SA_TOOLS}/session-archive"
-SA_AREAS='{"work":{"description":"d","library":"/srv/cards","projects":["p"]}}'
-archive_section() {
-  section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" \
-    SESSION_ARCHIVE_SCHEDULED=true "$@"
-}
-# archive_status [<jq edit>]: a healthy status --json answer, its last run <hours> (1) ago, edited as given.
-archive_status() {
-  jq -cn --arg t "$(date -u -d "${2:-1} hours ago" +%Y-%m-%dT%H:%M:%S+00:00)" \
-    '{last_run: $t, last_result: "ok", eligible: 3, held: 0, review: 0, last_run_usd: 0.42, run_sessions: 20, root_ok: true, owner_ok: true} | '"${1:-.}"
-}
-
-print -r -- "session archive: test_doctor_section_warns_on_held_sessions"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 2')")"
-contains "held sessions warn with their count" "${out}" "[WARN] 2 held"
-check    "and nothing else does"               "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
-
-print -r -- "session archive: a recent run with nothing held, in review or backed up passes"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status)")"
-contains "the run, its result and cost" "${out}" "[ OK ] last run 1 h ago (ok, 0.42 USD)"
-contains "the counts"                   "${out}" "[ OK ] 3 eligible (20 per run), none held, none waiting for review"
-contains "the root"                     "${out}" "[ OK ] archive root reachable"
-lacks    "no warning"                   "${out}" "[WARN]"
-
-print -r -- "session archive: each finding is its own warning"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.review = 1')")"
-contains "review names the count"   "${out}" "[WARN] 1 session(s) waiting for review"
-contains "and the command"          "${out}" "flakelab session-archive review"
-contains "a run 50 h ago is stale"  "$(archive_section FAKE_SA_STATUS="$(archive_status . 50)")" "[WARN] the session archive last ran 50 h ago, over 48 h"
-lacks    "47 h is not"              "$(archive_section FAKE_SA_STATUS="$(archive_status . 47)")" "[WARN]"
-contains "no run at all warns"      "$(archive_section FAKE_SA_STATUS="$(archive_status '.last_run = null | .last_result = null')")" "[WARN] the session archive has never run"
-contains "an unreadable time warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.last_run = "yesterday-ish"')")" "[WARN] cannot read the time of the session archive's last run"
-contains "a backlog over twice a run warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = 41')")" "[WARN] 41 sessions eligible, more than twice the 20 a run takes"
-lacks    "twice a run does not"     "$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = 40')")" "[WARN]"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = null')")"
-lacks    "no counted backlog yet is no finding" "${out}" "[WARN]"
-contains "and the counts say so"     "${out}" "[ OK ] none held, none waiting for review; no backlog count until a full run finishes"
-lacks    "never printed as null"     "${out}" "null"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.eligible = null | .held = 1')")"
-check    "held still warns, alone"   "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
-lacks    "with no all-clear"         "${out}" "none held"
-contains "an unreachable root warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.root_ok = false')")" "[WARN] the archive root (flakelab.sessionArchiveRoot) is unreachable"
-contains "another box's claim warns" "$(archive_section FAKE_SA_STATUS="$(archive_status '.owner_ok = false')")" "[WARN] the archive root or a library is claimed by another box"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.root_ok = null | .owner_ok = null')")"
-lacks    "an unchecked root is no finding" "${out}" "[WARN]"
-lacks    "nor called reachable"            "${out}" "archive root reachable"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 1 | .review = 2 | .root_ok = false')")"
-check    "three findings, three warnings" "$(print -r -- "${out}" | grep -c '\[WARN\]')" "3"
-lacks    "and no all-clear for the counts" "${out}" "none held"
-out="$(archive_section FAKE_SA_STATUS="$(archive_status '.held = 2 | .root_ok = false | .last_result = "error\nTraceback"')")"
-contains "a multi-line result does not hide the held count" "${out}" "[WARN] 2 held"
-contains "nor the root"                   "${out}" "[WARN] the archive root (flakelab.sessionArchiveRoot) is unreachable"
-contains "and reads as one line"          "${out}" "[ OK ] last run 1 h ago (error Traceback, 0.42 USD)"
-
-print -r -- "session archive: a last run that ended in failure warns; ok, capped and one in progress do not"
-for saCase in model_unavailable root_unreachable library_unreachable error; do
-  out="$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = \"${saCase}\"")")"
-  contains "${saCase}: the failed run's result warns" "${out}" "[WARN] the session archive's last run ended ${saCase}"
-  check    "${saCase}: and nothing else does"         "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
-done
-for saCase in '"ok"' '"capped"' null; do
-  lacks "${saCase}: no warning" "$(archive_section FAKE_SA_STATUS="$(archive_status ".last_result = ${saCase}")")" "[WARN]"
-done
-
-print -r -- "session archive: with no schedule the run's age is a note, the other findings stay"
-out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status . 50)")"
-contains "a run 50 h ago is shown"        "${out}" "[ OK ] note: last run 50 h ago (ok, 0.42 USD); no schedule (flakelab.sessionArchiveSchedule), so its age is not checked"
-lacks    "and not warned about"           "${out}" "[WARN]"
-out="$(archive_section SESSION_ARCHIVE_SCHEDULED=false FAKE_SA_STATUS="$(archive_status '.last_run = null | .last_result = null | .held = 2')")"
-contains "no run at all is a note"        "${out}" "[ OK ] note: the session archive has never run; no schedule"
-check    "held still warns, alone"        "$(print -r -- "${out}" | grep -c '\[WARN\]')" "1"
-contains "it is the held count"           "${out}" "[WARN] 2 held"
-contains "the wrapper variable absent reads as no schedule" "$(section 'Session archive' PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}" FAKE_SA_STATUS="$(archive_status . 50)")" "[ OK ] note: last run 50 h ago"
-
-print -r -- "session archive: an answer it cannot use warns"
-contains "a failing status"   "$(archive_section FAKE_SA_RC=1)" "[WARN] session-archive status --json gave no usable answer"
-contains "a stub's silence"   "$(archive_section)" "[WARN] session-archive status --json gave no usable answer"
-contains "a missing count"    "$(archive_section FAKE_SA_STATUS="$(archive_status 'del(.held)')")" "[WARN] session-archive status --json gave no usable answer"
-contains "no session-archive" "$(section 'Session archive' PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other SESSION_ARCHIVE_AREAS="${SA_AREAS}")" "[WARN] session-archive is not on PATH"
-
-print -r -- "session archive: no area configured is a note, and the archive is not asked"
-for areas in unset '' '{}'; do
-  local -a env=(PATH="${SA_TOOLS}:${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other FAKE_SA_RC=1)
-  [[ "${areas}" == unset ]] || env+=(SESSION_ARCHIVE_AREAS="${areas}")
-  out="$(section 'Session archive' "${env[@]}")"
-  contains "${areas:-empty}: a note" "${out}" "[ OK ] note: no session-archive area configured (flakelab.sessionArchiveAreas)"
-  lacks    "${areas:-empty}: no warning" "${out}" "[WARN]"
-done
+print -r -- "no session archive section: the archive lane runs on the hub, which reports on it"
+lacks "a full run has no such section" "$(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other zsh "${DOCTOR}" 2>&1 < /dev/null)" "==> Session archive"
 
 print -r -- "secrets: the old ~/.config/tyc is named with the move, its absence is not"
 secrets() { section Secrets PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other }
