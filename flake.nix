@@ -43,38 +43,9 @@
       # Re-check on each channel bump: drop an entry stable has caught up with.
       # Imported with explicit config, not read off `legacyPackages`, which is a
       # separate evaluation that never sees nix/configuration.nix's allowUnfree.
-      # virtualenv 21.14.12 declares `packaging>=26.3` as a runtime dependency and
-      # imports it at startup (seed/wheels/acquire.py); nixpkgs' derivation lists
-      # distlib, filelock, platformdirs and python-discovery only, so the
-      # virtualenv pre-commit runs for every python hook exited with
-      # ModuleNotFoundError before pip ran. Drop once unstable's virtualenv lists
-      # packaging; checks.pre-commit-virtualenv creates an environment with the
-      # shipped binary.
-      virtualenvPackagingOverlay = _final: prev: {
-        pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
-          (
-            pyfinal: pyprev:
-            let
-              hasPackaging = builtins.any (p: (p.pname or "") == "packaging") (
-                pyprev.virtualenv.dependencies or [ ]
-              );
-            in
-            {
-              virtualenv = pyprev.virtualenv.overridePythonAttrs (old: {
-                dependencies = (old.dependencies or [ ]) ++ nixpkgs.lib.optional (!hasPackaging) pyfinal.packaging;
-                # As for pre-commit below: no binary cache holds the override, and
-                # the added dependency changes nothing nixpkgs' suite covers.
-                doCheck = false;
-                dontUsePytestCheck = true;
-              });
-            }
-          )
-        ];
-      };
       pkgsUnstable = import nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
-        overlays = [ virtualenvPackagingOverlay ];
       };
       unstableOverlay = _final: _prev: {
         # opentofu: stable is below the `required_version` floor the infra repos set.
@@ -94,16 +65,56 @@
       # own clones do: a cold hook cache in a linked worktree, or under `commit -a`,
       # otherwise gets the commit's index overwritten by npm's clone of the hook.
       # pre-commit/pre-commit#3773; #3774 covers npm only, pip's git+ deps leak too.
+      #
+      # virtualenv 21.14.12 declares `packaging>=26.3` as a runtime dependency and
+      # imports it at startup (seed/wheels/acquire.py); nixpkgs' derivation lists
+      # distlib, filelock, platformdirs and python-discovery only, so the
+      # virtualenv pre-commit runs for every python hook exited with
+      # ModuleNotFoundError before pip ran. The dependency is added in the python
+      # set pre-commit is built from, not in an overlay on the whole unstable
+      # import: that changed every derivation with virtualenv in its build closure,
+      # and playwright's browsers reach it (playwright-firefox -> pipewire -> ffado
+      # -> scons -> distutils, whose suite pulls jaraco-envs), so each box built
+      # pipewire, gst-plugins-bad, subversion and both browsers from source.
+      # Retires itself once unstable's virtualenv lists packaging;
+      # checks.pre-commit-virtualenv creates an environment with the shipped binary.
       preCommitOverlay = _final: prev: {
-        pre-commit = prev.pre-commit.overridePythonAttrs (old: {
-          patches = (old.patches or [ ]) ++ [ ./nix/pre-commit-installer-env.patch ];
-          # No binary cache holds the patched build, so nixpkgs' suite would rerun
-          # on every CI job; checks.pre-commit-installer-env covers the patch. Both
-          # flags are needed: the pytest setup-hook gates only on dontUsePytestCheck,
-          # while doCheck drops nativeCheckInputs from the closure.
-          doCheck = false;
-          dontUsePytestCheck = true;
-        });
+        pre-commit =
+          (prev.pre-commit.override (args: {
+            python3Packages = args.python3Packages.overrideScope (
+              pyfinal: pyprev:
+              let
+                hasPackaging = builtins.any (p: (p.pname or "") == "packaging") (
+                  pyprev.virtualenv.dependencies or [ ]
+                );
+              in
+              {
+                # The attribute is always present: an overlay whose names depend on
+                # the previous scope recurses. Its value is nixpkgs' virtualenv once
+                # that lists packaging.
+                virtualenv =
+                  if hasPackaging then
+                    pyprev.virtualenv
+                  else
+                    pyprev.virtualenv.overridePythonAttrs (old: {
+                      dependencies = (old.dependencies or [ ]) ++ [ pyfinal.packaging ];
+                      # As for pre-commit: no binary cache holds the override, and the
+                      # added dependency changes nothing nixpkgs' suite covers.
+                      doCheck = false;
+                      dontUsePytestCheck = true;
+                    });
+              }
+            );
+          })).overridePythonAttrs
+            (old: {
+              patches = (old.patches or [ ]) ++ [ ./nix/pre-commit-installer-env.patch ];
+              # No binary cache holds the patched build, so nixpkgs' suite would rerun
+              # on every CI job; checks.pre-commit-installer-env covers the patch. Both
+              # flags are needed: the pytest setup-hook gates only on dontUsePytestCheck,
+              # while doCheck drops nativeCheckInputs from the closure.
+              doCheck = false;
+              dontUsePytestCheck = true;
+            });
       };
 
       # 0.12.0 opens mount parents for reading, breaking traversable but unreadable
