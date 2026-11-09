@@ -104,7 +104,7 @@ in
   # The virtualenv binary pre-commit runs for every python hook must create an
   # environment: nixpkgs' virtualenv 21.14.12 lacks the `packaging` it imports at
   # startup, so a cold hook cache died before pip ran (flake.nix's
-  # virtualenvPackagingOverlay). --no-seed keeps the check off the network.
+  # preCommitOverlay). --no-seed keeps the check off the network.
   pre-commit-virtualenv =
     let
       pc = pkgsDev.pre-commit;
