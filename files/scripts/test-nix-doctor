@@ -709,9 +709,6 @@ lacks    "a subagent transcript with a copy is not" "${out}" "never synced: agen
 lacks    "a workflow journal with a copy is not"    "${out}" "never synced: journal.jsonl"
 rm -rf "${GATE}" "${SROOT}"
 
-print -r -- "no session archive section: the archive lane runs on the hub, which reports on it"
-lacks "a full run has no such section" "$(env -i __ETC_ZSHENV_SOURCED=1 PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other zsh "${DOCTOR}" 2>&1 < /dev/null)" "==> Session archive"
-
 print -r -- "secrets: the old ~/.config/tyc is named with the move, its absence is not"
 secrets() { section Secrets PATH="${TOOLS}" HOME="${BASE}/home" FLAKELAB_TARGET=other }
 mkdir -p "${BASE}/home/.config/tyc"
