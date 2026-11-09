@@ -43,9 +43,38 @@
       # Re-check on each channel bump: drop an entry stable has caught up with.
       # Imported with explicit config, not read off `legacyPackages`, which is a
       # separate evaluation that never sees nix/configuration.nix's allowUnfree.
+      # virtualenv 21.14.12 declares `packaging>=26.3` as a runtime dependency and
+      # imports it at startup (seed/wheels/acquire.py); nixpkgs' derivation lists
+      # distlib, filelock, platformdirs and python-discovery only, so the
+      # virtualenv pre-commit runs for every python hook exited with
+      # ModuleNotFoundError before pip ran. Drop once unstable's virtualenv lists
+      # packaging; checks.pre-commit-virtualenv creates an environment with the
+      # shipped binary.
+      virtualenvPackagingOverlay = _final: prev: {
+        pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
+          (
+            pyfinal: pyprev:
+            let
+              hasPackaging = builtins.any (p: (p.pname or "") == "packaging") (
+                pyprev.virtualenv.dependencies or [ ]
+              );
+            in
+            {
+              virtualenv = pyprev.virtualenv.overridePythonAttrs (old: {
+                dependencies = (old.dependencies or [ ]) ++ nixpkgs.lib.optional (!hasPackaging) pyfinal.packaging;
+                # As for pre-commit below: no binary cache holds the override, and
+                # the added dependency changes nothing nixpkgs' suite covers.
+                doCheck = false;
+                dontUsePytestCheck = true;
+              });
+            }
+          )
+        ];
+      };
       pkgsUnstable = import nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
+        overlays = [ virtualenvPackagingOverlay ];
       };
       unstableOverlay = _final: _prev: {
         # opentofu: stable is below the `required_version` floor the infra repos set.
