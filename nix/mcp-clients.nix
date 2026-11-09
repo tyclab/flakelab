@@ -8,7 +8,7 @@ let
   # every wsl box (nix/codex-config.nix); the path itself lives here alone.
   windowsChromePath = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe";
   # renovate: datasource=npm depName=mcp-remote
-  remoteVersion = "0.16.0";
+  remoteVersion = "0.16.1";
   settings = pkgs.writeText "flakelab-mcp.json" (
     builtins.toJSON {
       inherit remoteVersion;
