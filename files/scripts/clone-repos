@@ -196,7 +196,8 @@ process_repo() {
     fi
     # branch.<name>.merge surviving without a resolvable @{upstream} means the
     # remote branch was pruned (MR merged) — the local branch is stranded and the
-    # default branch drifts behind unnoticed. Absent merge config it was never pushed.
+    # default branch drifts behind unnoticed. Absent merge config, a remote-tracking ref
+    # of the branch's name tells a push without -u from a branch no remote has.
     if ! git -C "${dest}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
       local branch merge_ref behind_note=""
       branch="$(git -C "${dest}" symbolic-ref --short -q HEAD 2>/dev/null)"
@@ -212,7 +213,16 @@ process_repo() {
         fi
         print -r -- "REBASE_SKIPPED|${dest}|upstream gone: ${branch} (remote branch pruned${behind_note})" >> "${RESULT_FILE}"
       else
-        print -r -- "REBASE_SKIPPED|${dest}|no upstream configured: ${branch}" >> "${RESULT_FILE}"
+        local r on=""
+        for r in ${(f)"$(git -C "${dest}" remote 2>/dev/null)"}; do
+          git -C "${dest}" rev-parse -q --verify "refs/remotes/${r}/${branch}" >/dev/null 2>&1 \
+            && on+="${on:+, }${r}"
+        done
+        if [[ -n "${on}" ]]; then
+          print -r -- "REBASE_SKIPPED|${dest}|pushed, no upstream set: ${branch} (on ${on})" >> "${RESULT_FILE}"
+        else
+          print -r -- "REBASE_SKIPPED|${dest}|no upstream configured: ${branch}" >> "${RESULT_FILE}"
+        fi
       fi
       return
     fi
@@ -339,7 +349,7 @@ typeset -i cloned=0 fetched=0 rebased=0 rebase_skipped=0 rebase_conflict=0 force
 typeset -i default_ff=0
 typeset -a fail_details=() conflict_details=() force_details=()
 typeset -a default_ff_details=() default_ff_skipped=()
-typeset -a skip_empty=() skip_gone=() skip_unpushed=() skip_dirty=() skip_detached=() skip_other=()
+typeset -a skip_empty=() skip_gone=() skip_unpushed=() skip_untracked=() skip_dirty=() skip_detached=() skip_other=()
 
 while IFS='|' read -r result_status dest err; do
   case "${result_status}" in
@@ -363,6 +373,7 @@ while IFS='|' read -r result_status dest err; do
         empty\ repo*)          skip_empty+=("  ${dest}") ;;
         upstream\ gone*)       skip_gone+=("  ${dest} — ${err#upstream gone: }") ;;
         no\ upstream\ config*) skip_unpushed+=("  ${dest} — ${err#no upstream configured: }") ;;
+        pushed,\ no\ upstream*) skip_untracked+=("  ${dest} — ${err#pushed, no upstream set: }") ;;
         dirty*)                skip_dirty+=("  ${dest}") ;;
         detached*)             skip_detached+=("  ${dest}") ;;
         *)                     skip_other+=("  ${dest} — ${err}") ;;
@@ -408,7 +419,7 @@ fi
 
 if (( rebase_skipped > 0 )); then
   echo ""
-  print -r -- "Rebase skipped (${rebase_skipped}): ${#skip_gone[@]} upstream-gone, ${#skip_empty[@]} empty, ${#skip_unpushed[@]} never-pushed, ${#skip_dirty[@]} dirty, ${#skip_detached[@]} detached, ${#skip_other[@]} other"
+  print -r -- "Rebase skipped (${rebase_skipped}): ${#skip_gone[@]} upstream-gone, ${#skip_empty[@]} empty, ${#skip_unpushed[@]} never-pushed, ${#skip_untracked[@]} pushed-no-upstream, ${#skip_dirty[@]} dirty, ${#skip_detached[@]} detached, ${#skip_other[@]} other"
 
   print_skip_group() {
     local header="$1"; shift
@@ -421,7 +432,8 @@ if (( rebase_skipped > 0 )); then
   print_skip_group "upstream gone — local branch stranded:" "${skip_gone[@]}"
   print_skip_group "dirty working tree — uncommitted changes block rebase:" "${skip_dirty[@]}"
   print_skip_group "detached HEAD:" "${skip_detached[@]}"
-  print_skip_group "never pushed — branch exists only locally:" "${skip_unpushed[@]}"
+  print_skip_group "never pushed — no remote has a branch of this name:" "${skip_unpushed[@]}"
+  print_skip_group "pushed, no upstream set — git branch -u <remote>/<branch> lets the sweep rebase it:" "${skip_untracked[@]}"
   print_skip_group "empty repo — no commits upstream yet, skips on every run:" "${skip_empty[@]}"
   print_skip_group "other:" "${skip_other[@]}"
 fi
