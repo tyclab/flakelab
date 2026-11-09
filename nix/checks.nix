@@ -101,6 +101,24 @@ in
       '
       touch $out
     '';
+  # The virtualenv binary pre-commit runs for every python hook must create an
+  # environment: nixpkgs' virtualenv 21.14.12 lacks the `packaging` it imports at
+  # startup, so a cold hook cache died before pip ran (flake.nix's
+  # virtualenvPackagingOverlay). --no-seed keeps the check off the network.
+  pre-commit-virtualenv =
+    let
+      pc = pkgsDev.pre-commit;
+      virtualenv = nixpkgs.lib.findFirst (
+        p: (p.pname or "") == "virtualenv"
+      ) (throw "pre-commit no longer carries virtualenv; retire this check") pc.propagatedBuildInputs;
+    in
+    pkgs.runCommandLocal "flakelab-check-pre-commit-virtualenv" { } ''
+      export HOME="$TMPDIR/home"
+      mkdir -p "$HOME"
+      ${virtualenv}/bin/virtualenv --no-seed --no-periodic-update "$TMPDIR/venv"
+      "$TMPDIR/venv/bin/python" -c 'import sys; assert sys.prefix == sys.argv[1], sys.prefix' "$TMPDIR/venv"
+      touch $out
+    '';
   clone-repos = suiteCheck "clone-repos";
   gh-repos = suiteCheck "gh-repos";
   gitchecker = suiteCheck "gitchecker";
