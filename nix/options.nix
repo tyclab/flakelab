@@ -422,7 +422,7 @@ in
     claudeAgentDefaults = mkOption {
       type = types.bool;
       default = false;
-      description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\" and skipAutoPermissionPrompt. It leaves remoteControlAtStartup and the env vars Remote Control needs alone: those are claudeRemoteControl's decision. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the force-push deny floor) is written regardless.";
+      description = "Enable the operator's agent-box bundle for Claude Code: settings.permissions.defaultMode = \"auto\" and skipAutoPermissionPrompt. It leaves remoteControlAtStartup and the env vars Remote Control needs alone: those are claudeRemoteControl's decision. Off by default: it is a policy an adopter must choose, not a side effect of installing Claude Code. Everything else claude.nix asserts (attribution, feedbackSurveyRate, installMethod, autoUpdatesChannel, autoMode, the `git push --mirror` deny floor) is written regardless.";
     };
 
     # Its own switch, apart from the trust bundle above: steering a session from
