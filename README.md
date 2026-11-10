@@ -589,8 +589,9 @@ headroom, `tycswap run 2` runs a second account in a second terminal on a
 profile of its own and `eval "$(tycswap env 2)"` pins a shell to it;
 `tycswap codex …` does the same for Codex. `flakelab.tycswapAutoSwitchInterval
 = "2min";` installs a user timer that runs `tycswap auto --once`, moving the
-live login before it hits a limit; the thresholds, the strategy and the
-cooldown are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
+live login before it hits a limit while auto-switch is on (`tycswap auto
+on|off`, the tray's toggle); the thresholds, the strategy and the cooldown
+are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
 by `flakelab backup` (`tycswap/`) and read by `flakelab doctor` (`Switcher`),
 `flakelab web` and `flakelab sessions`.
 
@@ -638,12 +639,15 @@ and follows the pin like the distro's binary, so a tycswap bump is a
 The app writes that token on every start and the tray reads it again by
 itself; the tray switches, toggles auto-switch and opens the distro's
 dashboard, while adding a login stays on the dashboard. Its auto-switch
-toggle starts an engine inside the app: with `tycswapAutoSwitchInterval` set
-the timer is the engine. The service sets `TYCSWAP_AUTO_MANAGED_BY`, so
-the dashboard and tray show the owner and disable that toggle, and the
-server rejects hosted-engine starts (including remembered startup and dry
-runs). Model-window settings remain editable and apply on the next timer
-tick.
+toggle turns auto-switch off and on: it writes tycswap's
+`autoswitch.enabled`, which every tick honours (`tycswap auto off|on` does
+the same from a shell, `tycswap auto status` shows it). With
+`tycswapAutoSwitchInterval` set the timer does the ticking and the service
+sets `TYCSWAP_AUTO_MANAGED_BY`, so the app hosts no second engine; without
+the timer the toggle also starts and stops the engine inside the app. The
+activation seeds the setting to on once, where a box schedules the timer and
+its store holds no choice yet, and never changes it afterwards.
+Model-window settings apply on the next tick.
 
 #### Migrating from flakelab accounts
 

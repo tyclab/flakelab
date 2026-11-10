@@ -7,7 +7,9 @@
 }:
 let
   cfg = osConfig.flakelab;
-  # Timer: one `tycswap auto --once` per interval; tycswap has no engine on/off, so an installed timer is live.
+  # Timer: one `tycswap auto --once` per interval. A tick does nothing while tycswap's own
+  # `autoswitch.enabled` is off (tray, dashboard, `tycswap auto on|off`), so the timer schedules and
+  # the user decides; the activation only seeds "on" where no choice exists yet.
   # App: tycswap's dashboard on loopback for the Windows tray (`tycswap app --remote`, installed by `flakelab tray`); no update check, the binary is this pin.
   on = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
   app = cfg.installTycswap && cfg.tycswapAppPort != null;
@@ -74,7 +76,7 @@ in
         Unit.Description = "flakelab: tycswap's dashboard on 127.0.0.1:${toString cfg.tycswapAppPort} for the Windows tray";
         Service = {
           ExecStart = "${lib.getExe pkgs.tycswap} app --headless --port ${toString cfg.tycswapAppPort} --no-update-check";
-          # The timer owns rotation: dashboard/tray starts are rejected server-side, a remembered hosted engine included.
+          # The timer ticks, so the app hosts no second engine; its toggle writes autoswitch.enabled.
           Environment = lib.optional on "TYCSWAP_AUTO_MANAGED_BY=flakelab-tycswap-autoswitch.timer";
           Restart = "on-failure";
           RestartSec = "5s";
@@ -82,6 +84,18 @@ in
         Install.WantedBy = [ "default.target" ];
       };
     };
+
+  # A box that schedules the timer wants auto-switch on until its user says otherwise: seed the
+  # setting once, never over a choice. Only into an existing store: a settings file written into an
+  # empty one would stand in the way of `tycswap migrate`.
+  home.activation.tycswapAutoDefault = lib.mkIf on (
+    lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      if [ -d "$HOME/.local/share/tycswap" ]; then
+        $DRY_RUN_CMD ${lib.getExe pkgs.tycswap} auto on --if-unset >/dev/null ||
+          echo "flakelab: tycswap auto on --if-unset failed; auto-switch stays as it is" >&2
+      fi
+    ''
+  );
 
   systemd.user.timers = lib.mkIf on {
     flakelab-tycswap-autoswitch = {
