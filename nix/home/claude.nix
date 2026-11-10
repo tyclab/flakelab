@@ -127,7 +127,8 @@ let
   # also recognises the retired engine's command, so a settings.json from an
   # earlier generation loses a hook that would exec a path no longer there.
   tycswapHook = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
-  tycswapHookCmd = "${lib.getExe pkgs.tycswap} auto --once --json >/dev/null 2>&1 || true";
+  # Its events go to the journal like the timer's: a switch nobody can attribute is a gap.
+  tycswapHookCmd = "${lib.getExe pkgs.tycswap} auto --once --json 2>&1 | ${pkgs.systemd}/bin/systemd-cat -t flakelab-tycswap-hook || true";
   tycswapHookArg = lib.optionalString tycswapHook "--arg tycswapHook ${lib.escapeShellArg tycswapHookCmd}";
   tycswapHookJq = ''
     | .hooks = ((.hooks // {})
@@ -177,9 +178,17 @@ let
   # 15-second refresh keeps that reading current while only subagents work.
   statuslineMarketplace = marketplaceOf "statusbar";
   claudeStatuslinePlugin = ''bash "$(ls -d ~/.claude/plugins/cache/${statuslineMarketplace}/statusbar/*/ | sort -V | tail -1)statusline-command.sh"'';
+  # An observation that ticks journals what the tick decided (a switch, an error, a quarantine);
+  # the poll and the no-switch of every 15-second reading stay out, and so does stderr, which a
+  # pinned shell repeats on every reading. The subshell gives up the statusline's stdout, or
+  # Claude Code would wait for the tick before it draws the line.
   claudeStatuslineObserve = pkgs.writeShellScript "flakelab-claude-statusline" ''
     input=$(cat)
-    ( printf '%s' "$input" | ${lib.getExe pkgs.tycswap} auto --observe >/dev/null 2>&1 & )
+    (
+      events=$(printf '%s' "$input" | ${lib.getExe pkgs.tycswap} auto --observe --json 2>/dev/null |
+        ${pkgs.gnugrep}/bin/grep -v -E '"event":"(poll|no-switch|all-exhausted)"')
+      [ -n "$events" ] && printf '%s\n' "$events" | ${pkgs.systemd}/bin/systemd-cat -t flakelab-tycswap-observe
+    ) >/dev/null 2>&1 &
     printf '%s' "$input" | ${claudeStatuslinePlugin}
   '';
   claudeStatuslineArg = lib.optionalString (statuslineMarketplace != null) (
