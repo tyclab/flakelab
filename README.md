@@ -15,7 +15,6 @@ Both targets need WSL >= 2.5.7 (native systemd) or an equivalent
 for that system and no other, so an `aarch64` Windows box or an Apple Silicon
 host cannot build or run this system.
 Design and internals: [`ARCHITECTURE.md`](ARCHITECTURE.md).
-Planned work: [`BACKLOG.md`](BACKLOG.md).
 Driving a Windows browser from inside WSL (Chrome DevTools across the WSL2 NAT):
 [`browser-debugging-from-wsl.md`](browser-debugging-from-wsl.md).
 

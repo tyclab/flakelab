@@ -1,15 +1,14 @@
 # Architecture
 
-How flakelab is put together, and why. Usage lives in
-[`README.md`](README.md); hazards in [`known-issues.md`](known-issues.md).
+Why flakelab is put together the way it is. Usage lives in
+[`README.md`](README.md); hazards in [`known-issues.md`](known-issues.md); the
+options, with types, defaults and descriptions, in `nix/options.nix`.
 
 ## Principles
 
 1. **Two layers.** System-scoped configuration in `nix/configuration.nix` plus
-   the one platform module `mkSystem` picks from `nix/targets/`, user-scoped in
-   `nix/home/` (Home Manager as a NixOS module), split by concern: `packages`,
-   `zsh`, `git-ssh`, `claude`, `codex`, `tycswap`, `web`, `tooling`, `health`,
-   `backup`.
+   the one platform module `mkSystem` picks from `nix/targets/`; user-scoped in
+   `nix/home/` (Home Manager as a NixOS module), one module per concern.
 2. **Declarative first.** The only imperative exceptions are foreign binaries
    whose nixpkgs builds lag upstream (Claude Code, Codex) and SSH key
    material — both behind guarded, idempotent activation, never in the store.
@@ -17,25 +16,19 @@ How flakelab is put together, and why. Usage lives in
    values are injected by the private overlay through `lib.mkSystem`. Flakes
    evaluate only git-tracked files, which is what keeps a public fork free of
    personal data.
-4. **Secrets never enter repo or store in plaintext.** They arrive either as
-   the overlay's age-encrypted sops dotenv file (`sopsSecretsFile`, decrypted
-   by sops-nix into the `/run/secrets` ramfs — only ciphertext is committed or
-   stored) or, as the fallback, from a vault as `~/.config/flakelab/secrets.env`;
-   the shell sources whichever is present, sops first (nix/secrets.nix,
-   nix/home/zsh.nix).
-5. **Reuse the repo-discovery logic** rather than rewriting it: `clone-repos` and
-   `activate-hooks` descend from an Ansible/PowerShell predecessor, wrapped with
-   a pinned PATH (`nix/scripts.nix`). They have since diverged materially — the
-   predecessor is the design ancestor, not a copy source.
+4. **Secrets never enter repo or store in plaintext.** They come from exactly
+   one source, chosen at build time by `sopsSecretsFile`: the overlay's
+   age-encrypted sops dotenv file, decrypted by sops-nix into the `/run/secrets`
+   ramfs, or, without it, `~/.config/flakelab/secrets.env` from a vault. There
+   is no runtime fallback between the two, so an enrolled box with no render
+   starts with no secrets rather than a stale file (`nix/secrets.nix`,
+   `nix/home/zsh.nix`).
 
 ## Options and the overlay
 
-`nix/options.nix` declares every per-user value once, with a type, a default and
-a description. Before it, the same values travelled as an untyped `userData`
-attrset that each consumer read with an `or <fallback>`: a typo silently kept
-the fallback, and the only way to learn a field existed was to grep. Now a typo
-or a wrong type aborts evaluation. Options **without** a default (`username`,
-`repoPath` among them) must keep aborting when unset rather than defaulting.
+`nix/options.nix` declares every per-user value once, so a typo or a wrong type
+aborts evaluation. Options **without** a default (`username`, `repoPath` among
+them) must keep aborting when unset rather than defaulting.
 
 `lib.mkSystem` has two call forms. The attrset form takes the declared keys
 directly; the second form, `{ userData, modules, homeModules }`, lets an overlay
@@ -46,56 +39,30 @@ while `sessionVariables`, `customAliases` and `claudeMcpServers` merge per key �
 replacing one of those wholesale needs `lib.mkForce`.
 
 Anything that describes the **operator** rather than the distro is an option
-that defaults to off, because every activation here runs on every adopter's box.
-The options themselves — names, types, defaults, what each one does — are
-declared once in `nix/options.nix`, and that file is the reference; what follows
-is only the reasoning a description has no room for:
+that defaults to off, because every activation here runs on every adopter's box:
 
-- `claudeAgentDefaults` and `claudeRemoteControl` default off because each
-  trades something of the operator's away — the permission prompts, or the
-  transcript staying on the box — and the trade is the adopter's to make,
-  one switch at a time: neither option implies the other.
-  Everything else `claudeSettings` asserts (attribution, the classifier rules,
-  `installMethod`, `autoUpdatesChannel`, the deny floor) is unconditional, and
-  the whole activation is gated on `installClaude`.
-- `tycswapAutoSwitchInterval` (nullable string, default `null`) is the span of
-  the `flakelab-tycswap-autoswitch` user timer running `tycswap auto --once`
-  (`nix/home/tycswap.nix`); `null` installs no timer, and the quota hook on
-  `quota_auto_resume_fired` runs one tick at once only with the timer. Needs
-  `installTycswap`. Thresholds, strategy and cooldown are `tycswap config`.
-- `tycswapAppPort` (nullable port, default `null`) runs `tycswap app --headless`
-  as the `flakelab-tycswap-app` user service on loopback for the Windows tray,
-  tycswap's own binary on the host (`tycswap app --remote`). `flakelab tray`
-  (`nix-tycswap-tray` driving `files/scripts/tycswap-tray.ps1` over PowerShell)
-  installs that binary from the same pin (`tycswapWindows`, a fixed-output
-  fetch) as an at-logon scheduled task; `flakelab update` syncs it after the
-  switch on the wsl target and `flakelab doctor` reads its status. Unlike
-  `flakelab-web`, the service follows the activation: a new pin restarts it,
-  and the tray re-reads the token it writes.
+- `claudeAgentDefaults` and `claudeRemoteControl` each trade something of the
+  operator's away — the permission prompts, or the transcript staying on the
+  box — and the trade is the adopter's to make, one switch at a time: neither
+  option implies the other. Everything else `claudeSettings` asserts is
+  unconditional, and the whole activation is gated on `installClaude`.
 - `notify.*`, `mosh.enable` and `web.*` reach outside the box — a push, an open
-  port, a dashboard — so each is its own switch. `web.bind` off loopback opens
-  the port in the proxmox-vm firewall, and ttyd is reached only through the
-  dashboard, never on a port of its own.
+  port, a dashboard — so each is its own switch. ttyd is reached only through
+  the dashboard, never on a port of its own.
 - `mcpShared.*` and `mcpBrowsers.headless` register their servers in Claude and
   Codex from one definition (`mcp.md`), so the two clients cannot drift.
-- `claudeMdExtra` keeps the shipped half of `~/.claude/CLAUDE.md` and, with
-  `installCodex`, `~/.codex/AGENTS.md` limited to facts about the distro;
-  personal workflow rules go there, from the overlay, and reach both agents.
+- `claudeMdExtra` keeps the shipped half of `~/.claude/CLAUDE.md` and
+  `~/.codex/AGENTS.md` limited to facts about the distro; personal workflow
+  rules go there, from the overlay, and reach both agents.
 - `bitwardenServer = null` skips the `bw config server` activation entirely
   rather than rewriting someone's region on every rebuild.
 
 `profiles/` is resolved **before** the module system runs: `profiles/merge.nix`
 turns the selected `profiles` into effective `gitlabGroups`, `profileCliTools`,
 `customAliases` and `sessionVariables`, which is why `profiles` itself is not an
-option. Selecting none is legal but warns — no profile packages, no profile
-groups. A selected profile with a key `merge.nix` does not read (its
-`profileKeys` list) aborts evaluation, naming the profile and the key. The
-registry is the directory: `profiles/default.nix` lists every
-`profiles/<name>.nix` but itself and `merge.nix`, so a new profile is one new
-file. A `profileCliTools` name installs the nixpkgs package of that name, or
-what `profileCliMap` in `nix/home/packages.nix` maps a differently spelt name
-to; one that resolves to no package aborts, naming the tool and the profile
-that listed it.
+option. The registry is the directory, so a new profile is one new file; a
+profile key `merge.nix` does not read, or a tool that resolves to no package,
+aborts evaluation by name.
 
 From the overlay's call to a built system, with the point where each guard
 aborts and where the escape hatch enters:
@@ -130,102 +97,71 @@ flowchart TB
     HOME --> TOP
 ```
 
-Generating the overlay from a `user_data.yaml` is one script with two call
-sites, because it reads `templates/overlay/` and `profiles/` relative to itself:
-
-- `./files/scripts/nix-overlay-generate` from a **checkout** reads that checkout
-  and defaults `--flakelab-ref` to `path:` it. This is the bootstrap path, and
-  the one to use while editing the templates.
-- `flakelab overlay-gen` from **PATH** reads the installed flake generation out
-  of a store path holding exactly the script, `templates/overlay/` and
-  `profiles/`. There `--flakelab-ref` is **required**: the only value it could
-  default to is a frozen, garbage-collectable store path, and writing that into
-  an overlay would pin it to something the next GC removes.
-
-Both rewrite one anchored line in `templates/overlay/flake.nix` (keyed on a
-`# flakelab-url:` marker comment, not on the URL) and abort if that marker is
-not present exactly once. Git-ignore the overlay's own `flake.lock`: a committed
-lock pins the NAR hash of a local checkout, and the next edit over there aborts
-the build with "NAR hash mismatch".
+Generating the overlay is one script with two call sites, because it reads
+`templates/overlay/` and `profiles/` relative to itself. From a **checkout**
+(`./files/scripts/nix-overlay-generate`) `--flakelab-ref` defaults to `path:`
+that checkout. From **PATH** (`flakelab overlay-gen`) it reads a store path and
+`--flakelab-ref` is **required**: the only default would be a
+garbage-collectable store path, and an overlay pinned to it breaks at the next
+GC. Git-ignore the overlay's own `flake.lock`: a committed lock pins the NAR
+hash of a local checkout, and the next edit there aborts the build with "NAR
+hash mismatch".
 
 ## Targets
 
-`target` picks the platform module set `mkSystem` builds from —
-`nix/targets/wsl.nix` or `nix/targets/proxmox-vm.nix`, unioned with the shared
-`nix/configuration.nix` every target carries. It is a `let`-level choice, not a
-module-system one: `imports` cannot be `mkIf`'d, so the module list is decided
-before a module system exists to hold a conditional definition, from
-`flake.nix`'s own `targetModules.${target}` map, read via `args.target or
-"wsl"` in both `mkSystem` call forms. An unknown target hits a `throwIf`
-against that map's own keys, naming the bad value and the known set, before
-`targetModules.${target}` would fail on a missing attribute with neither.
-`nix/options.nix` still declares `flakelab.target` — `readOnly`, no default —
-purely so the choice already made is inspectable afterwards; a module
-redefining it would describe a system nobody built, which is why nothing but
-`mkSystem` may set it.
-
-`flakeAttr` (string, default `"default"`) is the companion option: the
-`nixosConfigurations` attribute `flakelab update` rebuilds
-(`nixos-rebuild switch --flake path:<repoPath>#<flakeAttr>`). This repo's own
-output is `default`; an overlay describing more than one box — several targets,
-or several boxes on the same one — gives each `nixosConfigurations.<name>` the
-matching `flakeAttr = "<name>"` so each box's `flakelab update` switches into
-itself and not another box's configuration.
+`target` picks the platform module `mkSystem` builds from, unioned with the
+shared `nix/configuration.nix`. It is a `let`-level choice, not a module-system
+one: `imports` cannot be `mkIf`'d, so the module list is decided before a module
+system exists. `nix/options.nix` still declares `flakelab.target` — `readOnly`,
+no default — purely so the choice is inspectable afterwards; nothing but
+`mkSystem` may set it. `flakeAttr` is its companion: an overlay describing more
+than one box gives each `nixosConfigurations.<name>` the matching `flakeAttr`,
+so each box's `flakelab update` switches into itself.
 
 The seed image is a **variant** of `nixosConfigurations.proxmox-vm`, not a
-second system: `image.modules.proxmox-vm-seed` (nix/targets/proxmox-vm.nix)
-extends the same modules with nixpkgs' `disk-image.nix` and `image.format =
-"qcow2"`, which is why `system.build.image` never lands on the toplevel system
-where `images.nix` would warn about it colliding with every other variant. The
-variant forces `home-manager.users` empty and parks the placeholder user's uid
-at 65000. Both are load-bearing. A full closure is 7.9 GiB, far past what a
-release asset carries, and a home-manager activation in a generic image would
-run installers against credentials it cannot have; and with the placeholder out
-of the useradd range, the login cloud-init creates from the hypervisor's `user:`
-lands on uid 1000 — the uid the overlay declares for it a few minutes later.
-`checks.targets` asserts the stripping held, so a module wiring home-manager
-back in reddens `nix flake check` rather than a 8 GiB upload.
+second system (`image.modules.proxmox-vm-seed`). The variant forces
+`home-manager.users` empty and parks the placeholder user's uid at 65000. Both
+are load-bearing: a full closure is far past what a release asset carries, and a
+Home Manager activation in a generic image would run installers against
+credentials it cannot have; with the placeholder out of the useradd range, the
+login cloud-init creates lands on uid 1000, the uid the overlay declares for it.
+`checks.targets` asserts the stripping held.
 
-A seed is half a system, and the other half is private. `flakelab-bootstrap`
-is the seam: a one-shot unit, conditioned on `/etc/flakelab/bootstrap.env`
-existing and `/var/lib/flakelab/bootstrapped` not, that reads `OVERLAY_URL`
-(required) plus `OVERLAY_REF`, `OVERLAY_ATTR`, `BOOTSTRAP_USER`, `REPO_PATH`,
-`OVERLAY_SSH_IDENTITY` and `OVERLAY_KNOWN_HOSTS`. `OVERLAY_REF` names a branch
-or a tag, and the unit expands a leading `~/` in the three path values against
-the home `BOOTSTRAP_USER` has in the passwd database, because systemd reads an
-`EnvironmentFile=` itself and a shell never sees it. It clones the overlay, locks
-it and checks it out **as `BOOTSTRAP_USER`** — a lock written by root makes that
-user's next `nix` command in the checkout fail on a permission denied — and runs
-only `nixos-rebuild switch --flake path:<repo>#<attr>` as root. Its marker
-follows the switch's verdict (see "A switch's result"): `applied` writes it and
-exits 0; `degraded` writes it and exits 4, so the unit shows failed with the units
-it could not bring up named in its journal, and a further run would only switch
-into the same generation again; every other verdict writes nothing, and the next
-boot retries. The verdict comes from the seed's own `flakelab-switch-result`, so
-an overlay pinning an older flakelab is still classified. An
-identity `BOOTSTRAP_USER` cannot read exits 75 and names the path it wants,
-because on a fresh guest the key arrives after the first boot and the unit is
-meant to be started again rather than to fail it. The unit ships from the target module and not the seed variant,
-so a system already built from an overlay carries it too: the marker is what
-makes it a one-shot, never the image.
+A seed is half a system, and the other half is private. `flakelab-bootstrap` is
+the seam: a one-shot unit that reads `/etc/flakelab/bootstrap.env`. `OVERLAY_URL`
+defaults to the `overlayUrl` of the overlay the seed was built from and is
+required only without it.
 
-The wsl target also decides where systemd starts: its
-`flakelab-wsl-init-cgroup` activation snippet (files/scripts/wsl-init-cgroup)
-moves a distro that starts in a cgroup its users cannot enter before systemd
-roots its tree there (known-issues.md, "No user manager"); `checks.targets`
-asserts the snippet is on the wsl target alone.
+- It clones, locks and checks out the overlay **as `BOOTSTRAP_USER`** — a lock
+  written by root makes that user's next `nix` command in the checkout fail —
+  and runs only the `nixos-rebuild switch` as root.
+- Its marker follows the switch's verdict (see "A switch's result"): `applied`
+  and `degraded` write it, since a further run would only switch into the same
+  generation again; every other verdict writes nothing and the next boot retries.
+  The verdict comes from the seed's own `flakelab-switch-result`, so an overlay
+  pinning an older flakelab is still classified.
+- An identity `BOOTSTRAP_USER` cannot read exits 75 and names the path, because
+  on a fresh guest the key arrives after the first boot and the unit is meant to
+  be started again.
+- The unit ships from the target module, not the seed variant: the marker is
+  what makes it a one-shot, never the image.
+
+The wsl target also decides where systemd starts: its `flakelab-wsl-init-cgroup`
+activation snippet moves a distro that starts in a cgroup its users cannot enter
+before systemd roots its tree there (known-issues.md, "No user manager").
 
 ## The CLI
 
 `flakelab` is one binary with subcommands, and it is a **router**
-(`files/scripts/flakelab`): each subcommand execs the same per-command wrapper
+(`files/scripts/flakelab`): each subcommand execs the per-command wrapper
 `nix/scripts.nix` builds, so every one keeps its own pinned PATH and exported
-environment (`FLAKELAB_REPO_ROOT` from `repoPath`, `FLAKELAB_BACKUP_ROOT`,
-`FLAKELAB_STATE_ROOT` from `stateRoot` when set). `nix/cli.nix` assembles those
-wrappers into the dispatch directory the router reads.
+environment. `FLAKELAB_REPO_ROOT` is what makes `build-distro` and
+`test-provision` callable from anywhere: deriving the repo root from `$0` yields
+a store path once they are packaged. Run from a checkout, the router dispatches
+to the sibling `files/scripts/<name>` copies.
 
-A typed command, the menu a bare `flakelab` opens at a terminal, and the gate
-every question passes (see "At a terminal" below):
+`gitchecker`, `gitcleaner` and `gitpublisher` stay standalone commands — no
+namespace collision, and other repos invoke them by name.
 
 ```mermaid
 flowchart TB
@@ -256,39 +192,21 @@ flowchart TB
     TTY -->|"no terminal, an agent's shell<br/>or FLAKELAB_NO_PROMPT"| FLAGS
 ```
 
-`FLAKELAB_REPO_ROOT` is what makes `flakelab build-distro` and
-`flakelab test-provision` callable from anywhere: both need the repo root, and
-deriving it from `$0` yields a `/nix` store path once they are packaged. The
-`files/scripts/<name>` copies still work in a plain checkout, and the router
-dispatches to those copies when it is run from one.
-
-`gitchecker`, `gitcleaner` and `gitpublisher` stay standalone commands — no
-namespace collision, and other repos invoke them by name. Each subcommand keeps
-its own `--help`, flags, exit codes and `--json` output.
-
 ### At a terminal
 
-A person gets questions where an agent gets flags. Everything asked lives in
-`files/scripts/lib/prompt.zsh`, pure zsh plus `stty`: an arrow-key list with
-type-to-filter, one line in the zsh line editor with its default typed in and
-Tab completing paths, and the single-key `[y/N]`. Every prompt is gated on
-`prompt_tty` (stdin and stderr a terminal, `TERM` not dumb, no
-`FLAKELAB_NO_PROMPT`, and not an agent's own shell: `CLAUDECODE` or
-`CODEX_THREAD_ID` set, since Codex can give a command a pty); anywhere else a command does what it did before it could
-ask — refuse, take the default, need the flag — so an agent's shell, a pipe, a
-hook, a timer and every `--json` run meet no prompt and wait on none.
+A person gets questions where an agent gets flags. Every prompt lives in
+`files/scripts/lib/prompt.zsh` and is gated on `prompt_tty`: stdin and stderr a
+terminal, `TERM` not dumb, no `FLAKELAB_NO_PROMPT`, and not an agent's own shell
+(`CLAUDECODE` or `CODEX_THREAD_ID` set, since Codex can give a command a pty).
+Anywhere else a command does what it did before it could ask — refuse, take the
+default, need the flag — so an agent's shell, a pipe, a hook, a timer and every
+`--json` run meet no prompt and wait on none.
 
-Two layers use it. A bare `flakelab` with all three ends a terminal opens
-`flakelab-menu`: a command, then what to do with it, and it re-enters the
-router with those flags, so the target gate and the command's wrapper apply as
-they do to a typed command; its wrapper sets the caller's PATH back first. An
-action is listed with the flags it adds beside its wording, so typing `--recent`
-finds `sessions --recent` as typing `recently` does. The
-menu asks nothing a command asks itself: a command that was not given a
-required argument asks for it — `sessions --start` the tool and the
-directory, `--attach` the session — and prints the full command it amounts
-to (`→ flakelab sessions --attach claude-work`), so the flags are there to
-copy next time.
+A bare `flakelab` at a terminal opens `flakelab-menu`, which re-enters the
+router with the chosen flags, so the target gate and the command's wrapper apply
+as they do to a typed command. The menu asks nothing a command asks itself: a
+command missing a required argument asks for it and prints the full command it
+amounts to, so the flags are there to copy next time.
 
 ## Why two switches
 
@@ -296,93 +214,55 @@ A `provision` applies the overlay twice. The SSH-dependent activation steps —
 plugin clones, the marketplaces, the statusline that follows them — need a
 passphrase-unlocked ssh-agent, and the key can only be copied into `~` once the
 Linux user exists, which is what the first switch creates. So the order is
-switch #1 -> seed key and `secrets.env` -> load the agent (`-SshPassphrase` for
-an unattended run) -> switch #2, which completes what #1 could only defer.
+switch #1 -> seed key and `secrets.env` -> load the agent -> switch #2, which
+completes what #1 could only defer.
 
 Switch #2 is **conditional on that agent load succeeding**: with no private key
-in `<overlay>-payload\shared\ssh\keys\` there is nothing to load, and
-the script skips the second switch rather than running one that could only defer
-again. So the keyless run the README recommends applies the overlay once, and
-the SSH-dependent steps stay deferred until a `flakelab update` from inside the
-distro with an agent holding a key. `-SkipSecondSwitch` opts out explicitly when
-those steps are already done; either way a one-switch run ends with no plugins
-and no statusline, and `flakelab doctor` is the only hint.
+in the payload there is nothing to load, and a second switch could only defer
+again. A one-switch run ends with no plugins and no statusline until a
+`flakelab update` from inside the distro with an agent holding a key;
+`flakelab doctor` is the only hint.
 
-The clone at the end of a `provision` needs the same agent, and WSL can stop
-the distro between two `wsl.exe` calls even with the user lingering, which
-takes the agent and its unlocked key with it: the clone then refused on an
-empty agent and the provision closed with an empty `~/git`. So the run keeps a
-hidden `wsl.exe` running `sleep` in the distro across the key load and the
-start of the clone, waits for the distro to finish booting, loads the key again
-into that distro's agent, and only then runs `flakelab clone`. The wait is the
-one the bootstrap's agent load follows (`systemctl is-system-running --wait`,
-at most 180 s): a distro the keep-alive had to start again has no agent socket
-until its user manager is up. A key that does not load is a warning and the
-clone still runs: an unencrypted key needs no agent, and an encrypted one makes
-the clone refuse with its own message.
-
-The keep-alive is not yet verified on a host: no run has shown the distro
-staying up across the key load and the clone, or the `sleep` inside it ending
-when the run stops the keep-alive's `wsl.exe`.
+The clone at the end of a `provision` needs the same agent, and WSL can stop the
+distro between two `wsl.exe` calls even with the user lingering, which takes the
+agent and its unlocked key with it. So the run keeps a hidden `wsl.exe` running
+`sleep` in the distro across the key load and the start of the clone, and loads
+the key again once the distro has finished booting. A key that does not load is
+a warning and the clone still runs: an unencrypted key needs no agent, and an
+encrypted one makes the clone refuse with its own message.
 
 Both switches wipe VM-wide WSL interop, so each is followed by an interop probe
-and an offer to `wsl --shutdown` (`-Shutdown` answers yes up front; declining
-right after switch #1 stops the run before anything is seeded and prints how to
-resume). A non-interactive run never shuts anything down by itself.
+and an offer to `wsl --shutdown`. A non-interactive run never shuts anything
+down by itself.
 
 ## A switch's result
 
 `nixos-rebuild switch` exits with switch-to-configuration's status, and that
-status cannot say what happened. It is 2 when the activation script failed and 4
-when a unit failed to start, restart or reload, or a user's activation did — and a
-unit failing after a failed activation script overwrites the 2 with the 4. The
-activation a boot runs has no status at all: stage 2 and the NixOS-WSL init shim
-both ignore it. Read as a verdict, the exit code made every caller guess, and each
-guessed differently.
+status cannot say what happened: it is 2 when the activation script failed and 4
+when a unit did, and a unit failing after a failed activation script overwrites
+the 2 with the 4. The activation a boot runs has no status at all.
 
 So the verdict is read from the system instead. The
-`flakelab-activation-result` activation snippet (nix/configuration.nix) is ordered
-after every other snippet and records the activation script's own `$_status`, the
-system it activated and the start time of the init it ran under, in
-`/run/flakelab/activation` — at every switch and every boot, since both run the
-same script. `checks.activation-result` asserts it runs last in both targets and
-runs the generated text under the activation script's ERR trap.
-`flakelab-switch-result` (files/scripts/switch-result, installed system-wide so
-root reaches it at `/run/current-system/sw/bin`) combines that record with
-systemd's failed units, the running user managers' included, and prints one
-verdict; its header is the contract:
+`flakelab-activation-result` activation snippet is ordered after every other
+snippet and records the activation script's own status, the system it activated
+and the init it ran under, in `/run/flakelab/activation` — at every switch and
+every boot. `flakelab-switch-result` combines that record with systemd's failed
+units, the running user managers' included, and prints one verdict. Its header
+is the contract for the verdicts and their exit codes.
 
-| exit | verdict             | meaning                                                  |
-| ---- | ------------------- | -------------------------------------------------------- |
-| 0    | `applied`           | activated, no unit failed                                |
-| 4    | `degraded`          | activated, units not running (named)                     |
-| 2    | `activation-failed` | the activation script failed: the record says so, or a 2 |
-| 3    | `unverified`        | no record for this system and boot, or systemd no answer |
-| 100  | `reboot-required`   | the new init cannot be switched to live                  |
-| N    | `not-applied`       | the switch failed before activating                      |
+Every caller applies the same rule: `applied` and `degraded` carry on,
+`degraded` ending the run with exit 4 and the units named; every other verdict
+stops with its own code. Three points constrain a change here:
 
-`degraded` names every unit not running when it reads — the system's and the
-running user managers' — not only the switch's own: a user unit that failed before
-the switch, which switch-to-configuration does not reset, still makes the run exit 4.
-A service crash-looping in auto-restart after a non-zero exit counts as failed too,
-as switch-to-configuration counts it, though `systemctl --failed` never lists it.
-
-Every caller applies the same rule: `applied` and `degraded` carry on, `degraded`
-ending the run with exit 4 and the units named; every other verdict stops with its
-own code. `flakelab update` runs its post-switch steps on a degraded switch and
-exits 4. `setup-wsl-nix.ps1` reads a verdict after each switch, for the boot the
-restart after switch #1 starts, and at the close. Across a switch it carries the
-units a degraded verdict named: a switch resets failed units without starting them
-all, so "not active" rather than "failed" is what keeps such a unit named, and one
-that has not run again since counts as still down. Across the restart it carries
-nothing, since a boot starts clean. A classifier that runs and answers nothing is
-never a clean verdict; only a probe that finds none in the running system is read
-as "not verified", and then only an exit 0 carries on. `flakelab build-distro`
-reads around its one switch and its verification, with nothing to carry, and
-`flakelab-bootstrap` (below) writes its marker for `applied` and `degraded` only.
-`flakelab doctor` reports the running system's verdict. A running system built
-before the recorder existed is `unrecorded`: only an exit 0 or 2 is taken from
-the switch, since a 4 cannot be told from a failed activation.
+- `degraded` names every unit not running when it reads, not only the switch's
+  own, and counts a service crash-looping in auto-restart as failed, as
+  switch-to-configuration does, though `systemctl --failed` never lists it.
+- Across a switch a caller carries the units a degraded verdict named: a switch
+  resets failed units without starting them all, so "not active" rather than
+  "failed" is what keeps such a unit named. Across a restart it carries nothing.
+- A classifier that runs and answers nothing is never a clean verdict. A running
+  system built before the recorder existed is `unrecorded`: only an exit 0 or 2
+  is taken from the switch, since a 4 cannot be told from a failed activation.
 
 `flakelab update` (`files/scripts/nix-update`) from its pre-flight to its exit
 status, with every point where it stops:
@@ -392,24 +272,24 @@ flowchart TB
     START["flakelab update"]
     subgraph pre["pre-flight"]
         BOOT["wait out the boot activation,<br/>at most 180 s"]
-        DRIFT["overlay checkout: fetch,<br/>pull --rebase when behind;<br/>behind the default branch:<br/>warn, offer a rebase"]
-        LOCK["take flake.lock back,<br/>re-lock the flakelab input,<br/>prefetch inputs as the caller"]
+        DRIFT["overlay checkout: adopt a plain<br/>directory as a repo; fetch,<br/>pull --rebase when behind;<br/>behind the default branch:<br/>warn, offer a rebase"]
+        LOCK["render GH_TOKEN for nix,<br/>take flake.lock back,<br/>re-lock the flakelab input,<br/>prefetch inputs as the caller"]
     end
     subgraph sw["switch"]
         REBUILD["sudo nixos-rebuild switch<br/>--flake path:#lt;repoPath#gt;#35;#lt;flakeAttr#gt;"]
         HM["home-manager-#lt;user#gt;.service<br/>Home Manager activation;<br/>a failed health check<br/>fails the unit"]
         RESULT{"flakelab-switch-result"}
     end
-    POST["restart the Home Manager unit<br/>if the switch left failed or<br/>deferred steps alone;<br/>print the deferred steps;<br/>refresh Claude marketplaces,<br/>assert the allow and ask tiers;<br/>--all: flakelab clone"]
+    POST["restart the Home Manager unit<br/>if the switch left failed or<br/>deferred steps alone;<br/>print the deferred steps;<br/>wsl: flakelab tray sync;<br/>refresh Claude marketplaces,<br/>update changed plugins,<br/>assert the allow and ask tiers;<br/>--all: flakelab clone"]
     STOP(["exit 1"])
     CODE(["exit with the verdict's code"])
-    DONE(["exit 0 applied, 4 degraded"])
+    DONE(["exit 0 applied, 4 degraded,<br/>1 when an input went unchecked"])
     DOCTOR["flakelab doctor,<br/>run by hand"]
 
     START --> BOOT --> DRIFT --> LOCK --> REBUILD --> HM --> RESULT
     BOOT -->|"still booting"| STOP
-    DRIFT -->|"behind and dirty, a conflict,<br/>or the fetch failed"| STOP
-    LOCK -->|"path: input, lock<br/>not writable"| STOP
+    DRIFT -->|"behind and dirty, a conflict,<br/>the fetch failed, or the<br/>adoption was refused"| STOP
+    LOCK -->|"path: input, lock not writable,<br/>or the token render failed"| STOP
     RESULT -->|"applied, degraded"| POST --> DONE
     RESULT -->|"activation-failed, unverified,<br/>reboot-required, not-applied"| CODE
     POST -.->|"lists the deferred<br/>steps too"| DOCTOR
@@ -422,109 +302,71 @@ reported as a defect, while work it structurally cannot do — no seeded SSH key
 no unlocked ssh-agent, no network — is recorded as **deferred** and never fatal.
 That is what lets the first rebuild of a fresh distro succeed before anything
 has been seeded into `~`. `flakelab doctor` covers the rest, because it runs
-from an interactive shell: an agent holding a key, `glab` auth, a working
-`git@gitlab.com`, and whether Claude Code is the native, self-updating
-`~/.local/bin/claude` with no npm copy shadowing it.
+from an interactive shell.
 
 Claude Code state is owned by idempotent jq/marker merges rather than store
 symlinks, because Claude rewrites these files itself:
 
-- **`settings.json`** — attribution, the classifier rules (`claudeAutoMode`),
-  `installMethod = native`, `autoUpdatesChannel` (`claudeAutoUpdatesChannel`),
-  the output style when `claudeOutputStyle` names one, the auto-memory
-  directory when `claudeAutoMemoryDirectory` names one,
-  the bridge environment, the statusline, and a `permissions.deny` **floor**
-  against rewriting the protected default branch, asserted whole like
-  `autoMode`. `AUTO-MODE.md` covers how the floor, the ask tier, the allowlist
-  and the classifier are ordered, and why the floor is scoped to `main`. The
-  permission mode is not among them unless `claudeAgentDefaults` says so.
+- **`settings.json`** — one pass in `nix/home/claude.nix` asserts attribution,
+  the update channel and `installMethod`, the cleanup period, the plugin
+  environment, the classifier rules (`claudeAutoMode`), the `permissions.deny`
+  **floor**, `deniedMcpServers`, the optional output style, auto-memory
+  directory, agent defaults and Remote Control, the `SessionEnd` and
+  `Notification` hooks, and the statusline. The floor holds only
+  `git push --mirror`: `AUTO-MODE.md` covers how the floor, the ask tier, the
+  allowlist and the classifier are ordered, and why the floor is almost empty.
 - **`~/.claude.json`** — user-scope MCP servers from `claudeMcpServers`,
   installed mode 600, since the same file holds Claude's account and OAuth
   state.
 - **`permissions.allow`** and **`permissions.ask`** — asserted by
-  `flakelab update` after every switch from `recommended-permissions.json` and
-  `recommended-ask.json` in the first marketplace `claudePluginMarketplaces`
-  declares that ships them, located by searching that clone rather than by a
-  fixed path (it has moved once already). A marketplace added by hand is never
-  read. A file that is not a list of rule strings, or an allow file that
-  approves a whole command, write or fetch tool (`Bash`, `Bash(*)`,
-  `WebFetch(domain:*)`), is refused with a warning and the tier stays as it
-  was. Not an activation: the clone is runtime data, and activation reruns only
-  when the built config changed.
-- **Installed plugins** — after installing `claudePlugins`, activation
-  uninstalls from user scope an `mcp-*` plugin the list stopped naming and,
-  through `files/scripts/claude-plugin-orphans`, a plugin it does not name that
-  a declared marketplace's catalogue no longer offers. A withdrawn plugin the
-  list still names is the installer's to report; a missing or empty catalogue
-  prunes nothing and says so.
-- **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block holding the
-  shipped facts, the permission tiers (`files/config/claude/auto-mode.md`) and
-  `claudeMdExtra`; anything outside the markers is left alone. Codex's
-  `~/.codex/AGENTS.md` (`$CODEX_HOME` when the activation environment sets it)
-  gets the same block without the permission tiers and the question-tool text,
-  which reaches Codex through `developer_instructions` in
-  `/etc/codex/config.toml`. An `AGENTS.override.md` beside it makes Codex skip
-  the block, and a `home.file` for the path is refused at evaluation.
+  `flakelab update` after every switch from the first declared marketplace that
+  ships the tier files. Not an activation: the clone is runtime data, and
+  activation reruns only when the built config changed. A marketplace added by
+  hand is never read, and an allow file that approves a whole command, write or
+  fetch tool is refused.
+- **Installed plugins** — activation uninstalls an `mcp-*` plugin the list
+  stopped naming and a plugin it does not name that a declared marketplace no
+  longer offers. A missing or empty catalogue prunes nothing and says so.
+- **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block; anything
+  outside the markers is left alone. Codex's `~/.codex/AGENTS.md` gets the same
+  block without the permission tiers and the question-tool text, which reach
+  Codex through `developer_instructions`. An `AGENTS.override.md` beside it
+  makes Codex skip the block, and a `home.file` for the path is refused at
+  evaluation.
 
 A merge takes back what it stops rendering, and nothing else. The `env` of
 `settings.json` and the `mcpServers` of `~/.claude.json` are maps the user and
-the tool write too, so each
-merge records the key names it wrote, never their values, in
-`~/.local/state/flakelab/activation-rendered/` (mode 600). A name in that record
+the tool write too, so each merge records the key names it wrote, never their
+values, in `~/.local/state/flakelab/activation-rendered/`. A name in that record
 that the next generation no longer renders is removed; a name never recorded
 stays, and a missing or unreadable record removes nothing. The record is
-rewritten only after the file was, so a merge that failed leaves it for the
-next one. The statusline is known by its command instead: flakelab's own goes
-once the statusbar plugin is not enabled, a local one stays.
+rewritten only after the file was, so a failed merge leaves it for the next one.
 
 `~/.gitconfig` is a flake-owned `[include]` of `~/.config/git/config`. git reads
-the legacy path last, so a real file there overrides every key `programs.git`
-sets and `backupFileExtension` cannot catch it — Home Manager writes the XDG
-path while a restore writes the legacy one. `flakelab doctor` reports which file
-`user.email` actually resolves to. The trade: `git config --global` now writes
-to the read-only store and fails; git config is declarative here.
+the legacy path last, so a real file there would override every key
+`programs.git` sets. The trade: `git config --global` now writes to the
+read-only store and fails; git config is declarative here.
 
 ## Backup, and what a payload is
 
 `flakelab backup` writes two different kinds of thing, which want opposite
 treatment:
 
-- The **provisioning seed** — `secrets.env`, the SSH key, glab/kube/helm config,
-  the Claude settings with their environment block, the Codex config, login and
-  MCP OAuth tokens — describes _this_ host and must never leave the overlay
-  checkout.
-- The **state** — merged shell history, Claude Code auto-memory per checkout,
-  Codex memories, optionally session transcripts — is what you want on every
-  machine you work from.
+- The **provisioning seed** — secrets, keys, tool config, logins — describes
+  _this_ host and must never leave the overlay checkout.
+- The **state** — merged shell history, agent memory, optionally session
+  transcripts — is what you want on every machine you work from.
 
 `stateRoot` splits them: set it and the state is written there instead of into
-the payload. Whether that directory is replicated by Syncthing, Dropbox, rclone,
-a NAS client or nothing at all is outside this repo's knowledge, with one
-exception: `stateSyncthing` (`nix/state-syncthing.nix`) runs Syncthing on the
-box with the state root as its only folder, shared with one always-on hub that
-holds it Receive Encrypted. The folder password comes from the sops render, so
-the hub and its disk only ever see ciphertext. An optional `trustedHub` is a second
-device that gets the folder without the password: a plaintext replica for processing.
+the payload. What replicates that directory is outside this repo's knowledge,
+with one exception: `stateSyncthing` runs Syncthing on the box with the state
+root as its only folder, shared with a hub that holds it Receive Encrypted, so
+the hub and its disk only ever see ciphertext. An optional `trustedHub` gets the
+folder without the password: a plaintext replica for processing.
 
-A box that leaves `stateTranscripts` off never reads the transcript trees, so it
-does not take them from the folder either: syncthing-init writes
-`<stateRoot>/.stignore` with `claude/projects/<slug>/*.jsonl`, the
-`<slug>/<session uuid>/` folders beside them, `claude/diverged/`,
-`codex/sessions/` and `codex/diverged/`, and leaves `memory/`,
-`memory-tombstones/` and everything else to sync. Syncthing never syncs the
-`.stignore` file itself. With transcripts on, syncthing-init posts an empty list,
-which deletes the file. Ignoring a path leaves on disk what an earlier sync put
-there, so a box that already held the trees deletes them once by hand
-(`known-issues.md`).
-
-```text
-<stateRoot>/shell/.zsh_history_merged                 # union of every machine's history
-<stateRoot>/claude/projects/<slug>/memory/            # auto-memory, per checkout path
-<stateRoot>/claude/projects/<slug>/<session>.jsonl    # transcripts, opt-in
-```
-
-Where each category goes, which of them pass the secret gate, and how they come
-back:
+A box that leaves `stateTranscripts` off does not take the transcript trees from
+the folder either: syncthing-init writes a `.stignore` for them. Ignoring a path
+leaves on disk what an earlier sync put there (`known-issues.md`).
 
 ```mermaid
 flowchart TB
@@ -558,25 +400,18 @@ flowchart TB
     sroot -->|"--restore, or<br/>--state-only both ways"| HOME
 ```
 
-Restore on the second machine with `flakelab backup --restore`. The daily timer
-only PUSHES into the state root; automatic two-way convergence needs
-`flakelab.stateSyncInterval` set (schedules `--state-only`, which pushes AND
-pulls) — without it, pulls happen only through a manual `--restore`. The two
-timers are independent: `stateSyncInterval` needs `stateRoot`, not
-`backupAutostart`, so a box that must not run the unattended daily payload pass
-still converges its state root; while it is scheduled, a Claude Code
-`SessionEnd` hook starts the same sync when a session closes, so a finished
-session does not wait out the period. Memory is keyed by the checkout's **absolute path**,
+The daily timer only PUSHES into the state root; two-way convergence needs
+`stateSyncInterval` (`--state-only`, which pushes AND pulls). The two timers are
+independent, so a box that must not run the unattended daily payload pass still
+converges its state root. Memory is keyed by the checkout's **absolute path**,
 so keep checkouts at the same path on both boxes — and never let a checkout live
 inside the synced folder.
 
-The restore is additive: it no longer deletes local files the backup does not
-have. The backup mirrors a box's own categories instead: a file deleted at home,
-in a backed-up directory or matched by a glob such as `~/.kube/kubeconfig_*`,
-leaves the payload on the next run (a dry run names a globbed one), while `shared/ssh`, which
-several boxes write into, stays additive. Rollback snapshots (`snapshots/` beside the payload) cover the payload
-only; the state root is not snapshotted, because every write into it is additive
-or a union, and the sync client's own version history is the rollback there.
+The restore is additive. The backup mirrors a box's own categories instead: a
+file deleted at home leaves the payload on the next run, while `shared/ssh`,
+which several boxes write into, stays additive. Rollback snapshots cover the
+payload only: every write into the state root is additive or a union, and the
+sync client's own version history is the rollback there.
 
 ### Shared state and the secret gate
 
@@ -584,88 +419,37 @@ There is no cross-machine lock — the `.backup.lock` beside the payload
 serialises runs on one box and is invisible to the other — so every write into
 the state root has to converge on its own:
 
-- **History** is a union: additive, deduplicating and stability-checked, and the
-  first run with a state root folds the payload's existing merge in.
-- **Conflict copies** (`<name>_<host>_<date>_Conflict`,
-  `<name>.sync-conflict-<date>`, `<name> (conflicted copy …)` — every client has
-  its own spelling) are handled by kind: a conflict copy of one of the three
-  files both machines rewrite — the merged history, the shared `MEMORY.md` index
-  and the gate's `decisions.jsonl` — is merged in and then removed; every other
-  conflict copy, and the metadata litter (`@eaDir`, `.DS_Store`, `Thumbs.db`,
-  `desktop.ini`), is ignored on restore and never copied into `$HOME`.
-- **Memory** backs up and restores additively and newest-wins: a topic file
-  the destination changed since the last sync is kept, so a memory rewritten
-  between a run's push and its pull survives the pull. `MEMORY.md` merges one
-  line per memory file — the side whose topic file was just placed wins that
-  file's line, a kept file keeps its own, a line naming no file dedupes by its
-  text — so a hook edited in place replaces the old line, and a line whose
-  file is on neither side goes. Deletions propagate: a box records the topic
-  files it holds after each pull (`~/.local/state/flakelab/state-sync/memory/<slug>.seen`);
-  a file it then lacks while the state root still has it was deleted there, so
-  it leaves the state root and a tombstone in `<slug>/memory-tombstones/`, dated
-  the last time the box saw it. Every box drops a copy no newer than the
-  tombstone; a copy edited after the deletion lifts it. A directory with
-  nothing left in it, index included, is treated as a reset: nothing propagates
+- **History** is a union: additive, deduplicating and stability-checked.
+- **Conflict copies** (every sync client has its own spelling) are handled by
+  kind: a conflict copy of one of the three files both machines rewrite — the
+  merged history, the shared `MEMORY.md` index and the gate's `decisions.jsonl`
+  — is merged in and then removed; every other conflict copy, and the metadata
+  litter, is ignored on restore and never copied into `$HOME`.
+- **Memory** is additive and newest-wins: a topic file the destination changed
+  since the last sync is kept. `MEMORY.md` merges one line per memory file.
+  Deletions propagate through tombstones: a box records the topic files it holds
+  after each pull, so a file it then lacks while the state root still has it was
+  deleted there. A copy edited after the deletion lifts the tombstone. A
+  directory with nothing left in it is treated as a reset: nothing propagates
   and the pull refills it.
-- **Transcripts** are opt-in (`stateTranscripts`) and grow-only in both
-  directions: a copy with fewer lines never overwrites one with more, `--force`
-  included. Lines, not bytes — a redacted copy can outweigh its source. A
-  longer copy that does not _continue_ the one it would replace (the entry the
-  shorter copy ends on, its last `uuid`, is nowhere in the longer one) is a
-  fork — the same session carried on in two places. The longer copy still takes
-  the path, but the other branch is parked first: a state-root copy under
-  `<stateRoot>/claude/diverged/` (it replicates), a local one under
-  `~/.local/state/flakelab/state-sync/diverged/` (raw, so it stays on its box).
-  A conflict copy that forks its base is parked the same way before it is
-  folded away. `claude --resume <parked file> --fork-session` reopens a branch
-  as a session of its own; nothing prunes them, so delete them once read.
-  Counting is reading, and the state root is usually a Windows mount, so a
-  line count is remembered per file in
-  `~/.local/state/flakelab/state-sync/transcript-lines` and reused while the
-  file's size, mtime and inode stand — append-only files placed by rename
-  cannot change count otherwise. Deleting the index only costs one full count.
-  Claude's missing local sessions are pulled only within `cleanupPeriodDays`
-  (`claudeCleanupPeriodDays`, 30), measured from the last timestamp in the transcript tail;
-  unknown ages stay eligible. Idle local copies get their own content timestamp
-  as mtime, so Claude's cleanup can expire them. Subagents and side files follow
-  the parent session. `flakelab backup --fetch-session <uuid>` explicitly recovers
-  an older session. Automatic sync retains the archive; explicit `--state-gc`
-  can still remove a slug no machine claims after local cleanup.
-- **Session side files** — the tool outputs Claude Code spills to
-  `<slug>/<session>/tool-results/`, a subagent's `.meta.json` — travel with the
-  transcripts. Write-once, so each is copied only to a side that lacks it,
-  through the same gate as plain text: a reported secret is replaced literally,
-  and a file whose secret cannot be matched literally stays on its box, listed
-  in `~/.local/state/flakelab/state-sync/side-files.held`.
-- **Codex** follows the same two rules. `~/.codex/memories/` syncs as one memory
-  directory under `<stateRoot>/codex/memories/`, deletions and tombstones
-  included, but without an index merge: Codex regenerates every file there,
-  its `MEMORY.md` too, so the newest copy wins whole. Sessions
-  (`~/.codex/sessions/`, under `stateTranscripts`) take the transcript path
-  above through the same gate; a rollout line carries no id, so the fork check
-  matches the `timestamp` the shorter copy ends on, and branches park under
-  `<stateRoot>/codex/diverged/` or `…/diverged/codex/`. The pull leaves a
-  session alone that this box archived (`archived_sessions/`) or compressed
-  (`<name>.zst` beside it), since the plain copy would undo the one or shadow
-  the other. Without `codexCleanupPeriodDays` every rollout this box lacks is
-  pulled, whatever its age. With it, the daily `flakelab-codex-cleanup` timer
-  deletes a local rollout (archived and compressed ones included) older than
-  that many days once its state-root copy is complete: at least as many lines
-  as the rollout unpacked, and at the number of its last line with a top-level
-  `timestamp` (the tail line its age is read from, so a last line cut
-  mid-write is covered by the count) a line with the same timestamp. Lines,
-  not bytes, here too: a redaction changes a line's length and never its
-  timestamp. The pull and the restore leave a missing rollout older than the
-  same window in the state root, measured by the same tail timestamp (unknown
-  ages stay eligible): a deleted rollout stays gone, so a prune of the state
-  root holds, as long as every box sharing the state root sets the option. A
-  box left at the default pulls old rollouts back, and its push re-creates
-  copies pruned from the state root.
-  A child rollout is a file of its own and ages by its own tail.
-  `codex resume <id>` finds a pulled session by id: Codex falls back
-  to the files when its SQLite state does not know the thread. Side files, the
-  manifest and `--state-gc` stay Claude's: sessions live in dated folders, not
-  per-checkout slugs.
+- **Transcripts** are opt-in and grow-only in both directions: a copy with
+  fewer lines never overwrites one with more, `--force` included. Lines, not
+  bytes — a redacted copy can outweigh its source. A longer copy that does not
+  _continue_ the one it would replace is a fork, the same session carried on in
+  two places: the longer copy takes the path and the other branch is parked
+  first, a state-root copy under `<stateRoot>/claude/diverged/`, a local one
+  raw on its own box. Nothing prunes parked branches. Missing local sessions are
+  pulled only within the cleanup window, measured from the last timestamp in the
+  transcript; unknown ages stay eligible.
+- **Session side files** travel with the transcripts, write-once, through the
+  same gate; a file whose secret cannot be matched literally stays on its box.
+- **Codex** follows the same two rules, with two differences. Its memories sync
+  without an index merge, since Codex regenerates every file there and the
+  newest copy wins whole. A rollout line carries no id, so the fork check
+  matches the timestamp the shorter copy ends on. With `codexCleanupPeriodDays`
+  a deleted rollout stays gone only when every box sharing the state root sets
+  the option: a box left at the default pulls old rollouts back, and its push
+  re-creates copies pruned from the state root.
 
 **The gate.** The merged history and the transcripts are everything ever typed
 at a prompt or printed in a session, including anything pasted before you had a
@@ -673,83 +457,45 @@ vault; whatever replicates that folder keeps version history of it. So every
 backup scans what it is about to write into the state root with `gitleaks` and
 holds findings back:
 
-- A flagged **history** record is held back whole, header and continuation
-  lines; the rest of the merge still goes.
+- A flagged **history** record is held back whole; the rest of the merge still
+  goes.
 - A flagged **transcript** is copied with the secret replaced by
-  `[REDACTED:<rule>]`. A match that runs out of one string value and into the
-  next (gitleaks' private-key rule spans everything between its markers) is
-  redacted string by string instead: every value holding a piece of it becomes
-  the placeholder, keys and the rest of the line stand. Only a file that
-  cannot be cleared either way is held back whole, and the closing line counts
-  those apart from the records the review can show.
+  `[REDACTED:<rule>]`; only a file that cannot be cleared is held back whole.
 - **Local files are never modified by a backup** — the gate decides what is
   written out, not what you keep.
 - **Memory is not gated**: it is small, curated and hand-written. History is
   none of those, which is the point.
 
-Held findings are listed in the run summary; a run with them warns rather than
-fails. `flakelab backup --review-secrets` walks them one at a time: **delete**
-from every local source (a pre-scrub copy is kept for a week), **keep** it local
-and never sync it, or **allow** it. Decisions are stored in the state root as
-fingerprints, never secrets, so one triage settles a secret for every machine's
-_syncing_ — but a **delete** rewrites local files, and only the box you are
-sitting at may do that, so it stays pending elsewhere until that box runs its
-own review. `--review-secrets` needs a terminal (exit 1 without one) and refuses
-`--dry-run`, because it is the one mode that rewrites local files.
-
-Before a delete rewrites a file, the review copies it to
-`~/.local/state/flakelab/state-gate/pre-scrub/<role>.<epoch>`, and a copy that
-cannot be made refuses the rewrite. The copy is the undo for a rewrite gone
-wrong and holds exactly what the delete removed, so it does not stay: every run
-but `--dry-run` (backup, `--state-only`, the review itself) removes the copies
-older than `FLAKELAB_STATE_GATE_PRE_SCRUB_DAYS`, 7 by default. A bad rewrite
-shows the next time the file is used, so a week covers it; the ruling reaching
-the other boxes is no anchor, since each box rewrites its own files under its
-own copy. Only regular files named as the review names them, directly in that
-folder, go, by mtime. A symlink is neither followed nor removed; a folder that
-is itself a symlink, or a window that is not a whole number of days up to
-36500, fails the run and prunes nothing.
+A run with held findings warns rather than fails. `flakelab backup
+--review-secrets` walks them one at a time: **delete** from every local source,
+**keep** it local and never sync it, or **allow** it. Decisions are stored in
+the state root as fingerprints, never secrets, so one triage settles a secret
+for every machine's _syncing_ — but a **delete** rewrites local files, and only
+the box you are sitting at may do that, so it stays pending elsewhere until that
+box runs its own review. The review needs a terminal and refuses `--dry-run`,
+because it is the one mode that rewrites local files. Before a delete rewrites a
+file it keeps a pre-scrub copy, and a copy that cannot be made refuses the
+rewrite; the copy holds exactly what the delete removed, so later runs remove it
+after a week.
 
 A fingerprint is a plain `sha256`, not an HMAC, and it lives in a folder
 something replicates: a low-entropy secret — a short password, a PIN, a token
 from a small keyspace — can be recovered from it by guessing offline. Treat the
 decisions file as sensitive. If the scanner is missing from PATH the run records
-a failure and writes neither category, `--dry-run` included: nothing ungated
-reaches the state root.
+a failure and writes neither category: nothing ungated reaches the state root.
 
 Two refusals are built in: a `stateRoot` that is, or sits inside, a git checkout
 is rejected outright (sync clients write conflict copies of `.git/config`,
-`index` and `packed-refs` — a corrupted repository, not a merge; observed, not
-theoretical), and a root whose parent directory is missing (the sync drive is
-not mounted) skips the state categories with a recorded failure rather than
-silently writing them somewhere else. On a Windows drive POSIX modes are lost —
-one more reason the seed stays out.
+`index` and `packed-refs` — a corrupted repository, not a merge), and a root
+whose parent directory is missing (the sync drive is not mounted) skips the
+state categories with a recorded failure rather than silently writing them
+somewhere else. On a Windows drive POSIX modes are lost — one more reason the
+seed stays out.
 
 ## Language runtimes
 
-`nix/home/packages.nix` ships Go (`gopls`), Node 24 (`nodeenv`, `bun`,
-`typescript`, `typescript-language-server`) and
-`python3` with `uv` and `pyright`. The Python interpreter is there for
-`#!/usr/bin/env python3` scripts — without it every such script dies with "no
-such file or directory", and the Claude marketplace's PreToolUse guard hooks are
-exactly that. It carries one library, PyYAML, because agents read YAML with
-`python3 -c 'import yaml'`; a venv made from the interpreter starts without the
-library (`checks.python3-pyyaml`). It is installed at low priority, so an
-overlay's own `python3` replaces it instead of colliding. There is deliberately
-**no `pip`**: `uv` is the installer for Python tooling.
-
-## Packaging notes
-
-`programs.git.settings` is canonical
-(`extraConfig`/`userName`/`userEmail` are deprecated aliases);
-`programs.ssh.enableDefaultConfig` is slated for deprecation, so forced `"*"`
-defaults migrate to `programs.ssh.settings."*"`; the NixOS-WSL image is
-`config.system.build.tarballBuilder` and native Docker is
-`virtualisation.docker.enable`, **not** `wsl.docker-desktop.enable`;
-`claude-code` in nixpkgs lags what this environment needs, so it comes from
-its official installer through activation with `programs.nix-ld`. Codex comes from its official installer too:
-nixpkgs' `codex` trailed upstream by ten minor releases on 2026-09-23. Its binary
-is static, so it needs no nix-ld, and the installer runs on every switch because
-`codex update` is that same installer. Each fetch is piped into its shell under
-`pipefail`, or an offline switch runs an empty script, exits 0, and records no
-deferral for the health check to excuse the missing binary with.
+`python3` is there for `#!/usr/bin/env python3` scripts, the Claude
+marketplace's PreToolUse guard hooks among them. It carries one library, PyYAML,
+because agents read YAML with `python3 -c 'import yaml'`, and it is installed at
+low priority so an overlay's own `python3` replaces it instead of colliding.
+There is deliberately **no `pip`**: `uv` is the installer for Python tooling.
