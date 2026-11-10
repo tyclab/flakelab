@@ -12,6 +12,23 @@ let
   on = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
   app = cfg.installTycswap && cfg.tycswapAppPort != null;
   inherit (flakelab) neverRestartedByActivation;
+  # tycswap keeps its own record (every switch whoever made it, usage fetch failures, credential
+  # warnings) in a private file; the journal is the record a box reads and ships, so it is followed.
+  # journald takes a leading <N> as the line's priority.
+  logLevels = pkgs.writeShellScript "flakelab-tycswap-log-levels" ''
+    while IFS= read -r line; do
+      case $line in
+        *' - ERROR - '*) printf '<3>%s\n' "$line" ;;
+        *' - WARNING - '*) printf '<4>%s\n' "$line" ;;
+        *) printf '<6>%s\n' "$line" ;;
+      esac
+    done
+  '';
+  # -F follows the name across tycswap's rotation and waits for a file not written yet; -n 0 because
+  # the journal already holds what an earlier run followed.
+  logFollower = pkgs.writeShellScript "flakelab-tycswap-log" ''
+    ${pkgs.coreutils}/bin/tail -F -n 0 "$HOME/.local/share/tycswap/tycswap.log" | ${logLevels}
+  '';
 in
 {
   assertions = [
@@ -26,7 +43,19 @@ in
   ];
 
   systemd.user.services =
-    lib.optionalAttrs on {
+    lib.optionalAttrs cfg.installTycswap {
+      flakelab-tycswap-log = {
+        Unit.Description = "flakelab: tycswap's log in the journal";
+        Service = {
+          ExecStart = "${logFollower}";
+          SyslogIdentifier = "tycswap";
+          Restart = "always";
+          RestartSec = "5s";
+        };
+        Install.WantedBy = [ "default.target" ];
+      };
+    }
+    // lib.optionalAttrs on {
       flakelab-tycswap-autoswitch = lib.recursiveUpdate neverRestartedByActivation {
         Unit.Description = "flakelab: tycswap moves the live agent login before it hits a rate limit";
         Service = {

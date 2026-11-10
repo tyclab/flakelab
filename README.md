@@ -594,6 +594,14 @@ cooldown are `tycswap config`. Its store, `~/.local/share/tycswap`, is carried
 by `flakelab backup` (`tycswap/`) and read by `flakelab doctor` (`Switcher`),
 `flakelab web` and `flakelab sessions`.
 
+What tycswap did is in the journal: the user service `flakelab-tycswap-log`
+follows `tycswap.log` (every switch whoever made it, usage fetch failures,
+credential warnings; `journalctl --user -t tycswap`), the timer's ticks print
+their events as JSON lines under their unit, and the ticks the quota hook and
+the status line run print theirs under `-t flakelab-tycswap-hook` and
+`-t flakelab-tycswap-observe` (an observed tick only what it decided, not the
+reading). A box that ships its journal ships all of it.
+
 Plain `claude` needs no group or launcher: the status line feeds
 `tycswap auto --observe`, so the live login follows the model each session
 runs. tycswap retired its Fable and Opus/other session groups; a former group's

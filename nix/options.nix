@@ -209,7 +209,7 @@ in
     installTycswap = mkOption {
       type = types.bool;
       default = true;
-      description = "Install tycswap, the account switcher for Claude Code and Codex logins: numbered slots, a switch without a logout, auto-switch before a rate limit (`tycswapAutoSwitchInterval`), a TUI. Pinned to a release in flake.nix; its store is `~/.local/share/tycswap`, carried by `flakelab backup` and read by `flakelab doctor` and `flakelab web`.";
+      description = "Install tycswap, the account switcher for Claude Code and Codex logins: numbered slots, a switch without a logout, auto-switch before a rate limit (`tycswapAutoSwitchInterval`), a TUI. Pinned to a release in flake.nix; its store is `~/.local/share/tycswap`, carried by `flakelab backup` and read by `flakelab doctor` and `flakelab web`. The user service flakelab-tycswap-log follows its log, `tycswap.log` there, into the journal (identifier `tycswap`, the line's own level as the priority).";
     };
     tycswapAutoSwitchInterval = mkOption {
       type = types.nullOr types.str;

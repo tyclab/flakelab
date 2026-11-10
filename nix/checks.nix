@@ -643,12 +643,15 @@ in
         jq -e '.env | .MY_VAR == "mine" and .WHATSAPP_MCP_DIR == "/example/whatsapp-mcp-server" and .PLAYWRIGHT_MCP_EXTENSION == "true"' "$settings" > /dev/null
         jq -e '.statusLine.command | test("/statusbar/\\*/ \\| sort -V \\| tail -1\\)statusline-command\\.sh\"$")' "$settings" > /dev/null
 
-        echo "with the auto-switch timer the statusline also feeds tycswap and refreshes every 15 s; without it, the plugin alone again"
+        echo "with the auto-switch timer the statusline also feeds tycswap and refreshes every 15 s, and the hook and the observed tick journal their events; without it, the plugin alone again"
         bash -euo pipefail ${entryObserving}
         jq -e '.statusLine.command | test("^/nix/store/[^/ ]+-flakelab-claude-statusline$")' "$settings" > /dev/null
         jq -e '.statusLine.refreshInterval == 15' "$settings" > /dev/null
         script=$(jq -r '.statusLine.command' "$settings")
-        grep -q '/bin/tycswap auto --observe >/dev/null 2>&1 & )$' "$script"
+        grep -q '/bin/tycswap auto --observe --json 2>/dev/null |$' "$script"
+        grep -q '/bin/systemd-cat -t flakelab-tycswap-observe$' "$script"
+        grep -q '^) >/dev/null 2>&1 &$' "$script"
+        jq -e '[.hooks.Notification[].hooks[].command] | any(test("/bin/tycswap auto --once --json 2>&1 \\| /nix/store/[^/ ]+/bin/systemd-cat -t flakelab-tycswap-hook \\|\\| true$"))' "$settings" > /dev/null
         grep -q 'statusline-command.sh"$' "$script"
         bash -euo pipefail ${entryEarlier}
         jq -e '.statusLine | (.command | test("statusline-command\\.sh\"$")) and (has("refreshInterval") | not)' "$settings" > /dev/null
@@ -1764,6 +1767,11 @@ in
       (hmOf managedApp).systemd.user.services.flakelab-tycswap-app.Service.Environment;
     assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAppPort" a.message)
       (hmOf badApp).assertions;
+    # tycswap's own log is followed into the journal wherever tycswap is installed.
+    assert
+      (hmOf self.nixosConfigurations.default).systemd.user.services.flakelab-tycswap-log.Service.Restart
+      == "always";
+    assert !(builtins.hasAttr "flakelab-tycswap-log" (hmOf bad).systemd.user.services);
     assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
     assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
     assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
@@ -1772,6 +1780,16 @@ in
     assert lib.hasInfix "statusline-command.sh" (settingsOf statusline);
     assert !self.nixosConfigurations.default.config.programs.zsh.enableGlobalCompInit;
     pkgs.runCommandLocal "flakelab-check-tycswap-timer" { } ''
+      follower=${lib.concatStringsSep " " (lib.toList (hmOf self.nixosConfigurations.default).systemd.user.services.flakelab-tycswap-log.Service.ExecStart)}
+      grep -q '/bin/tail -F -n 0 "$HOME/.local/share/tycswap/tycswap.log" |' "$follower"
+      levels=$(grep -o '/nix/store/[^ ]*-flakelab-tycswap-log-levels' "$follower")
+      got=$(printf '%s\n' '2026-01-01 00:00:00,000 - INFO - Switched from account 1 to 2' \
+        '2026-01-01 00:00:01,000 - WARNING - Usage fetch failed for account 2: http-429' \
+        '2026-01-01 00:00:02,000 - ERROR - boom' 'a line without a level' | "$levels")
+      want=$(printf '%s\n' '<6>2026-01-01 00:00:00,000 - INFO - Switched from account 1 to 2' \
+        '<4>2026-01-01 00:00:01,000 - WARNING - Usage fetch failed for account 2: http-429' \
+        '<3>2026-01-01 00:00:02,000 - ERROR - boom' '<6>a line without a level')
+      test "$got" = "$want"
       grep -q '^export FLAKELAB_TYCSWAP_AUTOSWITCH=false$' ${doctorOf self.nixosConfigurations.default}/bin/nix-doctor
       grep -q '^export FLAKELAB_TYCSWAP_AUTOSWITCH=true$' ${doctorOf on}/bin/nix-doctor
       grep -q '^export FLAKELAB_INSTALL_TYCSWAP=true$' ${doctorOf on}/bin/nix-doctor
