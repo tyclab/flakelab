@@ -1772,6 +1772,10 @@ in
       (hmOf self.nixosConfigurations.default).systemd.user.services.flakelab-tycswap-log.Service.Restart
       == "always";
     assert !(builtins.hasAttr "flakelab-tycswap-log" (hmOf bad).systemd.user.services);
+    # The timer schedules, the user decides: the activation seeds "on" only with the timer.
+    assert lib.hasInfix "auto on --if-unset" (hmOf on).home.activation.tycswapAutoDefault.data;
+    assert
+      !(builtins.hasAttr "tycswapAutoDefault" (hmOf self.nixosConfigurations.default).home.activation);
     assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
     assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
     assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
