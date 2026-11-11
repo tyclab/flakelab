@@ -227,6 +227,37 @@ run_sweep "$(spec conflict)"
 contains "the conflict is counted"          "${OUT}" "1 rebase-conflict"
 contains "and git's text survives the \\c"  "${OUT}" 'local \c tail-marker'
 
+# A bare `git fetch` takes one remote. An upstream or a fork beside it went
+# stale: a branch merged there still read as unmerged days later.
+full()   { git -C "$1" rev-parse "$2" 2> /dev/null }
+print -r -- "every other remote of a checkout is fetched too"
+mk_up tworemotes
+mk_up second
+clone_into tworemotes
+git -C "${BASE}/repos/tworemotes" remote add upstream "file://${BASE}/up/second.git"
+run_sweep "$(spec tworemotes)"
+check    "it exits clean"                   "${RC}" "0"
+check    "the second remote's main is there" "$(full "${BASE}/repos/tworemotes" upstream/main)" "$(full "${BASE}/src/second" main)"
+push_to second main later
+run_sweep "$(spec tworemotes)"
+check    "and follows it on the next run"   "$(full "${BASE}/repos/tworemotes" upstream/main)" "$(full "${BASE}/src/second" main)"
+
+print -r -- "a branch tracking another remote still gets origin fetched"
+git -C "${BASE}/repos/tworemotes" switch -q -c port --track upstream/main
+push_to tworemotes main while-on-port
+run_sweep "$(spec tworemotes)"
+check    "it exits clean"                   "${RC}" "0"
+check    "origin's main is current"         "$(full "${BASE}/repos/tworemotes" origin/main)" "$(full "${BASE}/src/tworemotes" main)"
+
+print -r -- "a remote that does not fetch is named, and the checkout still counts"
+git -C "${BASE}/repos/tworemotes" remote add dead "file://${BASE}/up/nowhere.git"
+run_sweep "$(spec tworemotes)"
+check    "it exits 1"                       "${RC}" "1"
+contains "the remote is counted"            "${OUT}" "Remotes that did not fetch (1):"
+contains "and named with its checkout"      "${OUT}" "${BASE}/repos/tworemotes — dead:"
+contains "the checkout itself was fetched"  "${OUT}" "1 fetched"
+contains "and is no failed repository"      "${OUT}" "0 failed"
+
 print -r -- "a flag with no value is a usage error"
 OUT="$("${SWEEP}" --key-file "${KEY}" --repos-dir < /dev/null 2>&1)"; RC=$?
 check    "it exits 2"                       "${RC}" "2"

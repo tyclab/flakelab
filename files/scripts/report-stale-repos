@@ -107,10 +107,10 @@ while IFS='|' read -r reason repo_path; do
   fi
 done < <(sort -u "${ENTRIES}")
 
+# Without a checkout there is no clone to act on, and the report stays silent.
+(( checked_out > 0 )) || exit 0
 print -r -- "SUMMARY archived/deletion-scheduled: ${checked_out} checked out locally (${removable} with no local work), ${remote_only} remote-only"
-if (( checked_out > 0 )); then
-  echo "Excluded from clone/fetch — these never update again."
-fi
+echo "Excluded from clone/fetch — these never update again."
 if (( removable > 0 )); then
   echo "These clones have no detected local work or linked worktrees; delete them:"
   for repo in "${removable_paths[@]}"; do

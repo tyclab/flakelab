@@ -74,7 +74,7 @@ if ! ssh-keygen -y -P "" -f "${KEY_FILE}" > /dev/null 2>&1 \
   exit 1
 fi
 
-# Process a single repo: clone, or fetch + rebase local branch onto upstream.
+# Process a single repo: clone, or fetch every remote + rebase local branch onto upstream.
 # On rebase conflict: abort (restore pre-rebase state) and flag REBASE_CONFLICT.
 # Pre-flight guards skip the rebase with REBASE_SKIPPED + reason.
 process_repo() {
@@ -109,6 +109,20 @@ process_repo() {
         return
       fi
     fi
+
+    # The bare fetch above took one remote: the one the checked-out branch
+    # tracks, origin without one. An upstream or a fork beside it went stale, so
+    # every other remote is fetched too. One that fails is named and leaves the
+    # repository's own result alone. No terminal prompt: a hand-added https
+    # remote wanting a password fails here instead of asking in every worker.
+    local cur_branch tracked_remote="" other_remote
+    cur_branch="$(git -C "${dest}" symbolic-ref --short -q HEAD 2>/dev/null)"
+    [[ -n "${cur_branch}" ]] && tracked_remote="$(git -C "${dest}" config "branch.${cur_branch}.remote" 2>/dev/null)"
+    for other_remote in ${(f)"$(git -C "${dest}" remote 2>/dev/null)"}; do
+      [[ "${other_remote}" == "${tracked_remote:-origin}" ]] && continue
+      gitnet_retry env GIT_TERMINAL_PROMPT=0 git -C "${dest}" fetch --prune "${other_remote}" \
+        || print -r -- "REMOTE_FAILED|${dest}|${other_remote}: ${GITNET_OUT//$'\n'/ }" >> "${RESULT_FILE}"
+    done
 
     # A rewritten default branch drops commits that local refs may still hold,
     # so rebasing onto it would resurrect or conflict on them — the repo is
@@ -214,7 +228,7 @@ process_repo() {
         print -r -- "REBASE_SKIPPED|${dest}|upstream gone: ${branch} (remote branch pruned${behind_note})" >> "${RESULT_FILE}"
       else
         local r on=""
-        for r in ${(f)"$(git -C "${dest}" remote 2>/dev/null)"}; do
+        for other_remote in ${(f)"$(git -C "${dest}" remote 2>/dev/null)"}; do
           git -C "${dest}" rev-parse -q --verify "refs/remotes/${r}/${branch}" >/dev/null 2>&1 \
             && on+="${on:+, }${r}"
         done
@@ -347,7 +361,7 @@ fi
 # Summary
 typeset -i cloned=0 fetched=0 rebased=0 rebase_skipped=0 rebase_conflict=0 force_pushed=0 failed=0
 typeset -i default_ff=0
-typeset -a fail_details=() conflict_details=() force_details=()
+typeset -a fail_details=() conflict_details=() force_details=() remote_fail_details=()
 typeset -a default_ff_details=() default_ff_skipped=()
 typeset -a skip_empty=() skip_gone=() skip_unpushed=() skip_untracked=() skip_dirty=() skip_detached=() skip_other=()
 
@@ -386,6 +400,9 @@ while IFS='|' read -r result_status dest err; do
     FAILED)
       (( failed++ ))
       fail_details+=("  ${dest}: ${err}")
+      ;;
+    REMOTE_FAILED)
+      remote_fail_details+=("  ${dest} — ${err}")
       ;;
   esac
 done < "${RESULT_FILE}"
@@ -446,11 +463,17 @@ if (( rebase_conflict > 0 )); then
   done
 fi
 
+if (( ${#remote_fail_details[@]} > 0 )); then
+  echo ""
+  print -r -- "Remotes that did not fetch (${#remote_fail_details[@]}):"
+  printf '%s\n' "${remote_fail_details[@]}"
+fi
+
 if (( failed > 0 )); then
   echo ""
   echo "Failures:"
   for detail in "${fail_details[@]}"; do
     print -r -- "${detail}"
   done
-  exit 1
 fi
+(( failed == 0 && ${#remote_fail_details[@]} == 0 )) || exit 1
