@@ -39,6 +39,18 @@ in
         "until=168h"
       ];
     };
+    # Docker's systemd cgroup driver takes a slice unit as the parent, not a cgroup path.
+    daemon.settings = lib.mkIf (config.flakelab.containerLimits != null) {
+      cgroup-parent = "docker.slice";
+    };
+  };
+  # A top-level slice, so its weight competes with user.slice: a dash in the name would nest it (a-b.slice lives in a.slice).
+  systemd.slices.docker = lib.mkIf (config.flakelab.containerLimits != null) {
+    description = "flakelab: Docker containers and builds, capped to keep login sessions responsive";
+    sliceConfig = {
+      MemoryMax = config.flakelab.containerLimits.memoryMax;
+      CPUWeight = config.flakelab.containerLimits.cpuWeight;
+    };
   };
   users.users.${config.flakelab.username} = {
     extraGroups = [ "docker" ];

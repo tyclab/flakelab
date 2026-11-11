@@ -660,6 +660,27 @@ in
       description = "systemd calendar expression (OnCalendar syntax) for pruning what grows without bound: Docker's unused images, stopped containers and build cache older than a week (`virtualisation.docker.autoPrune`; volumes stay), and the `flakelab-prune` user timer's Codex releases other than the current one (skipped while any codex process runs), unused uv and pre-commit cache entries, and `~/.platformio` and `~/.cache/huggingface` once nothing in them was written for 30 days and no running process executes from or holds a file in them. Persistent: a box that was off at the slot catches up at its next start. null schedules none.";
     };
 
+    containerLimits = mkOption {
+      type = types.nullOr (
+        types.submodule {
+          options = {
+            memoryMax = mkOption {
+              type = types.strMatching "([1-9][0-9]?|100)%|[1-9][0-9]*[KMGT]?|infinity";
+              default = "75%";
+              description = "systemd `MemoryMax=` of the slice: a share of the RAM the box sees (`75%`), bytes with an optional K, M, G or T suffix, or `infinity`.";
+            };
+            cpuWeight = mkOption {
+              type = types.ints.between 1 10000;
+              default = 20;
+              description = "systemd `CPUWeight=` of the slice. Every other slice keeps 100, so under contention the containers together get about a fifth of what the login sessions get; an idle box gives them every core.";
+            };
+          };
+        }
+      );
+      default = { };
+      description = "Runs every Docker container and build in `docker.slice` (the daemon's `cgroup-parent`) with a memory ceiling and a low CPU weight, so a container job that takes all it can get leaves the login sessions room to answer. Past `memoryMax` the kernel reclaims from the containers and then kills inside the slice, not outside it. A percentage follows the RAM each box sees (on WSL the VM's), so one overlay value fits a small and a large box. It bounds containers only: a job an agent starts outside Docker stays in its login session. A container started with `--cgroup-parent` leaves the slice. The switch that first applies or removes it restarts dockerd, which stops the running containers. Other slice settings merge in from an overlay module (`systemd.slices.docker.sliceConfig.MemorySwapMax`). Read the result with `systemctl status docker.slice` while a container runs. null leaves Docker under `system.slice` without limits.";
+    };
+
     sessionsAutosaveInterval = mkOption {
       type = types.nullOr types.str;
       default = "5min";

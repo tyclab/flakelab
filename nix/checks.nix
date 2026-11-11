@@ -2045,6 +2045,37 @@ in
     assert !hasInfix "/run/secrets/flakelab-env" zshOff;
     pkgs.runCommandLocal "flakelab-check-sops-optional" { } "touch $out";
 
+  # Containers run in a capped top-level slice on both targets; null takes the
+  # slice and the daemon's cgroup-parent away together.
+  container-limits =
+    let
+      ext =
+        attrs: self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; };
+      wsl = self.nixosConfigurations.default.config;
+      vm = self.nixosConfigurations.proxmox-vm.config;
+      off = (ext { containerLimits = null; }).config;
+      tuned = (ext { containerLimits.memoryMax = "6G"; }).config;
+      sliceOf = cfg: cfg.systemd.slices.docker.sliceConfig;
+      maxOf = value: (sliceOf (ext { containerLimits.memoryMax = value; }).config).MemoryMax;
+      rejects = value: !(builtins.tryEval (maxOf value)).success;
+    in
+    assert wsl.virtualisation.docker.daemon.settings.cgroup-parent == "docker.slice";
+    assert vm.virtualisation.docker.daemon.settings.cgroup-parent == "docker.slice";
+    assert (sliceOf wsl).MemoryMax == "75%";
+    assert (sliceOf wsl).CPUWeight == 20;
+    assert sliceOf vm == sliceOf wsl;
+    # One key set keeps the other's default.
+    assert (sliceOf tuned).MemoryMax == "6G";
+    assert (sliceOf tuned).CPUWeight == 20;
+    assert !(off.virtualisation.docker.daemon.settings ? cgroup-parent);
+    assert !(off.systemd.slices ? docker);
+    # systemd ignores a value it cannot parse and runs the slice without a ceiling.
+    assert rejects "0%";
+    assert rejects "150%";
+    assert rejects "6GB";
+    assert !(rejects "infinity");
+    pkgs.runCommandLocal "flakelab-check-container-limits" { } "touch $out";
+
   # The secrets directory is owner-only after activation, also where
   # home-manager's own files created it 755 first.
   secrets-dir-mode =
