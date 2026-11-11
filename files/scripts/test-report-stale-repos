@@ -110,6 +110,12 @@ excludes "nothing suggests parking a clone elsewhere"  "${OUT}" ".stale-repos"
 contains "the query asks for subgroups and the full page" "$(calls)" "groups/acme/projects?include_subgroups=true&per_page=100"
 excludes "and not for membership"                      "$(calls)" "membership=true"
 
+print -r -- "archived projects without a checkout"
+project ghost/retired true > "${FIXTURES}/ghost.ndjson"
+run --repos-dir "${REPOS}" --group ghost
+check    "exits 0" "${RC}" "0"
+check    "and prints nothing: there is no clone to act on" "${OUT}" ""
+
 print -r -- "local data outside the main worktree's ordinary status"
 for name in ignored detached tagged clean-linked dirty-linked; do
   mkclone "local-work/${name}"
