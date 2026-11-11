@@ -35,9 +35,12 @@ if (( ${#owners} )); then
     gh api --hostname github.com graphql --paginate -f query="${query}" -f owner="${owner}" >> "${tmp}/pages"
   done
 else
+  # affiliations defaults to OWNER and COLLABORATOR: without ORGANIZATION_MEMBER the
+  # viewer's private organization repositories are left out.
   query='query($endCursor: String) {
     owner: viewer {
-      repositories(first: 100, after: $endCursor, ownerAffiliations: [OWNER, ORGANIZATION_MEMBER]) {'"${fields}"'}
+      repositories(first: 100, after: $endCursor, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER],
+        ownerAffiliations: [OWNER, ORGANIZATION_MEMBER]) {'"${fields}"'}
     }
   }'
   gh api --hostname github.com graphql --paginate -f query="${query}" > "${tmp}/pages"

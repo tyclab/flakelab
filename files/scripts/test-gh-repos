@@ -39,7 +39,8 @@ print -r -- 'ok: all pages, eligibility filters, explicit owner, pagination and 
 "${script}" > "${scratch}/out"
 grep -q -- 'owner: viewer' "${GH_TEST_CALLS}"
 grep -q -- 'ownerAffiliations: \[OWNER, ORGANIZATION_MEMBER\]' "${GH_TEST_CALLS}"
-print -r -- 'ok: default discovery includes owned and organization repositories'
+grep -q -- ' affiliations: \[OWNER, COLLABORATOR, ORGANIZATION_MEMBER\]' "${GH_TEST_CALLS}"
+print -r -- 'ok: default discovery includes owned and organization repositories, private ones too'
 
 "${script}" --owner example --owner other > "${scratch}/out"
 [[ $(wc -l < "${scratch}/out") == 2 ]]
