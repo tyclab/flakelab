@@ -4,8 +4,7 @@ set -uo pipefail
 
 #
 # report-unswept-clones — name the clones under the repos dir that the clone
-# sweep did not fetch, and the remotes it left alone. Read-only; always exits 0
-# once its arguments parse.
+# sweep did not fetch. Read-only; always exits 0 once its arguments parse.
 #
 # Usage:
 #   report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>] [--skip <dir>]...
@@ -137,7 +136,7 @@ shown_url() {
   print -r -- "$u"
 }
 
-# A bare `git fetch` takes the remote the checked-out branch tracks, origin without one.
+# The remote a wrong-repository finding names: the one the checked-out branch tracks, origin without one.
 fetched_remote() {
   local branch remote=""
   branch="$(git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null)"
@@ -145,19 +144,24 @@ fetched_remote() {
   print -r -- "${remote:-origin}"
 }
 
-typeset -a unswept=() remotes=()
-typeset clone origin okey other fetched furl fkey
+typeset -a unswept=()
+typeset clone origin okey fetched furl r rurl
+typeset -i held
 for clone in "${clones[@]}"; do
   (( ${SKIP[(Ie)$clone]} )) && continue
   if [[ -n "${swept_dest[$clone]:-}" ]]; then
-    fetched="$(fetched_remote "$clone")"
-    furl="$(git -C "$clone" remote get-url "$fetched" 2>/dev/null)"
-    fkey="${furl:+$(url_key "$furl")}"
-    if [[ "${swept_dest[$clone]}" != "-" && "$fkey" != "${swept_dest[$clone]}" ]]; then
+    # The sweep fetches every remote of a destination, so the project is
+    # fetched when any of them is it.
+    held=0
+    for r in ${(f)"$(git -C "$clone" remote 2>/dev/null)"}; do
+      rurl="$(git -C "$clone" remote get-url "$r" 2>/dev/null)"
+      [[ -n "$rurl" && "$(url_key "$rurl")" == "${swept_dest[$clone]}" ]] && held=1
+    done
+    if [[ "${swept_dest[$clone]}" != "-" ]] && (( ! held )); then
+      fetched="$(fetched_remote "$clone")"
+      furl="$(git -C "$clone" remote get-url "$fetched" 2>/dev/null)"
       unswept+=("  ${fetched} is ${${furl:+$(shown_url "$furl")}:-missing}, not ${swept_dest[$clone]}  $(rel "$clone")")
     fi
-    other="${(j:, :)${(@f)$(git -C "$clone" remote 2>/dev/null | grep -vxF -- "$fetched")}}"
-    [[ -n "$other" ]] && remotes+=("  ${other}  $(rel "$clone")")
     continue
   fi
   origin="$(git -C "$clone" remote get-url origin 2>/dev/null)"
@@ -176,9 +180,5 @@ done
 if (( ${#unswept[@]} > 0 )); then
   print -r -- "Clones the sweep does not fetch (${#unswept[@]}), under ${REPOS_DIR}:"
   printf '%s\n' "${unswept[@]}"
-fi
-if (( ${#remotes[@]} > 0 )); then
-  print -r -- "Remotes the sweep does not fetch (${#remotes[@]}):"
-  printf '%s\n' "${remotes[@]}"
 fi
 exit 0
