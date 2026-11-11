@@ -228,7 +228,7 @@ process_repo() {
         print -r -- "REBASE_SKIPPED|${dest}|upstream gone: ${branch} (remote branch pruned${behind_note})" >> "${RESULT_FILE}"
       else
         local r on=""
-        for other_remote in ${(f)"$(git -C "${dest}" remote 2>/dev/null)"}; do
+        for r in ${(f)"$(git -C "${dest}" remote 2>/dev/null)"}; do
           git -C "${dest}" rev-parse -q --verify "refs/remotes/${r}/${branch}" >/dev/null 2>&1 \
             && on+="${on:+, }${r}"
         done
