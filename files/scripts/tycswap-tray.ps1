@@ -18,7 +18,10 @@
     three times a minute apart; the Task Scheduler service is the parent, so
     nothing in the tray's lineage belongs to WSL and `wsl --shutdown` cannot end
     it. The Run key value an earlier `--autostart on` wrote is removed: two
-    starts would race for the tray's single-instance lock.
+    starts would race for the tray's single-instance lock. A task the user
+    turned off (the tray's Start at login switch disables it) stays off: that
+    alone registers nothing, a registration for another reason keeps it off,
+    and a start of the tray turns it on only for that start.
   - The tray runs: when no tycswap.exe from that path is running, the task is
     started, which is the same start a logon gets.
 
@@ -98,6 +101,8 @@ if ($Apply -and (Test-Path -LiteralPath $Old)) {
 
 # 2. The task.
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+# Settings.Enabled, not State: a turned-off task whose tray still runs reports Running.
+$taskOff = $task -and -not $task.Settings.Enabled
 $taskWhy = @()
 if (-not $task) {
   $taskWhy += 'is not registered'
@@ -116,10 +121,10 @@ if (-not $task) {
   if ($s.DisallowStartIfOnBatteries -or $s.StopIfGoingOnBatteries) { $taskWhy += 'minds the battery' }
   if ($s.RestartCount -lt 1) { $taskWhy += 'is not restarted after a crash' }
   if ($s.MultipleInstances -ne 'IgnoreNew') { $taskWhy += "allows a second instance ($($s.MultipleInstances))" }
-  if ($task.State -eq 'Disabled') { $taskWhy += 'is disabled' }
 }
 if ($taskWhy.Count -eq 0) {
-  Say "task: $TaskName starts the distro and the tray at logon"
+  if ($taskOff) { Say "task: $TaskName is turned off (Start at login is off in the tray); it stays off" }
+  else { Say "task: $TaskName starts the distro and the tray at logon" }
 } else {
   Off "register the logon task $TaskName (it $($taskWhy -join '; '))"
   if ($Apply) {
@@ -131,7 +136,12 @@ if ($taskWhy.Count -eq 0) {
     $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
     Register-ScheduledTask -TaskName $TaskName -Action @($a1, $a2) -Trigger $trigger -Settings $settings -Principal $principal `
       -Description "flakelab: tycswap's Windows tray for the dashboard in the $Distro distro (flakelab tray)" -Force | Out-Null
-    Say "registered $TaskName"
+    if ($taskOff) {
+      Disable-ScheduledTask -TaskName $TaskName | Out-Null
+      Say "registered $TaskName and kept it turned off"
+    } else {
+      Say "registered $TaskName"
+    }
   }
 }
 
@@ -160,9 +170,15 @@ if ($procs.Count -gt 0) {
 } else {
   Off 'start the tray (none running)'
   if ($Apply) {
-    Start-ScheduledTask -TaskName $TaskName
-    $deadline = (Get-Date).AddSeconds(15)
-    do { Start-Sleep -Milliseconds 500; $procs = @(Running) } while ($procs.Count -eq 0 -and (Get-Date) -lt $deadline)
+    # A turned-off task cannot be started; a tray it started keeps running once it is off again.
+    if ($taskOff) { Enable-ScheduledTask -TaskName $TaskName | Out-Null }
+    try {
+      Start-ScheduledTask -TaskName $TaskName
+      $deadline = (Get-Date).AddSeconds(15)
+      do { Start-Sleep -Milliseconds 500; $procs = @(Running) } while ($procs.Count -eq 0 -and (Get-Date) -lt $deadline)
+    } finally {
+      if ($taskOff) { Disable-ScheduledTask -TaskName $TaskName | Out-Null }
+    }
     if ($procs.Count -gt 0) { Say "started the tray through the task (pid $($procs[0].Id))" }
     else { throw "the task ran but no tray appeared within 15 s; its last result: $((Get-ScheduledTaskInfo -TaskName $TaskName).LastTaskResult)" }
   }
