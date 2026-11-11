@@ -647,7 +647,11 @@ sets `TYCSWAP_AUTO_MANAGED_BY`, so the app hosts no second engine; without
 the timer the toggle also starts and stops the engine inside the app. The
 activation seeds the setting to on once, where a box schedules the timer and
 its store holds no choice yet, and never changes it afterwards.
-Model-window settings apply on the next tick.
+Model-window settings apply on the next tick. The tray's Start at login
+switch turns the logon task off and on, and `flakelab tray` leaves a
+turned-off task off: it registers nothing for that reason, keeps it off when
+it registers the task for another, and turns it on only for the moment it
+has to start the tray.
 
 #### Migrating from flakelab accounts
 
