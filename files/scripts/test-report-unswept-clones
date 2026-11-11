@@ -58,7 +58,8 @@ clone worktrees/app-feature/inner git@gitlab.com:inner/inner.git
 clone acme/moved          git@github.com:other/moved.git         # destination holds another repository
 clone acme/tracks         git@gitlab.com:fork/tracks.git upstream git@gitlab.com:acme/tracks.git
 git -C "${REPOS}/acme/tracks" config branch.main.remote upstream
-clone overlay             git@gitlab.com:me/overlay.git          # kept current by flakelab update
+clone acme/forked         git@gitlab.com:me/forked.git upstream git@gitlab.com:acme/forked.git
+clone overlay            git@gitlab.com:me/overlay.git          # kept current by flakelab update
 clone .hidden/cache       git@gitlab.com:hidden/cache.git
 clone acme/app/vendor/dep git@gitlab.com:vendor/dep.git          # nested inside a swept clone
 
@@ -71,7 +72,8 @@ git@gitlab.com:acme/sub/lib.git
 git@github.com:Owner/fork.git
 git@gitlab.com:acme/explicit-name.git ${REPOS}/acme/explicit
 git@gitlab.com:acme/moved.git
-git@gitlab.com:acme/tracks.git" > "${BASE}/list"
+git@gitlab.com:acme/tracks.git
+git@gitlab.com:acme/forked.git" > "${BASE}/list"
 
 print -r -- "== report"
 out="$(zsh "${CMD}" --repos-dir "${REPOS}" --swept "${BASE}/list" --discovered "${BASE}/raw" --skip "${REPOS}/overlay" 2>&1)"
@@ -86,10 +88,12 @@ contains "origin shown without its userinfo" "${out}" "  not discovered (https:/
 excludes "token never printed" "${out}" "FAKE_TOKEN"
 contains "clone six levels down is found" "${out}" "g/a/b/c/d/deep"
 contains "destination holding another repository" "${out}" "  origin is git@github.com:other/moved.git, not gitlab.com/acme/moved  acme/moved"
-contains "extra remotes of swept clones" "${out}" "Remotes the sweep does not fetch (2):"
-contains "extra remote names it and the clone" "${out}" "  upstream  Owner/fork"
-contains "a branch tracking upstream leaves origin unfetched" "${out}" "  origin  acme/tracks"
-excludes "the tracked remote is the fetched one" "${out}" "fork/tracks"
+# The sweep fetches every remote of a destination, so none is listed, and the
+# project is fetched whichever remote holds it.
+excludes "no list of remotes" "${out}" "Remotes the sweep does not fetch"
+excludes "an extra remote of a swept clone is not a finding" "${out}" "Owner/fork"
+excludes "the project behind the tracked remote is swept" "${out}" "acme/tracks"
+excludes "the project behind an untracked second remote is swept" "${out}" "acme/forked"
 excludes "--skip leaves the overlay out" "${out}" "overlay"
 excludes "swept clone at its derived path" "${out}" "  acme/app"$'\n'
 excludes "subgroup clone is swept" "${out}" "sub/lib"
