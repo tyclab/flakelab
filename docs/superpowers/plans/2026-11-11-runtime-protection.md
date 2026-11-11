@@ -4,7 +4,7 @@
 itself, and one mechanism fits every box.
 
 **Spec:** `docs/superpowers/specs/2026-11-11-runtime-protection-design.md`. Goal ids
-(G1 to G10) below are the spec's.
+(G1 to G9) below are the spec's.
 
 **Architecture:** three PRs. A makes WSLg recover from a crash and gives a command
 for a dead one. B puts agent sessions into one user slice with a memory ceiling and
@@ -19,10 +19,11 @@ library for the config edit, Windows PowerShell 5.1 reached through interop.
 ## Global Constraints
 
 - No value below 0 for `oom_score_adj`, anywhere.
-- No absolute memory amount or CPU count in any default. The drill's own 300 MB
-  test scope is the one exception and is not a unit.
+- No absolute memory amount or CPU count in any default.
+- No benchmark or load test: every check that runs on a live box only reads. It
+  allocates no memory, loads no CPU and kills no process.
 - No script calls `wsl --shutdown`, `wsl --terminate`, restarts dockerd or restarts
-  a user manager. The pilot of G9 on tycdev is done by hand.
+  a user manager. The pilots of G1 and G8 are done once by hand.
 - With `flakelab.wsl.gui = null` no update, switch or doctor run reads or writes a
   Windows file or starts a Windows process. `flakelab wslg quiet` is exempt: a
   person types it.
@@ -59,8 +60,9 @@ manager`).
 - `.wslconfig` with CRLF, a comment between section and key, a `[WSL2]` header in
   another case, and a key already set to the wanted value (`test-wslconf: keeps
 foreign lines byte for byte`, `…: idempotent`).
-- The drill cleans up after a failure in the middle and reports `FAIL`, not `skip`,
-  without a user manager (`test-runtime-drill`).
+- The doctor's runtime section starts no process on the box besides reading
+  `/proc`, the cgroup tree and `systemctl show` (`test-nix-doctor`: a stub
+  `systemd-run` on `PATH` is never called).
 
 ---
 
@@ -107,14 +109,14 @@ rewritten: the clipboard crash, the mount that kept it down, `flakelab wslg quie
 - `flakelab update` on GamerTyc, tycdev (no effect there) and, when a session wakes
   on it, the EliteBook.
 - **Operator-only:** each box's next WSL start, at a time of their choosing.
-- After GamerTyc's next start, before any profile is set: `flakelab drill` for G1
-  (`X0` no mountpoint, connect succeeds, weston back within 5 s after `pkill weston`
-  through `wsl.exe --system`, twice). Its result goes into the PR and decides the
-  WSLg profile question put to the operator.
+- After GamerTyc's next start, before any profile is set: `flakelab doctor` (`X0` no
+  mountpoint), then G1's pilot by hand: `pkill weston` through `wsl.exe --system`,
+  a new weston within 5 s, twice. The result goes into the PR and decides the WSLg
+  profile question put to the operator.
 
 ---
 
-## PR B: workload slice, kill order, self-repair (G5 to G10)
+## PR B: workload slice, kill order, self-repair (G5 to G9)
 
 ### Task B1: options, slice, kill order, self-repair
 
@@ -178,40 +180,14 @@ live slice's three properties against the configuration; `oom_score_adj` of the 
 manager, with "takes effect when the user manager next starts" while it still reads
 100; every `claude` and `codex` process whose cgroup is outside `agents.slice`, with
 its pid; every user slice outside `agents.slice` that holds processes and is not
-`app.slice`, `session.slice` or `background.slice`, with the naming rule.
+`app.slice`, `session.slice` or `background.slice`, with the naming rule; and
+`memory.peak` of `system.slice` and of the user manager's tree outside
+`agents.slice`, for sizing.
 
 **Failing tests first:** fake `/proc` and cgroup trees for a session inside the
 slice, one in `/non-systemd`, a user manager at 100, and a foreign `hs.slice`.
 
-### Task B5: `flakelab drill`
-
-**Files:** `files/scripts/runtime-drill`, `files/scripts/test-runtime-drill`,
-`files/scripts/flakelab` (router), `nix/cli.nix`, `nix/scripts.nix`,
-`nix/checks.nix`.
-
-**Interface:** `flakelab drill [--json]`; one `ok`, `FAIL` or `skip` line per check
-with the reason, exit 1 on any failure. Checks:
-
-- G1 (WSLg running): as in Task A4.
-- G2 (`gui = "off"`): `/mnt/wslg` absent, no WSL client, no failed unit.
-- G5: scores of the user manager, one flakelab user service, a wrapped process and
-  a marked shell.
-- G6: live slice values; then a 300 MB scope below `agents.slice` with a bystander
-  holding 150 MB at 500 and a job at 800 that grows by 10 MB steps to 250 MB: the
-  job is gone, the bystander and the shell answer.
-- G7: the fixed loop for 6 s beside 4 × `nproc` busy threads, once with the threads
-  in `agents.slice` and once in a default-weight scope; pass at a ratio of 1.3.
-- G8: the doctor's two lists are empty.
-
-It prints `memory.peak` of `system.slice` and of the user manager's tree outside
-`agents.slice`, and warns before the G6 kill that the "Kernel OOM Kill" alert will
-fire.
-
-**Failing tests first:** argument handling, the JSON shape, `FAIL` without a user
-manager, and cleanup after a failed check, with stubs; the live checks are replaced
-by fixtures under `FLAKELAB_DRILL_OFFLINE`.
-
-### Task B6: documents
+### Task B5: documents
 
 **Files:** `ARCHITECTURE.md` (one section, "Workload and runtime", with the naming
 rule for job slices), `known-issues.md` (a session outside the slice; the kill order
@@ -219,14 +195,14 @@ before the user manager restarts), `CHANGELOG.md`,
 `files/config/claude/target-wsl.md` (one line: a job slice is named
 `agents-<name>.slice`).
 
-### Task B7: pilot and rollout
+### Task B6: pilot and rollout
 
 - tycdev first. Check no agent session runs there, `ssh tycdev flakelab update` with
-  `agents` set in its overlay entry, then G9's pilot by hand (the agent unit starts;
+  `agents` set in its overlay entry, then G8's pilot by hand (the agent unit starts;
   `sudo systemctl kill -s KILL user@<uid>.service`, the manager answers within
-  10 s), then `ssh tycdev flakelab drill`. Read the printed peaks; if 25 % of its
+  10 s), then `ssh tycdev flakelab doctor`. Read the printed peaks; if 25 % of its
   RAM is less than the runtime's peak, lower its `memoryMax` in the same rollout.
-- GamerTyc: `flakelab update`, `flakelab drill`. Each session enters the slice when
+- GamerTyc: `flakelab update`, `flakelab doctor`. Each session enters the slice when
   it is ended and resumed. **Operator-only:** the moment for that, and the next WSL
   start, at which the kill order takes effect.
 - EliteBook: when a session next wakes there.
@@ -269,4 +245,4 @@ starts no stub and touches nothing; `--dry-run` writes nothing.
   on the Windows side), `CHANGELOG.md`.
 - **Operator-only:** the profile per box, chosen with G1's result in hand, and each
   box's next WSL start.
-- After that start: `flakelab drill` for G2; G3's pilot on the first `hardened` box.
+- After that start: `flakelab doctor` for G2; G3's pilot on the first `hardened` box.

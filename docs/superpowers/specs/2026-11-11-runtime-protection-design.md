@@ -114,7 +114,10 @@ already in use`, and segfaulted.
   controllers reach the user manager; inside a capped cgroup the kernel killed score
   800 before 500 before 0; an unprivileged process can raise its score and its
   children inherit it; `systemd-run --user --scope --slice=…` works from
-  `/non-systemd`.
+  `/non-systemd`; `CPUWeight=20` on a user slice is applied.
+- CPU weight, measured by a peer session: a fixed loop ran 33 M steps alone, 18 M
+  beside 40 busy threads in its own cgroup and 27 M with those threads in a scope
+  of their own.
 - Anything a session starts with `systemd-run --user` leaves the session's cgroup,
   and a slice name with a dash nests below the slice named before the dash.
 - Alerts exist and cover the WSL boxes: tycpve `saturation.yml`, "Kernel OOM Kill"
@@ -134,51 +137,45 @@ a share with a per-box override.
 ## Goals
 
 Each goal names the check that proves it. "Suite" is an offline `files/scripts/test-*`
-or a `nix/checks.nix` evaluation, run by `nix flake check`; "drill" is `flakelab
-drill` on a live box; "pilot" is done once and recorded in the PR.
+or a `nix/checks.nix` evaluation, run by `nix flake check`; "doctor" is `flakelab
+doctor` on a live box, which only reads; "pilot" is done once by hand and recorded in
+the PR.
 
 - G1. After a compositor crash WSLg comes back by itself. Suite: the wsl target
-  evaluates without the `X0` mount unit unless `/tmp` is a tmpfs. Drill, on a box
-  that runs WSLg, after its next WSL start: `X0` is no mountpoint, a connect to
-  `/tmp/.X11-unix/X0` succeeds, and after `pkill weston` in the system distro a new
-  weston answers within 5 s, twice in a row.
+  evaluates without the `X0` mount unit unless `/tmp` is a tmpfs. Doctor: `X0` is no
+  mountpoint. Pilot on GamerTyc after its next WSL start: `pkill weston` in the
+  system distro, a new weston runs within 5 s, twice in a row.
 - G2. A box configured `gui = "off"` starts without WSLg and without a failed unit.
   Suite: the `.wslconfig` edit sets `guiApplications=false` under `[wsl2]`, keeps
-  every other byte and is idempotent. Drill, after the next WSL start: `/mnt/wslg`
-  is absent, no WSL `msrdc.exe` runs, `systemctl --failed` is empty.
+  every other byte and is idempotent. Doctor, after the next WSL start: `/mnt/wslg`
+  is absent and no unit has failed.
 - G3. A box configured `gui = "hardened"` runs WSLg without the clipboard bridge.
   Suite: the `.wslgconfig` edit. Pilot on the first such box: copy text on Windows
   twenty times in quick succession (the repro of #1407); weston's pid is unchanged.
 - G4. A dead WSLg in a running VM is silenced with one command. Suite: `flakelab wslg
 quiet --dry-run` names only `…\WSL\msrdc.exe` and refuses when more than one runs.
-  Drill: `flakelab doctor` reports a dead compositor and names the command. Proven
-  by hand on 2026-11-11.
+  Doctor: reports a dead compositor and names the command. Proven by hand on
+  2026-11-11.
 - G5. Under memory exhaustion the kernel kills workload first. Suite: evaluated
   units carry `OOMScoreAdjust=0` for `user@.service` and `DefaultOOMScoreAdjust=0`
-  for the user manager; the wrapper sets 500; the tool-shell hook sets 800. Drill:
-  the user manager and a flakelab user service read 0; a process started through the
-  wrapper reads 500; a shell with the agent marker reads 800.
-- G6. What runs in the sessions' cgroups cannot take the box's memory. Suite:
-  `agents.slice` evaluates with the configured `MemoryMax`, `MemorySwapMax` and
-  `CPUWeight`. Drill: the live slice shows them; in a 300 MB test scope below
-  `agents.slice`, a bystander holding 150 MB at score 500 and the scope's shell
-  survive while a job at score 800 that grows past the limit is killed.
-- G7. The slice's CPU weight has effect. Drill: a fixed loop in a default-weight
-  scope runs at least 1.3 times as many steps beside four busy threads per CPU
-  thread inside `agents.slice` as beside the same threads in a default-weight scope.
-- G8. Agent sessions are in the slice however they start. Suite: `claude-sessions`
+  for the user manager; the wrapper sets 500; the tool-shell hook sets 800. Doctor:
+  the user manager's live score.
+- G6. What runs in the sessions' cgroups is bounded in memory and yields the CPU.
+  Suite: `agents.slice` evaluates with the configured `MemoryMax`, `MemorySwapMax`
+  and `CPUWeight`. Doctor: the live slice shows the same three values.
+- G7. Agent sessions are in the slice however they start. Suite: `claude-sessions`
   starts and resumes every tool through the wrapper; the wrapper falls back to
   `choom` alone when no user manager answers; with `flakelab.agents = null` it
-  execs the command unchanged. Drill: `flakelab doctor` lists agent processes
-  outside `agents.slice`, and user slices outside it that hold processes.
-- G9. A killed user manager and a stale agent socket repair themselves. Suite:
+  execs the command unchanged. Doctor: lists agent processes outside `agents.slice`,
+  and user slices outside it that hold processes.
+- G8. A killed user manager and a stale agent socket repair themselves. Suite:
   `user@.service` evaluates with `Restart=on-failure`; `ssh-agent.service` removes
   its socket before starting. Pilot on tycdev, where the agent unit has been failed
   since 2026-11-10: after the update it starts; with no session running there,
   `systemctl kill -s KILL user@<uid>.service` and the manager answers again within
   10 s.
-- G10. One mechanism, per-box values. Suite: the proxmox-vm target evaluates G5 to
-  G9 and nothing of G1 to G4; no default names an absolute amount of memory or a CPU
+- G9. One mechanism, per-box values. Suite: the proxmox-vm target evaluates G5 to
+  G8 and nothing of G1 to G4; no default names an absolute amount of memory or a CPU
   count; `flakelab.agents = null` and `flakelab.wsl.gui = null` evaluate to today's
   system plus G1 and the ssh-agent fix.
 
@@ -191,6 +188,10 @@ quiet --dry-run` names only `…\WSL\msrdc.exe` and refuses when more than one r
 - A box-wide job runner. A repo's own limiter stays its own business, provided its
   slice nests below `agents.slice`.
 - The VM's size (`memory`, `processors` in `.wslconfig`).
+- A benchmark or load test of the limits. It would measure systemd and the kernel,
+  not this repo, need an invented pass mark, and every run would add an OOM kill
+  that fires the alert. The behaviour was measured once (Evidence); the doctor
+  reads the live values.
 - Fixing weston's clipboard code. The upstream issues carry the analysis.
 
 ## Anti-goals (failure even if it works)
@@ -206,8 +207,8 @@ quiet --dry-run` names only `…\WSL\msrdc.exe` and refuses when more than one r
   neither the slice nor the kill order exists.
 - Ending any `msrdc.exe` other than the one under the WSL install folder.
 - `wsl --shutdown`, `wsl --terminate`, a dockerd restart or a user-manager restart
-  from any script but the pilot of G9.
-- A drill that fills real memory or starves the box it runs on.
+  from any script. The pilot of G8 is done by hand.
+- A check on a live box that allocates memory, loads the CPU or kills a process.
 
 ## Design
 
@@ -259,7 +260,7 @@ WESTON_RDP_CLIPBOARD=false` in `%USERPROFILE%\.wslgconfig`.
   itself to 800 in `.zshenv`, so what the agent runs dies before the agent.
 - A job slice that a session makes for itself is named `agents-<name>.slice`. The
   dash nests it below `agents.slice`, where the ceiling holds for it too.
-- Sizing: the drill prints `memory.peak` of everything outside `agents.slice`. A box
+- Sizing: the doctor prints `memory.peak` of everything outside `agents.slice`. A box
   whose runtime needs more than the remaining share, or whose sessions need more
   than the slice, sets its own values in the overlay.
 
@@ -273,27 +274,18 @@ WESTON_RDP_CLIPBOARD=false` in `%USERPROFILE%\.wslgconfig`.
 
 - `ssh-agent.service`: `ExecStartPre` removes `%t/ssh-agent`.
 
-### Drill
-
-`flakelab drill [--json]` runs the drill halves of the goals that apply to the box's
-configuration, prints one `ok`, `FAIL` or `skip` line each with the reason, and exits
-non-zero on a failure. Without a user manager the scope checks are `FAIL`, not
-skipped. It allocates at most 400 MB inside its own 300 MB scope and runs its CPU
-load twice for 6 s. Its one deliberate OOM kill raises the "Kernel OOM Kill" alert
-for that hour; the drill says so before it starts.
-
 ## Rollout
 
 1. PR A: the `X0` mount (G1), `wslg quiet` and the doctor's detection (G4),
-   known-issues. Effective at each box's next WSL start; G1's drill runs then.
-2. PR B: workload slice, kill order, self-repair, wrapper, doctor, drill (G5 to
-   G10). The overlay enables it per box.
+   known-issues. Effective at each box's next WSL start; G1's pilot runs then.
+2. PR B: workload slice, kill order, self-repair, wrapper, doctor (G5 to G9). The
+   overlay enables it per box.
    - The kill order reaches a running box only when its user manager restarts,
      because the manager cannot lower the score PID 1 gave it. That is the next WSL
      start, which stays the operator's call; until then the services keep 200.
    - A session enters the slice when it is ended and resumed. `flakelab sessions
 --open` does not resume a session that still runs.
-   - Pilot order: tycdev (G9's pilot, and the box with the least memory), GamerTyc,
+   - Pilot order: tycdev (G8's pilot, and the box with the least memory), GamerTyc,
      then the EliteBook when a session next wakes there.
 3. PR C: `wsl-host` and the `gui` option (G2, G3). The overlay sets the profile per
    box after the operator has chosen it with G1 proven.
