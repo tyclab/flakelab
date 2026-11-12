@@ -967,6 +967,28 @@ in
       webOnTunnel = webOn self.nixosConfigurations.proxmox-vm "10.66.0.2";
       webOnLoopback = webOn self.nixosConfigurations.proxmox-vm "127.0.0.1";
       webOnTunnelWsl = webOn self.nixosConfigurations.default "10.66.0.2";
+      xSocketMount = "tmp-.X11\\x2dunix-X0.mount";
+      wslWithTmp =
+        module: (self.nixosConfigurations.default.extendModules { modules = [ module ]; }).config;
+      separateTmp = [
+        (wslWithTmp { boot.tmp.useTmpfs = true; })
+        (wslWithTmp {
+          fileSystems."/tmp" = {
+            device = "/dev/disk/by-label/tmp";
+            fsType = "ext4";
+          };
+        })
+        (wslWithTmp {
+          systemd.mounts = [
+            {
+              what = "tmpfs";
+              where = "/tmp";
+              type = "tmpfs";
+              wantedBy = [ "local-fs.target" ];
+            }
+          ];
+        })
+      ];
     in
     assert wsl.flakelab.target == "wsl";
     assert wsl.wsl.enable;
@@ -979,6 +1001,13 @@ in
     assert nixpkgs.lib.hasSuffix "/bin/flakelab-wsl-init-cgroup"
       wsl.system.activationScripts.flakelab-wsl-init-cgroup.text;
     assert !(vm.system.activationScripts ? flakelab-wsl-init-cgroup);
+    assert builtins.elem xSocketMount wsl.systemd.suppressedSystemUnits;
+    assert builtins.all (
+      cfg:
+      !(builtins.elem xSocketMount cfg.systemd.suppressedSystemUnits)
+      && cfg.systemd.units.${xSocketMount}.enable
+    ) separateTmp;
+    assert !(vm.systemd.units ? ${xSocketMount});
     assert vm.services.cloud-init.enable;
     # default_user must arrive alongside the module's own system_info defaults.
     assert vm.services.cloud-init.settings.system_info.default_user.name == vm.flakelab.username;

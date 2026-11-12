@@ -318,8 +318,17 @@ ends every session, so it is the operator's call.
 
 When a WSLg distro's compositor has crashed, Windows relaunches its `msrdc.exe`
 client about every 30 seconds and each launch takes the keyboard focus from
-the terminal. `tail /mnt/wslg/stderr.log` shows the relaunches. Only
-`wsl --shutdown` from a Windows terminal clears it, which ends every session.
+the terminal. `tail /mnt/wslg/stderr.log` shows the relaunches.
+
+NixOS-WSL's bind mount of `/tmp/.X11-unix/X0` can prevent the restarted
+compositor from replacing its socket. On the default `/tmp` layout, flakelab
+suppresses that redundant unit and keeps WSL's mount of the containing
+directory. A separately mounted `/tmp` keeps upstream's socket mount so X11
+remains reachable. This removes a recovery obstacle; it does not fix the
+upstream clipboard crash or restart a compositor whose retry limit is exhausted.
+
+An existing mount or exhausted compositor may need the next WSL start to
+clear. A WSL restart ends every session and remains the operator's decision.
 
 ## A hard crash leaves broken git objects
 

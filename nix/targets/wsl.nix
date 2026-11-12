@@ -1,4 +1,9 @@
-{ config, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   scripts = import ../scripts.nix {
     inherit pkgs;
@@ -24,6 +29,14 @@ in
 
   # The shim runs this before systemd: known-issues.md, "No user manager".
   system.activationScripts.flakelab-wsl-init-cgroup.text = "${scripts.wsl-init-cgroup}/bin/flakelab-wsl-init-cgroup";
+
+  # Binding X0 itself pins the old socket when weston restarts. WSL already
+  # mounts its directory unless a separate /tmp mount hides it.
+  systemd.suppressedSystemUnits = lib.optionals (
+    !config.boot.tmp.useTmpfs
+    && !(config.fileSystems ? "/tmp")
+    && !(builtins.any (mount: mount.where == "/tmp") config.systemd.mounts)
+  ) [ "tmp-.X11\\x2dunix-X0.mount" ];
 
   # WSL generates this shutdown guard with ExecStart=/bin/true, which NixOS
   # does not provide. Keep the generated ordering, mount condition and ExecStop
