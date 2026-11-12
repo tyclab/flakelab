@@ -351,6 +351,13 @@ in
       description = "One auto-memory directory for every project, asserted into settings.autoMemoryDirectory. Null leaves the key alone, so each working directory keeps its own ~/.claude/projects/<slug>/memory. Claude Code takes an absolute path or a `~/` one and ignores any other form. With stateRoot set, naming a directory under ~/.claude/projects keeps it in the state sync.";
     };
 
+    claudeAutoMemory = mkOption {
+      type = types.nullOr types.bool;
+      default = null;
+      example = false;
+      description = "Claude Code's auto memory, asserted into settings.autoMemoryEnabled. Null leaves the key alone, so it stays whatever `/memory` last set on the box. False: Claude Code neither reads nor writes the auto-memory directory, for a box whose notes live in one other store. `CLAUDE_CODE_DISABLE_AUTO_MEMORY` in a session's environment takes precedence over the key for that session.";
+    };
+
     mcpShared = {
       gateway = mkOption {
         type = types.nullOr types.str;

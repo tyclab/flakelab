@@ -7,6 +7,9 @@ Read for this topic; paths below are relative to the repository root unless stat
   unless `claudeAutoMemoryDirectory` names one store: renaming or moving a
   checkout orphans them. Move the slug directory on this box, in the state root
   (under the backup lock) and on every other box.
+- `claudeAutoMemory = false` asserts `autoMemoryEnabled: false`: Claude Code then
+  neither reads nor writes the auto-memory directory. The directory and its copy in
+  the state root stay as they are.
 - Client dialog behaviour (Claude Code, Codex) is probed by driving the TUI in
   an isolated tmux server (`tmux -L spike`) and reading `capture-pane -p`, with a
   stdio MCP server that logs every line as the probe. Pause about a second

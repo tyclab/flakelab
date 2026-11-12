@@ -65,9 +65,14 @@ let
     | .outputStyle = ${builtins.toJSON cfg.claudeOutputStyle}
   '';
 
-  claudeAutoMemoryDirectoryJq = lib.optionalString (cfg.claudeAutoMemoryDirectory != null) ''
-    | .autoMemoryDirectory = ${builtins.toJSON cfg.claudeAutoMemoryDirectory}
-  '';
+  # Both auto-memory keys; an option left null leaves its key as the box has it.
+  claudeAutoMemoryJq =
+    lib.optionalString (cfg.claudeAutoMemoryDirectory != null) ''
+      | .autoMemoryDirectory = ${builtins.toJSON cfg.claudeAutoMemoryDirectory}
+    ''
+    + lib.optionalString (cfg.claudeAutoMemory != null) ''
+      | .autoMemoryEnabled = ${builtins.toJSON cfg.claudeAutoMemory}
+    '';
 
   # A file, not an inline literal: the prose carries apostrophes.
   claudeAutoModeFile = pkgs.writeText "claude-automode.json" (builtins.toJSON claudeAutoMode);
@@ -469,7 +474,7 @@ in
             | .deniedMcpServers = $dm
             | if .deniedMcpServers == [] then del(.deniedMcpServers) else . end
             ${claudeOutputStyleJq}
-            ${claudeAutoMemoryDirectoryJq}
+            ${claudeAutoMemoryJq}
             ${claudeAgentDefaultsJq}
             ${claudeRemoteControlJq}
             ${claudeStatePushJq}
