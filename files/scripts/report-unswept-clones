@@ -14,11 +14,13 @@ set -uo pipefail
 #   --discovered  every discovered url before cloneExclude; a url here and not
 #                 in --swept was excluded
 #   --skip        a clone something else keeps current (the overlay checkout)
+#   --list-local  emit url/destination specs for existing clones outside --swept
 #
 
 REPOS_DIR=""
 SWEPT=""
 DISCOVERED=""
+LIST_LOCAL=0
 typeset -a SKIP=()
 # GitLab nests up to 20 subgroups: group, subgroups and repo fit with room to spare.
 # The walk stops at every clone, so the depth costs only plain directory trees.
@@ -28,12 +30,13 @@ typeset -i MAX_DEPTH=24
 _need() { (( $# > 1 )) || { print -r -- "$1 needs a value" >&2; exit 2 } }
 while (( $# > 0 )); do
   case $1 in
+    --list-local) LIST_LOCAL=1 ;;
     --repos-dir)  _need "$@"; REPOS_DIR="$2"; shift ;;
     --swept)      _need "$@"; SWEPT="$2"; shift ;;
     --discovered) _need "$@"; DISCOVERED="$2"; shift ;;
     --skip)       _need "$@"; SKIP+=("${2:A}"); shift ;;
     --help|-h)
-      echo "Usage: report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>] [--skip <dir>]..."
+      echo "Usage: report-unswept-clones --repos-dir <dir> --swept <file> [--discovered <file>] [--skip <dir>]... [--list-local]"
       exit 0 ;;
     *)
       print -r -- "Unknown option: $1" >&2; exit 2 ;;
@@ -145,10 +148,22 @@ fetched_remote() {
 }
 
 typeset -a unswept=()
+typeset -A seen=()
 typeset clone origin okey fetched furl r rurl
 typeset -i held
 for clone in "${clones[@]}"; do
+  clone="${clone:A}"
+  [[ -n "${seen[$clone]:-}" ]] && continue
+  seen[$clone]=1
   (( ${SKIP[(Ie)$clone]} )) && continue
+  if (( LIST_LOCAL )); then
+    [[ -n "${swept_dest[$clone]:-}" ]] && continue
+    origin="$(git -C "$clone" remote get-url origin 2>/dev/null)"
+    if [[ -n "$origin" ]] && git -C "$clone" rev-parse --git-dir >/dev/null 2>&1; then
+      print -r -- "$origin $clone"
+    fi
+    continue
+  fi
   if [[ -n "${swept_dest[$clone]:-}" ]]; then
     # The sweep fetches every remote of a destination, so the project is
     # fetched when any of them is it.

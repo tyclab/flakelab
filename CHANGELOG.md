@@ -32,6 +32,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- `flakelab clone` also fetches and updates existing local clones outside discovery destinations, including second copies. Discovery exclusions prevent new clones; existing checkouts retain the usual rebase guards. Linked worktrees and the live overlay remain managed separately.
+
 - tycswap 0.11.1: the Windows tray's **Check for updates** shortcut checks the dashboard server's installation and opens its Updates section, including when scheduled checks are disabled. Active switches use the same accent for their label, track and on state; an unavailable switch that remains on keeps a dimmed accent. Footer commands wrap without widening the account table. The release also updates `golang.org/x/text` to 0.41.0. The Linux service and Windows tray follow the same release pin through `flakelab update`.
 - `flakelab clone` (and `update-all`) fetches every remote of a clone, not only the one the checked-out branch tracks, so an `upstream` or fork remote no longer goes stale until someone fetches it by hand: a branch merged there read as unmerged four days later. A remote that does not fetch is listed under `Remotes that did not fetch` with git's words, and the sweep exits 1; the clone's own result stays what its tracked remote gave. The report that listed those remotes on every run is gone with its cause.
 - The archived/deletion-scheduled report prints nothing when no such project has a local checkout. Its summary line then counted only projects that exist on the forge, which leaves nothing to do on the box.
