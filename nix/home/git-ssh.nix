@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   pkgs,
   osConfig,
@@ -53,6 +54,7 @@ in
   systemd.user.services.ssh-agent = {
     Unit."X-RestartIfChanged" = false;
     Service."X-RestartIfChanged" = false;
+    Service.ExecStartPre = "${pkgs.coreutils}/bin/rm -f -- %t/${config.services.ssh-agent.socket}";
   };
   programs.ssh = {
     enable = true;
