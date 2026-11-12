@@ -600,7 +600,7 @@ rec {
             echo "Usage: flakelab clone"
             echo ""
             echo "Clones configured GitLab groups, opt-in GitHub owners, and extra repos under"
-            echo "~/git, fetches every remote of the clones already there and rebases"
+            echo "~/git, includes existing local clones, fetches every remote and rebases"
             echo "them, installs their pre-commit hooks, names the clones under ~/git it"
             echo "did not fetch, and reports clones whose project is archived or"
             echo "scheduled for deletion. No options: the groups, the repos and the"
@@ -655,10 +655,17 @@ rec {
           _exclude=${lib.escapeShellArg (lib.concatMapStringsSep "|" lib.escapeRegex cfg.cloneExclude)}
           _raw="$(mktemp)"
           _list="$(mktemp)"
-          trap 'rm -f "$_raw" "$_list"' EXIT
+          _local="$(mktemp)"
+          trap 'rm -f "$_raw" "$_list" "$_local"' EXIT
 
           ${discoveryBlock}
           ${reposBlock}
+
+          # Discovery controls creation; existing hand clones and second copies
+          # still need fetching. Linked worktrees stay with their main clone.
+          ${zsh} ${s}/report-unswept-clones --repos-dir "$_repos" --swept "$_list" \
+            --skip ${lib.escapeShellArg cfg.repoPath} --list-local > "$_local" || exit 1
+          cat "$_local" >> "$_list"
 
           # Groups overlap, and two clones racing into one destination corrupt it.
           sort -u "$_list" \

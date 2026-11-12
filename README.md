@@ -315,6 +315,14 @@ read before cloning, archived/disabled/empty repositories are skipped, and
 choose owners without namespace collisions with your GitLab groups. Individual
 repositories on any forge can still be listed under `repos`.
 
+The sweep also updates existing clones under `~/git`, including hand clones and
+second copies outside those discovery destinations. `cloneExclude` prevents
+creation through discovery; a copy already on disk is still updated. Every
+remote is fetched and the usual dirty, detached and history guards apply before
+rebasing. Linked worktrees and nested repositories inside a clone are not swept
+separately. The live overlay at `repoPath` remains managed by `flakelab update`.
+Clones without an origin or with a mismatched discovery destination are reported.
+
 ## Where configuration lives
 
 `nix/users/default.nix` in this repo holds **placeholders**, and the supported
