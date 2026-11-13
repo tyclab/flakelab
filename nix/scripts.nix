@@ -175,6 +175,8 @@ rec {
   # ~/.local/bin holds the tools a --start window runs (the native installs of
   # Claude Code and Codex); the window gets this PATH, so a caller with
   # no login environment (the dashboard's service) still starts them.
+  # python3 runs lib/codex_threads.py (Codex lanes, the table's STATE) and git
+  # tells it a lane folder's repository root, which Codex keys trust by.
   claude-sessions = pkgs.writeShellScriptBin "claude-sessions" ''
     ${lib.optionalString (cfg.stateRoot != null) ''
       export FLAKELAB_STATE_ROOT=${lib.escapeShellArg cfg.stateRoot}
@@ -188,6 +190,8 @@ rec {
         pkgs.gawk
         pkgs.jq
         pkgs.tmux
+        pkgs.python3
+        pkgs.git
       ]
     }${lib.optionalString cfg.installTycswap ":${pkgs.tycswap}/bin"}:$HOME/.local/bin:$PATH
     exec ${zsh} ${s}/claude-sessions "$@"

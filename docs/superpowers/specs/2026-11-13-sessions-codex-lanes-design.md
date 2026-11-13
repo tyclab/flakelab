@@ -1,7 +1,8 @@
 # `flakelab sessions`: Codex lanes with a model, an effort, a state and a close
 
-Status: revision 2, 2026-11-13, after an independent review (its findings and what
-became of each are listed at the end). Measured against codex-cli 0.169.0; source
+Status: built, 2026-11-13. Revision 2 of the design, after an independent review
+(its findings and what became of each are listed at the end), plus what building
+it showed ("Found while building"). Measured against codex-cli 0.169.0; source
 references are to the tag `rust-v0.169.0` of `openai/codex`.
 
 ## Problem
@@ -303,8 +304,8 @@ server's version when a connection existed.
 
 ```
 start        {"session","model","effort","turn","server"}
-state        [{"session","state","model","effort","name"}]     # state null: no answer
-close-check  {"session","finished": bool,"state","reasons":[…],"cwd"}
+state        [{"session","state","model","effort","name"}]     # state null: no answer; "missing": unknown id
+close-check  {"session","finished": bool,"state","reasons":[…],"cwd","name"}
 stop         {"session","interrupted":[ids],"cleaned":[ids]}
 archive      {"session","archived": true}
 ```
@@ -331,7 +332,8 @@ bytes and a live server. (My call.)
 
 ### Packaging and documents
 
-- `nix/scripts.nix`: `pkgs.python3` on the `claude-sessions` wrapper's PATH.
+- `nix/scripts.nix`: `pkgs.python3` and `pkgs.git` on the `claude-sessions`
+  wrapper's PATH (the helper asks git for a folder's repository root).
 - `nix/checks.nix`: `codex-threads = suiteCheckWith [ pkgs.python3 ] "codex-threads"`,
   and `claude-sessions` likewise (one of its cases runs the real helper).
   `Makefile`: the new suite in the `test` list.
@@ -395,8 +397,8 @@ string it does not know.
   a session id with two windows closes both; a name on two windows is refused;
   several targets with one refused: exit 1 and the others closed.
 
-**L: live checks** (`FLAKELAB_CODEX_LIVE=1 files/scripts/test-codex-threads`;
-never part of `make test` or the flake check; run by the builder on a box with
+**L: live checks** (`FLAKELAB_CODEX_LIVE=1 files/scripts/test-codex-threads`,
+in `lib/test-codex-threads-live.py`; never part of `make test` or the flake check; run by the builder on a box with
 Codex and again after a Codex update). Each check works in folders of its own,
 records the ids it creates, and removes them in a step that runs whatever
 happened before: `thread/delete`, then the copy under the state root if there is
@@ -414,6 +416,25 @@ may change meanwhile.
 - L3: a prompt that runs `sleep`: the terminal list names the command (that, not
   a process search, proves it started); close refuses; `--force` ends the turn
   and the terminal list is empty; the window is gone.
+
+## Found while building
+
+- Both suites were checked by breaking the code on purpose, one place at a time
+  (30 breaks: 14 in the helper, 16 in the script); a break the suite did not notice was
+  a defect of the suite and was fixed. Two were: an unknown status word passed as
+  a crash instead of an error, and every usage-error case exited 2 for the wrong
+  reason, because the fixture folder's name holds a space and the cases split it.
+- L1 to L3 pass on the real server (0.169.0, three short turns on the cheapest
+  model at its lowest effort); afterwards no session, window, process, file or
+  trust entry of theirs was left, and `config.toml` was byte-identical.
+- F6, narrower than first written: with the first turn started before the window
+  opens, the turn ran on the conversation's model and effort even when
+  `turn/start` named neither (one live run). What resets the effort is the window
+  opening first. The explicit values on `turn/start` stay as a second guard.
+- The table's 5 s limit covers connecting to the server too; an id the server
+  does not know shows `?`, like one that got no answer.
+- A lane in a folder that does not exist is a usage error (exit 2), like any
+  `--start`.
 
 ## What the review changed
 

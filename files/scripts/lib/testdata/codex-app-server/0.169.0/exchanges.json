@@ -1,0 +1,761 @@
+{
+  "config-read": {
+    "answer": {
+      "result": {
+        "config": {
+          "model": "gpt-6-astra",
+          "model_reasoning_effort": "max",
+          "projects": {
+            "/work/trusted-repo": {
+              "trust_level": "trusted"
+            },
+            "/work/untrusted-repo": {
+              "trust_level": "untrusted"
+            }
+          }
+        },
+        "layers": null,
+        "origins": {}
+      }
+    },
+    "method": "config/read",
+    "params": {
+      "cwd": "/work/lane",
+      "includeLayers": false
+    }
+  },
+  "initialize": {
+    "answer": {
+      "result": {
+        "codexHome": "/home/user/.codex",
+        "platformFamily": "unix",
+        "platformOs": "linux",
+        "userAgent": "codex-tui/0.169.0 (Linux; x86_64) terminal (flakelab-sessions; 1)"
+      }
+    },
+    "method": "initialize"
+  },
+  "loaded-list": {
+    "answer": {
+      "result": {
+        "data": [
+          "11111111-1111-7111-8111-111111111111",
+          "33333333-3333-7333-8333-333333333333"
+        ],
+        "nextCursor": null
+      }
+    },
+    "method": "thread/loaded/list",
+    "params": {}
+  },
+  "model-list": {
+    "answer": {
+      "result": {
+        "data": [
+          {
+            "defaultReasoningEffort": "low",
+            "description": "Latest workhorse model for coding and everyday work.",
+            "displayName": "GPT-6.1-Sol",
+            "hidden": false,
+            "id": "gpt-6.1-sol",
+            "isDefault": true,
+            "model": "gpt-6.1-sol",
+            "supportedReasoningEfforts": [
+              {
+                "description": "Fast responses with lighter reasoning",
+                "reasoningEffort": "low"
+              },
+              {
+                "description": "Balances speed and reasoning depth for everyday tasks",
+                "reasoningEffort": "medium"
+              },
+              {
+                "description": "Greater reasoning depth for complex problems",
+                "reasoningEffort": "high"
+              },
+              {
+                "description": "Extra high reasoning depth for complex problems",
+                "reasoningEffort": "xhigh"
+              },
+              {
+                "description": "Maximum reasoning depth for the hardest problems",
+                "reasoningEffort": "max"
+              },
+              {
+                "description": "Maximum reasoning with automatic task delegation",
+                "reasoningEffort": "ultra"
+              }
+            ]
+          },
+          {
+            "defaultReasoningEffort": "medium",
+            "description": "Frontier intelligence for the most demanding work.",
+            "displayName": "GPT-6-Astra",
+            "hidden": false,
+            "id": "gpt-6-astra",
+            "isDefault": false,
+            "model": "gpt-6-astra",
+            "supportedReasoningEfforts": [
+              {
+                "description": "Fast responses with lighter reasoning",
+                "reasoningEffort": "low"
+              },
+              {
+                "description": "Balances speed and reasoning depth for everyday tasks",
+                "reasoningEffort": "medium"
+              },
+              {
+                "description": "Greater reasoning depth for complex problems",
+                "reasoningEffort": "high"
+              },
+              {
+                "description": "Extra high reasoning depth for complex problems",
+                "reasoningEffort": "xhigh"
+              },
+              {
+                "description": "Maximum reasoning depth for the hardest problems",
+                "reasoningEffort": "max"
+              },
+              {
+                "description": "Maximum reasoning with automatic task delegation",
+                "reasoningEffort": "ultra"
+              }
+            ]
+          },
+          {
+            "defaultReasoningEffort": "medium",
+            "description": "Fast and affordable model for easier tasks.",
+            "displayName": "GPT-6-Luna",
+            "hidden": false,
+            "id": "gpt-6-luna",
+            "isDefault": false,
+            "model": "gpt-6-luna",
+            "supportedReasoningEfforts": [
+              {
+                "description": "Fast responses with lighter reasoning",
+                "reasoningEffort": "low"
+              },
+              {
+                "description": "Balances speed and reasoning depth for everyday tasks",
+                "reasoningEffort": "medium"
+              },
+              {
+                "description": "Greater reasoning depth for complex problems",
+                "reasoningEffort": "high"
+              },
+              {
+                "description": "Extra high reasoning depth for complex problems",
+                "reasoningEffort": "xhigh"
+              },
+              {
+                "description": "Maximum reasoning depth for the hardest problems",
+                "reasoningEffort": "max"
+              }
+            ]
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    "method": "model/list",
+    "params": {
+      "includeHidden": true
+    }
+  },
+  "terminals-clean": {
+    "answer": {
+      "result": {}
+    },
+    "method": "thread/backgroundTerminals/clean",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "terminals-list": {
+    "answer": {
+      "result": {
+        "data": [
+          {
+            "command": "sleep 240",
+            "cpuPercent": null,
+            "cwd": "/work/lane",
+            "itemId": "exec-00000000-0000-4000-8000-000000000001",
+            "osPid": null,
+            "processId": "4242",
+            "rssKb": null
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    "method": "thread/backgroundTerminals/list",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "terminals-list-empty": {
+    "answer": {
+      "result": {
+        "data": [],
+        "nextCursor": null
+      }
+    },
+    "method": "thread/backgroundTerminals/list",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "terminals-list-unloaded": {
+    "answer": {
+      "error": {
+        "code": -32600,
+        "message": "thread not found: 11111111-1111-7111-8111-111111111111"
+      }
+    },
+    "method": "thread/backgroundTerminals/list",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-archive": {
+    "answer": {
+      "result": {}
+    },
+    "method": "thread/archive",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-name-set": {
+    "answer": {
+      "result": {}
+    },
+    "method": "thread/name/set",
+    "params": {
+      "name": "fixture-lane",
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-read-active": {
+    "answer": {
+      "result": {
+        "readState": {
+          "firstUnread": null,
+          "revision": "initial:11111111-1111-7111-8111-111111111111"
+        },
+        "thread": {
+          "agentNickname": null,
+          "agentRole": null,
+          "attachedToThreadId": null,
+          "canAcceptDirectInput": true,
+          "cliVersion": "0.169.0",
+          "createdAt": 1794607606,
+          "cwd": "/work/lane",
+          "daybreakEnabled": null,
+          "environments": [
+            {
+              "cwd": "/work/lane",
+              "environmentId": "local",
+              "runtimeWorkspaceRoots": ["/work/lane"]
+            }
+          ],
+          "ephemeral": false,
+          "extra": null,
+          "forkedFromId": null,
+          "gitInfo": null,
+          "historyMode": "paginated",
+          "id": "11111111-1111-7111-8111-111111111111",
+          "model": "gpt-6-luna",
+          "modelProvider": "openai",
+          "name": "fixture-lane",
+          "originator": "codex-tui",
+          "parentThreadId": null,
+          "path": "/home/user/.codex/sessions/2026/11/13/rollout-2026-11-13T23-06-46-11111111-1111-7111-8111-111111111111.jsonl",
+          "preview": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+          "projectId": null,
+          "reasoningEffort": "low",
+          "recencyAt": 1794607607,
+          "section": null,
+          "sectionEnteredAt": null,
+          "sessionId": "11111111-1111-7111-8111-111111111111",
+          "source": "vscode",
+          "status": {
+            "activeFlags": [],
+            "type": "active"
+          },
+          "threadSource": null,
+          "turns": [],
+          "updatedAt": 1794607610
+        }
+      }
+    },
+    "method": "thread/read",
+    "params": {
+      "includeTurns": false,
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-read-archived": {
+    "answer": {
+      "result": {
+        "readState": {
+          "firstUnread": null,
+          "revision": "initial:11111111-1111-7111-8111-111111111111"
+        },
+        "thread": {
+          "agentNickname": null,
+          "agentRole": null,
+          "attachedToThreadId": null,
+          "canAcceptDirectInput": null,
+          "cliVersion": "0.169.0",
+          "createdAt": 1794607606,
+          "cwd": "/work/lane",
+          "daybreakEnabled": null,
+          "environments": null,
+          "ephemeral": false,
+          "extra": null,
+          "forkedFromId": null,
+          "gitInfo": null,
+          "historyMode": "paginated",
+          "id": "11111111-1111-7111-8111-111111111111",
+          "model": "gpt-6-luna",
+          "modelProvider": "openai",
+          "name": "fixture-lane",
+          "originator": "codex-tui",
+          "parentThreadId": null,
+          "path": "/home/user/.codex/archived_sessions/rollout-2026-11-13T23-06-46-11111111-1111-7111-8111-111111111111.jsonl",
+          "preview": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+          "projectId": null,
+          "reasoningEffort": "low",
+          "recencyAt": 1794607607,
+          "section": null,
+          "sectionEnteredAt": null,
+          "sessionId": "11111111-1111-7111-8111-111111111111",
+          "source": "vscode",
+          "status": {
+            "type": "notLoaded"
+          },
+          "threadSource": null,
+          "turns": [],
+          "updatedAt": 1794607613
+        }
+      }
+    },
+    "method": "thread/read",
+    "params": {
+      "includeTurns": false,
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-read-fresh": {
+    "answer": {
+      "result": {
+        "readState": null,
+        "thread": {
+          "agentNickname": null,
+          "agentRole": null,
+          "attachedToThreadId": null,
+          "canAcceptDirectInput": true,
+          "cliVersion": "0.169.0",
+          "createdAt": 1794607606,
+          "cwd": "/work/lane",
+          "daybreakEnabled": null,
+          "environments": [
+            {
+              "cwd": "/work/lane",
+              "environmentId": "local",
+              "runtimeWorkspaceRoots": ["/work/lane"]
+            }
+          ],
+          "ephemeral": false,
+          "extra": null,
+          "forkedFromId": null,
+          "gitInfo": null,
+          "historyMode": "paginated",
+          "id": "11111111-1111-7111-8111-111111111111",
+          "model": "gpt-6-luna",
+          "modelProvider": "openai",
+          "name": null,
+          "originator": "codex-tui",
+          "parentThreadId": null,
+          "path": "/home/user/.codex/sessions/2026/11/13/rollout-2026-11-13T23-06-46-11111111-1111-7111-8111-111111111111.jsonl",
+          "preview": "",
+          "projectId": null,
+          "reasoningEffort": "low",
+          "recencyAt": 1794607606,
+          "section": null,
+          "sectionEnteredAt": null,
+          "sessionId": "11111111-1111-7111-8111-111111111111",
+          "source": "vscode",
+          "status": {
+            "type": "idle"
+          },
+          "threadSource": null,
+          "turns": [],
+          "updatedAt": 1794607606
+        }
+      }
+    },
+    "method": "thread/read",
+    "params": {
+      "includeTurns": false,
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-read-idle": {
+    "answer": {
+      "result": {
+        "readState": {
+          "firstUnread": null,
+          "revision": "initial:11111111-1111-7111-8111-111111111111"
+        },
+        "thread": {
+          "agentNickname": null,
+          "agentRole": null,
+          "attachedToThreadId": null,
+          "canAcceptDirectInput": true,
+          "cliVersion": "0.169.0",
+          "createdAt": 1794607606,
+          "cwd": "/work/lane",
+          "daybreakEnabled": null,
+          "environments": [
+            {
+              "cwd": "/work/lane",
+              "environmentId": "local",
+              "runtimeWorkspaceRoots": ["/work/lane"]
+            }
+          ],
+          "ephemeral": false,
+          "extra": null,
+          "forkedFromId": null,
+          "gitInfo": null,
+          "historyMode": "paginated",
+          "id": "11111111-1111-7111-8111-111111111111",
+          "model": "gpt-6-luna",
+          "modelProvider": "openai",
+          "name": "fixture-lane",
+          "originator": "codex-tui",
+          "parentThreadId": null,
+          "path": "/home/user/.codex/sessions/2026/11/13/rollout-2026-11-13T23-06-46-11111111-1111-7111-8111-111111111111.jsonl",
+          "preview": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+          "projectId": null,
+          "reasoningEffort": "low",
+          "recencyAt": 1794607607,
+          "section": null,
+          "sectionEnteredAt": null,
+          "sessionId": "11111111-1111-7111-8111-111111111111",
+          "source": "vscode",
+          "status": {
+            "type": "idle"
+          },
+          "threadSource": null,
+          "turns": [],
+          "updatedAt": 1794607611
+        }
+      }
+    },
+    "method": "thread/read",
+    "params": {
+      "includeTurns": false,
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "thread-read-missing": {
+    "answer": {
+      "error": {
+        "code": -32600,
+        "message": "thread not loaded: 01a1d6ff-0000-7000-8000-000000000002"
+      }
+    },
+    "method": "thread/read",
+    "params": {
+      "includeTurns": false,
+      "threadId": "01a1d6ff-0000-7000-8000-000000000002"
+    }
+  },
+  "thread-start": {
+    "answer": {
+      "result": {
+        "activePermissionProfile": {
+          "extends": null,
+          "id": "flakelab"
+        },
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "auto_review",
+        "cwd": "/work/lane",
+        "disabledPluginIds": [],
+        "instructionSources": ["/home/user/.codex/AGENTS.md"],
+        "model": "gpt-6-luna",
+        "modelProvider": "openai",
+        "multiAgentMode": "explicitRequestOnly",
+        "reasoningEffort": "low",
+        "runtimeWorkspaceRoots": ["/work/lane"],
+        "sandbox": {
+          "excludeSlashTmp": false,
+          "excludeTmpdirEnvVar": false,
+          "networkAccess": false,
+          "type": "workspaceWrite",
+          "writableRoots": []
+        },
+        "serviceTier": null,
+        "thread": {
+          "agentNickname": null,
+          "agentRole": null,
+          "attachedToThreadId": null,
+          "canAcceptDirectInput": true,
+          "cliVersion": "0.169.0",
+          "createdAt": 1794607606,
+          "cwd": "/work/lane",
+          "daybreakEnabled": null,
+          "environments": [
+            {
+              "cwd": "/work/lane",
+              "environmentId": "local",
+              "runtimeWorkspaceRoots": ["/work/lane"]
+            }
+          ],
+          "ephemeral": false,
+          "extra": null,
+          "forkedFromId": null,
+          "gitInfo": null,
+          "historyMode": "paginated",
+          "id": "11111111-1111-7111-8111-111111111111",
+          "model": "gpt-6-luna",
+          "modelProvider": "openai",
+          "name": null,
+          "originator": "codex-tui",
+          "parentThreadId": null,
+          "path": "/home/user/.codex/sessions/2026/11/13/rollout-2026-11-13T23-06-46-11111111-1111-7111-8111-111111111111.jsonl",
+          "preview": "",
+          "projectId": null,
+          "reasoningEffort": "low",
+          "recencyAt": 1794607606,
+          "section": null,
+          "sectionEnteredAt": null,
+          "sessionId": "11111111-1111-7111-8111-111111111111",
+          "source": "vscode",
+          "status": {
+            "type": "idle"
+          },
+          "threadSource": null,
+          "turns": [],
+          "updatedAt": 1794607606
+        }
+      }
+    },
+    "method": "thread/start",
+    "params": {
+      "config": {
+        "model_reasoning_effort": "low"
+      },
+      "cwd": "/work/lane",
+      "model": "gpt-6-luna"
+    }
+  },
+  "thread-unarchive": {
+    "answer": {
+      "result": {
+        "thread": {
+          "agentNickname": null,
+          "agentRole": null,
+          "attachedToThreadId": null,
+          "canAcceptDirectInput": null,
+          "cliVersion": "0.169.0",
+          "createdAt": 1794607606,
+          "cwd": "/work/lane",
+          "daybreakEnabled": null,
+          "environments": null,
+          "ephemeral": false,
+          "extra": null,
+          "forkedFromId": null,
+          "gitInfo": null,
+          "historyMode": "paginated",
+          "id": "11111111-1111-7111-8111-111111111111",
+          "model": "gpt-6-luna",
+          "modelProvider": "openai",
+          "name": "fixture-lane",
+          "originator": "codex-tui",
+          "parentThreadId": null,
+          "path": "/home/user/.codex/sessions/2026/11/13/rollout-2026-11-13T23-06-46-11111111-1111-7111-8111-111111111111.jsonl",
+          "preview": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+          "projectId": null,
+          "reasoningEffort": "low",
+          "recencyAt": 1794607607,
+          "section": null,
+          "sectionEnteredAt": null,
+          "sessionId": "11111111-1111-7111-8111-111111111111",
+          "source": "vscode",
+          "status": {
+            "type": "notLoaded"
+          },
+          "threadSource": null,
+          "turns": [],
+          "updatedAt": 1794607615
+        }
+      }
+    },
+    "method": "thread/unarchive",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "turn-interrupt": {
+    "answer": {
+      "result": {}
+    },
+    "method": "turn/interrupt",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111",
+      "turnId": "22222222-2222-7222-8222-222222222222"
+    }
+  },
+  "turn-interrupt-none": {
+    "answer": {
+      "error": {
+        "code": -32600,
+        "message": "no active turn to interrupt"
+      }
+    },
+    "method": "turn/interrupt",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111",
+      "turnId": "22222222-2222-7222-8222-222222222222"
+    }
+  },
+  "turn-interrupt-wrong": {
+    "answer": {
+      "error": {
+        "code": -32600,
+        "message": "expected active turn id 01a1d6ff-0000-7000-8000-000000000001 but found 22222222-2222-7222-8222-222222222222"
+      }
+    },
+    "method": "turn/interrupt",
+    "params": {
+      "threadId": "11111111-1111-7111-8111-111111111111",
+      "turnId": "01a1d6ff-0000-7000-8000-000000000001"
+    }
+  },
+  "turn-start": {
+    "answer": {
+      "result": {
+        "turn": {
+          "completedAt": null,
+          "durationMs": null,
+          "error": null,
+          "id": "22222222-2222-7222-8222-222222222222",
+          "items": [],
+          "itemsView": "notLoaded",
+          "rootTurnId": "22222222-2222-7222-8222-222222222222",
+          "startedAt": null,
+          "status": "inProgress"
+        }
+      }
+    },
+    "method": "turn/start",
+    "params": {
+      "effort": "low",
+      "input": [
+        {
+          "text": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+          "type": "text"
+        }
+      ],
+      "model": "gpt-6-luna",
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "turns-list-active": {
+    "answer": {
+      "result": {
+        "backwardsCursor": "{\"requestedThreadId\":\"11111111-1111-7111-8111-111111111111\",\"rolloutOrdinal\":2,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}",
+        "data": [
+          {
+            "completedAt": null,
+            "durationMs": null,
+            "error": null,
+            "id": "22222222-2222-7222-8222-222222222222",
+            "items": [
+              {
+                "clientId": null,
+                "completedAtMs": 1794607608987,
+                "content": [
+                  {
+                    "text": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+                    "text_elements": [],
+                    "type": "text"
+                  }
+                ],
+                "id": "01a1d6f2-f499-7700-aafe-97cc9e179b21",
+                "startedAtMs": 1794607608987,
+                "type": "userMessage"
+              }
+            ],
+            "itemsView": "summary",
+            "rootTurnId": "22222222-2222-7222-8222-222222222222",
+            "startedAt": 1794607607,
+            "status": "inProgress"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    "method": "thread/turns/list",
+    "params": {
+      "limit": 1,
+      "sortDirection": "desc",
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "turns-list-idle": {
+    "answer": {
+      "result": {
+        "backwardsCursor": "{\"requestedThreadId\":\"11111111-1111-7111-8111-111111111111\",\"rolloutOrdinal\":2,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}",
+        "data": [
+          {
+            "completedAt": 1794607611,
+            "durationMs": 4040,
+            "error": null,
+            "id": "22222222-2222-7222-8222-222222222222",
+            "items": [
+              {
+                "clientId": null,
+                "completedAtMs": 1794607608987,
+                "content": [
+                  {
+                    "text": "Run the shell command 'sleep 240' in the foreground and then reply with the single word OK.",
+                    "text_elements": [],
+                    "type": "text"
+                  }
+                ],
+                "id": "01a1d6f2-f499-7700-aafe-97cc9e179b21",
+                "startedAtMs": 1794607608987,
+                "type": "userMessage"
+              }
+            ],
+            "itemsView": "summary",
+            "rootTurnId": "22222222-2222-7222-8222-222222222222",
+            "startedAt": 1794607607,
+            "status": "interrupted"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    "method": "thread/turns/list",
+    "params": {
+      "limit": 1,
+      "sortDirection": "desc",
+      "threadId": "11111111-1111-7111-8111-111111111111"
+    }
+  },
+  "unknown-method": {
+    "answer": {
+      "error": {
+        "code": -32600,
+        "message": "Invalid request: unknown variant `flakelab/noSuchMethod`, expected one of `initialize`, `server/diagnostics`, `userVerification/status`, `userVerification/enroll`, `userVerification/delete`, `userVerification/verify`, `userVerification/cancel`, `thread/start`, `thread/resume`, `thread/fork`, `thread/sample`, `thread/sample/cancel`, `thread/archive`, `thread/delete`, `thread/unsubscribe`, `thread/increment_elicitation`, `thread/decrement_elicitation`, `thread/name/set`, `thread/prediction/request`, `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/queue/add`, `thread/queue/list`, `thread/queue/update`, `thread/queue/delete`, `thread/queue/reorder`, `thread/queue/start`, `thread/metadata/update`, `thread/attachment/add`, `thread/attachment/list`, `thread/attachmentOwner/list`, `thread/attachment/remove`, `thread/section/move`, `thread/settings/update`, `thread/memoryMode/set`, `thread/memory/read`, `memory/status`, `memory/reset`, `rollout/compress`, `thread/unarchive`, `thread/compact/start`, `thread/shellCommand`, `thread/approveGuardianDeniedAction`, `thread/backgroundTerminals/clean`, `thread/backgroundTerminals/list`, `thread/backgroundTerminals/terminate`, `thread/revert`, `thread/list`, `project/list`, `project/read`, `project/create`, `project/import`, `project/update`, `project/move`, `project/delete`, `threadSection/list`, `threadSection/create`, `threadSection/update`, `threadSection/delete`, `thread/search`, `thread/searchOccurrences`, `thread/loaded/list`, `thread/read`, `thread/readState/update`, `thread/turns/list`, `thread/items/list`, `thread/items/read`, `thread/guardianReview`, `thread/inject_items`, `thread/prepareApprovedPlan`, `skills/list`, `skills/extraRoots/set`, `hooks/list`, `marketplace/add`, `marketplace/remove`, `marketplace/upgrade`, `plugin/list`, `plugin/search`, `plugin/installed`, `plugin/reconcile`, `plugin/read`, `plugin/skill/read`, `plugin/share/save`, `plugin/share/updateTargets`, `plugin/share/list`, `plugin/share/checkout`, `plugin/share/delete`, `app/read`, `app/list`, `app/installed`, `fs/readFile`, `fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`, `fs/remove`, `fs/copy`, `fs/watch`, `fs/unwatch`, `skills/config/write`, `plugin/install`, `plugin/uninstall`, `turn/start`, `turn/settings/update`, `turn/steer`, `turn/interrupt`, `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/appendSpeech`, `thread/realtime/stop`, `thread/timeline/list`, `thread/realtime/listVoices`, `review/start`, `model/list`, `account/gatewayOAuth/read`, `account/gatewayOAuth/login`, `account/gatewayOAuth/cancel`, `modelProvider/list`, `modelProvider/config/write`, `modelProvider/capabilities/read`, `experimentalFeature/list`, `permissionProfile/list`, `experimentalFeature/enablement/set`, `remoteControl/enable`, `remoteControl/disable`, `remoteControl/status/read`, `remoteControl/pairing/start`, `remoteControl/pairing/status`, `remoteControl/client/list`, `remoteControl/client/revoke`, `collaborationMode/list`, `mock/experimentalMethod`, `environment/add`, `environment/info`, `environment/status`, `mcpServer/oauth/login`, `config/mcpServer/reload`, `mcpServerStatus/list`, `mcpServer/resource/read`, `mcpServer/event/stream/start`, `mcpServer/event/stream/stop`, `mcpServer/tool/call`, `windowsSandbox/setupStart`, `windowsSandbox/readiness`, `account/login/start`, `account/bedrock/discover`, `account/bedrock/setup`, `account/gcp/setup`, `account/bedrock/checkGovCloudRequirements`, `account/login/cancel`, `accountSession/list`, `accountSession/switch`, `account/logout`, `account/securitySetup/read`, `account/rateLimits/read`, `account/rateLimitResetCredit/consume`, `account/usage/read`, `account/workspaceMessages/read`, `account/sendAddCreditsNudgeEmail`, `feedback/upload`, `feedback/save`, `command/exec`, `command/exec/write`, `command/exec/terminate`, `command/exec/resize`, `process/spawn`, `process/writeStdin`, `process/kill`, `process/resizePty`, `config/read`, `externalAgentConfig/detect`, `externalAgentConfig/import`, `externalAgentConfig/import/recordHistory`, `externalAgentConfig/import/readHistories`, `config/value/write`, `config/batchWrite`, `configRequirements/read`, `account/read`, `getConversationSummary`, `gitDiffToRemote`, `getAuthStatus`, `fuzzyFileSearch`, `fuzzyFileSearch/sessionStart`, `fuzzyFileSearch/sessionUpdate`, `fuzzyFileSearch/sessionStop`"
+      }
+    },
+    "method": "flakelab/noSuchMethod",
+    "params": {}
+  }
+}

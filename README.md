@@ -260,7 +260,7 @@ them all, and the table has the daily ones.
 | `flakelab clone`          | clone / fetch GitLab group, GitHub owner and extra repos                     |
 | `flakelab doctor`         | diagnose a provisioned distro                                                |
 | `flakelab backup`         | payload + optional shared state root                                         |
-| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux                |
+| `flakelab sessions`       | running agent sessions; `--start`/`--attach` host one in tmux; `--close`     |
 | `tycswap`                 | the account switcher: stored logins per agent CLI; a switch without a logout |
 | `flakelab notify`         | a push (ntfy, a JSON webhook) when a session waits on you; the hooks call it |
 | `flakelab web`            | the dashboard in a browser: tycswap logins, sessions, switch, start          |

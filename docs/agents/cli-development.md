@@ -40,7 +40,33 @@ Read for this topic; paths below are relative to the repository root unless stat
     matches helpers. Profile sessions use JSON lines with `tool`, `cwd`,
     `session` (the actual continuation id), `group` and `profile`. Unmanaged
     sessions keep `<tool>  <dir>  <id>` lines; legacy lines without the tool
-    column still mean Claude Code. Saves go to the state root's `claude/sessions/`
+    column still mean Claude Code. A Codex **lane** is `--start codex [dir]
+--prompt TEXT|--prompt-file FILE [--model M] [--effort E] [--name N]
+[--trust]`: Codex has no flag for the reasoning effort that keeps a session
+    on its shared server, so the lane is created through Codex's own protocol
+    (`lib/codex_threads.py`, python3 stdlib, a WebSocket on
+    `$CODEX_HOME/app-server-control/app-server-control.sock`): conversation
+    with model and effort, first turn with both, and only then the window, which
+    runs `codex resume <id>`. Keep that order: a window opened before the first
+    turn applies its own defaults. The id is the tmux window option
+    `@flakelab_session` (`--open` sets it on its Codex windows too); a client
+    row takes its session from it, and the table's `STATE` and `MODEL`
+    (`--json`: `state`, `model`, `effort`) are read from the server for those
+    ids and the shared server's own, 5 s for all, only in the list and `--json`
+    modes. Codex saves a trust entry by itself when a protocol start names a
+    folder it holds no decision for, so a lane is refused there unless
+    `--trust`. `--close [--force] [--archive] <window|session-id>...` removes a
+    window flakelab started (one pane, `codex resume` on the recorded id) once
+    the session, its helper agents and its commands are finished, and prints
+    the resume line; `--force` interrupts and cleans first, for every window of
+    that session. It locks nothing. A lane flag without a prompt, with
+    `--start claude` or with `-- args` exits 2. Suites: `test-codex-threads`
+    (the helper against `lib/codex_fake_server.py`, whose answers are recorded
+    ones under `lib/testdata/codex-app-server/`; `FLAKELAB_CODEX_LIVE=1` runs
+    the live checks instead, after a Codex update) and the lane cases of
+    `test-claude-sessions`. Design and the measured Codex behaviour:
+    `docs/superpowers/specs/2026-11-13-sessions-codex-lanes-design.md`.
+    Saves go to the state root's `claude/sessions/`
     when one is set, else `~/.local/state/flakelab/sessions/`, never into
     `~/.claude/sessions`; they are named `<hostname>-<machine>-…` (twelve hex
     digits of `/etc/machine-id`), and the default `--resume`/`--open` read only

@@ -1,0 +1,16 @@
+{
+  "handshake_answer": "HTTP/1.1 101 Switching Protocols\r\nconnection: Upgrade\r\nupgrade: websocket\r\nsec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nx-codex-websocket-max-unfragmented-message-bytes: 16777216\r\n\r\n",
+  "large": {
+    "header_hex": "817f0000000000012baf",
+    "payload_bytes": 76719
+  },
+  "medium": {
+    "header_hex": "817e2417",
+    "payload_bytes": 9239
+  },
+  "request_nonce_text": "the sample nonce",
+  "short": {
+    "header_hex": "8164",
+    "payload_bytes": 100
+  }
+}
