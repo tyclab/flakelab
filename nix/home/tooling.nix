@@ -41,6 +41,15 @@ in
     fi
   '';
 
+  # pre-commit builds a node hook from the box's node only while node and npm both
+  # resolve outside $HOME. The pinned npm does not, and without this file nodeenv
+  # then downloads the newest node release for each hook. A hook's language_version
+  # and a repo's own nodeenv config still win.
+  home.file.".nodeenvrc".text = ''
+    [nodeenv]
+    node = system
+  '';
+
   # `bw config server` drops the stored session when the endpoint changes, so only
   # write when the CLI actually points elsewhere. Null skips the activation entirely.
   home.activation.bwConfigServer = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
