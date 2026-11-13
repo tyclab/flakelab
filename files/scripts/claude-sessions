@@ -997,7 +997,7 @@ ask_start() {
 # protocol, then its window opens on it. The order is the point: see the header.
 start_lane() {
   local dir="${START_DIR:-$PWD}" name out sid model effort wid
-  local -a helper_args=()
+  local -a helper_args=() taken=() alive=()
   [[ "$START_TOOL" == codex ]] || { print -ru2 -- "Error: ${LANE_FLAGS[1]} is for --start codex; ${START_TOOL} takes its own flags after --"; return 2 }
   (( ${#START_ARGS} == 0 )) || { print -ru2 -- "Error: ${LANE_FLAGS[1]} cannot be combined with -- args"; return 2 }
   [[ -z "$LANE_PROMPT" || -z "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: --prompt and --prompt-file exclude each other"; return 2 }
@@ -1012,7 +1012,9 @@ start_lane() {
   [[ -d "$dir" ]] || { print -ru2 -- "Error: no such directory: ${dir}"; return 2 }
   dir="${dir:A}"
   name="${LANE_NAME:-$(window_name codex "$dir")}"
-  if [[ -n "$LANE_NAME" ]] && tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qxF -- "$LANE_NAME"; then
+  # Read into an array, then look: a pipe into grep -q can fail a match under pipefail.
+  taken=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null)}" )
+  if [[ -n "$LANE_NAME" ]] && (( ${taken[(Ie)$LANE_NAME]} )); then
     print -ru2 -- "Error: a window named ${LANE_NAME} exists in ${TMUX_SESSION}"; return 1
   fi
   helper_args=(start --cwd "$dir")
@@ -1035,7 +1037,8 @@ start_lane() {
   }
   tmux set-option -w -t "$wid" @flakelab_session "$sid" >/dev/null 2>&1
   sleep "$LANE_SETTLE"
-  tmux list-windows -t "$TMUX_SESSION" -F '#{window_id}' 2>/dev/null | grep -qxF -- "$wid" || {
+  alive=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_id}' 2>/dev/null)}" )
+  (( ${alive[(Ie)$wid]} )) || {
     print -ru2 -- "Error: the window closed at once; the session runs without one: codex resume ${sid}"; return 1
   }
   print -ru2 -- "started codex ${model} ${effort} in ${dir} as ${TMUX_SESSION}:${name} (${wid}), session ${sid}"
