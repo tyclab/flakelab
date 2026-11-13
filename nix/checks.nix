@@ -602,6 +602,10 @@ in
       entryObserving = entry "claude-settings-observing-activation" observing;
       entryLater = entry "claude-settings-later-activation" later;
       entryShortCleanup = entry "claude-settings-short-cleanup-activation" shortCleanup;
+      memoryOff = later.extendModules {
+        modules = [ { flakelab.claudeAutoMemory = false; } ];
+      };
+      entryMemoryOff = entry "claude-settings-memory-off-activation" memoryOff;
     in
     pkgs.runCommandLocal "flakelab-check-claude-settings-prune"
       {
@@ -635,6 +639,19 @@ in
         printf '{}' > "$settings"
         bash -euo pipefail ${entryShortCleanup}
         jq -e '.cleanupPeriodDays == 7' "$settings" > /dev/null
+
+        echo "claudeAutoMemory asserts autoMemoryEnabled; unset, the key stays as the box has it"
+        fresh memory
+        printf '{}' > "$settings"
+        bash -euo pipefail ${entryLater}
+        jq -e 'has("autoMemoryEnabled") | not' "$settings" > /dev/null
+        echo '{"autoMemoryEnabled":true}' > "$settings"
+        bash -euo pipefail ${entryLater}
+        jq -e '.autoMemoryEnabled == true' "$settings" > /dev/null
+        bash -euo pipefail ${entryMemoryOff}
+        jq -e '.autoMemoryEnabled == false' "$settings" > /dev/null
+        bash -euo pipefail ${entryLater}
+        jq -e '.autoMemoryEnabled == false' "$settings" > /dev/null
 
         echo "env keys and the statusline one generation rendered and the next does not are removed, the user's survive both"
         fresh generations

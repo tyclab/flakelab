@@ -110,6 +110,9 @@
         # One Claude auto-memory directory for every project, not one per working directory.
         # claudeAutoMemoryDirectory = "~/.claude/projects/-home-CHANGEME/memory";
 
+        # Claude auto memory off, where the notes live in another store.
+        # claudeAutoMemory = false;
+
         # Per-developer Claude user-scope MCP servers, merged into ~/.claude.json.
         # claudeMcpServers = {
         #   scratch = {
