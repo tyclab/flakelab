@@ -50,6 +50,9 @@ write_stub() {
   {
     print -r -- '#!/usr/bin/env zsh'
     print -r -- '[[ "$1" == "auth" ]] && exit 0'
+    # The project record of a login with no rights there: a stub with one payload for every question would
+    # answer "which rights do I hold" with a list of MRs. No test built on it has server leftovers to report.
+    print -r -- '[[ "$1" == "api" ]] && { print -r -- "{}"; exit 0 }'
     [[ -n "${payload}" ]] && print -r -- "cat ${(q)payload}"
     print -r -- "exit ${rc}"
   } > "${STUB_DIR}/${name}"
@@ -680,5 +683,113 @@ assert_lacks "not fast-forwarded" "and the report says so"
 [[ "$(< "${W}/seed.txt")" == changed ]] &&
   { (( PASSED++ )); print -r -- "  ok   the dirty edit survives" } ||
   { (( FAILED++ )); print -r -- "  FAIL the dirty edit was lost" }
+
+# ── Branches a finished request left on the server ──────────────────
+# The forge deletes a source branch only for a merge it performs itself with that
+# setting on. gitchecker names what stayed; gitcleaner deletes the same list.
+print -r -- ""
+print -r -- "server leftovers:"
+LT="${TESTROOT}/roots/leftovers"
+mkdir -p "${LT}"
+LW="$(mk_repo "${LT}" left gitlab.com t/left)"
+for lb in left-merged left-closed plain reopened others; do
+  git -C "${LW}" checkout -qb "${lb}" main
+  print -r -- "${lb}" > "${LW}/${lb}.txt"
+  git -C "${LW}" add -A; git -C "${LW}" commit -qm "${lb}"
+  git -C "${LW}" push -q origin "${lb}"
+  git -C "${LW}" checkout -q main
+done
+LEFT_MERGED="$(git -C "${LW}" rev-parse left-merged)"
+LEFT_CLOSED="$(git -C "${LW}" rev-parse left-closed)"
+LEFT_REOPENED="$(git -C "${LW}" rev-parse reopened)"
+LEFT_OTHERS="$(git -C "${LW}" rev-parse others)"
+git -C "${LW}" branch -q -D left-merged left-closed plain reopened others
+git -C "${LW}" remote set-head origin main >/dev/null 2>&1
+# The stub answers who is asking, what that login may do in the project (LEFT_ACCESS, Owner unless set),
+# and the per-branch request query (--all) by branch; the open list is empty.
+cat > "${STUB_DIR}/glab" <<STUB
+#!/usr/bin/env zsh
+[[ "\$1" == auth ]] && exit 0
+if [[ "\$1" == api ]]; then
+  case "\$2" in
+    user)       print -r -- '{"username":"tester"}' ;;
+    projects/*) print -r -- "{\"id\":7,\"permissions\":{\"project_access\":{\"access_level\":\${LEFT_ACCESS:-50}},\"group_access\":null}}" ;;
+    # Open requests anywhere built on the branch: one, from this project (id 7), on left-closed when asked for.
+    merge_requests\?*) if [[ -n "\${LEFT_UPSTREAM:-}" && "\$2" == *"source_branch=\${LEFT_UPSTREAM}"* ]]; then
+                         print -r -- '[{"source_project_id":7,"source_branch":"x"}]'
+                       else
+                         print -r -- '[]'
+                       fi ;;
+  esac
+  exit 0
+fi
+if [[ "\$*" == *--all* ]]; then
+  case "\$*" in
+    *"--source-branch left-merged"*) print -r -- '[{"state":"merged","sha":"${LEFT_MERGED}","source_project_id":1,"target_project_id":1,"author":{"username":"tester"}}]' ;;
+    *"--source-branch left-closed"*) print -r -- '[{"state":"closed","sha":"${LEFT_CLOSED}","source_project_id":1,"target_project_id":1,"author":{"username":"tester"}}]' ;;
+    *"--source-branch reopened"*)    print -r -- '[{"state":"closed","sha":"${LEFT_REOPENED}","source_project_id":1,"target_project_id":1,"author":{"username":"tester"}},{"state":"opened","sha":"${LEFT_REOPENED}","source_project_id":1,"target_project_id":1,"author":{"username":"tester"}}]' ;;
+    *"--source-branch others"*)      print -r -- '[{"state":"merged","sha":"${LEFT_OTHERS}","source_project_id":1,"target_project_id":1,"author":{"username":"colleague"}}]' ;;
+    *)                               print -r -- '[]' ;;
+  esac
+fi
+exit 0
+STUB
+chmod +x "${STUB_DIR}/glab"
+
+run_gc --repos-dir "${LT}"
+assert_rc 1 "a branch left on the server makes the repo need attention"
+assert_has "2 left on server" "the row counts the leftovers"
+assert_has "server left-merged" "the merged request's branch is named"
+assert_has "MR merged, branch left on the server" "with how its request ended"
+assert_has "server left-closed" "the closed request's branch is named"
+assert_lacks "server plain" "a branch without a request is not a leftover"
+assert_lacks "server reopened" "a reopened request keeps its branch"
+assert_lacks "server others" "a colleague's request leaves its branch to them"
+
+# An open request in another project is built on the branch: it is in use, not left over.
+LEFT_UPSTREAM=left-closed run_gc --repos-dir "${LT}"
+assert_has "1 left on server" "a branch an open request elsewhere is built on is not counted"
+assert_lacks "server left-closed" "and not named"
+
+# Push access is not ownership: a clone of a project this login does not administer has nothing to report.
+LEFT_ACCESS=30 run_gc --repos-dir "${LT}"
+assert_rc 0 "a Developer's clone of someone else's project is current"
+assert_lacks "left on server" "and names no leftovers"
+
+run_gc --repos-dir "${LT}" --json
+assert_rc 1 "--json exits 1 with leftovers"
+assert_jq '.repos[0].remote_leftovers | map(.name) == ["left-closed", "left-merged"]' "the document lists exactly the leftovers"
+LEFT_SHORT="$(git -C "${LW}" rev-parse --short "${LEFT_MERGED}")"
+assert_jq ".repos[0].remote_leftovers[] | select(.name == \"left-merged\") | .sha == \"${LEFT_SHORT}\" and .reason == \"MR merged, branch left on the server\"" \
+  "each with its tip and reason"
+
+# A local branch that moved on from the server's tip is work in progress, not a leftover.
+git -C "${LW}" checkout -qb left-merged origin/left-merged
+print -r -- more > "${LW}/more.txt"; git -C "${LW}" add -A; git -C "${LW}" commit -qm more
+git -C "${LW}" checkout -q main
+run_gc --repos-dir "${LT}"
+assert_has "1 left on server" "a branch with newer local commits is no longer counted"
+assert_lacks "server left-merged" "and no longer named"
+git -C "${LW}" branch -q -D left-merged
+
+# A request list that cannot be read aborts: an empty answer would read as "nothing left".
+cat > "${STUB_DIR}/glab" <<STUB
+#!/usr/bin/env zsh
+[[ "\$1" == auth ]] && exit 0
+if [[ "\$1" == api ]]; then
+  case "\$2" in
+    user)       print -r -- '{"username":"tester"}' ;;
+    projects/*) print -r -- '{"permissions":{"project_access":{"access_level":50},"group_access":null}}' ;;
+  esac
+  exit 0
+fi
+[[ "\$*" == *--all* ]] && print -r -- '<html>rate limited</html>'
+exit 0
+STUB
+chmod +x "${STUB_DIR}/glab"
+run_gc --repos-dir "${LT}"
+assert_rc 2 "an unreadable request list exits 2"
+assert_has "could not parse the request list" "and names the failure"
+write_stub glab 0 /dev/null
 
 finish

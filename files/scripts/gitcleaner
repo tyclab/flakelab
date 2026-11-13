@@ -5,8 +5,9 @@ set -uo pipefail
 #
 # gitcleaner — retire local branches and worktrees whose work has landed
 #
-# Per repo: fast-forward strictly-behind branches, prune worktree entries whose directory is gone, delete branches
-# merged into the default, and gone-upstream branches whose forge MR/PR merged (squash case, -d refuses).
+# Per repo: fast-forward strictly-behind branches, prune worktree entries whose directory is gone, delete the server
+# branches finished MRs/PRs left behind, delete branches merged into the default, and gone-upstream branches whose
+# forge MR/PR merged (squash case, -d refuses) or closed on that tip.
 # Never touched: the default branch, an open MR/PR's branch, unpushed commits. A checkout (HEAD or a worktree) on a
 # landed branch is reported as parked and moved off it only when asked, or under --unpark --yes.
 # Asks per branch at a terminal; without one it only reports unless --yes. Each delete prints its SHA (undo:
@@ -55,6 +56,21 @@ branches whose remote branch was pruned AND whose MR/PR the forge reports as
 merged — the squash-merge case, where `git branch -d` refuses because the
 commits are not ancestors of anything.
 
+It also deletes branches on the server that a finished MR/PR left behind. A
+forge deletes a source branch only for a merge it performs itself with that
+setting on, so a setting that was off, a stacked MR merged inside another, and
+every closed MR/PR leave theirs. Only in a project this login administers
+(GitHub admin, GitLab Maintainer or Owner), and only for its own MRs/PRs: a
+clone of someone else's project, or a colleague's branch, is never touched.
+A server branch goes when its tip is the one
+its MR/PR merged or closed on, no MR/PR in any project is open on it (a fork's
+branch can be the head of an upstream request), and no local branch
+of that name has moved on from it; the server compares the tip again as it
+deletes, so a push that landed in between keeps the branch. A closed MR/PR's
+branch stays while it is checked out. The local branch behind a deleted server
+branch goes in the same run, and so does any local branch whose remote is gone
+and whose tip an MR/PR closed on: the forge keeps those commits under the MR/PR.
+
 Never touched: the default branch, a branch with an open MR/PR, and a branch
 holding commits the remote has never seen. A repo without origin/HEAD is
 skipped rather than guessed at.
@@ -67,10 +83,12 @@ under --yes that needs --unpark. Uncommitted changes, untracked files in a
 worktree, and a worktree lock that names no pid or a running one leave it alone.
 
 Every deletion prints the SHA it removed, so the undo is the
-`git branch <name> <sha>` already on your screen.
+`git branch <name> <sha>` (or, for a server branch, the `git push`) already on
+your screen.
 
 At a terminal each candidate is shown and confirmed one at a time (y/N/a/q):
-y delete, n keep, a the rest of this repo, q stop. That prompt IS the
+y delete, n keep, a the rest of this repo's local branches, q stop. A server
+branch and a parked checkout are always asked on their own. That prompt IS the
 confirmation — there is no separate apply step. With no terminal there is
 nobody to ask, so it reports and changes nothing unless --yes.
 
@@ -182,8 +200,9 @@ done
 if (( ${#GITDIRS[@]} == 0 )); then
   if (( JSON )); then
     jq -n '{ok: true, aborted: null, mode: "report", scanned: 0, repos: [],
-            found: {branches: 0, worktrees: 0}, removed: {branches: 0, worktrees: 0},
-            kept: 0, failed: 0, skipped: 0}'
+            found: {branches: 0, worktrees: 0, parked: 0, remote: 0},
+            removed: {branches: 0, worktrees: 0, parked: 0, remote: 0},
+            kept: 0, failed: 0, skipped: 0, only_not_found: []}'
   else
     print -r -- "No git repos found under: ${(j:, :)ABS_ROOTS}"
   fi
@@ -196,6 +215,7 @@ gitscan_require_gh "${GITDIRS[@]}"
 typeset -i FOUND_BRANCHES=0 FOUND_WORKTREES=0
 typeset -i GONE_BRANCHES=0 GONE_WORKTREES=0 KEPT_BRANCHES=0 FAILED_BRANCHES=0
 typeset -i FOUND_PARKED=0 GONE_PARKED=0
+typeset -i FOUND_REMOTE=0 GONE_REMOTE=0
 typeset -i REPOS_TOUCHED=0 SKIPPED=0
 typeset -i REC_IDX=0
 typeset -a ONLY_MATCHED=() ONLY_NEEDS_UNPARK=()
@@ -227,10 +247,13 @@ clean_repo() {
   local repo="$1"
   local default_branch head_branch branch upstream_track remote_url forge_line forge project
   local open_srcs="" wt_out
+  # Declared once, here: a second `local` for a declared name prints it and corrupts --json.
+  local b line sha reason entry
   # No queryable forge: the ancestor test still stands, the squash case is skipped rather than guessed.
-  local -i have_forge=0
-  typeset -a to_delete_safe=() to_delete_squashed=() pruned_worktrees=() parked=()
-  typeset -A held_path=() held_lock=() checked_sha=()
+  local -i have_forge=0 rec_open=0
+  typeset -a to_delete_safe=() to_delete_squashed=() to_delete_closed=() pruned_worktrees=() parked=()
+  typeset -a remote_left=()
+  typeset -A held_path=() held_lock=() checked_sha=() remote_tip=() remote_why=()
   # "all" is per repo: agreeing to sweep one repo is not agreeing to the rest.
   typeset -i REPO_ALL=0
 
@@ -334,6 +357,91 @@ clean_repo() {
     open_srcs="${GITSCAN_JQ_OUT}"
   fi
 
+  # The repo's header and record file, opened by the first thing this run has to say about it.
+  open_record() {
+    (( rec_open )) && return 0
+    rec_open=1
+    (( REC_IDX++ ))
+    REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
+    rec_line REPO "${repo}" "${default_branch}"
+    say ""
+    say "${C_CYAN}${repo}${C_RESET} ${C_DIM}(default: ${default_branch})${C_RESET}"
+    (( REPOS_TOUCHED++ ))
+  }
+
+  # confirm <prompt> [each]: y delete, n keep, a rest of this repo, q stop the run; "each" ignores an earlier a.
+  confirm() {
+    local _p="$1"
+    [[ "${MODE}" == delete ]] && return 0
+    [[ "${MODE}" == report ]] && return 1
+    (( REPO_ALL )) && [[ "${2-}" != each ]] && return 0
+    prompt_keys "${_p}" "y/N/a/q"
+    case "${PROMPT_KEY}" in
+      [yY]) return 0 ;;
+      [aA]) REPO_ALL=1; return 0 ;;
+      [qQ]) QUIT_ALL=1; return 1 ;;
+      *)    return 1 ;;
+    esac
+  }
+
+  # The lease makes the server compare the tip before it deletes: a push that landed since the fetch keeps the
+  # branch. Prints the SHA it removed and the push that puts it back.
+  delete_remote() {
+    local _b="$1" _why="$2" _sha="$3"
+    if gitnet_push_once git -C "${repo}" push --quiet \
+        --force-with-lease="${_b}:${remote_tip[${_b}]}" origin --delete "${_b}"; then
+      say "  ${C_GREEN}deleted on the server${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} push origin ${_sha}:refs/heads/${_b}${C_RESET}"
+      rec_line REMOTE "${_b}" "${_why}" "${_sha}" deleted ""
+      (( GONE_REMOTE++ ))
+      return
+    fi
+    # A refused delete is a failure, not a quiet no-op: the branch is still there.
+    print -r -u2 -- "  ${C_RED}FAILED${C_RESET} to delete ${_b} on the server (${_why})"
+    print -r -u2 -- "  ${GITNET_OUT}"
+    rec_line REMOTE "${_b}" "${_why}" "${_sha}" failed "${${GITNET_OUT##*$'\n'}//$'\t'/ }"
+    (( FAILED_BRANCHES++ ))
+  }
+
+  # Server branches go first: deleting one prunes its tracking ref, so the local branch behind it is judged
+  # below, in this same run, as the leftover it now is.
+  if (( have_forge )); then
+    if ! gitscan_remote_leftovers "${repo}" "${forge}" "${project}" "${default_branch}" "${open_srcs}"; then
+      skip "${GITSCAN_FORGE_WHY} — skipping ${repo}"
+      return 2
+    fi
+    for entry in "${GITSCAN_LEFTOVERS[@]}"; do
+      b="${entry%%$'\t'*}"
+      if (( ${#ONLY[@]} > 0 )); then
+        (( ${ONLY[(Ie)${b}]} )) || continue
+        ONLY_MATCHED+=("${b}")
+      fi
+      remote_left+=("${b}")
+      remote_tip[${b}]="${${entry#*$'\t'}%%$'\t'*}"
+      remote_why[${b}]="${entry##*$'\t'}"
+    done
+  fi
+  for b in "${remote_left[@]}"; do
+    (( QUIT_ALL )) && break
+    open_record
+    (( FOUND_REMOTE++ ))
+    reason="${remote_why[${b}]}"
+    sha="$(git -C "${repo}" rev-parse --short "${remote_tip[${b}]}" 2>/dev/null)"
+    if [[ "${MODE}" == report ]]; then
+      say "  ${C_YELLOW}stale on the server${C_RESET} ${b} ${C_DIM}(${reason})${C_RESET}"
+      rec_line REMOTE "${b}" "${reason}" "${sha}" reported ""
+      continue
+    fi
+    # Asked one at a time: "a" agreed to deleting this clone's branches, and this one goes for every clone.
+    if confirm "delete ${b} on the server (${reason})?" each; then
+      delete_remote "${b}" "${reason}" "${sha}"
+    else
+      (( KEPT_BRANCHES++ ))
+      rec_line REMOTE "${b}" "${reason}" "${sha}" kept ""
+      (( QUIT_ALL )) || say "  ${C_DIM}kept${C_RESET} ${b} ${C_DIM}(on the server)${C_RESET}"
+    fi
+  done
+  (( QUIT_ALL )) && return 0
+
   while IFS= read -r branch || [[ -n "${branch}" ]]; do
     [[ -z "${branch}" ]] && continue
     [[ "${branch}" == "${default_branch}" ]] && continue
@@ -374,25 +482,35 @@ clean_repo() {
     gitscan_branch_merged "${forge}" "${project}" "${branch}" \
       "${checked_sha[${branch}]}"
     case $? in
-      0) to_delete_squashed+=("${branch}") ;;
+      0) to_delete_squashed+=("${branch}"); continue ;;
       1) ;;
       *) skip "${GITSCAN_FORGE_WHY} — skipping ${repo}"; return 2 ;;
     esac
+    # A closed request: the forge keeps its commits under the request's own ref, and only the tip the request
+    # ended on is that work. Commits added since are not, and an open request keeps the branch.
+    if ! gitscan_request_end "${forge}" "${project}" "${branch}" "${checked_sha[${branch}]}"; then
+      skip "${GITSCAN_FORGE_WHY} — skipping ${repo}"
+      return 2
+    fi
+    [[ "${GITSCAN_REQUEST_END}" == closed ]] && to_delete_closed+=("${branch}")
   done < <(git -C "${repo}" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null)
 
   # --only narrows deletions only: a stale worktree entry has nothing to lose, and pruning it unblocks the branch.
   if (( ${#ONLY[@]} > 0 )); then
-    typeset -a keep_safe=() keep_squashed=()
+    typeset -a keep_safe=() keep_squashed=() keep_closed=()
     for branch in "${to_delete_safe[@]}"; do
       (( ${ONLY[(Ie)${branch}]} )) && { keep_safe+=("${branch}"); ONLY_MATCHED+=("${branch}") }
     done
     for branch in "${to_delete_squashed[@]}"; do
       (( ${ONLY[(Ie)${branch}]} )) && { keep_squashed+=("${branch}"); ONLY_MATCHED+=("${branch}") }
     done
+    for branch in "${to_delete_closed[@]}"; do
+      (( ${ONLY[(Ie)${branch}]} )) && { keep_closed+=("${branch}"); ONLY_MATCHED+=("${branch}") }
+    done
     to_delete_safe=("${keep_safe[@]}")
     to_delete_squashed=("${keep_squashed[@]}")
+    to_delete_closed=("${keep_closed[@]}")
     typeset -a keep_parked=()
-    local entry
     for entry in "${parked[@]}"; do
       branch="${entry%%$'\t'*}"
       (( ${ONLY[(Ie)${branch}]} )) || continue
@@ -406,17 +524,11 @@ clean_repo() {
     parked=("${keep_parked[@]}")
   fi
 
-  (( ${#to_delete_safe[@]} + ${#to_delete_squashed[@]} + ${#pruned_worktrees[@]} + ${#parked[@]} == 0 )) && return 0
+  (( ${#to_delete_safe[@]} + ${#to_delete_squashed[@]} + ${#to_delete_closed[@]}
+     + ${#pruned_worktrees[@]} + ${#parked[@]} == 0 )) && return 0
 
-  (( REC_IDX++ ))
-  REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
-  rec_line REPO "${repo}" "${default_branch}"
+  open_record
 
-  say ""
-  say "${C_CYAN}${repo}${C_RESET} ${C_DIM}(default: ${default_branch})${C_RESET}"
-  (( REPOS_TOUCHED++ ))
-
-  local b line sha reason
   for line in "${pruned_worktrees[@]}"; do
     (( FOUND_WORKTREES++ ))
     if [[ "${MODE}" == report ]]; then
@@ -428,21 +540,6 @@ clean_repo() {
       (( GONE_WORKTREES++ ))
     fi
   done
-
-  # confirm <prompt> [each]: y delete, n keep, a rest of this repo, q stop the run; "each" ignores an earlier a.
-  confirm() {
-    local _p="$1"
-    [[ "${MODE}" == delete ]] && return 0
-    [[ "${MODE}" == report ]] && return 1
-    (( REPO_ALL )) && [[ "${2-}" != each ]] && return 0
-    prompt_keys "${_p}" "y/N/a/q"
-    case "${PROMPT_KEY}" in
-      [yY]) return 0 ;;
-      [aA]) REPO_ALL=1; return 0 ;;
-      [qQ]) QUIT_ALL=1; return 1 ;;
-      *)    return 1 ;;
-    esac
-  }
 
   # Forge queries and operator confirmation can wait while another session commits.
   branch_unchanged() {
@@ -505,6 +602,27 @@ clean_repo() {
     # -D, not -d: the squashed commits are not ancestors, so -d refuses. The
     # forge said this branch's MR merged and its remote is gone, which is the
     # evidence -d cannot see.
+    if confirm "delete ${b} (${reason})?"; then
+      delete_branch "${b}" -D "${reason}"
+    else
+      (( KEPT_BRANCHES++ ))
+      rec_line BRANCH "${b}" "${reason}" \
+        "$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)" kept
+      (( QUIT_ALL )) || say "  ${C_DIM}kept${C_RESET} ${b}"
+    fi
+  done
+
+  for b in "${to_delete_closed[@]}"; do
+    (( QUIT_ALL )) && break
+    (( FOUND_BRANCHES++ ))
+    reason="MR closed, upstream pruned"
+    if [[ "${MODE}" == report ]]; then
+      say "  ${C_YELLOW}stale${C_RESET} ${b} ${C_DIM}(${reason})${C_RESET}"
+      rec_line BRANCH "${b}" "${reason}" \
+        "$(git -C "${repo}" rev-parse --short "refs/heads/${b}" 2>/dev/null)" reported
+      continue
+    fi
+    # -D: nothing merged, so -d refuses. The forge holds these commits under the closed request.
     if confirm "delete ${b} (${reason})?"; then
       delete_branch "${b}" -D "${reason}"
     else
@@ -650,10 +768,11 @@ render_json() {
       --argjson branches "$(grep $'^BRANCH\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({name: .[0], reason: .[1], sha: .[2], action: .[3]})')" \
       --argjson worktrees "$(grep $'^WT\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({entry: .[0], action: .[1]})')" \
       --argjson parked "$(grep $'^PARKED\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({name: .[0], reason: .[1], sha: .[2], checkout: .[3], action: .[4], blocker: (if (.[5] // "") == "" then null else .[5] end)})')" \
+      --argjson remote "$(grep $'^REMOTE\t' "${rec}" 2>/dev/null | cut -f2- | jq -R -s 'split("\n") | map(select(length > 0)) | map(split("\t")) | map({name: .[0], reason: .[1], sha: .[2], action: .[3], blocker: (if (.[4] // "") == "" then null else .[4] end)})')" \
       '{path: $path,
         default_branch: (if $default_branch == "" then null else $default_branch end),
         skipped: (if $skipped == "" then null else $skipped end),
-        branches: $branches, worktrees: $worktrees, parked: $parked}' \
+        branches: $branches, worktrees: $worktrees, parked: $parked, remote: $remote}' \
       > "${WORKDIR}/json.$(printf '%04d' ${idx})"
   done
 
@@ -665,14 +784,15 @@ render_json() {
     --argjson found_b "${FOUND_BRANCHES}" --argjson found_w "${FOUND_WORKTREES}" \
     --argjson gone_b "${GONE_BRANCHES}" --argjson gone_w "${GONE_WORKTREES}" \
     --argjson found_p "${FOUND_PARKED}" --argjson gone_p "${GONE_PARKED}" \
+    --argjson found_r "${FOUND_REMOTE}" --argjson gone_r "${GONE_REMOTE}" \
     --argjson kept "${KEPT_BRANCHES}" --argjson failed "${FAILED_BRANCHES}" \
     --argjson skipped "${SKIPPED}" \
     --argjson only_missed "$(print -rn -- "${(F)ONLY_MISSED}" | jq -R -s 'split("\n") | map(select(length > 0))')" \
     '{ok: ($failed == 0 and $skipped == 0 and ($only_missed | length) == 0),
       aborted: null,
       mode: $mode, scanned: $scanned, repos: .,
-      found: {branches: $found_b, worktrees: $found_w, parked: $found_p},
-      removed: {branches: $gone_b, worktrees: $gone_w, parked: $gone_p},
+      found: {branches: $found_b, worktrees: $found_w, parked: $found_p, remote: $found_r},
+      removed: {branches: $gone_b, worktrees: $gone_w, parked: $gone_p, remote: $gone_r},
       kept: $kept, failed: $failed, skipped: $skipped,
       only_not_found: $only_missed}' \
     "${WORKDIR}"/json.*(N) < /dev/null
@@ -684,7 +804,8 @@ render_json() {
 # at the prompt always leaves the candidate it stopped at.
 work_left() {
   (( QUIT_ALL )) && return 0
-  (( FOUND_BRANCHES - GONE_BRANCHES + FOUND_WORKTREES - GONE_WORKTREES + FOUND_PARKED - GONE_PARKED > 0 ))
+  (( FOUND_BRANCHES - GONE_BRANCHES + FOUND_WORKTREES - GONE_WORKTREES + FOUND_PARKED - GONE_PARKED
+     + FOUND_REMOTE - GONE_REMOTE > 0 ))
 }
 
 if (( JSON )); then
@@ -697,7 +818,7 @@ fi
 print -r -- ""
 # Gated on what was found, not on what went: keeping every candidate is still a
 # run that found work.
-if (( FOUND_BRANCHES + FOUND_WORKTREES + FOUND_PARKED == 0 )); then
+if (( FOUND_BRANCHES + FOUND_WORKTREES + FOUND_PARKED + FOUND_REMOTE == 0 )); then
   # A skip leaves that repo unread, so "nothing to clean" cannot cover it.
   if (( rc == 2 )); then
     print -r -- "Nothing to clean in the repos that were readable; ${SKIPPED} skipped (see errors above)."
@@ -710,6 +831,7 @@ fi
 if [[ "${MODE}" == report ]]; then
   print -r -- "${FOUND_BRANCHES} branches and ${FOUND_WORKTREES} worktree entries are stale in ${REPOS_TOUCHED} repos."
   (( FOUND_PARKED > 0 )) && print -r -- "${FOUND_PARKED} checkouts are parked on a landed branch."
+  (( FOUND_REMOTE > 0 )) && print -r -- "${FOUND_REMOTE} branches of finished MRs/PRs are left on the server."
   if (( DRY_RUN )); then
     print -r -- "Drop --dry-run to work through them one at a time."
   else
@@ -718,6 +840,7 @@ if [[ "${MODE}" == report ]]; then
 else
   print -r -- "Removed ${GONE_BRANCHES} of ${FOUND_BRANCHES} branches and ${GONE_WORKTREES} of ${FOUND_WORKTREES} worktree entries in ${REPOS_TOUCHED} repos."
   (( FOUND_PARKED > 0 )) && print -r -- "Unparked ${GONE_PARKED} of ${FOUND_PARKED} parked checkouts."
+  (( FOUND_REMOTE > 0 )) && print -r -- "Deleted ${GONE_REMOTE} of ${FOUND_REMOTE} leftover branches on the server."
   (( KEPT_BRANCHES > 0 )) && print -r -- "${KEPT_BRANCHES} branches kept at your request."
   (( QUIT_ALL )) && print -r -- "Stopped at your request; the rest were left alone."
 fi
