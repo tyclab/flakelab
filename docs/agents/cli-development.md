@@ -145,7 +145,15 @@ Read for this topic; paths below are relative to the repository root unless stat
   `gitcleaner --repo . --json` and act with `--only <branch> --yes` — never
   `--yes` alone, which sweeps every repo it can reach. A branch still checked
   out (HEAD or a worktree) is listed under `parked`; acting on it also takes
-  `--unpark`. `gitcleaner` exits 0 when nothing is left in its selection (none
+  `--unpark`. A branch a merged or closed MR/PR left on the server is listed
+  under `remote` (in gitchecker's document as `remote_leftovers`, on the
+  `shared_state` row): `--only <branch> --yes` deletes it there with a lease on
+  the tip the request ended on, and deletes the local branch on that tip in the
+  same run. A forge only deletes a source branch for a merge it performs itself
+  with that setting on, so stacked MRs, a setting that was off and every closed
+  request leave theirs. Both tools list a server branch only in a project the
+  login administers and only for its own requests, so a clone of an upstream
+  project never has any. `gitcleaner` exits 0 when nothing is left in its selection (none
   found, or all removed), 1 when stale items are left in it. Under `--only` the
   selection is the named branches, so a 0 there says those went, not that the
   repo is clean: a plan with candidates exits 1, the act that removed its

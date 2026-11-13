@@ -223,6 +223,276 @@ gitscan_branch_merged() {
   return 1
 }
 
+# gitscan_forge_user <forge>: this login's name on the forge in GITSCAN_FORGE_USER, asked once per process.
+# rc 2 with the reason in GITSCAN_FORGE_WHY.
+typeset -gA GITSCAN_USER_OF=()
+gitscan_forge_user() {
+  local forge="$1" field=username
+  typeset -g GITSCAN_FORGE_WHY="" GITSCAN_FORGE_USER=""
+  if (( ${+GITSCAN_USER_OF[${forge}]} )); then
+    GITSCAN_FORGE_USER="${GITSCAN_USER_OF[${forge}]}"
+    return 0
+  fi
+  if [[ "${forge}" == gitlab ]]; then
+    if ! gitnet_retry glab api user; then
+      GITSCAN_FORGE_WHY="glab api user failed (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+  else
+    field=login
+    if ! gitnet_retry gh api user; then
+      GITSCAN_FORGE_WHY="gh api user failed (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+  fi
+  if ! gitscan_jq "${GITNET_OUT}" ".${field} // empty" || [[ -z "${GITSCAN_JQ_OUT}" ]]; then
+    GITSCAN_FORGE_WHY="could not read this login's ${forge} user name"
+    return 2
+  fi
+  GITSCAN_USER_OF[${forge}]="${GITSCAN_JQ_OUT}"
+  GITSCAN_FORGE_USER="${GITSCAN_JQ_OUT}"
+  return 0
+}
+
+# gitscan_can_administer <forge> <project>: rc 0 when this login administers the project (GitHub admin, GitLab
+# Maintainer or Owner), 1 when it does not, 2 (GITSCAN_FORGE_WHY) when the forge was not asked. Push access is
+# not the bar: a contributor allowed to push to someone else's project could delete that project's branches.
+gitscan_can_administer() {
+  local forge="$1" project="$2" filter
+  typeset -g GITSCAN_FORGE_WHY=""
+  if [[ "${forge}" == gitlab ]]; then
+    if ! gitnet_retry glab api "projects/${project//\//%2F}"; then
+      GITSCAN_FORGE_WHY="glab api projects/${project} failed (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    filter='[.permissions.project_access.access_level // 0, .permissions.group_access.access_level // 0] | max >= 40'
+  else
+    if ! gitnet_retry gh api "repos/${project}"; then
+      GITSCAN_FORGE_WHY="gh api repos/${project} failed (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    filter='.permissions.admin == true'
+  fi
+  # An empty reply is no answer: read as "no rights" it would report a project with leftovers as current.
+  if ! gitscan_jq "${GITNET_OUT}" "[(${filter}), (.id // \"\")] | @tsv" || [[ -z "${GITSCAN_JQ_OUT}" ]]; then
+    GITSCAN_FORGE_WHY="could not parse the project record of ${project}: ${GITSCAN_JQ_ERR:-empty reply}"
+    return 2
+  fi
+  # GitLab names a request's source project by this number, not by path.
+  typeset -g GITSCAN_PROJECT_ID="${GITSCAN_JQ_OUT#*$'\t'}"
+  [[ "${GITSCAN_JQ_OUT%%$'\t'*}" == true ]]
+}
+
+# gitscan_head_in_use <forge> <project> <project-id> <branch>: rc 0 when an open request in any project is built
+# on this branch of this project, 1 when none is, 2 (GITSCAN_FORGE_WHY) when the forge was not asked. A fork's
+# branch is the head of requests in its upstream, or in any other project of its network, and the fork's own
+# request list shows none of them: deleting the branch would close a request someone else is reviewing.
+gitscan_head_in_use() {
+  local forge="$1" project="$2" project_id="$3" branch="$4"
+  typeset -g GITSCAN_FORGE_WHY=""
+  if [[ "${forge}" == gitlab ]]; then
+    if ! gitnet_retry glab api \
+        "merge_requests?scope=created_by_me&state=opened&per_page=100&source_branch=$(jq -rn --arg b "${branch}" '$b | @uri')"; then
+      GITSCAN_FORGE_WHY="glab api merge_requests failed for ${branch} (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    if ! gitscan_jq "${GITNET_OUT}" "[.[] | select((.source_project_id | tostring) == \"${project_id}\")] | length"; then
+      GITSCAN_FORGE_WHY="could not parse the open requests built on ${branch}: ${GITSCAN_JQ_ERR}"
+      return 2
+    fi
+  else
+    if ! gitnet_retry gh api graphql \
+        -f query='query($o:String!,$n:String!,$r:String!){repository(owner:$o,name:$n){ref(qualifiedName:$r){associatedPullRequests(states:OPEN,first:1){nodes{number}}}}}' \
+        -f o="${project%%/*}" -f n="${project#*/}" -f r="refs/heads/${branch}"; then
+      GITSCAN_FORGE_WHY="gh api graphql failed for ${branch} (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    # A ref the server no longer has is not a branch to delete either: counted as in use.
+    if ! gitscan_jq "${GITNET_OUT}" '.data.repository.ref | if . == null then 1 else (.associatedPullRequests.nodes | length) end'; then
+      GITSCAN_FORGE_WHY="could not parse the open requests built on ${branch}: ${GITSCAN_JQ_ERR}"
+      return 2
+    fi
+  fi
+  # No body is no answer, and "nothing is built on it" is the answer that deletes.
+  if [[ -z "${GITSCAN_JQ_OUT}" ]]; then
+    GITSCAN_FORGE_WHY="could not parse the open requests built on ${branch}: empty reply"
+    return 2
+  fi
+  (( GITSCAN_JQ_OUT > 0 ))
+}
+
+# gitscan_request_end <forge> <project> <branch> <tip>: how this login's request from the branch ended on this
+# tip, in GITSCAN_REQUEST_END: "merged", "closed", or "" when none of its requests in this project ended on it
+# or any request of the branch is still open. rc 2, with the reason in GITSCAN_FORGE_WHY, when the forge was
+# not asked. Every request of the branch is read, not one state: an open one among them means the branch is in
+# use, and a tip no request ended on holds commits pushed since. Someone else's request does not make the
+# branch this login's to remove, and a fork's request with the same branch name is another repository's branch.
+gitscan_request_end() {
+  local forge="$1" project="$2" branch="$3" tip="$4" filter me
+  typeset -g GITSCAN_FORGE_WHY="" GITSCAN_REQUEST_END=""
+  [[ -n "${tip}" ]] || return 0
+  gitscan_forge_user "${forge}" || return 2
+  me="${GITSCAN_FORGE_USER}"
+  if [[ "${forge}" == gitlab ]]; then
+    if ! gitnet_retry glab mr list --repo "${project}" --source-branch "${branch}" \
+        --all --output json --per-page 100; then
+      GITSCAN_FORGE_WHY="glab mr list --all failed for ${branch} (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    filter='.[] | select(.source_project_id == .target_project_id)
+      | [(.state // "" | if . == "merged" or . == "closed" then . else "open" end), (.sha // "-"),
+         (.author.username // "-")] | @tsv'
+  else
+    if ! gitnet_retry gh pr list --repo "${project}" --head "${branch}" \
+        --state all --limit 100 --json state,headRefOid,isCrossRepository,author; then
+      GITSCAN_FORGE_WHY="gh pr list --state all failed for ${branch} (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    filter='.[] | select(.isCrossRepository != true)
+      | [(.state // "" | ascii_downcase | if . == "merged" or . == "closed" then . else "open" end),
+         (.headRefOid // "-"), (.author.login // "-")] | @tsv'
+  fi
+  if ! gitscan_jq "${GITNET_OUT}" "${filter}"; then
+    GITSCAN_FORGE_WHY="could not parse the request list for ${branch}: ${GITSCAN_JQ_ERR}"
+    return 2
+  fi
+  [[ -z "${GITSCAN_JQ_OUT}" ]] && return 0
+  # A full page is indistinguishable from one cut off before an open request. An array, because the length of
+  # a one-line split is that line's characters.
+  local -a rows=("${(@f)GITSCAN_JQ_OUT}")
+  if (( ${#rows[@]} >= 100 )); then
+    GITSCAN_FORGE_WHY="100 or more requests for ${branch} — refusing to work from a truncated list"
+    return 2
+  fi
+  gitscan_request_verdict "${GITSCAN_JQ_OUT}" "${tip}" "${me}"
+  return 0
+}
+
+# gitscan_request_verdict <lines> <tip> <login>: GITSCAN_REQUEST_END from one branch's requests, one
+# "<state>\t<head>\t<author>" per line: "" when any is open, else how the login's request ended on this tip.
+gitscan_request_verdict() {
+  local lines="$1" tip="$2" me="$3" state head author
+  local -i merged=0 closed=0
+  typeset -g GITSCAN_REQUEST_END=""
+  while IFS=$'\t' read -r state head author; do
+    [[ "${state}" == open ]] && return 0
+    [[ "${head}" == "${tip}" ]] || continue
+    [[ "${author}" == "${me}" ]] || continue
+    [[ "${state}" == merged ]] && merged=1
+    [[ "${state}" == closed ]] && closed=1
+  done <<< "${lines}"
+  if (( merged )); then
+    GITSCAN_REQUEST_END=merged
+  elif (( closed )); then
+    GITSCAN_REQUEST_END=closed
+  fi
+  return 0
+}
+
+# gitscan_own_requests <project>: GitHub only. Every request this login opened in the project, from one query,
+# as "<state>\t<head>\t<author>" lines per branch in GITSCAN_OWN_REQUESTS. rc 1 when the list fills the cap, so
+# the caller asks per branch instead; rc 2 (GITSCAN_FORGE_WHY) when the forge was not asked. A fork carries its
+# upstream's branches by the hundred, and one query per branch is hundreds of queries for a handful of requests.
+# Another login's open request is not in this list: the caller's open-request list covers it.
+gitscan_own_requests() {
+  local project="$1" body branch rest
+  typeset -gA GITSCAN_OWN_REQUESTS=()
+  typeset -g GITSCAN_FORGE_WHY=""
+  if ! gitnet_retry gh pr list --repo "${project}" --author "@me" --state all \
+      --limit "${GITSCAN_GH_LIMIT}" --json state,headRefOid,headRefName,isCrossRepository,author; then
+    GITSCAN_FORGE_WHY="gh pr list --author @me failed (after retry, ${GITNET_WHY})"
+    return 2
+  fi
+  body="${GITNET_OUT}"
+  if ! gitscan_jq "${body}" 'length'; then
+    GITSCAN_FORGE_WHY="could not parse this login's request list for ${project}: ${GITSCAN_JQ_ERR}"
+    return 2
+  fi
+  (( ${GITSCAN_JQ_OUT:-0} >= GITSCAN_GH_LIMIT )) && return 1
+  if ! gitscan_jq "${body}" '.[] | select(.isCrossRepository != true)
+      | [.headRefName, (.state // "" | ascii_downcase | if . == "merged" or . == "closed" then . else "open" end),
+         (.headRefOid // "-"), (.author.login // "-")] | @tsv'; then
+    GITSCAN_FORGE_WHY="could not parse this login's request list for ${project}: ${GITSCAN_JQ_ERR}"
+    return 2
+  fi
+  [[ -z "${GITSCAN_JQ_OUT}" ]] && return 0
+  while IFS=$'\t' read -r branch rest; do
+    [[ -n "${branch}" ]] && GITSCAN_OWN_REQUESTS[${branch}]+="${rest}"$'\n'
+  done <<< "${GITSCAN_JQ_OUT}"
+  return 0
+}
+
+# gitscan_remote_leftovers <repo> <forge> <project> <default> <open-sources>: the server branches finished
+# requests left behind, as "<branch>\t<tip>\t<reason>" in GITSCAN_LEFTOVERS; rc 2 (GITSCAN_FORGE_WHY) when
+# the forge was not asked. A forge deletes a source branch only for a merge it performs itself with that
+# setting on: a setting that was off, a stacked request merged inside another, and every closed request
+# leave theirs. Left alone: the default branch, an open request's branch, a branch whose local copy has moved
+# on from the server's tip, and a closed request's branch that is checked out (someone may be reworking it).
+# Only in a project this login administers, and only for its own requests: a clone of someone else's project,
+# or a colleague's branch, is not this login's to clean. A branch an open request in another project is built
+# on stays as well (gitscan_head_in_use). The forge is asked nothing when no branch is in question.
+# gitchecker reports this list and gitcleaner deletes it, so the two never disagree about it.
+gitscan_remote_leftovers() {
+  local repo="$1" forge="$2" project="$3" default_branch="$4" open_srcs="$5"
+  local tip ref branch local_tip line wt_dir="" candidate me project_id
+  local -i bulk=0
+  typeset -ga GITSCAN_LEFTOVERS=()
+  typeset -a candidates=()
+  typeset -A held=()
+  while IFS= read -r line; do
+    case "${line}" in
+      worktree\ *) wt_dir="${line#worktree }" ;;
+      branch\ *)   [[ -d "${wt_dir}" ]] && held[${${line#branch }#refs/heads/}]=1 ;;
+    esac
+  done < <(git -C "${repo}" worktree list --porcelain 2>/dev/null)
+  while IFS=$'\t' read -r tip ref; do
+    branch="${ref#refs/remotes/origin/}"
+    [[ -z "${branch}" || "${branch}" == HEAD || "${branch}" == "${default_branch}" ]] && continue
+    (( ${${(f)open_srcs}[(Ie)${branch}]} )) && continue
+    if local_tip="$(git -C "${repo}" rev-parse --verify -q "refs/heads/${branch}" 2>/dev/null)"; then
+      [[ "${local_tip}" == "${tip}" ]] || continue
+    fi
+    candidates+=("${tip}"$'\t'"${branch}")
+  done < <(git -C "${repo}" for-each-ref --format='%(objectname)%09%(refname)' refs/remotes/origin/ 2>/dev/null)
+  (( ${#candidates[@]} == 0 )) && return 0
+  gitscan_can_administer "${forge}" "${project}"
+  case $? in
+    0) ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+  project_id="${GITSCAN_PROJECT_ID}"
+  gitscan_forge_user "${forge}" || return 2
+  me="${GITSCAN_FORGE_USER}"
+  if [[ "${forge}" == github ]]; then
+    gitscan_own_requests "${project}"
+    case $? in
+      0) bulk=1 ;;
+      1) ;;
+      *) return 2 ;;
+    esac
+  fi
+  for candidate in "${candidates[@]}"; do
+    tip="${candidate%%$'\t'*}"; branch="${candidate#*$'\t'}"
+    if (( bulk )); then
+      gitscan_request_verdict "${GITSCAN_OWN_REQUESTS[${branch}]-}" "${tip}" "${me}"
+    else
+      gitscan_request_end "${forge}" "${project}" "${branch}" "${tip}" || return 2
+    fi
+    [[ -z "${GITSCAN_REQUEST_END}" ]] && continue
+    [[ "${GITSCAN_REQUEST_END}" == closed ]] && (( ${+held[${branch}]} )) && continue
+    # Asked last, and only about a branch every other condition would delete.
+    gitscan_head_in_use "${forge}" "${project}" "${project_id}" "${branch}"
+    case $? in
+      0) continue ;;
+      1) ;;
+      *) return 2 ;;
+    esac
+    GITSCAN_LEFTOVERS+=("${branch}"$'\t'"${tip}"$'\t'"MR ${GITSCAN_REQUEST_END}, branch left on the server")
+  done
+  return 0
+}
+
 # gitscan_jq <json> <filter> — parsed values into GITSCAN_JQ_OUT, rc 1 with the error
 # in GITSCAN_JQ_ERR. Never swallow it: an unparsable body yields an empty list, which
 # reads exactly like a legitimate "no open MRs". An empty body is that answer, rc 0.

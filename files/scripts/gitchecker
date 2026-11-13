@@ -5,7 +5,8 @@ set -uo pipefail
 #
 # gitchecker — report which clones on this host are out of date
 #
-# Per repo: dirty state, every local branch vs its upstream, gone upstreams, detached HEAD, stashes, open MRs/PRs.
+# Per repo: dirty state, every local branch vs its upstream, gone upstreams, detached HEAD, stashes, open MRs/PRs,
+# and the server branches merged or closed MRs/PRs left behind.
 # A linked worktree is its own row with its own tree and HEAD; what its repository shares (refs, stashes, the
 # forge project) is fetched, queried and reported once, on the main clone's row.
 # Only STRICTLY BEHIND branches fast-forward (not checked out: `git fetch . <up>:<branch>`); a dirty tree asks first
@@ -48,7 +49,9 @@ Usage: gitchecker [options] [repos-dir...]
 Finds every git clone under each root and reports, per repo: uncommitted and
 untracked changes, each local branch's ahead/behind/diverged state against its
 upstream, branches whose remote branch was deleted (gone), detached HEAD,
-branches with no upstream, stashed work, and open MRs/PRs on the forge.
+branches with no upstream, stashed work, open MRs/PRs on the forge, and
+branches this login's merged or closed MRs/PRs left on the server of a
+project it administers (`gitcleaner` deletes exactly those).
 
 A linked worktree is a row of its own: its changes, its HEAD and the branch it
 holds. The rest of what its repository shares (the other branches, the stash
@@ -89,7 +92,8 @@ Examples:
   gitchecker --dirty-only                only the repos needing work
   gitchecker --repo . --json             just this clone, for a script
 
-Exit: 0 all current, 1 attention needed (an open MR counts), 2 failure
+Exit: 0 all current, 1 attention needed (an open MR counts, and so does a
+branch a finished MR left on the server), 2 failure
 EOF
 }
 
@@ -384,6 +388,11 @@ check_checkout() {
   elif (( shared && ${#forge_rows[@]} > 0 )); then
     attention=1
   fi
+  # A branch a finished request left on the server is clutter every clone fetches until gitcleaner deletes it.
+  if (( shared && ${#leftover_rows[@]} > 0 )); then
+    marks+=("${C_YELLOW}${#leftover_rows[@]} left on server${C_RESET}")
+    attention=1
+  fi
 
   emit "${rec}" ROOT "${root}"
   emit "${rec}" REL "${rel}"
@@ -406,6 +415,9 @@ check_checkout() {
     [[ -z "${skip_reason}" ]] && emit "${rec}" PROJECT "${forge_line}"
     for row in "${forge_rows[@]}"; do
       print -r -- "FORGE	${row}" >> "${rec}"
+    done
+    for row in "${leftover_rows[@]}"; do
+      print -r -- "REMOTE	${row}" >> "${rec}"
     done
   fi
   if (( attention )); then
@@ -447,8 +459,8 @@ check_repository() {
   local owner="$1" idx head
   local repo="${GITDIRS[owner]:h}"
   local remote_url forge_line forge project jq_prog sigil forge_out parsed
-  local iid title source draft skip_reason=""
-  typeset -a forge_rows=()
+  local iid title source draft skip_reason="" default_branch entry
+  typeset -a forge_rows=() leftover_rows=()
   typeset -A other_heads=()
 
   [[ -e "${ABORT_FILE}" ]] && return
@@ -534,6 +546,25 @@ check_repository() {
         [[ "${draft}" == true ]] || draft=false
         forge_rows+=("${sigil}${iid}	$(sanitize "${title}")	$(sanitize "${source}")	${draft}")
       done <<< "${parsed}"
+    fi
+
+    # Branches finished requests left on the server: the list gitcleaner deletes, from the one function both
+    # read it through. Without origin/HEAD there is no default branch to exempt, and gitcleaner skips the repo too.
+    default_branch="$(git -C "${repo}" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
+    default_branch="${default_branch#origin/}"
+    if [[ -n "${default_branch}" ]]; then
+      if [[ "${forge}" == gitlab ]]; then jq_prog='.[].source_branch'; else jq_prog='.[].headRefName'; fi
+      if ! gitscan_jq "${forge_out}" "${jq_prog}"; then
+        abort_run "${repo}" "could not parse ${forge} response" "${GITSCAN_JQ_ERR}"
+        return
+      fi
+      if ! gitscan_remote_leftovers "${repo}" "${forge}" "${project}" "${default_branch}" "${GITSCAN_JQ_OUT}"; then
+        abort_run "${repo}" "${GITSCAN_FORGE_WHY}" ""
+        return
+      fi
+      for entry in "${GITSCAN_LEFTOVERS[@]}"; do
+        leftover_rows+=("${entry%%$'\t'*}	$(git -C "${repo}" rev-parse --short "${${entry#*$'\t'}%%$'\t'*}" 2>/dev/null)	${entry##*$'\t'}")
+      done
     fi
   fi
 
@@ -707,6 +738,14 @@ render() {
       printf '      %s%-5s%s %s  %s%s%s\n' \
         "${C_CYAN}" "${iid}" "${C_RESET}" "${title}" "${C_DIM}" "${source}" "${C_RESET}"
     done < "${rec}"
+
+    # Server leftovers, named so the row says which branches gitcleaner would delete. iid, title and source
+    # are reused as branch, sha and reason: every local is declared once, at the top.
+    while IFS=$'\t' read -r k iid title source; do
+      [[ "${k}" == REMOTE ]] || continue
+      printf '      %sserver%s %s  %s%s %s%s\n' \
+        "${C_YELLOW}" "${C_RESET}" "${iid}" "${C_DIM}" "${title}" "${source}" "${C_RESET}"
+    done < "${rec}"
   done
 }
 
@@ -742,13 +781,14 @@ render_json() {
       --arg skipped "$(field "${rec}" SKIP)" \
       --argjson branches "$(rows_json "${rec}" BR '{name: .[0], upstream: (if .[1] == "" then null else .[1] end), ahead: (.[2] | tonumber), behind: (.[3] | tonumber), state: .[4]}')" \
       --argjson open_requests "$(rows_json "${rec}" FORGE '{id: .[0], title: .[1], source_branch: .[2], draft: (.[3] == "true")}')" \
+      --argjson remote_leftovers "$(rows_json "${rec}" REMOTE '{name: .[0], sha: .[1], reason: .[2]}')" \
       '{path: $path, root: $root, rel: $rel, branch: $branch, state: $state,
         repository: (if $repository == "" then null else $repository end),
         shared_state: $shared_state,
         skipped: (if $skipped == "" then null else $skipped end),
         dirty: {tracked: $tracked, untracked: $untracked},
         detached: $detached, stashes: $stashes,
-        branches: $branches, open_requests: $open_requests}' \
+        branches: $branches, open_requests: $open_requests, remote_leftovers: $remote_leftovers}' \
       > "${WORKDIR}/json.$(printf '%04d' ${idx})"
   done
 
