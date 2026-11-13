@@ -119,6 +119,37 @@ in
       "$TMPDIR/venv/bin/python" -c 'import sys; assert sys.prefix == sys.argv[1], sys.prefix' "$TMPDIR/venv"
       touch $out
     '';
+  # A node hook that sets no language_version is built from the box's node
+  # (nix/home/tooling.nix's ~/.nodeenvrc): given the rendered file and pre-commit's
+  # arguments, pre-commit's nodeenv and the nodeenv command each build their
+  # environment in the sandbox, where a download fails.
+  pre-commit-nodeenv =
+    let
+      sys = self.nixosConfigurations.default.config;
+      nodeenv =
+        nixpkgs.lib.findFirst (p: (p.pname or "") == "nodeenv")
+          (throw "pre-commit no longer carries nodeenv; retire this check")
+          pkgsDev.pre-commit.propagatedBuildInputs;
+    in
+    pkgs.runCommandLocal "flakelab-check-pre-commit-nodeenv"
+      {
+        rc = sys.home-manager.users.${sys.flakelab.username}.home.file.".nodeenvrc".text;
+        passAsFile = [ "rc" ];
+        nativeBuildInputs = [ pkgs.nodejs_24 ];
+      }
+      ''
+        export HOME="$TMPDIR/home"
+        mkdir -p "$HOME"
+        cp "$rcPath" "$HOME/.nodeenvrc"
+        cd "$HOME"
+        for nodeenv in ${nodeenv}/bin/nodeenv ${pkgsDev.nodeenv}/bin/nodeenv; do
+          env="$(mktemp -d)/env"
+          "$nodeenv" --prebuilt --clean-src "$env"
+          # The shim's #!/usr/bin/env does not exist in the sandbox.
+          [ "$(sh "$env/bin/node" --version)" = "$(node --version)" ]
+        done
+        touch $out
+      '';
   clone-repos = suiteCheck "clone-repos";
   gh-repos = suiteCheck "gh-repos";
   gitchecker = suiteCheck "gitchecker";
