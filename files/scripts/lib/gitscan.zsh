@@ -149,7 +149,7 @@ gitscan_open_requests() {
   # are the truncation this function refuses to return.
   if [[ "${forge}" == github ]]; then
     if ! gitnet_retry gh pr list --repo "${project}" --state open \
-        --limit "${GITSCAN_GH_LIMIT}" --json number,title,headRefName,isDraft; then
+        --limit "${GITSCAN_GH_LIMIT}" --json number,title,headRefName,baseRefName,isDraft; then
       GITSCAN_FORGE_WHY="gh pr list failed (after retry, ${GITNET_WHY})"
       GITSCAN_FORGE_JSON="${GITNET_OUT}"
       return 1
@@ -257,6 +257,8 @@ gitscan_forge_user() {
 # gitscan_can_administer <forge> <project>: rc 0 when this login administers the project (GitHub admin, GitLab
 # Maintainer or Owner), 1 when it does not, 2 (GITSCAN_FORGE_WHY) when the forge was not asked. Push access is
 # not the bar: a contributor allowed to push to someone else's project could delete that project's branches.
+# An archived project takes no push, so nothing in it is this login's to clean. Leaves the project's number in
+# GITSCAN_PROJECT_ID and the default branch the forge names in GITSCAN_PROJECT_DEFAULT.
 gitscan_can_administer() {
   local forge="$1" project="$2" filter
   typeset -g GITSCAN_FORGE_WHY=""
@@ -265,55 +267,84 @@ gitscan_can_administer() {
       GITSCAN_FORGE_WHY="glab api projects/${project} failed (after retry, ${GITNET_WHY})"
       return 2
     fi
-    filter='[.permissions.project_access.access_level // 0, .permissions.group_access.access_level // 0] | max >= 40'
+    filter='([.permissions.project_access.access_level // 0, .permissions.group_access.access_level // 0] | max >= 40)
+      and .archived != true'
   else
     if ! gitnet_retry gh api "repos/${project}"; then
       GITSCAN_FORGE_WHY="gh api repos/${project} failed (after retry, ${GITNET_WHY})"
       return 2
     fi
-    filter='.permissions.admin == true'
+    filter='.permissions.admin == true and .archived != true'
   fi
   # An empty reply is no answer: read as "no rights" it would report a project with leftovers as current.
-  if ! gitscan_jq "${GITNET_OUT}" "[(${filter}), (.id // \"\")] | @tsv" || [[ -z "${GITSCAN_JQ_OUT}" ]]; then
+  if ! gitscan_jq "${GITNET_OUT}" "[(${filter}), (.id // \"\"), (.default_branch // \"\")] | @tsv" \
+      || [[ -z "${GITSCAN_JQ_OUT}" ]]; then
     GITSCAN_FORGE_WHY="could not parse the project record of ${project}: ${GITSCAN_JQ_ERR:-empty reply}"
     return 2
   fi
-  # GitLab names a request's source project by this number, not by path.
-  typeset -g GITSCAN_PROJECT_ID="${GITSCAN_JQ_OUT#*$'\t'}"
-  [[ "${GITSCAN_JQ_OUT%%$'\t'*}" == true ]]
+  # Split on every tab: `read` folds an empty field into its neighbour.
+  local -a field=("${(@ps:\t:)GITSCAN_JQ_OUT}")
+  local admin="${field[1]-}" id="${field[2]-}" default="${field[3]-}"
+  [[ "${admin}" == true ]] || return 1
+  # GitLab names a request's source project by this number, not by path: without it "no open request built on
+  # the branch" cannot be told from "the filter matched nothing".
+  if [[ -z "${id}" ]]; then
+    GITSCAN_FORGE_WHY="the project record of ${project} carries no id"
+    return 2
+  fi
+  typeset -g GITSCAN_PROJECT_ID="${id}" GITSCAN_PROJECT_DEFAULT="${default}"
+  return 0
 }
 
-# gitscan_head_in_use <forge> <project> <project-id> <branch>: rc 0 when an open request in any project is built
-# on this branch of this project, 1 when none is, 2 (GITSCAN_FORGE_WHY) when the forge was not asked. A fork's
-# branch is the head of requests in its upstream, or in any other project of its network, and the fork's own
-# request list shows none of them: deleting the branch would close a request someone else is reviewing.
-gitscan_head_in_use() {
-  local forge="$1" project="$2" project_id="$3" branch="$4"
+# gitscan_branch_pinned <forge> <project> <project-id> <branch>: rc 0 when the server still needs this branch,
+# 1 when it does not, 2 (GITSCAN_FORGE_WHY) when the forge was not asked. Needed means: the project protects
+# it (branch protection, or a ruleset that applies to it: a long-lived branch, and one the delete would be
+# refused for on every run), the server no longer has it, or an open request in another project is built on
+# it. A fork's branch is the head of requests in its upstream, and the fork's own request list shows none of
+# them: deleting the branch would close a request someone else is reviewing. On GitLab that query sees this
+# login's requests only.
+gitscan_branch_pinned() {
+  local forge="$1" project="$2" project_id="$3" branch="$4" enc
   typeset -g GITSCAN_FORGE_WHY=""
   if [[ "${forge}" == gitlab ]]; then
+    enc="$(jq -rn --arg b "${branch}" '$b | @uri')"
+    if ! gitnet_retry glab api "projects/${project//\//%2F}/repository/branches/${enc}"; then
+      # Gone since the fetch: not a branch to delete, and the next run's prune forgets it.
+      [[ "${GITNET_OUT}" == *"404 Branch Not Found"* ]] && return 0
+      GITSCAN_FORGE_WHY="glab api repository/branches failed for ${branch} (after retry, ${GITNET_WHY})"
+      return 2
+    fi
+    if ! gitscan_jq "${GITNET_OUT}" 'if .protected == true then 1 else 0 end' || [[ -z "${GITSCAN_JQ_OUT}" ]]; then
+      GITSCAN_FORGE_WHY="could not parse the branch record of ${branch}: ${GITSCAN_JQ_ERR:-empty reply}"
+      return 2
+    fi
+    (( GITSCAN_JQ_OUT > 0 )) && return 0
     if ! gitnet_retry glab api \
-        "merge_requests?scope=created_by_me&state=opened&per_page=100&source_branch=$(jq -rn --arg b "${branch}" '$b | @uri')"; then
+        "merge_requests?scope=created_by_me&state=opened&per_page=100&source_branch=${enc}"; then
       GITSCAN_FORGE_WHY="glab api merge_requests failed for ${branch} (after retry, ${GITNET_WHY})"
       return 2
     fi
-    if ! gitscan_jq "${GITNET_OUT}" "[.[] | select((.source_project_id | tostring) == \"${project_id}\")] | length"; then
+    if ! gitscan_jq "${GITNET_OUT}" '[.[] | select((.source_project_id | tostring) == $id)] | length' \
+        --arg id "${project_id}"; then
       GITSCAN_FORGE_WHY="could not parse the open requests built on ${branch}: ${GITSCAN_JQ_ERR}"
       return 2
     fi
   else
     if ! gitnet_retry gh api graphql \
-        -f query='query($o:String!,$n:String!,$r:String!){repository(owner:$o,name:$n){ref(qualifiedName:$r){associatedPullRequests(states:OPEN,first:1){nodes{number}}}}}' \
+        -f query='query($o:String!,$n:String!,$r:String!){repository(owner:$o,name:$n){ref(qualifiedName:$r){branchProtectionRule{id} rules(first:1){totalCount} associatedPullRequests(states:OPEN,first:1){nodes{number}}}}}' \
         -f o="${project%%/*}" -f n="${project#*/}" -f r="refs/heads/${branch}"; then
       GITSCAN_FORGE_WHY="gh api graphql failed for ${branch} (after retry, ${GITNET_WHY})"
       return 2
     fi
-    # A ref the server no longer has is not a branch to delete either: counted as in use.
-    if ! gitscan_jq "${GITNET_OUT}" '.data.repository.ref | if . == null then 1 else (.associatedPullRequests.nodes | length) end'; then
+    # A ref the server no longer has is not a branch to delete either: counted as needed.
+    if ! gitscan_jq "${GITNET_OUT}" '.data.repository.ref | if . == null then 1 else
+        (.associatedPullRequests.nodes | length) + (if .branchProtectionRule != null then 1 else 0 end)
+        + (.rules.totalCount // 0) end'; then
       GITSCAN_FORGE_WHY="could not parse the open requests built on ${branch}: ${GITSCAN_JQ_ERR}"
       return 2
     fi
   fi
-  # No body is no answer, and "nothing is built on it" is the answer that deletes.
+  # No body is no answer, and "nothing needs it" is the answer that deletes.
   if [[ -z "${GITSCAN_JQ_OUT}" ]]; then
     GITSCAN_FORGE_WHY="could not parse the open requests built on ${branch}: empty reply"
     return 2
@@ -352,18 +383,20 @@ gitscan_request_end() {
       | [(.state // "" | ascii_downcase | if . == "merged" or . == "closed" then . else "open" end),
          (.headRefOid // "-"), (.author.login // "-")] | @tsv'
   fi
-  if ! gitscan_jq "${GITNET_OUT}" "${filter}"; then
+  local body="${GITNET_OUT}"
+  if ! gitscan_jq "${body}" 'length'; then
+    GITSCAN_FORGE_WHY="could not parse the request list for ${branch}: ${GITSCAN_JQ_ERR}"
+    return 2
+  fi
+  # A full page may be cut off, and a branch a hundred requests came from is a long-lived one, not a leftover:
+  # kept. Not a failure, or that one branch would stop every run for good. Counted before any request is
+  # filtered out, since the page fills with all of them.
+  (( ${GITSCAN_JQ_OUT:-0} >= 100 )) && return 0
+  if ! gitscan_jq "${body}" "${filter}"; then
     GITSCAN_FORGE_WHY="could not parse the request list for ${branch}: ${GITSCAN_JQ_ERR}"
     return 2
   fi
   [[ -z "${GITSCAN_JQ_OUT}" ]] && return 0
-  # A full page is indistinguishable from one cut off before an open request. An array, because the length of
-  # a one-line split is that line's characters.
-  local -a rows=("${(@f)GITSCAN_JQ_OUT}")
-  if (( ${#rows[@]} >= 100 )); then
-    GITSCAN_FORGE_WHY="100 or more requests for ${branch} — refusing to work from a truncated list"
-    return 2
-  fi
   gitscan_request_verdict "${GITSCAN_JQ_OUT}" "${tip}" "${me}"
   return 0
 }
@@ -422,23 +455,57 @@ gitscan_own_requests() {
   return 0
 }
 
-# gitscan_remote_leftovers <repo> <forge> <project> <default> <open-sources>: the server branches finished
-# requests left behind, as "<branch>\t<tip>\t<reason>" in GITSCAN_LEFTOVERS; rc 2 (GITSCAN_FORGE_WHY) when
-# the forge was not asked. A forge deletes a source branch only for a merge it performs itself with that
+# gitscan_pushes_to_origin <repo> <forge> <project>: rc 0 when a push to origin lands in the project the forge
+# was asked about. A push URL of its own (remote.origin.pushurl, url.*.pushInsteadOf) sends the delete to
+# another repository than the one whose requests were read.
+gitscan_pushes_to_origin() {
+  local repo="$1" forge="$2" project="$3" fetch_url push_urls url
+  fetch_url="$(git -C "${repo}" remote get-url origin 2>/dev/null)" || return 1
+  push_urls="$(git -C "${repo}" remote get-url --push --all origin 2>/dev/null)" || return 1
+  [[ "${push_urls}" == "${fetch_url}" ]] && return 0
+  # Another spelling of the same project (https to fetch, ssh to push) is still that project.
+  for url in "${(@f)push_urls}"; do
+    [[ "$(gitscan_forge_of "${url}")" == "${forge}"$'\t'"${project}" ]] || return 1
+  done
+  return 0
+}
+
+# gitscan_remote_leftovers <repo> <forge> <project> <default> <open-requests-json>: the server branches
+# finished requests left behind, as "<branch>\t<tip>\t<reason>" in GITSCAN_LEFTOVERS; rc 2 (GITSCAN_FORGE_WHY)
+# when the forge was not asked. A forge deletes a source branch only for a merge it performs itself with that
 # setting on: a setting that was off, a stacked request merged inside another, and every closed request
-# leave theirs. Left alone: the default branch, an open request's branch, a branch whose local copy has moved
-# on from the server's tip, and a closed request's branch that is checked out (someone may be reworking it).
+# leave theirs. Left alone: the default branch (the clone's and the one the forge names), an open request's
+# branch, a branch an open request targets (a stacked request's base), a branch whose local copy has moved on
+# from the server's tip, and a closed request's branch that is checked out (someone may be reworking it).
 # Only in a project this login administers, and only for its own requests: a clone of someone else's project,
-# or a colleague's branch, is not this login's to clean. A branch an open request in another project is built
-# on stays as well (gitscan_head_in_use). The forge is asked nothing when no branch is in question.
+# or a colleague's branch, is not this login's to clean. A branch the server still needs stays as well
+# (gitscan_branch_pinned), and so does everything when a push to origin goes somewhere else than the project
+# asked. The forge is asked nothing when no branch is in question.
 # gitchecker reports this list and gitcleaner deletes it, so the two never disagree about it.
 gitscan_remote_leftovers() {
-  local repo="$1" forge="$2" project="$3" default_branch="$4" open_srcs="$5"
-  local tip ref branch local_tip line wt_dir="" candidate me project_id
+  local repo="$1" forge="$2" project="$3" default_branch="$4" open_json="$5"
+  local tip ref branch local_tip line wt_dir="" candidate me project_id src tgt filter
   local -i bulk=0
   typeset -ga GITSCAN_LEFTOVERS=()
-  typeset -a candidates=()
+  typeset -a candidates=() open_srcs=() open_tgts=()
   typeset -A held=()
+  gitscan_pushes_to_origin "${repo}" "${forge}" "${project}" || return 0
+  if [[ "${forge}" == gitlab ]]; then
+    filter='.[] | [(.source_branch // ""), (.target_branch // "")] | @tsv'
+  else
+    filter='.[] | [(.headRefName // ""), (.baseRefName // "")] | @tsv'
+  fi
+  if ! gitscan_jq "${open_json}" "${filter}"; then
+    GITSCAN_FORGE_WHY="could not parse the open request list for ${project}: ${GITSCAN_JQ_ERR}"
+    return 2
+  fi
+  # Arrays, looked up by exact element: on a one-line string the same lookup is a substring search.
+  # Split on every tab: `read` folds an empty field into its neighbour.
+  for line in "${(@f)GITSCAN_JQ_OUT}"; do
+    src="${line%%$'\t'*}"; tgt="${line#*$'\t'}"
+    [[ -n "${src}" ]] && open_srcs+=("${src}")
+    [[ -n "${tgt}" && "${line}" == *$'\t'* ]] && open_tgts+=("${tgt}")
+  done
   while IFS= read -r line; do
     case "${line}" in
       worktree\ *) wt_dir="${line#worktree }" ;;
@@ -448,7 +515,9 @@ gitscan_remote_leftovers() {
   while IFS=$'\t' read -r tip ref; do
     branch="${ref#refs/remotes/origin/}"
     [[ -z "${branch}" || "${branch}" == HEAD || "${branch}" == "${default_branch}" ]] && continue
-    (( ${${(f)open_srcs}[(Ie)${branch}]} )) && continue
+    (( ${open_srcs[(Ie)${branch}]} )) && continue
+    # An open request merges into it: deleting it takes the base from under that request.
+    (( ${open_tgts[(Ie)${branch}]} )) && continue
     if local_tip="$(git -C "${repo}" rev-parse --verify -q "refs/heads/${branch}" 2>/dev/null)"; then
       [[ "${local_tip}" == "${tip}" ]] || continue
     fi
@@ -474,6 +543,8 @@ gitscan_remote_leftovers() {
   fi
   for candidate in "${candidates[@]}"; do
     tip="${candidate%%$'\t'*}"; branch="${candidate#*$'\t'}"
+    # The clone's origin/HEAD can be older than a default branch the project switched to.
+    [[ "${branch}" == "${GITSCAN_PROJECT_DEFAULT}" ]] && continue
     if (( bulk )); then
       gitscan_request_verdict "${GITSCAN_OWN_REQUESTS[${branch}]-}" "${tip}" "${me}"
     else
@@ -482,7 +553,7 @@ gitscan_remote_leftovers() {
     [[ -z "${GITSCAN_REQUEST_END}" ]] && continue
     [[ "${GITSCAN_REQUEST_END}" == closed ]] && (( ${+held[${branch}]} )) && continue
     # Asked last, and only about a branch every other condition would delete.
-    gitscan_head_in_use "${forge}" "${project}" "${project_id}" "${branch}"
+    gitscan_branch_pinned "${forge}" "${project}" "${project_id}" "${branch}"
     case $? in
       0) continue ;;
       1) ;;
@@ -493,14 +564,15 @@ gitscan_remote_leftovers() {
   return 0
 }
 
-# gitscan_jq <json> <filter> — parsed values into GITSCAN_JQ_OUT, rc 1 with the error
+# gitscan_jq <json> <filter> [jq options] — parsed values into GITSCAN_JQ_OUT, rc 1 with the error
 # in GITSCAN_JQ_ERR. Never swallow it: an unparsable body yields an empty list, which
 # reads exactly like a legitimate "no open MRs". An empty body is that answer, rc 0.
 gitscan_jq() {
   local body="$1" filter="$2"
+  shift 2
   typeset -g GITSCAN_JQ_OUT="" GITSCAN_JQ_ERR=""
   [[ -z "${body//[[:space:]]/}" ]] && return 0
-  if ! GITSCAN_JQ_OUT="$(print -r -- "${body}" | jq -r "${filter}" 2>&1)"; then
+  if ! GITSCAN_JQ_OUT="$(print -r -- "${body}" | jq -r "$@" "${filter}" 2>&1)"; then
     GITSCAN_JQ_ERR="${GITSCAN_JQ_OUT}"
     GITSCAN_JQ_OUT=""
     return 1

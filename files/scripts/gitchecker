@@ -553,12 +553,7 @@ check_repository() {
     default_branch="$(git -C "${repo}" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)"
     default_branch="${default_branch#origin/}"
     if [[ -n "${default_branch}" ]]; then
-      if [[ "${forge}" == gitlab ]]; then jq_prog='.[].source_branch'; else jq_prog='.[].headRefName'; fi
-      if ! gitscan_jq "${forge_out}" "${jq_prog}"; then
-        abort_run "${repo}" "could not parse ${forge} response" "${GITSCAN_JQ_ERR}"
-        return
-      fi
-      if ! gitscan_remote_leftovers "${repo}" "${forge}" "${project}" "${default_branch}" "${GITSCAN_JQ_OUT}"; then
+      if ! gitscan_remote_leftovers "${repo}" "${forge}" "${project}" "${default_branch}" "${forge_out}"; then
         abort_run "${repo}" "${GITSCAN_FORGE_WHY}" ""
         return
       fi

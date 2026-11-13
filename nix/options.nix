@@ -240,7 +240,7 @@ in
       default = {
         allow = [
           "$defaults"
-          "gitcleaner retires local branches already merged to main and prints per-branch SHAs for undo; running it with explicit --only names and --yes is routine."
+          "gitcleaner retires local branches whose work has landed and, only in projects this login administers, the server branches its own merged or closed MRs/PRs left behind (a delete under a lease on the tip the MR/PR ended on, never the default, a protected or an open MR/PR's branch); it prints per-branch SHAs for undo. Running it with explicit --only names and --yes is routine."
         ];
         soft_deny = [
           "$defaults"

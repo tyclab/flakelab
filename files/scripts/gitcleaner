@@ -63,11 +63,17 @@ every closed MR/PR leave theirs. Only in a project this login administers
 (GitHub admin, GitLab Maintainer or Owner), and only for its own MRs/PRs: a
 clone of someone else's project, or a colleague's branch, is never touched.
 A server branch goes when its tip is the one
-its MR/PR merged or closed on, no MR/PR in any project is open on it (a fork's
-branch can be the head of an upstream request), and no local branch
+its MR/PR merged or closed on, no MR/PR is open on it or merges into it (the
+base of a stacked MR/PR stays), none of this login's MRs/PRs in another project
+is built on it (a fork's branch can be the head of an upstream request; on
+GitHub anyone's counts), the project does not protect it, and no local branch
 of that name has moved on from it; the server compares the tip again as it
 deletes, so a push that landed in between keeps the branch. A closed MR/PR's
-branch stays while it is checked out. The local branch behind a deleted server
+branch stays while it is checked out, and so does a branch a hundred or more
+MRs/PRs came from. Protect a long-lived branch on the forge: one that sits on
+the tip of its own merged MR/PR is otherwise a leftover. Nothing is deleted on
+the server when a push to origin goes to another repository than the one the
+MRs/PRs were read from (a push URL of its own), or when the project is archived. The local branch behind a deleted server
 branch goes in the same run, and so does any local branch whose remote is gone
 and whose tip an MR/PR closed on: the forge keeps those commits under the MR/PR.
 
@@ -88,7 +94,7 @@ your screen.
 
 At a terminal each candidate is shown and confirmed one at a time (y/N/a/q):
 y delete, n keep, a the rest of this repo's local branches, q stop. A server
-branch and a parked checkout are always asked on their own. That prompt IS the
+branch and a parked checkout are always asked on their own (y/N/q). That prompt IS the
 confirmation — there is no separate apply step. With no terminal there is
 nobody to ask, so it reports and changes nothing unless --yes.
 
@@ -220,6 +226,8 @@ typeset -i REPOS_TOUCHED=0 SKIPPED=0
 typeset -i REC_IDX=0
 typeset -a ONLY_MATCHED=() ONLY_NEEDS_UNPARK=()
 LAST_SKIP=""
+# Set once a repository's record file is open, so a later skip joins that record.
+typeset -i REPO_REC_OPEN=0
 
 # The report is for the operator; --json owns stdout when it is on, so every
 # human line goes through here and every machine fact through rec_line. One
@@ -246,7 +254,8 @@ pid_alive() {
 clean_repo() {
   local repo="$1"
   local default_branch head_branch branch upstream_track remote_url forge_line forge project
-  local open_srcs="" wt_out
+  local open_srcs="" open_json="" wt_out
+  typeset -a open_list=()
   # Declared once, here: a second `local` for a declared name prints it and corrupts --json.
   local b line sha reason entry
   # No queryable forge: the ancestor test still stands, the squash case is skipped rather than guessed.
@@ -355,12 +364,14 @@ clean_repo() {
       fi
     fi
     open_srcs="${GITSCAN_JQ_OUT}"
+    open_json="${GITSCAN_FORGE_JSON}"
   fi
 
   # The repo's header and record file, opened by the first thing this run has to say about it.
   open_record() {
     (( rec_open )) && return 0
     rec_open=1
+    REPO_REC_OPEN=1
     (( REC_IDX++ ))
     REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
     rec_line REPO "${repo}" "${default_branch}"
@@ -369,13 +380,19 @@ clean_repo() {
     (( REPOS_TOUCHED++ ))
   }
 
-  # confirm <prompt> [each]: y delete, n keep, a rest of this repo, q stop the run; "each" ignores an earlier a.
+  # confirm <prompt> [each]: y delete, n keep, a rest of this repo, q stop the run. "each" is a question "a"
+  # neither answers nor is offered at: an earlier a does not cover it, and prompt_keys takes only the keys it
+  # offers, so a typed there keeps.
   confirm() {
     local _p="$1"
     [[ "${MODE}" == delete ]] && return 0
     [[ "${MODE}" == report ]] && return 1
-    (( REPO_ALL )) && [[ "${2-}" != each ]] && return 0
-    prompt_keys "${_p}" "y/N/a/q"
+    if [[ "${2-}" == each ]]; then
+      prompt_keys "${_p}" "y/N/q"
+    else
+      (( REPO_ALL )) && return 0
+      prompt_keys "${_p}" "y/N/a/q"
+    fi
     case "${PROMPT_KEY}" in
       [yY]) return 0 ;;
       [aA]) REPO_ALL=1; return 0 ;;
@@ -385,12 +402,13 @@ clean_repo() {
   }
 
   # The lease makes the server compare the tip before it deletes: a push that landed since the fetch keeps the
-  # branch. Prints the SHA it removed and the push that puts it back.
+  # branch. Full ref names, so a tag of the same name is neither deleted in the branch's place nor in the way.
+  # Prints the SHA it removed and the push that puts it back.
   delete_remote() {
     local _b="$1" _why="$2" _sha="$3"
     if gitnet_push_once git -C "${repo}" push --quiet \
-        --force-with-lease="${_b}:${remote_tip[${_b}]}" origin --delete "${_b}"; then
-      say "  ${C_GREEN}deleted on the server${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} push origin ${_sha}:refs/heads/${_b}${C_RESET}"
+        --force-with-lease="refs/heads/${_b}:${remote_tip[${_b}]}" origin ":refs/heads/${_b}"; then
+      say "  ${C_GREEN}deleted on the server${C_RESET} ${_b} ${C_DIM}(${_why}) — restore: git -C ${repo} push origin ${remote_tip[${_b}]}:refs/heads/${_b}${C_RESET}"
       rec_line REMOTE "${_b}" "${_why}" "${_sha}" deleted ""
       (( GONE_REMOTE++ ))
       return
@@ -405,7 +423,7 @@ clean_repo() {
   # Server branches go first: deleting one prunes its tracking ref, so the local branch behind it is judged
   # below, in this same run, as the leftover it now is.
   if (( have_forge )); then
-    if ! gitscan_remote_leftovers "${repo}" "${forge}" "${project}" "${default_branch}" "${open_srcs}"; then
+    if ! gitscan_remote_leftovers "${repo}" "${forge}" "${project}" "${default_branch}" "${open_json}"; then
       skip "${GITSCAN_FORGE_WHY} — skipping ${repo}"
       return 2
     fi
@@ -442,11 +460,13 @@ clean_repo() {
   done
   (( QUIT_ALL )) && return 0
 
+  # An array, looked up by exact element: on a one-line string the same lookup is a substring search.
+  open_list=("${(@f)open_srcs}")
   while IFS= read -r branch || [[ -n "${branch}" ]]; do
     [[ -z "${branch}" ]] && continue
     [[ "${branch}" == "${default_branch}" ]] && continue
     # An open MR means the work is in flight, whatever the ref graph says.
-    (( ${${(f)open_srcs}[(Ie)${branch}]} )) && continue
+    (( ${open_list[(Ie)${branch}]} )) && continue
     checked_sha[${branch}]="$(git -C "${repo}" rev-parse --verify "refs/heads/${branch}" 2>/dev/null)" || continue
     upstream_track="$(git -C "${repo}" for-each-ref --format='%(upstream:track)' "refs/heads/${branch}" 2>/dev/null)"
     # Checked out: parked only once pushed and its remote branch deleted, or a branch just started would qualify.
@@ -729,13 +749,17 @@ clean_repo() {
 typeset -i rc=0 repo_rc=0
 for gitdir in "${GITDIRS[@]}"; do
   (( QUIT_ALL )) && break
+  REPO_REC_OPEN=0
   clean_repo "${gitdir:h}"
   repo_rc=$?
   if (( repo_rc == 2 )); then
     rc=2
     (( SKIPPED++ ))
-    (( REC_IDX++ ))
-    REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
+    # A repo that already has a record keeps the skip in it: one row per repository.
+    if (( ! REPO_REC_OPEN )); then
+      (( REC_IDX++ ))
+      REC="${WORKDIR}/rec.$(printf '%04d' ${REC_IDX})"
+    fi
     rec_line SKIP "${gitdir:h}" "${LAST_SKIP}"
   fi
 done
