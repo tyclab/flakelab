@@ -43,7 +43,39 @@ write_forge_stubs() {
 cat > "${BASE}/bin/glab" <<'STUB'
 #!/usr/bin/env zsh
 [[ "$1" == auth ]] && exit 0
+# Who is asking, and what that login may do in the project: Maintainer (40) unless a test says otherwise.
+if [[ "$1" == api ]]; then
+  case "$2" in
+    user)       print -r -- '{"username":"tester"}' ;;
+    # "none" is a reply with no body: a proxy's empty 200, not an answer about rights.
+    projects/*) [[ "${GITCLEANER_ACCESS_LEVEL:-}" == none ]] && exit 0
+                print -r -- "{\"id\":7,\"permissions\":{\"project_access\":null,\"group_access\":{\"access_level\":${GITCLEANER_ACCESS_LEVEL:-40}}}}" ;;
+    # Open requests anywhere that are built on one branch name: the real query filters by that name too.
+    merge_requests\?*)
+      b="${${2#*source_branch=}%%&*}"
+      if [[ -f "${GITCLEANER_REQUESTS_DIR:-/nonexistent}/_elsewhere.json" ]]; then
+        jq --arg b "${b}" '[.[] | select(.source_branch == $b)]' "${GITCLEANER_REQUESTS_DIR}/_elsewhere.json"
+      else
+        print -r -- '[]'
+      fi ;;
+    *)          exit 1 ;;
+  esac
+  exit 0
+fi
 if [[ "$1" == mr && "$2" == list ]]; then
+  # Every request of one branch: answered from a file per branch, so a test states exactly what the forge
+  # knows about it, and a branch without a file has no request at all.
+  if [[ "$*" == *--all* ]]; then
+    integer i=${@[(i)--source-branch]}
+    b="${@[i+1]}"
+    [[ "${b}" != "${GITCLEANER_RACE_BRANCH:-}" || -z "${GITCLEANER_RACE_HOOK:-}" ]] || "${GITCLEANER_RACE_HOOK}"
+    if [[ -f "${GITCLEANER_REQUESTS_DIR:-/nonexistent}/${b}.json" ]]; then
+      cat "${GITCLEANER_REQUESTS_DIR}/${b}.json"
+    else
+      print -r -- '[]'
+    fi
+    exit 0
+  fi
   if [[ "$*" == *--merged* ]]; then
     if [[ "$*" == *"--source-branch squashed"* || "$*" == *"--source-branch=squashed"* ]]; then
       [[ -z "${GITCLEANER_ADVANCE_HOOK:-}" ]] || "${GITCLEANER_ADVANCE_HOOK}"
@@ -65,7 +97,45 @@ chmod +x "${BASE}/bin/glab"
 cat > "${BASE}/bin/gh" <<'STUB'
 #!/usr/bin/env zsh
 [[ "$1" == auth ]] && exit 0
+if [[ "$1" == api ]]; then
+  case "$2" in
+    user)    print -r -- '{"login":"tester"}' ;;
+    repos/*) print -r -- "{\"id\":7,\"permissions\":{\"admin\":${GITCLEANER_GH_ADMIN:-true},\"push\":true}}" ;;
+    # Open PRs in any repository that have this branch as their head.
+    graphql)
+      b=""
+      for a in "$@"; do [[ "${a}" == r=refs/heads/* ]] && b="${a#r=refs/heads/}"; done
+      if [[ -n "${GITCLEANER_UPSTREAM_HEAD:-}" && "${b}" == "${GITCLEANER_UPSTREAM_HEAD}" ]]; then
+        print -r -- '{"data":{"repository":{"ref":{"associatedPullRequests":{"nodes":[{"number":9}]}}}}}'
+      elif [[ -n "${GITCLEANER_GONE_REF:-}" && "${b}" == "${GITCLEANER_GONE_REF}" ]]; then
+        print -r -- '{"data":{"repository":{"ref":null}}}'
+      else
+        print -r -- '{"data":{"repository":{"ref":{"associatedPullRequests":{"nodes":[]}}}}}'
+      fi ;;
+    *)       exit 1 ;;
+  esac
+  exit 0
+fi
 if [[ "$1" == pr && "$2" == list ]]; then
+  # Every request this login opened, in one answer.
+  if [[ "$*" == *"--author @me"* ]]; then
+    if [[ -f "${GITCLEANER_REQUESTS_DIR:-/nonexistent}/_own.gh.json" ]]; then
+      cat "${GITCLEANER_REQUESTS_DIR}/_own.gh.json"
+    else
+      print -r -- '[]'
+    fi
+    exit 0
+  fi
+  if [[ "$*" == *"--state all"* ]]; then
+    integer i=${@[(i)--head]}
+    b="${@[i+1]}"
+    if [[ -f "${GITCLEANER_REQUESTS_DIR:-/nonexistent}/${b}.gh.json" ]]; then
+      cat "${GITCLEANER_REQUESTS_DIR}/${b}.gh.json"
+    else
+      print -r -- '[]'
+    fi
+    exit 0
+  fi
   if [[ "$*" == *"--state merged"* ]]; then
     if [[ "$*" == *"--head squashed"* ]]; then
       [[ -z "${GITCLEANER_ADVANCE_HOOK:-}" ]] || "${GITCLEANER_ADVANCE_HOOK}"
@@ -585,6 +655,239 @@ check "--dry-run does not fast-forward either" \
 OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" < /dev/null 2>/dev/null)"
 check "the default run fast-forwards it" \
   "$(git -C "${ROOTS}/repo" rev-list --count HEAD..@{upstream} 2>/dev/null)" "0"
+
+# ── branches a finished request left on the server ──────────────────────────
+# A forge deletes a source branch only for a merge it performs itself with that setting on. The fixture
+# holds one of each way a branch stays, and one of each reason a branch that looks the same must not go.
+
+# push_remote_branch <fixture> <name> — a pushed branch with one commit; prints its tip.
+push_remote_branch() {
+  local seed="${BASE}/$1/seed"
+  {
+    git -C "${seed}" checkout -qb "$2" main
+    print -r -- "$2" > "${seed}/$2.txt"; git -C "${seed}" add -A; git -C "${seed}" commit -qm "$2"
+    git -C "${seed}" push -q origin "$2"
+    git -C "${seed}" checkout -q main
+  } >/dev/null 2>&1
+  git -C "${seed}" rev-parse "$2"
+}
+# request <branch> <state> <sha> [source-project] [author] — what the forge knows about a branch (GitLab shape).
+request() {
+  print -r -- "[{\"state\":\"$2\",\"sha\":\"$3\",\"source_project_id\":${4:-1},\"target_project_id\":1,\"author\":{\"username\":\"${5:-tester}\"}}]" \
+    > "${GITCLEANER_REQUESTS_DIR}/$1.json"
+}
+remote_branches_of() { git -C "${BASE}/$1/remote.git" for-each-ref --format='%(refname:short)' refs/heads/ | sort | tr '\n' ' ' }
+
+# build_leftovers <name> — build_fixture plus the server branches below; sets ROOTS and SHA_* for the tests.
+build_leftovers() {
+  local name="$1" repo
+  build_fixture "${name}"; ROOTS="${FIXTURE_ROOTS}"; repo="${ROOTS}/repo"
+  export GITCLEANER_REQUESTS_DIR="${BASE}/${name}/requests"
+  mkdir -p "${GITCLEANER_REQUESTS_DIR}"
+  # The forge merged it inside another request, or with the setting off: nothing local.
+  SHA_MERGED="$(push_remote_branch "${name}" left-merged)"; request left-merged merged "${SHA_MERGED}"
+  # Closed without a merge; a local branch still sits on the same commit.
+  SHA_CLOSED="$(push_remote_branch "${name}" left-closed)"; request left-closed closed "${SHA_CLOSED}"
+  # Merged once, then pushed to again: the tip holds commits no request covers.
+  SHA_MOVED="$(push_remote_branch "${name}" moved-on)"; request moved-on merged "${GITCLEANER_MERGED_SHA}"
+  # Pushed, never requested.
+  push_remote_branch "${name}" no-request >/dev/null
+  # Closed, then reopened as a second request the open-request list does not carry (another page, a race).
+  SHA_REOPENED="$(push_remote_branch "${name}" reopened)"
+  print -r -- "[{\"state\":\"closed\",\"sha\":\"${SHA_REOPENED}\",\"source_project_id\":1,\"target_project_id\":1,\"author\":{\"username\":\"tester\"}},{\"state\":\"opened\",\"sha\":\"${SHA_REOPENED}\",\"source_project_id\":1,\"target_project_id\":1,\"author\":{\"username\":\"tester\"}}]" \
+    > "${GITCLEANER_REQUESTS_DIR}/reopened.json"
+  # Merged on this tip, but it was a colleague's request: not this login's branch to remove.
+  SHA_OTHERS="$(push_remote_branch "${name}" others-merged)"; request others-merged merged "${SHA_OTHERS}" 1 colleague
+  # The open request the fixture lists pins in-review even when the per-branch answer shows only an older,
+  # merged request on the same tip.
+  request in-review merged "$(git -C "${BASE}/${name}/seed" rev-parse in-review)"
+  # Closed here, but an open request in another project (this one's upstream) is built on the branch. The
+  # other entry is a same-named branch of someone else's project, which protects nothing here.
+  SHA_UPSTREAM="$(push_remote_branch "${name}" upstream-head)"; request upstream-head closed "${SHA_UPSTREAM}"
+  print -r -- '[{"source_project_id":7,"source_branch":"upstream-head"},{"source_project_id":99,"source_branch":"left-merged"}]' \
+    > "${GITCLEANER_REQUESTS_DIR}/_elsewhere.json"
+  # Closed, and checked out in a live worktree: someone may be reworking it.
+  SHA_HELD="$(push_remote_branch "${name}" closed-held)"; request closed-held closed "${SHA_HELD}"
+  # Merged at the server's tip, but the local branch has a commit on top.
+  SHA_AHEAD="$(push_remote_branch "${name}" local-ahead)"; request local-ahead merged "${SHA_AHEAD}"
+  # A fork's request under the same branch name: another repository's branch.
+  SHA_FORK="$(push_remote_branch "${name}" fork-name)"; request fork-name merged "${SHA_FORK}" 2
+  {
+    git -C "${repo}" fetch -q origin
+    git -C "${repo}" branch left-closed origin/left-closed
+    git -C "${repo}" worktree add -q "${BASE}/${name}/wt-held" -b closed-held origin/closed-held
+    git -C "${repo}" checkout -qb local-ahead origin/local-ahead
+    print -r -- more > "${repo}/more"; git -C "${repo}" add -A; git -C "${repo}" commit -qm more
+    git -C "${repo}" checkout -q main
+  } >/dev/null 2>&1
+}
+ALL_REMOTE="closed-held fork-name in-review left-closed left-merged local-ahead main moved-on no-request others-merged reopened upstream-head "
+
+print -r -- "── server leftovers: the plan names them and changes nothing ─────"
+build_leftovers leftplan
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" < /dev/null 2>&1)"; RC=$?
+check "exits 1 when a leftover is on the server" "${RC}" "1"
+contains "reports the merged request's branch" "${OUT}" "stale on the server left-merged"
+contains "reports the closed request's branch" "${OUT}" "stale on the server left-closed"
+contains "counts them" "${OUT}" "2 branches of finished MRs/PRs are left on the server"
+excludes "a tip pushed past its request is not a leftover" "${OUT}" "on the server moved-on"
+excludes "a branch without a request is not a leftover" "${OUT}" "on the server no-request"
+excludes "a reopened request keeps its branch" "${OUT}" "on the server reopened"
+excludes "a closed request's checked-out branch is left alone" "${OUT}" "on the server closed-held"
+excludes "a local branch that moved on keeps the server's" "${OUT}" "on the server local-ahead"
+excludes "a fork's request does not vouch for this repository's branch" "${OUT}" "on the server fork-name"
+excludes "a colleague's request leaves its branch to them" "${OUT}" "on the server others-merged"
+excludes "a branch on the open-request list is never a leftover" "${OUT}" "on the server in-review"
+excludes "a branch an open request elsewhere is built on stays" "${OUT}" "on the server upstream-head"
+check "the plan deletes nothing on the server" "$(remote_branches_of leftplan)" "${ALL_REMOTE}"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --json < /dev/null 2>/dev/null)"; RC=$?
+check "--json exits 1 with leftovers" "${RC}" "1"
+check "--json counts the server leftovers" "$(print -r -- "${OUT}" | jq -r '.found.remote')" "2"
+check "each carries how its request ended" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].remote[] | select(.name == "left-closed") | .reason')" \
+  "MR closed, branch left on the server"
+check "and the SHA that restores it" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].remote[] | select(.name == "left-merged") | .sha')" \
+  "$(git -C "${ROOTS}/repo" rev-parse --short "${SHA_MERGED}")"
+check "none acted on" "$(print -r -- "${OUT}" | jq -r '.removed.remote')" "0"
+
+print -r -- "── server leftovers: --only removes exactly the named one ────────"
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --only left-merged --yes --json < /dev/null 2>/dev/null)"; RC=$?
+check "--only --yes exits 0 after removing it" "${RC}" "0"
+check "one server branch went" "$(print -r -- "${OUT}" | jq -r '.removed.remote')" "1"
+check "and it was the named one" \
+  "$(print -r -- "${OUT}" | jq -r '.repos[0].remote[] | select(.action == "deleted") | .name')" "left-merged"
+check "every other server branch is still there" "$(remote_branches_of leftplan)" "${ALL_REMOTE/left-merged /}"
+
+print -r -- "── server leftovers: --yes deletes them and the local branch behind ─"
+build_leftovers leftyes
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "--yes exits 0 once everything it found is gone" "${RC}" "0"
+contains "deletes the merged request's branch on the server" "${OUT}" "deleted on the server left-merged"
+contains "deletes the closed request's branch on the server" "${OUT}" "deleted on the server left-closed"
+contains "prints the push that restores a server branch" "${OUT}" \
+  "push origin $(git -C "${ROOTS}/repo" rev-parse --short "${SHA_CLOSED}"):refs/heads/left-closed"
+contains "says how many went" "${OUT}" "Deleted 2 of 2 leftover branches on the server"
+check "exactly those two are gone from the server" "$(remote_branches_of leftyes)" \
+  "${${ALL_REMOTE/left-merged /}/left-closed /}"
+contains "the local branch behind the closed request goes in the same run" "${OUT}" \
+  "deleted left-closed (MR closed, upstream pruned)"
+check "local branches: the leftover is gone, work in progress stays" "$(branches_of "${ROOTS}")" \
+  "abandoned closed-held in-review local-ahead local-only main "
+check "the tip the request closed on is still in the clone" \
+  "$(git -C "${ROOTS}/repo" cat-file -t "${SHA_CLOSED}" 2>/dev/null)" "commit"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "a second run finds nothing" "${RC}" "0"
+contains "and says so" "${OUT}" "Nothing to clean"
+
+print -r -- "── server leftovers: a push that lands meanwhile keeps the branch ─"
+build_leftovers leftrace
+# The forge answers "merged on this tip", and before the delete someone pushes to the branch. The lease is
+# what stops the delete; without it the new commit would go with the branch.
+cat > "${BASE}/bin/race-push" <<HOOK
+#!/usr/bin/env zsh
+git -C "${BASE}/leftrace/seed" checkout -q left-merged
+print -r -- late > "${BASE}/leftrace/seed/late"
+git -C "${BASE}/leftrace/seed" add -A
+git -C "${BASE}/leftrace/seed" commit -qm late
+git -C "${BASE}/leftrace/seed" push -q origin left-merged
+git -C "${BASE}/leftrace/seed" checkout -q main
+HOOK
+chmod +x "${BASE}/bin/race-push"
+OUT="$(GITCLEANER_RACE_BRANCH=left-merged GITCLEANER_RACE_HOOK="${BASE}/bin/race-push" \
+  zsh "${CLEANER}" --repo "${ROOTS}/repo" --only left-merged --yes < /dev/null 2>&1)"; RC=$?
+check "a refused server delete exits 2" "${RC}" "2"
+contains "names the branch it could not delete" "${OUT}" "FAILED to delete left-merged on the server"
+check "the branch, with the late commit, is still on the server" \
+  "$(git -C "${BASE}/leftrace/remote.git" rev-parse left-merged)" \
+  "$(git -C "${BASE}/leftrace/seed" rev-parse left-merged)"
+[[ "$(git -C "${BASE}/leftrace/seed" rev-parse left-merged)" != "${SHA_MERGED}" ]] \
+  && ok "and the late commit really landed" || bad "and the late commit really landed"
+
+print -r -- "── server leftovers: a forge reply that cannot be read deletes nothing ─"
+build_leftovers leftbad
+print -r -- '<html>rate limited</html>' > "${GITCLEANER_REQUESTS_DIR}/left-merged.json"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "a garbled request list exits 2" "${RC}" "2"
+contains "names the parse failure" "${OUT}" "could not parse the request list for left-merged"
+check "nothing is deleted on the server" "$(remote_branches_of leftbad)" "${ALL_REMOTE}"
+# A full page may be cut off before an open request.
+jq -n --arg sha "${SHA_MERGED}" '[range(100) | {state: "merged", sha: $sha, source_project_id: 1, target_project_id: 1}]' \
+  > "${GITCLEANER_REQUESTS_DIR}/left-merged.json"
+OUT="$(zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+check "a full page of requests exits 2" "${RC}" "2"
+contains "and says why" "${OUT}" "refusing to work from a truncated list"
+check "and still deletes nothing on the server" "$(remote_branches_of leftbad)" "${ALL_REMOTE}"
+
+print -r -- "── server leftovers: only in a project this login administers ────"
+build_leftovers leftnoadmin
+# Push access is not ownership: a contributor's clone of someone else's project has nothing to clean there.
+OUT="$(GITCLEANER_ACCESS_LEVEL=30 zsh "${CLEANER}" --repos-dir "${ROOTS}" --yes < /dev/null 2>&1)"; RC=$?
+excludes "a Developer's clone reports no server leftovers" "${OUT}" "on the server"
+check "and deletes nothing on that server" "$(remote_branches_of leftnoadmin)" "${ALL_REMOTE}"
+# No answer about the rights is not "no rights": read that way, a project with leftovers reports clean.
+build_leftovers leftnoanswer
+OUT="$(GITCLEANER_ACCESS_LEVEL=none zsh "${CLEANER}" --repos-dir "${ROOTS}" < /dev/null 2>&1)"; RC=$?
+check "an empty project record exits 2" "${RC}" "2"
+contains "and says what could not be read" "${OUT}" "could not parse the project record"
+
+print -r -- "── server leftovers: GitHub ───────────────────────────────────────"
+build_leftovers leftgh
+{
+  git -C "${ROOTS}/repo" remote set-url origin "git@github.com:test/repo.git"
+  git -C "${ROOTS}/repo" config --unset "url.${BASE}/leftgh/remote.git.insteadOf"
+  git -C "${ROOTS}/repo" config "url.${BASE}/leftgh/remote.git.insteadOf" "git@github.com:test/repo.git"
+} >/dev/null 2>&1
+print -r -- "[{\"state\":\"MERGED\",\"headRefOid\":\"${SHA_MERGED}\",\"isCrossRepository\":false,\"author\":{\"login\":\"tester\"}}]" \
+  > "${GITCLEANER_REQUESTS_DIR}/left-merged.gh.json"
+print -r -- "[{\"state\":\"CLOSED\",\"headRefOid\":\"${SHA_FORK}\",\"isCrossRepository\":true,\"author\":{\"login\":\"tester\"}}]" \
+  > "${GITCLEANER_REQUESTS_DIR}/fork-name.gh.json"
+print -r -- "[{\"state\":\"CLOSED\",\"headRefOid\":\"${SHA_REOPENED}\",\"isCrossRepository\":false,\"author\":{\"login\":\"tester\"}},{\"state\":\"OPEN\",\"headRefOid\":\"${SHA_REOPENED}\",\"isCrossRepository\":false,\"author\":{\"login\":\"tester\"}}]" \
+  > "${GITCLEANER_REQUESTS_DIR}/reopened.gh.json"
+print -r -- "[{\"state\":\"MERGED\",\"headRefOid\":\"${SHA_OTHERS}\",\"isCrossRepository\":false,\"author\":{\"login\":\"colleague\"}}]" \
+  > "${GITCLEANER_REQUESTS_DIR}/others-merged.gh.json"
+# GitHub is asked once for all of this login's requests.
+write_own_list() {
+  jq -n --arg merged "${SHA_MERGED}" --arg fork "${SHA_FORK}" --arg reopened "${SHA_REOPENED}" --arg others "${SHA_OTHERS}" \
+    '[{state: "MERGED", headRefName: "left-merged", headRefOid: $merged, isCrossRepository: false, author: {login: "tester"}},
+      {state: "CLOSED", headRefName: "fork-name", headRefOid: $fork, isCrossRepository: true, author: {login: "tester"}},
+      {state: "CLOSED", headRefName: "reopened", headRefOid: $reopened, isCrossRepository: false, author: {login: "tester"}},
+      {state: "OPEN", headRefName: "reopened", headRefOid: $reopened, isCrossRepository: false, author: {login: "tester"}},
+      {state: "MERGED", headRefName: "others-merged", headRefOid: $others, isCrossRepository: false, author: {login: "colleague"}}]' \
+    > "${GITCLEANER_REQUESTS_DIR}/_own.gh.json"
+}
+write_own_list
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --json < /dev/null 2>/dev/null)"; RC=$?
+check "an admin's plan names the merged PR's branch" \
+  "$(print -r -- "${OUT}" | jq -r '[.repos[0].remote[].name] | join(",")')" "left-merged"
+# The fork's branch is the head of an open PR in its upstream: deleting it would close that PR.
+OUT="$(GITCLEANER_UPSTREAM_HEAD=left-merged zsh "${CLEANER}" --repo "${ROOTS}/repo" --json < /dev/null 2>/dev/null)"; RC=$?
+check "a branch an open PR in another repository is built on is not a leftover" \
+  "$(print -r -- "${OUT}" | jq -r '.found.remote')" "0"
+# The server answers that it has no such branch any more: nothing there to delete.
+OUT="$(GITCLEANER_GONE_REF=left-merged zsh "${CLEANER}" --repo "${ROOTS}/repo" --json < /dev/null 2>/dev/null)"; RC=$?
+check "a branch the server no longer has is not a leftover" \
+  "$(print -r -- "${OUT}" | jq -r '.found.remote')" "0"
+# Allowed to push, not an admin: the same repository has nothing that is this login's to clean.
+OUT="$(GITCLEANER_GH_ADMIN=false zsh "${CLEANER}" --repo "${ROOTS}/repo" --json < /dev/null 2>/dev/null)"; RC=$?
+check "a repository this login can only push to has no leftovers" \
+  "$(print -r -- "${OUT}" | jq -r '.found.remote')" "0"
+# A list that fills the cap may be cut off, so the branches are asked about one by one instead: here the
+# cut-off list lacks the leftover the per-branch answer has.
+jq -n '[range(4) | {state: "CLOSED", headRefName: "filler-\(.)", headRefOid: "0", isCrossRepository: false, author: {login: "tester"}}]' \
+  > "${GITCLEANER_REQUESTS_DIR}/_own.gh.json"
+OUT="$(GITSCAN_GH_LIMIT=4 zsh "${CLEANER}" --repo "${ROOTS}/repo" --json < /dev/null 2>/dev/null)"; RC=$?
+check "a request list that fills the cap falls back to asking per branch" \
+  "$(print -r -- "${OUT}" | jq -r '[.repos[0].remote[].name] | join(",")')" "left-merged"
+# The one list is the whole answer: the per-branch files are gone, so only it can name the leftover.
+rm -f "${GITCLEANER_REQUESTS_DIR}"/*.gh.json
+write_own_list
+OUT="$(zsh "${CLEANER}" --repo "${ROOTS}/repo" --yes --json < /dev/null 2>/dev/null)"; RC=$?
+check "the merged PR's branch is the one leftover" \
+  "$(print -r -- "${OUT}" | jq -r '[.repos[0].remote[] | "\(.name) \(.action)"] | join(",")')" "left-merged deleted"
+check "it is gone from the server, the fork's and the reopened PR's are not" "$(remote_branches_of leftgh)" \
+  "${ALL_REMOTE/left-merged /}"
+unset GITCLEANER_REQUESTS_DIR
 
 print -r -- ""
 print -r -- "${PASS} passed, ${FAIL} failed"
