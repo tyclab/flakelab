@@ -153,7 +153,11 @@ Read for this topic; paths below are relative to the repository root unless stat
   with that setting on, so stacked MRs, a setting that was off and every closed
   request leave theirs. Both tools list a server branch only in a project the
   login administers and only for its own requests, so a clone of an upstream
-  project never has any. `gitcleaner` exits 0 when nothing is left in its selection (none
+  project never has any. Never listed: a branch an open request merges into
+  (a stacked request's base), a branch the project protects, the default
+  branch the forge names, and anything in an archived project or behind a push
+  URL that leads elsewhere. A repository skipped after its server stage has
+  one row, carrying both `skipped` and `remote`. `gitcleaner` exits 0 when nothing is left in its selection (none
   found, or all removed), 1 when stale items are left in it. Under `--only` the
   selection is the named branches, so a 0 there says those went, not that the
   repo is clean: a plan with candidates exits 1, the act that removed its

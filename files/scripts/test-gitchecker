@@ -706,14 +706,17 @@ LEFT_OTHERS="$(git -C "${LW}" rev-parse others)"
 git -C "${LW}" branch -q -D left-merged left-closed plain reopened others
 git -C "${LW}" remote set-head origin main >/dev/null 2>&1
 # The stub answers who is asking, what that login may do in the project (LEFT_ACCESS, Owner unless set),
-# and the per-branch request query (--all) by branch; the open list is empty.
+# whether the server protects a branch (LEFT_PROTECTED), and the per-branch request query (--all) by branch.
+# The open list is empty unless LEFT_TARGET names a branch an open request merges into.
 cat > "${STUB_DIR}/glab" <<STUB
 #!/usr/bin/env zsh
 [[ "\$1" == auth ]] && exit 0
 if [[ "\$1" == api ]]; then
   case "\$2" in
     user)       print -r -- '{"username":"tester"}' ;;
-    projects/*) print -r -- "{\"id\":7,\"permissions\":{\"project_access\":{\"access_level\":\${LEFT_ACCESS:-50}},\"group_access\":null}}" ;;
+    projects/*/repository/branches/*)
+                if [[ "\${2##*/}" == "\${LEFT_PROTECTED:-}" ]]; then print -r -- '{"protected":true}'; else print -r -- '{"protected":false}'; fi ;;
+    projects/*) print -r -- "{\"id\":7,\"default_branch\":\"main\",\"permissions\":{\"project_access\":{\"access_level\":\${LEFT_ACCESS:-50}},\"group_access\":null}}" ;;
     # Open requests anywhere built on the branch: one, from this project (id 7), on left-closed when asked for.
     merge_requests\?*) if [[ -n "\${LEFT_UPSTREAM:-}" && "\$2" == *"source_branch=\${LEFT_UPSTREAM}"* ]]; then
                          print -r -- '[{"source_project_id":7,"source_branch":"x"}]'
@@ -731,6 +734,8 @@ if [[ "\$*" == *--all* ]]; then
     *"--source-branch others"*)      print -r -- '[{"state":"merged","sha":"${LEFT_OTHERS}","source_project_id":1,"target_project_id":1,"author":{"username":"colleague"}}]' ;;
     *)                               print -r -- '[]' ;;
   esac
+elif [[ -n "\${LEFT_TARGET:-}" && ( "\$*" == *"--page 1"* || "\$*" != *--page* ) ]]; then
+  print -r -- "[{\"iid\":5,\"title\":\"stacked\",\"source_branch\":\"on-top\",\"target_branch\":\"\${LEFT_TARGET}\",\"draft\":false}]"
 fi
 exit 0
 STUB
@@ -749,6 +754,16 @@ assert_lacks "server others" "a colleague's request leaves its branch to them"
 # An open request in another project is built on the branch: it is in use, not left over.
 LEFT_UPSTREAM=left-closed run_gc --repos-dir "${LT}"
 assert_has "1 left on server" "a branch an open request elsewhere is built on is not counted"
+assert_lacks "server left-closed" "and not named"
+
+# An open request merges into the branch: it is the base of a stacked request, not left over.
+LEFT_TARGET=left-closed run_gc --repos-dir "${LT}"
+assert_has "1 left on server" "a branch an open request merges into is not counted"
+assert_lacks "server left-closed" "and not named"
+
+# The project protects the branch: a long-lived one, and one the server would refuse to delete.
+LEFT_PROTECTED=left-closed run_gc --repos-dir "${LT}"
+assert_has "1 left on server" "a protected branch is not counted"
 assert_lacks "server left-closed" "and not named"
 
 # Push access is not ownership: a clone of a project this login does not administer has nothing to report.
@@ -779,7 +794,7 @@ cat > "${STUB_DIR}/glab" <<STUB
 if [[ "\$1" == api ]]; then
   case "\$2" in
     user)       print -r -- '{"username":"tester"}' ;;
-    projects/*) print -r -- '{"permissions":{"project_access":{"access_level":50},"group_access":null}}' ;;
+    projects/*) print -r -- '{"id":7,"permissions":{"project_access":{"access_level":50},"group_access":null}}' ;;
   esac
   exit 0
 fi
