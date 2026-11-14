@@ -159,7 +159,9 @@ in
   nix-overlay-generate = suiteCheck "nix-overlay-generate";
   # The --help sweep runs `mcp`, a python3 program.
   flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
-  claude-sessions = suiteCheck "claude-sessions";
+  # One block of cases runs lib/codex_threads.py against its stand-in server.
+  claude-sessions = suiteCheckWith [ pkgs.python3 ] "claude-sessions";
+  codex-threads = suiteCheckWith [ pkgs.python3 ] "codex-threads";
   notify = suiteCheck "notify";
   questions = suiteCheckWith [ pkgs.python3 ] "questions";
   # Both managed blocks against a fixture home: text outside the markers survives

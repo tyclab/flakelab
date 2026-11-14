@@ -130,13 +130,25 @@ case "$1" in
     # Window ids count up from @10 per -P call, this one included.
     if [[ " $* " == *" -P "* ]]; then
       local -i n=$(( $(grep -c -- ' -P ' "${TMUX_LOG}") + 9 ))
+      print -r -- "@${n}${US}${@[-1]}" >> "${TMUX_CREATED}"
       print -r -- "@${n}"
     fi
     exit 0 ;;
-  *) exit 0 ;;
+  set-option)
+    [[ "$2 $3 $5" == "-w -t @flakelab_session" && $# == 6 ]] || exit 1
+    awk -F"$US" -v w="$4" '$1 == w {found=1} END {exit !found}' "${TMUX_CREATED}" || exit 1
+    print -r -- "$4${US}$6" >> "${TMUX_OPEN_MARKS}" ;;
+  show-options)
+    [[ "$2 $3 $4 $6" == "-w -v -t @flakelab_session" ]] || exit 1
+    awk -F"$US" -v w="$5" '$1 == w {v=$2} END {print v}' "${TMUX_OPEN_MARKS}" ;;
+  set-hook|select-window|switch-client|attach-session) exit 0 ;;
+  *) print -r -- "$*" >> "${TMUX_EARLY_UNKNOWN}"; exit 1 ;;
 esac
 STUB
 chmod +x "${TMUXBIN}/tmux"
+export US
+export TMUX_CREATED="${BASE}/created" TMUX_OPEN_MARKS="${BASE}/open-marks" TMUX_EARLY_UNKNOWN="${BASE}/early-unknown"
+: > "${TMUX_CREATED}"; : > "${TMUX_OPEN_MARKS}"; : > "${TMUX_EARLY_UNKNOWN}"
 export TMUX_LOG="${BASE}/tmux.log"
 export TMUX_PANES="${BASE}/panes"
 {
@@ -176,7 +188,7 @@ ERR=""
 print -r -- "list"
 run
 check "list exits 0" "${RC}" "0"
-contains "the table starts with the tool and host columns" "${OUT}" "TOOL    PID      AGE     SESSION                              HOST               GROUP    DIRECTORY"
+contains "the table starts with the tool and host columns" "${OUT}" "TOOL    PID      AGE     SESSION                              HOST               STATE     MODEL                  GROUP    DIRECTORY"
 contains "pid 100 takes id and age from its registry file, not its open transcript" "${OUT}" "claude  100      2h01m   ${SID_A}"
 contains "pid 200 falls back to its own transcript, not the shared directory's newest" "${OUT}" "claude  200      1d01h   ${SID_B}"
 contains "a codex process is identified by the rollout file it holds open" "${OUT}" "codex   500      10m     ${SID_X}"
@@ -184,13 +196,13 @@ excludes "a registry file for a dead pid is not a session" "${OUT}" "999"
 contains "a claude process with no id is noted on stderr" "${ERR}" "note: claude pid 300 in ${BASE}/other has no local session id"
 contains "which says what that means: listed, nothing to resume it by" "${ERR}" "has no local session id: starting or a client of a shared server; nothing to save or resume by this pid"
 contains "the directory with a space is printed intact" "${OUT}" "${WORK}"
-contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  -        ${WORK}"
+contains "without tmux every host is a dash" "${OUT}" "${SID_B} -                  -         -                      -        ${WORK}"
 
 run_tmux
 check "list with tmux exits 0" "${RC}" "0"
-contains "a session whose shell is a tmux pane shows its window" "${OUT}" "${SID_B} claude-work_dir    -        ${WORK}"
-contains "the codex window is found through its pane too" "${OUT}" "${SID_X} codex-codex_proj   -        ${BASE}/codex proj"
-contains "a process not under a pane keeps the dash" "${OUT}" "${SID_A} -                  -        ${WORK}"
+contains "a session whose shell is a tmux pane shows its window" "${OUT}" "${SID_B} claude-work_dir    -         -                      -        ${WORK}"
+contains "the codex window is found through its pane too" "${OUT}" "${SID_X} codex-codex_proj   -         -                      -        ${BASE}/codex proj"
+contains "a process not under a pane keeps the dash" "${OUT}" "${SID_A} -                  -         -                      -        ${WORK}"
 check "the host lookup is one list-panes call" "$(grep -c '^list-panes' "${TMUX_LOG}")" "1"
 
 run --json
@@ -258,6 +270,11 @@ export FAKE_TMUX_HAS=1
 FAKE_PGREP_NONE=1 run_tmux --open
 check "--open with tmux exits 0" "${RC}" "0"
 check "--open with tmux opens a window per session" "$(grep -c '^new-window' "${TMUX_LOG}")" "3"
+check "--open records the session on the Codex window it creates, and on no Claude window" "$(grep -c '^set-option .*@flakelab_session' "${TMUX_LOG}")/$(grep -cE "^set-option -w -t @[0-9]+ @flakelab_session ${SID_X}\$" "${TMUX_LOG}")" "1/1"
+OPEN_WID="$(awk -F"$US" -v sid="$SID_X" '$2 == "codex resume " sid {print $1}' "${TMUX_CREATED}")"
+check "--open marks the actual created Codex window" "$(PATH="${TMUXBIN}:${PATH}" tmux show-options -w -v -t "$OPEN_WID" @flakelab_session)" "$SID_X"
+PATH="${TMUXBIN}:${PATH}" tmux set-option -w -t @999 @flakelab_session "$SID_X" >/dev/null 2>&1
+check "the recovery stand-in refuses a mark on a nonexistent window" "$?" 1
 contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --resume ${SID_A}"
 check "with the caller's PATH handed to it, whoever started the server" "$(grep -c '^new-window -d -P -F #{window_id} -t agents -n [a-z_-]* -e PATH=' "${TMUX_LOG}")" "3"
 check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "3"
@@ -836,11 +853,568 @@ printf 'claude\0daemon\0run\0' > "${PROC}/300/cmdline"
 run --json
 check "the Claude daemon is excluded" "$(print -r -- "$OUT" | jq '[.[] | select(.pid == 300)] | length')" 0
 
+# ---------------------------------------------------------------------------
+# Lanes: --start codex with a model, an effort and a prompt, the table's STATE
+# and MODEL, and --close. The helper (lib/codex_threads.py) is replaced by a
+# stand-in that logs its arguments and its stdin and prints the documents the
+# real one prints; the last block runs the real helper against
+# lib/codex_fake_server.py instead, so the two sides are also tested against
+# each other. The tmux stand-in of this section fails on any command or format
+# string it does not know.
+print -r -- ""
+print -r -- "lanes: --start codex with model, effort and prompt"
+SID_L=01a1d6aa-0000-7000-8000-00000000000a
+SID_S=01a1d6bb-0000-7000-8000-00000000000b
+LANEBIN="${BASE}/lanebin"
+mkdir -p "${LANEBIN}"
+cat > "${LANEBIN}/tmux" <<'STUB'
+#!/usr/bin/env zsh
+US=$'\x1f'
+print -r -- "$*" >> "${TMUX_LOG}"
+[[ -n "${EVENTS:-}" ]] && print -r -- "tmux $1" >> "${EVENTS}"
+[[ -n "${EVENT_SINK:-}" ]] && print -r -- "{\"method\":\"tmux/$1\"}" >> "${EVENT_SINK}"
+# Anything this stand-in does not know is recorded, and the suite asserts the record is empty:
+# a caller that hides tmux's stderr must not hide a call the stand-in cannot answer.
+unknown() { print -r -- "$*" >> "${TMUX_UNKNOWN}"; print -ru2 -- "tmux stand-in: unknown $*"; exit 1 }
+case "$1" in
+  -V) print -r -- "tmux 3.4"; exit 0 ;;
+  has-session) [[ -n "${FAKE_TMUX_HAS:-}" ]]; exit $? ;;
+  list-panes)
+    [[ "$*" == "list-panes -a -F #{pane_pid}${US}#{session_name}${US}#{window_id}${US}#{window_name}${US}#{@flakelab_session}" ]] || unknown "$@"
+    [[ -r "${TMUX_PANES:-}" ]] && cat "${TMUX_PANES}"; exit 0 ;;
+  list-windows)
+    n=$(( $(cat "${TMUX_LIST_COUNT}" 2>/dev/null || print 0) + 1 ))
+    print -r -- "$n" > "${TMUX_LIST_COUNT}"
+    [[ " ${FAKE_TMUX_LIST_FAILS:-} " == *" $n "* ]] && exit 1
+    [[ -n "${FAKE_TMUX_LIST_DELAY:-}" ]] && sleep "$FAKE_TMUX_LIST_DELAY"
+    case "$*" in
+      "list-windows -a -F #{window_id}")
+        [[ -n "${FAKE_TMUX_CONFIRM_DELAY:-}" ]] && sleep "$FAKE_TMUX_CONFIRM_DELAY"
+        [[ -r "${TMUX_WINDOWS:-}" ]] && cut -d"$US" -f1 "${TMUX_WINDOWS}"; exit 0 ;;
+      "list-windows -t agents -F #{window_name}") [[ -r "${TMUX_WINDOWS:-}" ]] && cut -d"$US" -f2 "${TMUX_WINDOWS}"; exit 0 ;;
+      "list-windows -t agents -F #{window_id}")
+        [[ -r "${TMUX_WINDOW_IDS:-}" ]] && cat "${TMUX_WINDOW_IDS}"
+        if [[ -e "${TMUX_MOVED}" ]]; then
+          awk -F"$US" '$1 != "@6" {print $1}' "${TMUX_WINDOWS}"
+        elif [[ -r "${TMUX_WINDOWS:-}" ]]; then cut -d"$US" -f1 "${TMUX_WINDOWS}"; fi
+        exit 0 ;;
+      "list-windows -t agents -F #{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}")
+        if [[ -e "${TMUX_MOVED}" ]]; then
+          awk -F"$US" '$1 != "@6"' "${TMUX_WINDOWS}"
+        elif [[ -r "${TMUX_WINDOWS:-}" ]]; then cat "${TMUX_WINDOWS}"; fi
+        exit 0 ;;
+    esac
+    unknown "$@" ;;
+  new-session|new-window)
+    [[ -n "${FAKE_TMUX_NO_WINDOW:-}" ]] && exit 1
+    [[ " $* " == *" -P -F #{window_id} "* ]] || unknown "$@"
+    print -r -- "@10"; exit 0 ;;
+  set-option)
+    [[ "$2 $3 $5" == "-w -t @flakelab_session" && $# == 6 ]] || unknown "$@"
+    [[ -n "${FAKE_TMUX_NO_MARK:-}" ]] && exit 1
+    print -r -- "$4${US}$6" >> "${TMUX_MARKS}"; exit 0 ;;
+  show-options)
+    [[ "$2 $3 $4 $6" == "-w -v -t @flakelab_session" && $# == 6 ]] || unknown "$@"
+    [[ -n "${FAKE_TMUX_WRONG_MARK:-}" ]] && { print -r -- "something-else"; exit 0 }
+    awk -F"$US" -v w="$5" '$1 == w { v = $2 } END { if (v != "") print v }' "${TMUX_MARKS}"; exit 0 ;;
+  if-shell)
+    # if-shell -F -t <window> <format> "kill-window -t <window>": the kill tmux's server
+    # decides on. The stand-in holds the window's row as it is at this moment and takes the
+    # format at its word: one pane, and it must compare the recorded session and the start
+    # command with exactly what the row has. Only then is the row removed.
+    [[ "$2 $3" == "-F -t" && $# == 6 && "$6" == "kill-window -t $4" ]] || unknown "$@"
+    [[ -n "${FAKE_TMUX_BEFORE_KILL:-}" ]] && eval "${FAKE_TMUX_BEFORE_KILL}"
+    [[ -n "${FAKE_TMUX_MOVE:-}" ]] && : > "${TMUX_MOVED}"
+    row="$(awk -F"$US" -v w="$4" '$1 == w' "${TMUX_WINDOWS}")"
+    [[ -n "$row" ]] || exit 1
+    IFS="$US" read -r wid wname wsid panes startcmd <<<"$row"
+    if [[ ( ! -e "${TMUX_MOVED}" || "$5" != *"#{==:#{session_name},agents}"* ) && "$panes" == 1 && "$5" == *"#{==:#{window_panes},1}"* && "$5" == *"#{==:#{@flakelab_session},${wsid}}"* &&
+          "$5" == *"#{==:#{pane_start_command},${startcmd}}"* && " ${FAKE_TMUX_KILL_FAILS:-} " != *" $4 "* ]]; then
+      print -r -- "kill-window -t $4" >> "${TMUX_LOG}"
+      [[ -n "${EVENTS:-}" ]] && print -r -- "tmux kill-window" >> "${EVENTS}"
+      awk -F"$US" -v w="$4" '$1 != w' "${TMUX_WINDOWS}" > "${TMUX_WINDOWS}.new"
+      mv "${TMUX_WINDOWS}.new" "${TMUX_WINDOWS}"
+    fi
+    exit 0 ;;
+esac
+unknown "$@"
+STUB
+# The helper stand-in: its documents are the ones lib/codex_threads.py prints.
+cat > "${LANEBIN}/helper" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "${HELPER_LOG}"
+[[ -n "${EVENTS:-}" ]] && print -r -- "helper $1" >> "${EVENTS}"
+[[ "$1" == start ]] && cat > "${HELPER_STDIN}"
+[[ " ${HELPER_FAIL:-} " == *" $1 "* ]] && { print -ru2 -- "Error: $1 failed on purpose"; exit ${HELPER_RC:-1} }
+case "$1" in
+  start) print -r -- "{\"session\":\"${HELPER_SID}\",\"model\":\"gpt-6.1-sol\",\"effort\":\"xhigh\",\"turn\":\"t1\",\"server\":\"0.169.0\"}" ;;
+  state) shift 3; jq -cn --arg busy "${HELPER_BUSY:-}" --arg mute "${HELPER_NO_ANSWER:-}" '[$ARGS.positional[] | if . == $mute then {session: ., state: null, model: null, effort: null, name: null} else {session: ., state: (if . == $busy then "working" else "idle" end), model: "gpt-6.1-sol", effort: "xhigh", name: null} end]' --args "$@" ;;
+  close-check)
+    sid="${@[-1]}"
+    # What happens to the windows while the session is being looked at.
+    [[ -n "${HELPER_DURING_CHECK:-}" ]] && eval "${HELPER_DURING_CHECK}"
+    if [[ " ${HELPER_BUSY:-} " == *" ${sid} "* && ! -e "${HELPER_STOPPED}.${sid}" ]]; then
+      jq -cn --arg s "$sid" --arg cwd "${HELPER_CWD}" '{session: $s, finished: false, state: "working", reasons: ["the session is working", "runs: sleep 300"], cwd: $cwd, name: null}'
+    else
+      jq -cn --arg s "$sid" --arg cwd "${HELPER_CWD}" '{session: $s, finished: true, state: "idle", reasons: [], cwd: $cwd, name: null}'
+    fi ;;
+  stop)
+    sid="${@[-1]}"
+    : > "${HELPER_STOPPED}.${sid}"
+    until="$(python3 -c 'import os,time; print(time.monotonic()+float(os.environ.get("HELPER_BUDGET", "30")))')"
+    print -r -- "{\"session\":\"$sid\",\"interrupted\":[\"$sid\"],\"cleaned\":[\"$sid\"],\"until\":$until}" ;;
+  archive) print -r -- "{\"session\":\"$2\",\"archived\":true}" ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "${LANEBIN}"/*
+export HELPER_LOG="${BASE}/helper.log" HELPER_STDIN="${BASE}/helper.stdin" HELPER_SID="${SID_L}" HELPER_CWD="${WORK}" HELPER_STOPPED="${BASE}/stopped"
+export FLAKELAB_CODEX_THREADS="${LANEBIN}/helper" FLAKELAB_SESSIONS_SETTLE=0
+export TMUX_WINDOWS="${BASE}/windows" TMUX_WINDOW_IDS="${BASE}/window-ids" TMUX_MARKS="${BASE}/marks" TMUX_UNKNOWN="${BASE}/tmux-unknown"
+export TMUX_LIST_COUNT="${BASE}/list-count" TMUX_MOVED="${BASE}/moved"
+export EVENTS="${BASE}/events"
+: > "${TMUX_UNKNOWN}"
+export FAKE_TMUX_HAS=1
+run_lane() { OUT="$(PATH="${LANEBIN}:${PATH}" "${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
+fresh() { print 0 > "${TMUX_LIST_COUNT}"; rm -f "${TMUX_MOVED}"; : > "${TMUX_LOG}"; : > "${HELPER_LOG}"; : > "${HELPER_STDIN}"; : > "${TMUX_MARKS}"; : > "${EVENTS}"; rm -f "${HELPER_STOPPED}".*(N); }
+# The first line number of an event, 0 when it never happened: for "this came before that".
+event() { local n; n="$(grep -n -m1 -x -- "$1" "${EVENTS}" | cut -d: -f1)"; print -r -- "${n:-0}" }
+print -r -- "@10" > "${TMUX_WINDOW_IDS}"
+: > "${TMUX_WINDOWS}"
+print -r -- "from a file" > "${BASE}/prompt.txt"
+
+fresh
+# Each usage error by its own reason: the folder's name holds a space, and a
+# case that merely exits 2 would also pass on a mis-split argument.
+usage_error() {
+  local label="$1" reason="$2"; shift 2
+  run_lane "$@"
+  check "${label} exits 2" "${RC}" "2"
+  contains "${label}: the reason" "${ERR}" "${reason}"
+}
+usage_error "a lane flag with --start claude" "is for --start codex" --start claude "${WORK}" --model opus --prompt go
+usage_error "a lane flag without a prompt" "needs --prompt or --prompt-file" --start codex "${WORK}" --model gpt-6.1-sol
+usage_error "both prompt flags" "exclude each other" --start codex "${WORK}" --prompt go --prompt-file "${BASE}/prompt.txt"
+usage_error "a lane flag with -- args" "cannot be combined with -- args" --start codex "${WORK}" --prompt go -- -m gpt-6.1-sol
+usage_error "a missing prompt file" "is missing, unreadable or empty" --start codex "${WORK}" --prompt-file "${BASE}/no-such-file"
+: > "${BASE}/empty.txt"
+usage_error "an empty prompt file" "is missing, unreadable or empty" --start codex "${WORK}" --prompt-file "${BASE}/empty.txt"
+usage_error "a name tmux cannot target" "must be a window name" --start codex "${WORK}" --prompt go --name a.b
+usage_error "a name of 41 characters" "must be a window name" --start codex "${WORK}" --prompt go --name "${(l:41::x:):-}"
+usage_error "a lane flag without a value" "--prompt needs a value" --start codex "${WORK}" --prompt
+usage_error "a lane flag without --start" "belongs to --start codex" --model gpt-6.1-sol
+usage_error "--force without --close" "belong to --close" --force
+usage_error "--close without a target" "needs a window or a session id" --close
+usage_error "a lane in a folder that does not exist" "no such directory" --start codex "${BASE}/nowhere" --prompt go
+usage_error "both prompt flags, one of them empty" "--prompt needs a value" --start codex "${WORK}" --prompt "" --prompt-file "${BASE}/prompt.txt"
+usage_error "an empty model" "--model needs a value" --start codex "${WORK}" --prompt go --model ""
+usage_error "an empty effort" "--effort needs a value" --start codex "${WORK}" --prompt go --effort ""
+usage_error "a name that begins with a dash" "must be a window name" --start codex "${WORK}" --prompt go --name "-lane"
+usage_error "a name with a line break" "must be a window name" --start codex "${WORK}" --prompt go --name $'lane\nnext'
+usage_error "a name with a tab" "must be a window name" --start codex "${WORK}" --prompt go --name $'lane\tnext'
+check "no usage error reached the helper or created a window" "$(wc -l < "${HELPER_LOG}")/$(grep -c '^new-' "${TMUX_LOG}")" "0/0"
+
+fresh
+PROMPT=$'Read BRIEF.md in full.\nThen: prüfe §3 — "alles".'
+CODEX_HOME="${BASE}/codex home" run_lane --start codex "${WORK}" --model GPT-6.1-Sol --effort xhigh --name lane-a --prompt "${PROMPT}" --detach
+check "a lane start exits 0" "${RC}" "0"
+check "the helper gets folder, model, effort and name, each value in one word" "$(<"${HELPER_LOG}")" "start --cwd ${WORK} --model=GPT-6.1-Sol --effort=xhigh --name=lane-a"
+print -rn -- "${PROMPT}" > "${BASE}/prompt.want"
+check "the prompt reaches the helper on stdin, byte for byte" "$(cmp "${BASE}/prompt.want" "${HELPER_STDIN}" 2>&1)" ""
+excludes "and is on no helper command line" "$(<"${HELPER_LOG}")" "BRIEF"
+contains "the window runs codex resume on the session the helper named" "$(<"${TMUX_LOG}")" "-c ${WORK} codex resume ${SID_L}"
+contains "under the lane's name" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n lane-a "
+contains "with the caller's Codex home" "$(<"${TMUX_LOG}")" "-e CODEX_HOME=${BASE}/codex home"
+contains "the session is recorded on the window" "$(<"${TMUX_LOG}")" "set-option -w -t @10 @flakelab_session ${SID_L}"
+check "the helper has started the session before the window is created, and the mark follows" "$(( $(event 'helper start') > 0 && $(event 'helper start') < $(event 'tmux new-window') && $(event 'tmux new-window') < $(event 'tmux set-option') ))" "1"
+check "the mark is read back" "$(grep -c '^show-options -w -v -t @10 @flakelab_session$' "${TMUX_LOG}")" "1"
+contains "the report names model, effort, window and session" "${ERR}" "started codex gpt-6.1-sol xhigh in ${WORK} as agents:lane-a (@10), session ${SID_L}"
+contains "and how to close it" "${ERR}" "flakelab sessions --close lane-a"
+
+fresh
+run_lane --start codex "${WORK}" --prompt-file "${BASE}/prompt.txt" --trust --detach
+check "--prompt-file and --trust: exit 0" "${RC}" "0"
+check "the helper gets --trust and no model" "$(<"${HELPER_LOG}")" "start --cwd ${WORK} --trust"
+check "the file is the prompt, its last line break included" "$(cmp "${BASE}/prompt.txt" "${HELPER_STDIN}" 2>&1)" ""
+fresh
+printf 'two line breaks at the end\n\n' > "${BASE}/prompt.want"
+run_lane --start codex "${WORK}" --prompt $'two line breaks at the end\n\n' --detach
+check "a prompt given as text keeps its trailing line breaks too" "$(cmp "${BASE}/prompt.want" "${HELPER_STDIN}" 2>&1)" ""
+fresh
+run_lane --start codex "${WORK}" --prompt "-- not a flag" --detach
+check "a value that begins with a dash stays a value" "$(<"${HELPER_LOG}")/$(<"${HELPER_STDIN}")" "start --cwd ${WORK}/-- not a flag"
+contains "without --name the window is named as before" "$(<"${TMUX_LOG}")" "-n codex-work_dir "
+excludes "and no Codex home is passed when the caller has none" "$(<"${TMUX_LOG}")" "CODEX_HOME"
+
+fresh
+HELPER_FAIL=start HELPER_RC=2 run_lane --start codex "${WORK}" --model nope --prompt go --detach
+check "a refusal of the helper is the exit code" "${RC}" "2"
+contains "with its reason" "${ERR}" "start failed on purpose"
+excludes "and no window" "$(<"${TMUX_LOG}")" "new-window"
+
+fresh
+print -r -- "@3${US}lane-a${US}${SID_S}${US}1${US}codex resume ${SID_S}" > "${TMUX_WINDOWS}"
+run_lane --start codex "${WORK}" --name lane-a --prompt go --detach
+check "a name already in use exits 1" "${RC}" "1"
+check "before the helper is asked" "$(wc -l < "${HELPER_LOG}")" "0"
+: > "${TMUX_WINDOWS}"
+
+fresh
+FAKE_TMUX_NO_MARK=1 run_lane --start codex "${WORK}" --prompt go --detach
+check "a window that cannot be marked with its session exits 1" "${RC}" "1"
+contains "and says what that means, and how to reach the session" "${ERR}" "could not be marked with its session, so the table and --close will not know it; the session runs: codex resume ${SID_L}"
+excludes "and does not call it started" "${ERR}" "started codex"
+fresh
+FAKE_TMUX_WRONG_MARK=1 run_lane --start codex "${WORK}" --prompt go --detach
+check "a mark that reads back as something else exits 1 too" "${RC}" "1"
+
+fresh
+HANDOVER_DIGEST="${(l:64::a:):-}"
+CODEX_HOME="${BASE}/codex home" TYCSWAP_HANDOVER_CWD="${WORK}" TYCSWAP_HANDOVER_DIGEST="${HANDOVER_DIGEST}" run_lane --start codex "${WORK}" --prompt go --detach
+check "a lane started during a handover exits 0" "${RC}" "0"
+contains "its window keeps the handover" "$(<"${TMUX_LOG}")" "-e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
+contains "and the caller's Codex home" "$(<"${TMUX_LOG}")" "-e CODEX_HOME=${BASE}/codex home"
+
+fresh
+ln -s "${WORK}" "${BASE}/link to work"
+run_lane --start codex "${BASE}/link to work" --prompt go --detach
+check "a folder given by a symlink reaches the helper in that spelling" "$(<"${HELPER_LOG}")" "start --cwd ${BASE}/link to work"
+contains "and the window opens there" "$(<"${TMUX_LOG}")" "-c ${BASE}/link to work codex resume ${SID_L}"
+
+fresh
+: > "${TMUX_WINDOW_IDS}"
+run_lane --start codex "${WORK}" --prompt go --detach
+check "a window that is gone at once exits 1" "${RC}" "1"
+contains "and says the session runs, and how to reach it" "${ERR}" "the session runs without one: codex resume ${SID_L}"
+fresh
+FAKE_TMUX_NO_WINDOW=1 run_lane --start codex "${WORK}" --prompt go --detach
+check "a window tmux cannot create exits 1" "${RC}" "1"
+contains "with the same way back" "${ERR}" "codex resume ${SID_L}"
+print -r -- "@10" > "${TMUX_WINDOW_IDS}"
+
+# The table. Pid 8600 is the client in a lane's window (@6, which records
+# SID_L): it holds no rollout. Pid 8700 is Codex's shared server and holds
+# SID_S. Pid 500 holds its own rollout and is no shared server.
+print -r -- ""
+print -r -- "lanes: the table's session, STATE and MODEL"
+mk_proc 8060 "${WORK}" 1
+mk_proc 8600 "${WORK}" 8060 /dev/null
+mk_proc 8700 "${BASE}/other" 1 "${HOME}/.codex/sessions/2026/09/24/rollout-2026-09-24T11-00-00-${SID_S}.jsonl"
+printf 'codex\0app-server\0--listen\0' > "${PROC}/8700/cmdline"
+{
+  print -r -- "20${US}agents${US}@2${US}claude-work_dir${US}"
+  print -r -- "50${US}agents${US}@5${US}codex-codex_proj${US}"
+  print -r -- "8060${US}agents${US}@6${US}lane-a${US}${SID_L}"
+} > "${TMUX_PANES}"
+LANE_PIDS=$'500\n8600\n8700'
+fresh
+HELPER_BUSY="${SID_L}" FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane
+check "the table with lanes exits 0" "${RC}" "0"
+contains "the client in a lane's window shows the session its window records, working, with model and effort" "${OUT}" "codex   8600     0m      ${SID_L} lane-a             working   gpt-6.1-sol xhigh      -        ${WORK}"
+contains "a session of the shared server shows its state" "${OUT}" "${SID_S} -                  idle      gpt-6.1-sol xhigh"
+contains "a Codex process that holds its own rollout is not asked about" "${OUT}" "${SID_X} codex-codex_proj   -         -     "
+check "one helper call for all ids, with the 5 s limit" "$(<"${HELPER_LOG}")" "state --deadline 5 ${SID_L} ${SID_S}"
+excludes "the lane's client is no longer a row without a session" "${ERR}" "pid 8600"
+
+fresh
+HELPER_BUSY="${SID_L}" FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane --json
+check "--json: state, model and effort of the lane" "$(print -r -- "$OUT" | jq -c '.[] | select(.pid == 8600) | [.session, .state, .model, .effort, .host.window]')" "[\"${SID_L}\",\"working\",\"gpt-6.1-sol\",\"xhigh\",\"lane-a\"]"
+check "--json: null for a session that is not asked about" "$(print -r -- "$OUT" | jq -c '.[] | select(.pid == 500) | [.state, .model, .effort]')" "[null,null,null]"
+check "--json keeps its keys and their types" "$(print -r -- "$OUT" | jq -c '.[] | select(.pid == 8600) | [(.pid|type), (.age_seconds|type), (.cwd|type), (.host|type), (.group|type), (.profile|type), (.distro|type)]')" '["number","number","string","object","null","null","null"]'
+
+fresh
+HELPER_FAIL=state FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane
+check "a server that does not answer leaves the table and exit 0" "${RC}" "0"
+contains "with ? for what was asked" "${OUT}" "${SID_L} lane-a             ?         -     "
+contains "and one note" "${ERR}" "Codex's shared server did not answer"
+HELPER_FAIL=state FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane --json
+check "--json: null when the server did not answer" "$(print -r -- "$OUT" | jq -c '.[] | select(.pid == 8600) | .state')" "null"
+
+fresh
+HELPER_NO_ANSWER="${SID_L}" FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane
+check "an answer for only some sessions leaves the table and exit 0" "${RC}" "0"
+contains "with ? for the one without" "${OUT}" "${SID_L} lane-a             ?         -     "
+contains "the state of the other" "${OUT}" "${SID_S} -                  idle      gpt-6.1-sol xhigh"
+contains "and one note that says how many" "${ERR}" "note: Codex's shared server answered for 1 of 2 sessions; the others show ?"
+
+: > "${TMUX_LOG}"
+FAKE_PGREP_ONLY="${LANE_PIDS}" run_tmux --attach "${SID_L}"
+check "--attach by a lane's session id exits 0" "${RC}" "0"
+contains "and finds the lane's window through the id it records" "$(<"${TMUX_LOG}")" "select-window -t agents-6-"
+
+fresh
+export FLAKELAB_STATE_ROOT="${BASE}/lane-state"
+FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane --save "${BASE}/lane-save.txt"
+FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane --autosave
+FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane --resume "${BASE}/lane-save.txt"
+FAKE_PGREP_ONLY="${LANE_PIDS}" run_lane --recent
+unset FLAKELAB_STATE_ROOT
+check "--save, --autosave, --resume and --recent ask the helper nothing" "$(wc -l < "${HELPER_LOG}")" "0"
+check "a lane is saved once, like any session" "$(grep -c "${SID_L}" "${BASE}/lane-save.txt")" "1"
+
+# --close. The windows file is what tmux lists: id, name, recorded session,
+# panes, start command.
+print -r -- ""
+print -r -- "lanes: --close"
+# tmux reports a start command that holds spaces in double quotes; that is what a lane's row looks like.
+win() { print -r -- "$1${US}$2${US}$3${US}${4:-1}${US}${5-\"codex resume $3\"}" }
+# The windows of every case, written anew each time: a closed window leaves the list.
+windows() {
+  {
+    win @6 lane-a "${SID_L}"
+    win @7 lane-b "${SID_S}"
+    win @8 lane-b-view "${SID_S}"
+    win @9 plain ""
+    win @11 split "${SID_L}" 2
+    win @12 switched "${SID_L}" 1 "\"codex resume ${SID_X}\""
+    win @13 twin "${SID_L}"
+    win @14 twin "${SID_L}"
+    win @15 argv "${SID_L}" 1 "codex resume ${SID_L}"
+    win @16 shell "${SID_L}" 1 "\"printf 'resume ${SID_L}'; exec sh\""
+    win @17 other-talk "${SID_L}" 1 "\"codex resume ${SID_X} 'resume ${SID_L}'\""
+    win @18 odd-mark "not-a-session}" 1 "\"codex resume not-a-session}\""
+  } > "${TMUX_WINDOWS}"
+}
+left() { cut -d"$US" -f1 "${TMUX_WINDOWS}" | tr '\n' ' ' }
+kills() { grep '^kill-window' "${TMUX_LOG}" | tr '\n' ' ' }
+
+fresh; windows
+run_lane --close lane-a
+check "a finished lane closes with exit 0" "${RC}" "0"
+check "after one look at its session" "$(<"${HELPER_LOG}")" "close-check ${SID_L}"
+check "its window is removed" "$(kills)" "kill-window -t @6 "
+check "by a kill that tmux itself guards with pane count, session and start command" "$(grep -c "^if-shell -F -t @6 #{&&:#{==:#{session_name},agents},#{&&:#{==:#{window_panes},1},#{&&:#{==:#{@flakelab_session},${SID_L}},#{||:#{==:#{pane_start_command},codex resume ${SID_L}},#{==:#{pane_start_command},\"codex resume ${SID_L}\"}}}}} kill-window -t @6\$" "${TMUX_LOG}")" "1"
+check "stdout is the command that reopens it" "${OUT}" "cd ${(q)WORK} && codex resume ${SID_L}"
+fresh; windows
+run_lane --close argv
+check "a start command tmux reports without quotes is a lane as well" "${RC}/$(kills)" "0/kill-window -t @15 "
+
+fresh; windows
+HELPER_BUSY="${SID_L}" run_lane --close lane-a
+check "a lane that is not finished exits 1" "${RC}" "1"
+contains "with the reasons" "${ERR}" "not closed: ${SID_L}: the session is working; runs: sleep 300"
+contains "and what would close it" "${ERR}" "--force stops that first"
+check "its window stays" "$(kills)" ""
+check "nothing is printed to reopen" "${OUT}" ""
+
+fresh; windows
+HELPER_BUSY="${SID_L}" run_lane --close --force @6
+check "--force closes it" "${RC}" "0"
+check "by stopping first, then looking with the stop taken into account" "$(<"${HELPER_LOG}")" "stop --with-deadline ${SID_L}"$'\n'"close-check --after-stop ${SID_L}"
+check "then removing the window" "$(kills)" "kill-window -t @6 "
+fresh; windows
+HELPER_BUDGET=0.2 FAKE_TMUX_LIST_DELAY=0.3 run_lane --close --force --archive lane-a
+check "a deadline spent refreshing windows prevents removal and archive" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1//0"
+contains "late window observation reports expiry" "${ERR}" "stop deadline expired"
+fresh; windows
+HELPER_BUDGET=0.6 FAKE_TMUX_CONFIRM_DELAY=0.8 run_lane --close --force --archive lane-a
+check "expiry after a timely removal prevents archive" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1/kill-window -t @6 /0"
+contains "archive expiry names the windows already removed" "${ERR}" "windows @6 of ${SID_L} are gone and the session is not archived"
+contains "archive expiry retains the resume command" "${OUT}" "codex resume ${SID_L}"
+fresh; windows
+HELPER_FAIL=stop HELPER_BUSY="${SID_L}" run_lane --close --force lane-a
+check "a stop that fails closes nothing and looks no further" "${RC}/$(kills)/$(<"${HELPER_LOG}")" "1//stop --with-deadline ${SID_L}"
+
+fresh; windows
+run_lane --close --archive lane-a
+check "--archive: exit 0" "${RC}" "0"
+check "the unarchive line comes before the resume line" "${OUT}" "codex unarchive ${SID_L}"$'\n'"cd ${(q)WORK} && codex resume ${SID_L}"
+check "the session is archived after its window is gone" "$(( $(event 'tmux kill-window') > 0 && $(event 'helper archive') > $(event 'tmux kill-window') ))" "1"
+fresh; windows
+HELPER_FAIL=archive run_lane --close --archive lane-a
+check "an archive that fails exits 1" "${RC}" "1"
+contains "and says what is so now" "${ERR}" "the window of ${SID_L} is gone and the session is not archived"
+
+# What --close must never remove.
+fresh; windows
+for label target reason in \
+  "a window that records no session" plain "records no Codex session" \
+  "a window with two panes" split "has 2 panes" \
+  "a window started on another session" switched "was not started by flakelab on session ${SID_L}" \
+  "a shell whose command merely holds the words" shell "was not started by flakelab on session ${SID_L}" \
+  "another conversation whose prompt holds the words" other-talk "was not started by flakelab on session ${SID_L}" \
+  "a mark that is no session id" odd-mark "records something that is no session id"; do
+  run_lane --close --force --archive "${target}"
+  check "${label} is refused" "${RC}" "1"
+  contains "${label}: the reason" "${ERR}" "${reason}"
+done
+run_lane --close twin
+check "a name on two windows is refused" "${RC}" "1"
+contains "with their ids" "${ERR}" "@13 @14"
+check "none of them asked the helper or removed a window" "$(wc -l < "${HELPER_LOG}")/$(kills)" "0/"
+
+# The window is read again after the session was judged, and tmux compares once more at the kill.
+SPLIT='awk -F"$US" -v OFS="$US" "\$1 == \"@6\" { \$4 = 2; \$5 = \"vim important.txt\" } { print }" "${TMUX_WINDOWS}" > "${TMUX_WINDOWS}.n"; mv "${TMUX_WINDOWS}.n" "${TMUX_WINDOWS}"'
+fresh; windows
+US="${US}" HELPER_DURING_CHECK="${SPLIT}" run_lane --close --archive lane-a
+check "a window that was split and reused while its session was judged is not removed" "${RC}/$(kills)" "1/"
+contains "and the reason is what it has become" "${ERR}" "not closed: window @6 changed since it was judged: it has 2 panes"
+check "nothing is archived and nothing printed to reopen" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+# A window that became a sound lane of another session meanwhile: one pane, mark and command agree.
+RELANE='awk -F"$US" -v OFS="$US" -v sid="$OTHER" "\$1 == \"@6\" { \$3 = sid; \$5 = \"codex resume \" sid } { print }" "${TMUX_WINDOWS}" > "${TMUX_WINDOWS}.n"; mv "${TMUX_WINDOWS}.n" "${TMUX_WINDOWS}"'
+fresh; windows
+US="${US}" OTHER="${SID_X}" HELPER_DURING_CHECK="${RELANE}" run_lane --close --archive lane-a
+check "a window that became another session's lane while its session was judged is not removed" "${RC}/$(kills)" "1/"
+contains "and the reason names the session it records now" "${ERR}" "not closed: window @6 changed since it was judged: it now records session ${SID_X}"
+check "no kill was tried on it and nothing is archived" "$(grep -c '^if-shell' "${TMUX_LOG}")/$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/0/"
+fresh; windows
+US="${US}" FAKE_TMUX_BEFORE_KILL="${SPLIT}" run_lane --close --archive lane-a
+check "a window that changes at the very last moment is left by tmux's own comparison" "${RC}/$(kills)" "1/"
+contains "and that is said" "${ERR}" "not closed: window @6 could not be removed, or changed at the last moment"
+check "nothing is archived then either" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+
+fresh; windows
+HELPER_DURING_CHECK=': > "${TMUX_MOVED}"' run_lane --close --archive lane-a
+check "a window moved before refresh is globally present and preserved" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1//0"
+contains "a moved target is distinguished from a deleted target" "${ERR}" "left agents, or its absence could not be verified"
+fresh; windows
+FAKE_TMUX_MOVE=1 run_lane --close --archive lane-a
+check "a lane moved outside agents at the guard is preserved" "${RC}/$(kills)" "1/"
+check "a moved window is not archived" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+for failed in 1 2 3; do
+  fresh; windows
+  FAKE_TMUX_KILL_FAILS=@6 FAKE_TMUX_LIST_FAILS=$failed run_lane --close --archive lane-a
+  check "failed window observation $failed refuses closure" "${RC}" "1"
+  check "failed window observation $failed never archives" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+  excludes "failed window observation $failed never reports closed" "${ERR}" "closed ${SID_L}"
+  if [[ "$failed" == 1 ]]; then
+    check "failed initial observation reaches no helper" "$(wc -l < "${HELPER_LOG}")" 0
+  elif [[ "$failed" == 2 ]]; then
+    contains "failed refresh is reported as an unreadable observation" "${ERR}" "windows of ${SID_L} could not be read"
+  fi
+done
+
+fresh; windows
+FAKE_TMUX_KILL_FAILS=@6 run_lane --close --archive lane-a
+check "a window that cannot be removed exits 1" "${RC}" "1"
+excludes "the session is not called closed" "${ERR}" "closed ${SID_L}"
+check "and is not archived" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+fresh; windows
+FAKE_TMUX_KILL_FAILS=@8 run_lane --close --archive "${SID_S}"
+check "one of a session's two windows staying exits 1" "${RC}" "1"
+contains "and says which stayed and which went" "${ERR}" "session ${SID_S}: still there: @8; removed: @7; nothing was archived"
+check "without archiving" "$(grep -c '^archive' "${HELPER_LOG}")" "0"
+
+fresh; windows
+run_lane --close "${SID_S}"
+check "a session id closes every window that records it" "$(kills)" "kill-window -t @7 kill-window -t @8 "
+check "after one look" "$(<"${HELPER_LOG}")" "close-check ${SID_S}"
+fresh; windows
+run_lane --close lane-b @7 "${SID_S}"
+check "a window named three ways is closed once" "$(grep -c "^kill-window -t @7" "${TMUX_LOG}")/$(grep -c '^close-check' "${HELPER_LOG}")" "1/1"
+
+fresh; windows
+run_lane --close lane-a nowhere
+check "a target that selects no window exits 2" "${RC}" "2"
+check "before anything is closed" "$(wc -l < "${HELPER_LOG}")/$(kills)" "0/"
+fresh; windows
+HELPER_BUSY="${SID_S}" run_lane --close lane-a lane-b @14
+check "several targets, one refused: exit 1" "${RC}" "1"
+check "the finished ones are closed, the refused one stays" "$(kills)" "kill-window -t @6 kill-window -t @14 "
+check "the tmux stand-in was asked nothing it does not know" "$(<"${TMUX_UNKNOWN}")" ""
+unset FLAKELAB_CODEX_THREADS
+
+# The real helper against the stand-in server: start, the table, a refused
+# close and a forced one, end to end.
+print -r -- ""
+print -r -- "lanes: the real helper against lib/codex_fake_server.py"
+if command -v python3 >/dev/null 2>&1; then
+  FAKE_HOME="${BASE}/fh"
+  mkdir -p "${FAKE_HOME}"
+  mkfifo "${BASE}/fake.ready"
+  # Beside the lane the case starts: a session in an error state with a command still
+  # running, and an idle session whose helper agent works. Lists come one item a page.
+  SID_E=01a1d6cc-0000-7000-8000-00000000000c
+  SID_P=01a1d6dd-0000-7000-8000-00000000000d
+  SID_C=01a1d6ee-0000-7000-8000-00000000000e
+  jq -n --arg work "${WORK}" --arg e "${SID_E}" --arg p "${SID_P}" --arg c "${SID_C}" \
+    '{projects: {($work): "trusted"}, page_size: 1, terminals: {($e): ["sleep 300"]},
+      threads: {($e): {state: "error"}, ($p): {}, ($c): {state: "working", parent: $p, name: "Darwin"}}}' > "${BASE}/scenario.json"
+  python3 "${SCRIPT_DIR}/lib/codex_fake_server.py" "${FAKE_HOME}" "${BASE}/scenario.json" > "${BASE}/fake.ready" 2>"${BASE}/fake.err" &
+  FAKE_PID=$!
+  read -r READY < "${BASE}/fake.ready"
+  check "the stand-in server listens" "${READY}" "ready"
+  export CODEX_HOME="${FAKE_HOME}"
+  # The tmux stand-in writes its calls into the server's own request log: one order for both.
+  export EVENT_SINK="${FAKE_HOME}/requests.jsonl"
+  nth() { local n; n="$(jq -r '.method' "${FAKE_HOME}/requests.jsonl" | grep -n -m1 -x -- "$1" | cut -d: -f1)"; print -r -- "${n:-0}" }
+  requests() { jq -c "select(.method == \"$1\") | .params" "${FAKE_HOME}/requests.jsonl" }
+  fresh
+  : > "${TMUX_WINDOWS}"
+  run_lane --start codex "${WORK}" --model gpt-6-luna --effort low --name real-lane --prompt "${PROMPT}" --detach
+  check "the real helper starts a lane" "${RC}" "0"
+  REAL_SID="$(requests turn/start | jq -r '.threadId')"
+  check "the conversation is created with model and effort" "$(requests thread/start)" "{\"cwd\":\"${WORK}\",\"model\":\"gpt-6-luna\",\"config\":{\"model_reasoning_effort\":\"low\"}}"
+  check "the first turn carries model, effort and the prompt" "$(requests turn/start | jq -c '[.model, .effort, .input[0].text]')" "$(jq -cn --arg p "${PROMPT}" '["gpt-6-luna","low",$p]')"
+  contains "the window opens on the session the server created" "$(<"${TMUX_LOG}")" "codex resume ${REAL_SID}"
+  check "the first turn is started before the window is created" "$(( $(nth turn/start) > 0 && $(nth turn/start) < $(nth tmux/new-window) ))" "1"
+  check "and the prompt went out once" "$(requests turn/start | wc -l | tr -d ' ')" "1"
+  run_lane --start codex "${WORK}" --model gpt-9-nope --prompt go --detach
+  check "an unknown model is the real helper's usage error" "${RC}" "2"
+  contains "with the models offered" "${ERR}" "gpt-6.1-sol"
+  run_lane --start codex "${BASE}/other" --prompt go --detach
+  check "a folder without a trust decision is refused" "${RC}" "1"
+  contains "naming --trust" "${ERR}" "--trust"
+  print -r -- "8060${US}agents${US}@6${US}real-lane${US}${REAL_SID}" > "${TMUX_PANES}"
+  FAKE_PGREP_ONLY=8600 run_lane
+  contains "the table reads the lane's state from the server" "${OUT}" "${REAL_SID} real-lane          working   gpt-6-luna low"
+  win @6 real-lane "${REAL_SID}" > "${TMUX_WINDOWS}"
+  fresh
+  run_lane --close real-lane
+  check "the working lane is not closed" "${RC}/$(grep -c '^kill-window' "${TMUX_LOG}")" "1/0"
+  contains "because it is working" "${ERR}" "the session is working"
+  run_lane --close --force real-lane
+  check "--force closes it" "${RC}/$(grep -c '^kill-window' "${TMUX_LOG}")" "0/1"
+  check "after interrupting the turn the server started" "$(requests turn/interrupt | jq -r '.threadId')" "${REAL_SID}"
+  check "stdout is the resume line" "${OUT}" "cd ${(q)WORK} && codex resume ${REAL_SID}"
+
+  { win @21 broken "${SID_E}"; win @22 parent "${SID_P}" } > "${TMUX_WINDOWS}"
+  fresh
+  run_lane --close broken
+  check "a session in an error state is not closed" "${RC}/$(kills)" "1/"
+  contains "because of that state and its running command" "${ERR}" "the session is in an error state; runs: sleep 300"
+  run_lane --close --force broken
+  check "--force closes it" "${RC}/$(kills)" "0/kill-window -t @21 "
+  check "after ending its command, without an interrupt" "$(requests thread/backgroundTerminals/clean | jq -r '.threadId' | grep -c "${SID_E}")/$(requests turn/interrupt | jq -r '.threadId' | grep -c "${SID_E}")" "1/0"
+  fresh
+  run_lane --close parent
+  check "an idle session whose helper agent works is not closed" "${RC}/$(kills)" "1/"
+  contains "and the helper, found on a later page of the list, is named" "${ERR}" "helper agent Darwin is working"
+  run_lane --close --force parent
+  check "--force closes it" "${RC}/$(kills)" "0/kill-window -t @22 "
+  check "after interrupting the helper" "$(requests turn/interrupt | jq -r '.threadId' | grep -c "${SID_C}")" "1"
+  check "the tmux stand-in was asked nothing it does not know" "$(<"${TMUX_UNKNOWN}")" ""
+  unset EVENT_SINK
+  kill "${FAKE_PID}" 2>/dev/null
+  wait "${FAKE_PID}" 2>/dev/null
+  # A fresh stand-in: stop succeeds, verification on the next connection exceeds its budget.
+  FAKE_HOME="${BASE}/deadline-home"
+  jq -n --arg s "${SID_L}" '{threads: {($s): {state: "working"}}, read_delays: {"2": 0.4}}' > "${BASE}/deadline-scenario.json"
+  python3 "${SCRIPT_DIR}/lib/codex_fake_server.py" "${FAKE_HOME}" "${BASE}/deadline-scenario.json" > "${BASE}/fake.ready" 2>"${BASE}/fake.err" &
+  FAKE_PID=$!
+  read -r READY < "${BASE}/fake.ready"
+  export CODEX_HOME="${FAKE_HOME}"
+  fresh; windows
+  FLAKELAB_CODEX_STOP_SECONDS=0.25 run_lane --close --force --archive lane-a
+  check "forced close carries the stop deadline through verification" "${RC}/$(kills)" "1/"
+  excludes "expired verification never archives" "$(jq -r '.method' "${FAKE_HOME}/requests.jsonl")" "thread/archive"
+  contains "expiry reports the completed stop" "${ERR}" "interrupted: ${SID_L}"
+  contains "expiry leaves the windows intact" "${ERR}" "windows untouched"
+  kill "${FAKE_PID}" 2>/dev/null
+  wait "${FAKE_PID}" 2>/dev/null
+  unset CODEX_HOME
+else
+  print -r -- "  skip (python3 is not on PATH)"
+fi
+unset FAKE_TMUX_HAS FLAKELAB_SESSIONS_SETTLE
+rm -rf "${PROC}/8060" "${PROC}/8600" "${PROC}/8700"
+
 run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus
 check "an unknown flag exits 2" "${RC}" "2"
 
 print -r -- ""
+check "the recovery stand-in saw no unknown operations" "$(<"${TMUX_EARLY_UNKNOWN}")" ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

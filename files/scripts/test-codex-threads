@@ -1,0 +1,19 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+#
+# Suite for lib/codex_threads.py, the helper `flakelab sessions` uses to start,
+# read and stop Codex conversations on Codex's shared server. Offline: python
+# unittest in lib/test-codex-threads.py against lib/codex_fake_server.py, a
+# stand-in whose answers were recorded from a real server. This is the entry
+# point `make test` and the flake check run.
+#
+# With FLAKELAB_CODEX_LIVE=1 it runs the live checks instead, against this
+# box's own Codex server: they start real (cheap) sessions and remove them
+# again. Never part of `make test`; run them after a Codex update.
+#
+# Usage: files/scripts/test-codex-threads [unittest arguments]
+#
+
+exec python3 "${0:A:h}/lib/test-codex-threads.py" "$@"
