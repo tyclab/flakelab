@@ -75,7 +75,15 @@ Read for this topic; paths below are relative to the repository root unless stat
     this box's: two distros from one overlay share the hostname and the synced
     directory, never the machine id.
   - tycswap is the account switcher (`installTycswap`, pinned in
-    `flake.nix`); flakelab carries the glue only: `nix/home/tycswap.nix` (the
+    `flake.nix`); flakelab carries the glue only. With `installClaude` as well,
+    `nix/home/claude.nix` puts a marked-login launcher ahead of native Claude on
+    PATH, at `~/.local/share/flakelab/claude/bin/claude`. It preserves the official
+    `~/.local/bin/claude` link, resolves that real executable, rejects self-recursion
+    and execs `tycswap start -- <real> "$@"` once (native Claude once if tycswap is
+    absent). A nonzero result never retries. Its `# tycswap-start-launcher` marker
+    lets direct `tycswap start` skip it during default-command resolution; never
+    alias `claude` to `tycswap start -- claude`. Suite: `test-claude-start`.
+    Other glue: `nix/home/tycswap.nix` (the
     `flakelab-tycswap-autoswitch` timer behind `tycswapAutoSwitchInterval`, the
     `flakelab-tycswap-app` service behind `tycswapAppPort` for the Windows tray,
     and the quota hook in `claude.nix` that ticks the timer), `flakelab tray`

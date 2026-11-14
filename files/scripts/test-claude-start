@@ -1,0 +1,4 @@
+#!/usr/bin/env zsh
+# Offline launcher tests: fake native Claude and tycswap, never live logins.
+set -eu
+exec python3 "${0:A:h}/lib/test-claude-start.py"

@@ -30,6 +30,11 @@ let
   # Codex's config (nix/codex-config.nix) reads it too.
   inherit (sharedMcp) windowsChromePath;
 
+  # A separate PATH entry leaves the official installer's self-updating symlink
+  # untouched. Direct `tycswap start` recognises the launcher's marker and skips it.
+  startLauncher = installClaude && cfg.installTycswap;
+  startLauncherDir = "$HOME/.local/share/flakelab/claude/bin";
+
   # Pins live in variables so renovate.json's customManagers can see them; an inline
   # pin in an args list has no manager watching it.
   # renovate: datasource=pypi depName=mcp-grafana
@@ -313,6 +318,24 @@ let
   }:$PATH"'';
 in
 {
+  home.file = lib.optionalAttrs startLauncher {
+    ".local/share/flakelab/claude/bin/claude" = {
+      executable = true;
+      text =
+        builtins.replaceStrings
+          [ "#!/usr/bin/env bash" "@realpath@" ]
+          [ "#!${pkgs.bash}/bin/bash" "${pkgs.coreutils}/bin/realpath" ]
+          (builtins.readFile ../../files/scripts/claude-start-launcher);
+    };
+  };
+  home.sessionPath = lib.mkBefore (lib.optional startLauncher startLauncherDir);
+  # .zshenv also prepends npm's bin directory; the launcher must win there too.
+  programs.zsh.envExtra = lib.mkAfter (
+    lib.optionalString startLauncher ''
+      export PATH="${startLauncherDir}:$PATH"
+    ''
+  );
+
   xdg.configFile = lib.mapAttrs' (
     name: server:
     lib.nameValuePair "flakelab/claude-mcp/${name}.json" {

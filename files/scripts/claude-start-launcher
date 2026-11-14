@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# tycswap-start-launcher
+# Rendered by claude.nix with a pinned interpreter and realpath. Keep the
+# installer's ~/.local/bin/claude link intact, including across self-updates.
+
+set -- "$("@realpath@" -e -- "$HOME/.local/bin/claude" 2>/dev/null)" "$@"
+if [[ -z "$1" || ! -x "$1" || -d "$1" ]]; then
+  printf '%s\n' 'claude: native executable missing at ~/.local/bin/claude; run flakelab update.' >&2
+  exit 127
+fi
+if [[ "$1" -ef "$0" ]]; then
+  printf '%s\n' 'claude: ~/.local/bin/claude points to this launcher; remove that incorrect link and run flakelab update.' >&2
+  exit 126
+fi
+
+if command -v tycswap >/dev/null 2>&1; then
+  exec tycswap start -- "$@"
+fi
+exec "$@"
