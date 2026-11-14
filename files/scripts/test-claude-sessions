@@ -130,13 +130,25 @@ case "$1" in
     # Window ids count up from @10 per -P call, this one included.
     if [[ " $* " == *" -P "* ]]; then
       local -i n=$(( $(grep -c -- ' -P ' "${TMUX_LOG}") + 9 ))
+      print -r -- "@${n}${US}${@[-1]}" >> "${TMUX_CREATED}"
       print -r -- "@${n}"
     fi
     exit 0 ;;
-  *) exit 0 ;;
+  set-option)
+    [[ "$2 $3 $5" == "-w -t @flakelab_session" && $# == 6 ]] || exit 1
+    awk -F"$US" -v w="$4" '$1 == w {found=1} END {exit !found}' "${TMUX_CREATED}" || exit 1
+    print -r -- "$4${US}$6" >> "${TMUX_OPEN_MARKS}" ;;
+  show-options)
+    [[ "$2 $3 $4 $6" == "-w -v -t @flakelab_session" ]] || exit 1
+    awk -F"$US" -v w="$5" '$1 == w {v=$2} END {print v}' "${TMUX_OPEN_MARKS}" ;;
+  set-hook|select-window|switch-client|attach-session) exit 0 ;;
+  *) print -r -- "$*" >> "${TMUX_EARLY_UNKNOWN}"; exit 1 ;;
 esac
 STUB
 chmod +x "${TMUXBIN}/tmux"
+export US
+export TMUX_CREATED="${BASE}/created" TMUX_OPEN_MARKS="${BASE}/open-marks" TMUX_EARLY_UNKNOWN="${BASE}/early-unknown"
+: > "${TMUX_CREATED}"; : > "${TMUX_OPEN_MARKS}"; : > "${TMUX_EARLY_UNKNOWN}"
 export TMUX_LOG="${BASE}/tmux.log"
 export TMUX_PANES="${BASE}/panes"
 {
@@ -259,6 +271,10 @@ FAKE_PGREP_NONE=1 run_tmux --open
 check "--open with tmux exits 0" "${RC}" "0"
 check "--open with tmux opens a window per session" "$(grep -c '^new-window' "${TMUX_LOG}")" "3"
 check "--open records the session on the Codex window it creates, and on no Claude window" "$(grep -c '^set-option .*@flakelab_session' "${TMUX_LOG}")/$(grep -cE "^set-option -w -t @[0-9]+ @flakelab_session ${SID_X}\$" "${TMUX_LOG}")" "1/1"
+OPEN_WID="$(awk -F"$US" -v sid="$SID_X" '$2 == "codex resume " sid {print $1}' "${TMUX_CREATED}")"
+check "--open marks the actual created Codex window" "$(PATH="${TMUXBIN}:${PATH}" tmux show-options -w -v -t "$OPEN_WID" @flakelab_session)" "$SID_X"
+PATH="${TMUXBIN}:${PATH}" tmux set-option -w -t @999 @flakelab_session "$SID_X" >/dev/null 2>&1
+check "the recovery stand-in refuses a mark on a nonexistent window" "$?" 1
 contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --resume ${SID_A}"
 check "with the caller's PATH handed to it, whoever started the server" "$(grep -c '^new-window -d -P -F #{window_id} -t agents -n [a-z_-]* -e PATH=' "${TMUX_LOG}")" "3"
 check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "3"
@@ -867,13 +883,26 @@ case "$1" in
     [[ "$*" == "list-panes -a -F #{pane_pid}${US}#{session_name}${US}#{window_id}${US}#{window_name}${US}#{@flakelab_session}" ]] || unknown "$@"
     [[ -r "${TMUX_PANES:-}" ]] && cat "${TMUX_PANES}"; exit 0 ;;
   list-windows)
+    n=$(( $(cat "${TMUX_LIST_COUNT}" 2>/dev/null || print 0) + 1 ))
+    print -r -- "$n" > "${TMUX_LIST_COUNT}"
+    [[ " ${FAKE_TMUX_LIST_FAILS:-} " == *" $n "* ]] && exit 1
+    [[ -n "${FAKE_TMUX_LIST_DELAY:-}" ]] && sleep "$FAKE_TMUX_LIST_DELAY"
     case "$*" in
+      "list-windows -a -F #{window_id}")
+        [[ -n "${FAKE_TMUX_CONFIRM_DELAY:-}" ]] && sleep "$FAKE_TMUX_CONFIRM_DELAY"
+        [[ -r "${TMUX_WINDOWS:-}" ]] && cut -d"$US" -f1 "${TMUX_WINDOWS}"; exit 0 ;;
       "list-windows -t agents -F #{window_name}") [[ -r "${TMUX_WINDOWS:-}" ]] && cut -d"$US" -f2 "${TMUX_WINDOWS}"; exit 0 ;;
       "list-windows -t agents -F #{window_id}")
         [[ -r "${TMUX_WINDOW_IDS:-}" ]] && cat "${TMUX_WINDOW_IDS}"
-        [[ -r "${TMUX_WINDOWS:-}" ]] && cut -d"$US" -f1 "${TMUX_WINDOWS}"
+        if [[ -e "${TMUX_MOVED}" ]]; then
+          awk -F"$US" '$1 != "@6" {print $1}' "${TMUX_WINDOWS}"
+        elif [[ -r "${TMUX_WINDOWS:-}" ]]; then cut -d"$US" -f1 "${TMUX_WINDOWS}"; fi
         exit 0 ;;
-      "list-windows -t agents -F #{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}") [[ -r "${TMUX_WINDOWS:-}" ]] && cat "${TMUX_WINDOWS}"; exit 0 ;;
+      "list-windows -t agents -F #{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}")
+        if [[ -e "${TMUX_MOVED}" ]]; then
+          awk -F"$US" '$1 != "@6"' "${TMUX_WINDOWS}"
+        elif [[ -r "${TMUX_WINDOWS:-}" ]]; then cat "${TMUX_WINDOWS}"; fi
+        exit 0 ;;
     esac
     unknown "$@" ;;
   new-session|new-window)
@@ -895,10 +924,11 @@ case "$1" in
     # command with exactly what the row has. Only then is the row removed.
     [[ "$2 $3" == "-F -t" && $# == 6 && "$6" == "kill-window -t $4" ]] || unknown "$@"
     [[ -n "${FAKE_TMUX_BEFORE_KILL:-}" ]] && eval "${FAKE_TMUX_BEFORE_KILL}"
+    [[ -n "${FAKE_TMUX_MOVE:-}" ]] && : > "${TMUX_MOVED}"
     row="$(awk -F"$US" -v w="$4" '$1 == w' "${TMUX_WINDOWS}")"
     [[ -n "$row" ]] || exit 1
     IFS="$US" read -r wid wname wsid panes startcmd <<<"$row"
-    if [[ "$panes" == 1 && "$5" == *"#{==:#{window_panes},1}"* && "$5" == *"#{==:#{@flakelab_session},${wsid}}"* &&
+    if [[ ( ! -e "${TMUX_MOVED}" || "$5" != *"#{==:#{session_name},agents}"* ) && "$panes" == 1 && "$5" == *"#{==:#{window_panes},1}"* && "$5" == *"#{==:#{@flakelab_session},${wsid}}"* &&
           "$5" == *"#{==:#{pane_start_command},${startcmd}}"* && " ${FAKE_TMUX_KILL_FAILS:-} " != *" $4 "* ]]; then
       print -r -- "kill-window -t $4" >> "${TMUX_LOG}"
       [[ -n "${EVENTS:-}" ]] && print -r -- "tmux kill-window" >> "${EVENTS}"
@@ -928,7 +958,11 @@ case "$1" in
     else
       jq -cn --arg s "$sid" --arg cwd "${HELPER_CWD}" '{session: $s, finished: true, state: "idle", reasons: [], cwd: $cwd, name: null}'
     fi ;;
-  stop) : > "${HELPER_STOPPED}.$2"; print -r -- "{\"session\":\"$2\",\"interrupted\":[\"$2\"],\"cleaned\":[\"$2\"]}" ;;
+  stop)
+    sid="${@[-1]}"
+    : > "${HELPER_STOPPED}.${sid}"
+    until="$(python3 -c 'import os,time; print(time.monotonic()+float(os.environ.get("HELPER_BUDGET", "30")))')"
+    print -r -- "{\"session\":\"$sid\",\"interrupted\":[\"$sid\"],\"cleaned\":[\"$sid\"],\"until\":$until}" ;;
   archive) print -r -- "{\"session\":\"$2\",\"archived\":true}" ;;
   *) exit 2 ;;
 esac
@@ -937,11 +971,12 @@ chmod +x "${LANEBIN}"/*
 export HELPER_LOG="${BASE}/helper.log" HELPER_STDIN="${BASE}/helper.stdin" HELPER_SID="${SID_L}" HELPER_CWD="${WORK}" HELPER_STOPPED="${BASE}/stopped"
 export FLAKELAB_CODEX_THREADS="${LANEBIN}/helper" FLAKELAB_SESSIONS_SETTLE=0
 export TMUX_WINDOWS="${BASE}/windows" TMUX_WINDOW_IDS="${BASE}/window-ids" TMUX_MARKS="${BASE}/marks" TMUX_UNKNOWN="${BASE}/tmux-unknown"
+export TMUX_LIST_COUNT="${BASE}/list-count" TMUX_MOVED="${BASE}/moved"
 export EVENTS="${BASE}/events"
 : > "${TMUX_UNKNOWN}"
 export FAKE_TMUX_HAS=1
 run_lane() { OUT="$(PATH="${LANEBIN}:${PATH}" "${CMD}" "$@" 2>"${BASE}/err")"; RC=$?; ERR="$(<"${BASE}/err")"; }
-fresh() { : > "${TMUX_LOG}"; : > "${HELPER_LOG}"; : > "${HELPER_STDIN}"; : > "${TMUX_MARKS}"; : > "${EVENTS}"; rm -f "${HELPER_STOPPED}".*(N); }
+fresh() { print 0 > "${TMUX_LIST_COUNT}"; rm -f "${TMUX_MOVED}"; : > "${TMUX_LOG}"; : > "${HELPER_LOG}"; : > "${HELPER_STDIN}"; : > "${TMUX_MARKS}"; : > "${EVENTS}"; rm -f "${HELPER_STOPPED}".*(N); }
 # The first line number of an event, 0 when it never happened: for "this came before that".
 event() { local n; n="$(grep -n -m1 -x -- "$1" "${EVENTS}" | cut -d: -f1)"; print -r -- "${n:-0}" }
 print -r -- "@10" > "${TMUX_WINDOW_IDS}"
@@ -1148,7 +1183,7 @@ run_lane --close lane-a
 check "a finished lane closes with exit 0" "${RC}" "0"
 check "after one look at its session" "$(<"${HELPER_LOG}")" "close-check ${SID_L}"
 check "its window is removed" "$(kills)" "kill-window -t @6 "
-check "by a kill that tmux itself guards with pane count, session and start command" "$(grep -c "^if-shell -F -t @6 #{&&:#{==:#{window_panes},1},#{&&:#{==:#{@flakelab_session},${SID_L}},#{||:#{==:#{pane_start_command},codex resume ${SID_L}},#{==:#{pane_start_command},\"codex resume ${SID_L}\"}}}} kill-window -t @6\$" "${TMUX_LOG}")" "1"
+check "by a kill that tmux itself guards with pane count, session and start command" "$(grep -c "^if-shell -F -t @6 #{&&:#{==:#{session_name},agents},#{&&:#{==:#{window_panes},1},#{&&:#{==:#{@flakelab_session},${SID_L}},#{||:#{==:#{pane_start_command},codex resume ${SID_L}},#{==:#{pane_start_command},\"codex resume ${SID_L}\"}}}}} kill-window -t @6\$" "${TMUX_LOG}")" "1"
 check "stdout is the command that reopens it" "${OUT}" "cd ${(q)WORK} && codex resume ${SID_L}"
 fresh; windows
 run_lane --close argv
@@ -1165,11 +1200,20 @@ check "nothing is printed to reopen" "${OUT}" ""
 fresh; windows
 HELPER_BUSY="${SID_L}" run_lane --close --force @6
 check "--force closes it" "${RC}" "0"
-check "by stopping first, then looking with the stop taken into account" "$(<"${HELPER_LOG}")" "stop ${SID_L}"$'\n'"close-check --after-stop ${SID_L}"
+check "by stopping first, then looking with the stop taken into account" "$(<"${HELPER_LOG}")" "stop --with-deadline ${SID_L}"$'\n'"close-check --after-stop ${SID_L}"
 check "then removing the window" "$(kills)" "kill-window -t @6 "
 fresh; windows
+HELPER_BUDGET=0.2 FAKE_TMUX_LIST_DELAY=0.3 run_lane --close --force --archive lane-a
+check "a deadline spent refreshing windows prevents removal and archive" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1//0"
+contains "late window observation reports expiry" "${ERR}" "stop deadline expired"
+fresh; windows
+HELPER_BUDGET=0.6 FAKE_TMUX_CONFIRM_DELAY=0.8 run_lane --close --force --archive lane-a
+check "expiry after a timely removal prevents archive" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1/kill-window -t @6 /0"
+contains "archive expiry names the windows already removed" "${ERR}" "windows @6 of ${SID_L} are gone and the session is not archived"
+contains "archive expiry retains the resume command" "${OUT}" "codex resume ${SID_L}"
+fresh; windows
 HELPER_FAIL=stop HELPER_BUSY="${SID_L}" run_lane --close --force lane-a
-check "a stop that fails closes nothing and looks no further" "${RC}/$(kills)/$(<"${HELPER_LOG}")" "1//stop ${SID_L}"
+check "a stop that fails closes nothing and looks no further" "${RC}/$(kills)/$(<"${HELPER_LOG}")" "1//stop --with-deadline ${SID_L}"
 
 fresh; windows
 run_lane --close --archive lane-a
@@ -1218,6 +1262,27 @@ US="${US}" FAKE_TMUX_BEFORE_KILL="${SPLIT}" run_lane --close --archive lane-a
 check "a window that changes at the very last moment is left by tmux's own comparison" "${RC}/$(kills)" "1/"
 contains "and that is said" "${ERR}" "not closed: window @6 could not be removed, or changed at the last moment"
 check "nothing is archived then either" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+
+fresh; windows
+HELPER_DURING_CHECK=': > "${TMUX_MOVED}"' run_lane --close --archive lane-a
+check "a window moved before refresh is globally present and preserved" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1//0"
+contains "a moved target is distinguished from a deleted target" "${ERR}" "left agents, or its absence could not be verified"
+fresh; windows
+FAKE_TMUX_MOVE=1 run_lane --close --archive lane-a
+check "a lane moved outside agents at the guard is preserved" "${RC}/$(kills)" "1/"
+check "a moved window is not archived" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+for failed in 1 2 3; do
+  fresh; windows
+  FAKE_TMUX_KILL_FAILS=@6 FAKE_TMUX_LIST_FAILS=$failed run_lane --close --archive lane-a
+  check "failed window observation $failed refuses closure" "${RC}" "1"
+  check "failed window observation $failed never archives" "$(grep -c '^archive' "${HELPER_LOG}")/${OUT}" "0/"
+  excludes "failed window observation $failed never reports closed" "${ERR}" "closed ${SID_L}"
+  if [[ "$failed" == 1 ]]; then
+    check "failed initial observation reaches no helper" "$(wc -l < "${HELPER_LOG}")" 0
+  elif [[ "$failed" == 2 ]]; then
+    contains "failed refresh is reported as an unreadable observation" "${ERR}" "windows of ${SID_L} could not be read"
+  fi
+done
 
 fresh; windows
 FAKE_TMUX_KILL_FAILS=@6 run_lane --close --archive lane-a
@@ -1322,6 +1387,21 @@ if command -v python3 >/dev/null 2>&1; then
   unset EVENT_SINK
   kill "${FAKE_PID}" 2>/dev/null
   wait "${FAKE_PID}" 2>/dev/null
+  # A fresh stand-in: stop succeeds, verification on the next connection exceeds its budget.
+  FAKE_HOME="${BASE}/deadline-home"
+  jq -n --arg s "${SID_L}" '{threads: {($s): {state: "working"}}, read_delays: {"2": 0.4}}' > "${BASE}/deadline-scenario.json"
+  python3 "${SCRIPT_DIR}/lib/codex_fake_server.py" "${FAKE_HOME}" "${BASE}/deadline-scenario.json" > "${BASE}/fake.ready" 2>"${BASE}/fake.err" &
+  FAKE_PID=$!
+  read -r READY < "${BASE}/fake.ready"
+  export CODEX_HOME="${FAKE_HOME}"
+  fresh; windows
+  FLAKELAB_CODEX_STOP_SECONDS=0.25 run_lane --close --force --archive lane-a
+  check "forced close carries the stop deadline through verification" "${RC}/$(kills)" "1/"
+  excludes "expired verification never archives" "$(jq -r '.method' "${FAKE_HOME}/requests.jsonl")" "thread/archive"
+  contains "expiry reports the completed stop" "${ERR}" "interrupted: ${SID_L}"
+  contains "expiry leaves the windows intact" "${ERR}" "windows untouched"
+  kill "${FAKE_PID}" 2>/dev/null
+  wait "${FAKE_PID}" 2>/dev/null
   unset CODEX_HOME
 else
   print -r -- "  skip (python3 is not on PATH)"
@@ -1335,5 +1415,6 @@ run --bogus
 check "an unknown flag exits 2" "${RC}" "2"
 
 print -r -- ""
+check "the recovery stand-in saw no unknown operations" "$(<"${TMUX_EARLY_UNKNOWN}")" ""
 print -r -- "${PASS} passed, ${FAIL} failed"
 (( FAIL == 0 ))

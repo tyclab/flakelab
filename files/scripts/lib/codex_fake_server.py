@@ -71,6 +71,7 @@ class FakeCodex:
         self.auto_trust = False  # thread/start saves a trust entry for cwd, as Codex does
         self.echo = {}  # overrides of thread/start's echoed "model" / "reasoningEffort"
         self.fail = {}  # method -> list of "error", "silent" or "drop:<key>", used up one per call
+        self.envelope = {}  # malformed reply after applying the request
         self.unknown = set()  # methods this server does not have
         self.fragment = False  # answers in two fragments with a ping between
         self.noise = False  # a notification and a server request before each answer
@@ -79,6 +80,8 @@ class FakeCodex:
         self.turn_changes = 0  # the active turn is replaced this many times before an interrupt
         self.stall_after = None  # answer this many thread/read, then stop answering them
         self.reads = 0
+        self.connections = 0
+        self.read_delays = {}  # connection number -> seconds for each thread/read
         self.delay = 0.0  # seconds every answer takes
         self.deaf_after = None  # after this many messages the server stops reading, for deaf_seconds
         self.deaf_seconds = 6.0
@@ -245,7 +248,7 @@ class FakeCodex:
             for key in path:
                 target = target[key]
             target.pop(last, None)
-        self._send(conn, {"id": rid, "result": result})
+        self._send(conn, {"id": rid, **self.envelope} if plan == "envelope" else {"id": rid, "result": result})
 
     def _thread_object(self, tid, sample="thread-read-idle"):
         t = self.threads[tid]
@@ -284,6 +287,8 @@ class FakeCodex:
     def _result(self, session, method, params):
         x = self.exchanges
         if method == "initialize":
+            self.connections += 1
+            session["connection"] = self.connections
             session["experimental"] = bool((params.get("capabilities") or {}).get("experimentalApi"))
             return copy.deepcopy(x["initialize"]["answer"]["result"])
         if method == "config/read":
@@ -323,6 +328,7 @@ class FakeCodex:
             result["turn"].update(id=turn, rootTurnId=turn)
             return result
         if method == "thread/read":
+            time.sleep(self.read_delays.get(str(session["connection"]), 0))
             self.reads += 1
             if self.stall_after is not None and self.reads > self.stall_after:
                 return None

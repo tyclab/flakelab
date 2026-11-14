@@ -240,7 +240,12 @@ class Server:
         home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
         self.version = "unknown"
         self.next_id = 0
+        if deadline is None and os.environ.get("FLAKELAB_CODEX_UNTIL"):
+            deadline = Deadline(0)
+            deadline.end = float(os.environ["FLAKELAB_CODEX_UNTIL"])
         self.overall = deadline
+        if deadline and deadline.over():
+            raise NoAnswer(f"connect: not sent, the time for this command is up ({self.where()})")
         # Codex makes this a link into a short directory; the resolved path also fits
         # a socket address where a long CODEX_HOME would not.
         path = os.path.realpath(os.path.join(home, "app-server-control", "app-server-control.sock"))
@@ -284,8 +289,10 @@ class Server:
         except Refusal as err:
             raise Refusal(f"{method}: {err} ({self.where()})") from None
         if "error" in answer:
-            error = answer["error"] if isinstance(answer["error"], dict) else {"message": answer["error"]}
-            raise RpcError(f"{method}: {str(error.get('message'))[:300]} ({self.where()})", error.get("code"))
+            error = answer["error"]
+            if ("result" in answer or not isinstance(error, dict) or type(error.get("code")) is not int or not isinstance(error.get("message"), str)):
+                raise Refusal(f"{method}: malformed error answer ({self.where()})")
+            raise RpcError(f"{method}: {error['message'][:300]} ({self.where()})", error["code"])
         if not isinstance(answer.get("result"), dict):
             raise Refusal(f"{method}: the answer has no result ({self.where()})")
         return answer["result"]
@@ -303,10 +310,10 @@ class Server:
         while True:
             result = self.call(method, {**params, **({"cursor": cursor} if cursor else {})})
             items += self.need(result, "data", method, list)
-            cursor = result.get("nextCursor")
-            if not cursor:
+            cursor = self.need(result, "nextCursor", method)
+            if cursor is None:
                 return items
-            if not isinstance(cursor, str) or cursor in seen:
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
                 raise Refusal(f"{method}: the server repeats its page cursor, the list cannot be read to its end ({self.where()})")
             seen.add(cursor)
 
@@ -359,15 +366,27 @@ def helpers_of(server, tid):
         if parent is not None and not isinstance(parent, str):
             raise Refusal(f"thread/read: 'parentThreadId' in the answer is not what it should be ({server.where()})")
         threads[other] = thread
-    found, family, grew = [], {tid}, True
-    while grew:
-        grew = False
-        for other, thread in threads.items():
-            if other not in family and thread["parentThreadId"] in family:
-                family.add(other)
-                found.append((other, thread))
-                grew = True
-    return found
+    ancestors = dict(threads)
+    family = {tid: True}
+    for other in threads:
+        chain, current = set(), other
+        while current not in family:
+            if current in chain:
+                raise Refusal(f"thread/read: cycle in parent chain at {current} ({server.where()})")
+            chain.add(current)
+            thread = ancestors.get(current)
+            if thread is None:
+                thread = ancestors[current] = read(server, current)
+            parent = server.need(thread, "parentThreadId", "thread/read")
+            if parent is None:
+                family[current] = False
+                break
+            if not isinstance(parent, str) or not parent:
+                raise Refusal(f"thread/read: invalid parentThreadId for {current} ({server.where()})")
+            current = parent
+        related = family[current]
+        family.update((member, related) for member in chain)
+    return [(other, thread) for other, thread in threads.items() if family[other]]
 
 
 def terminals_of(server, tid):
@@ -577,27 +596,26 @@ def close_check(args):
     thread = read(server, args.id)
     now = state_of(server, thread)
     reasons = []
-    if now != "unloaded":
+    if now in blocking:
+        reasons.append(f"the session {blocking[now]}")
+    members = [(args.id, thread), *helpers_of(server, args.id)]
+    for tid, helper in members[1:]:
+        word = state_of(server, helper)
+        if word in blocking:
+            reasons.append(f"helper agent {helper.get('agentNickname') or helper.get('name') or tid} {blocking[word]}")
+    for tid, member in members:
+        if state_of(server, member) == "unloaded":
+            continue
+        try:
+            reasons += [f"runs: {command}" for command in terminals_of(server, tid)]
+        except Refusal as err:
+            reasons.append(f"its running commands could not be read ({err})")
+    if not reasons:
+        # The last look, immediately before the caller removes the window.
+        thread = read(server, args.id)
+        now = state_of(server, thread)
         if now in blocking:
             reasons.append(f"the session {blocking[now]}")
-        members = [(args.id, thread), *helpers_of(server, args.id)]
-        for tid, helper in members[1:]:
-            word = state_of(server, helper)
-            if word in REASONS:
-                reasons.append(f"helper agent {helper.get('agentNickname') or helper.get('name') or tid} {REASONS[word]}")
-        for tid, member in members:
-            if state_of(server, member) == "unloaded":
-                continue
-            try:
-                reasons += [f"runs: {command}" for command in terminals_of(server, tid)]
-            except Refusal as err:
-                reasons.append(f"its running commands could not be read ({err})")
-        if not reasons:
-            # The last look, immediately before the caller removes the window.
-            thread = read(server, args.id)
-            now = state_of(server, thread)
-            if now in blocking:
-                reasons.append(f"the session {blocking[now]}")
     server.close()
     return {"session": args.id, "finished": not reasons, "state": now, "reasons": reasons, "cwd": thread.get("cwd"), "name": thread.get("name")}
 
@@ -606,13 +624,15 @@ def stop(args):
     # One deadline from before the connection: no interrupt and no clean is sent after it.
     deadline = Deadline(STOP_SECONDS)
     interrupted, cleaned = [], []
+    pending, refused, known = None, None, {}
     try:
         server = Server(experimental=True, deadline=deadline)
-        thread = read(server, args.id)
-        if state_of(server, thread) == "unloaded":
-            server.close()
-            return {"session": args.id, "interrupted": [], "cleaned": []}
+        read(server, args.id)
         members = [args.id, *[tid for tid, _ in helpers_of(server, args.id)]]
+
+        for tid in members:
+            member = read(server, tid)
+            known[tid] = (state_of(server, member), [] if state_of(server, member) == "unloaded" else terminals_of(server, tid))
 
         def newest_turn(tid):
             listed = server.call("thread/turns/list", {"threadId": tid, "limit": 1, "sortDirection": "desc"})
@@ -630,10 +650,13 @@ def stop(args):
                 if turn.get("status") != "inProgress":
                     break
                 try:
+                    pending = ("turn/interrupt", tid)
                     server.call("turn/interrupt", {"threadId": tid, "turnId": turn.get("id")})
                     interrupted.append(tid)
+                    pending, refused = None, None
                     break
                 except RpcError:
+                    refused, pending = pending, None
                     again = newest_turn(tid)
                     if again.get("status") == "inProgress" and again.get("id") == turn.get("id"):
                         raise
@@ -655,15 +678,23 @@ def stop(args):
         wait(lambda: [tid for tid in members if state_of(server, read(server, tid)) in ACTIVE], "working")
         loaded = [tid for tid in members if state_of(server, read(server, tid)) != "unloaded"]
         for tid in loaded:
+            pending = ("thread/backgroundTerminals/clean", tid)
             server.call("thread/backgroundTerminals/clean", {"threadId": tid})
             cleaned.append(tid)
+            pending = None
         wait(lambda: [c for tid in loaded for c in terminals_of(server, tid)], "running")
         server.close()
     except Refusal as err:
         # What was done before the failure is part of the answer: the session is no longer as it was.
         done = f"interrupted before that: {', '.join(interrupted) or 'none'}; background commands ended in: {', '.join(cleaned) or 'none'}"
-        raise Refusal(f"{err}; {done}; no window was closed") from None
-    return {"session": args.id, "interrupted": interrupted, "cleaned": cleaned}
+        if isinstance(err, RpcError) and pending:
+            refused, pending = pending, None
+        action = f"; uncertain: {pending[0]} for {pending[1]} (may have taken effect)" if pending else ""
+        if refused and not pending:
+            action += f"; refused: {refused[0]} for {refused[1]}"
+        unresolved = [f"{tid} (last observed {word}; commands: {', '.join(commands) or 'none'})" for tid, (word, commands) in known.items() if (word in ACTIVE and tid not in interrupted) or (commands and tid not in cleaned)]
+        raise Refusal(f"{err}; {done}{action}; unresolved: {'; '.join(unresolved) or args.id}; no window was closed") from None
+    return {"session": args.id, "interrupted": interrupted, "cleaned": cleaned, **({"until": deadline.end} if args.with_deadline else {})}
 
 
 def archive(args):
@@ -694,6 +725,8 @@ def main(argv=None):
     for name, run in (("stop", stop), ("archive", archive)):
         p = sub.add_parser(name)
         p.add_argument("id", metavar="ID")
+        if name == "stop":
+            p.add_argument("--with-deadline", action="store_true")
         p.set_defaults(run=run)
     args = parser.parse_args(argv)
     try:

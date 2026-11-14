@@ -1073,11 +1073,12 @@ start_lane() {
 # panes, start command.
 typeset -a LANE_ROWS=()
 lane_rows() {
-  local line
+  local line rows
   LANE_ROWS=()
+  rows="$(tmux list-windows -t "$TMUX_SESSION" -F "#{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}" 2>/dev/null)" || return 1
   while IFS= read -r line; do
     [[ -n "$line" ]] && LANE_ROWS+=("$line")
-  done < <(tmux list-windows -t "$TMUX_SESSION" -F "#{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}" 2>/dev/null)
+  done <<<"$rows"
   return 0
 }
 
@@ -1105,12 +1106,26 @@ lane_fault() {
 # kill, so a window that was split or reused after it was last read stays. 0: it is gone.
 kill_lane() {
   local wid="$1" sid="$2" want fmt
-  local -a alive=()
   want="$(tool_command codex resume "$sid")"
-  fmt="#{&&:#{==:#{window_panes},1},#{&&:#{==:#{@flakelab_session},${sid}},#{||:#{==:#{pane_start_command},${want}},#{==:#{pane_start_command},\"${want}\"}}}}"
-  tmux if-shell -F -t "$wid" "$fmt" "kill-window -t ${wid}" >/dev/null 2>&1
-  alive=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_id}' 2>/dev/null)}" )
-  (( ! ${alive[(Ie)$wid]} ))
+  fmt="#{&&:#{==:#{session_name},${TMUX_SESSION}},#{&&:#{==:#{window_panes},1},#{&&:#{==:#{@flakelab_session},${sid}},#{||:#{==:#{pane_start_command},${want}},#{==:#{pane_start_command},\"${want}\"}}}}}"
+  lane_in_time || return 1
+  tmux if-shell -F -t "$wid" "$fmt" "kill-window -t ${wid}" >/dev/null 2>&1 || return 1
+  lane_absent "$wid"
+}
+
+lane_absent() {
+  local rows
+  local -a alive=()
+  rows="$(tmux list-windows -a -F '#{window_id}' 2>/dev/null)" || return 1
+  alive=( "${(@f)rows}" )
+  (( ! ${alive[(Ie)$1]} ))
+}
+
+lane_in_time() {
+  [[ -z "${FLAKELAB_CODEX_UNTIL:-}" ]] && return 0
+  python3 -c 'import os,sys,time; sys.exit(time.monotonic() >= float(os.environ["FLAKELAB_CODEX_UNTIL"]))' && return 0
+  print -ru2 -- "not closed: the stop deadline expired; ${LANE_STOP_DONE}; no further window removal or archive was sent"
+  return 1
 }
 
 # --close: a window is a view, the conversation lives on Codex's server. The
@@ -1121,14 +1136,16 @@ kill_lane() {
 # window. The window itself is read again then, and tmux compares it once more
 # at the kill (kill_lane): what is removed is the lane that was judged.
 close_sessions() {
-  local line wid wname wsid panes startcmd target sid w check cwd fault
+  local line wid wname wsid panes startcmd target sid w check cwd fault stopped
+  local -x FLAKELAB_CODEX_UNTIL=""
+  local LANE_STOP_DONE=""
   local -i rc=0
   local bad found
   local -a by_id=() by_name=() by_session=() chosen=() order=() removed=() kept=()
   local -A windows_of=()
   have_tmux || { print -ru2 -- "Error: --close needs tmux on PATH"; return 2 }
   (( ${#CLOSE_TARGETS} > 0 )) || { print -ru2 -- "Error: --close needs a window or a session id"; return 2 }
-  lane_rows
+  lane_rows || { print -ru2 -- "Error: windows of ${TMUX_SESSION} could not be read; nothing was closed"; return 1 }
   # A target that selects no window is a usage error, found before anything is closed.
   for target in "${CLOSE_TARGETS[@]}"; do
     bad=true
@@ -1167,11 +1184,15 @@ close_sessions() {
     done
   done
   for sid in "${order[@]}"; do
+    FLAKELAB_CODEX_UNTIL=""
     if $CLOSE_FORCE; then
       # A stop that fails says what it had done; its windows stay.
-      codex_threads stop "$sid" >/dev/null || { rc=1; continue }
+      stopped="$(codex_threads stop --with-deadline "$sid")" || { rc=1; continue }
+      FLAKELAB_CODEX_UNTIL="$(print -r -- "$stopped" | jq -r '.until // empty')"
+      LANE_STOP_DONE="$(print -r -- "$stopped" | jq -r '"interrupted: " + (.interrupted | join(", ")) + "; cleaned: " + (.cleaned | join(", "))')"
+      [[ -n "$FLAKELAB_CODEX_UNTIL" ]] || { print -ru2 -- "Error: stop named no deadline; ${LANE_STOP_DONE}; windows untouched"; rc=1; continue }
       # After a stop an error state no longer holds the window: what could be ended, was.
-      check="$(codex_threads close-check --after-stop "$sid")" || { rc=1; continue }
+      check="$(codex_threads close-check --after-stop "$sid")" || { print -ru2 -- "not closed: ${sid}; ${LANE_STOP_DONE}; windows untouched"; rc=1; continue }
     else
       check="$(codex_threads close-check "$sid")" || { rc=1; continue }
     fi
@@ -1181,7 +1202,8 @@ close_sessions() {
     fi
     cwd="$(print -r -- "$check" | jq -r '.cwd // ""')"
     # The windows as they are now: the check above took time, and so did earlier targets.
-    lane_rows
+    lane_rows || { print -ru2 -- "not closed: windows of ${sid} could not be read; unverified:${windows_of[$sid]}; nothing was archived"; rc=1; continue }
+    lane_in_time || { rc=1; continue }
     removed=(); kept=()
     for w in ${=windows_of[$sid]}; do
       found=false; fault=""
@@ -1194,7 +1216,12 @@ close_sessions() {
         break
       done
       if ! $found; then
-        removed+=("$w")  # it went by itself
+        if lane_absent "$w"; then
+          removed+=("$w")
+        else
+          print -ru2 -- "not closed: window ${w} left ${TMUX_SESSION}, or its absence could not be verified"
+          kept+=("$w")
+        fi
       elif [[ -n "$fault" ]]; then
         print -ru2 -- "not closed: window ${w} changed since it was judged: it ${fault}"
         kept+=("$w")
@@ -1210,6 +1237,11 @@ close_sessions() {
       rc=1; continue
     fi
     if $CLOSE_ARCHIVE; then
+      lane_in_time || {
+        print -ru2 -- "Error: windows ${(j: :)removed} of ${sid} are gone and the session is not archived"
+        resume_line codex "$cwd" "$sid"
+        rc=1; continue
+      }
       if codex_threads archive "$sid" >/dev/null; then
         print -r -- "codex unarchive ${sid}"
       else
