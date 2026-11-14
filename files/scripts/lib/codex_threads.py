@@ -623,7 +623,7 @@ def close_check(args):
 def stop(args):
     # One deadline from before the connection: no interrupt and no clean is sent after it.
     deadline = Deadline(STOP_SECONDS)
-    interrupted, cleaned = [], []
+    interrupted, acknowledged, cleaned = [], [], []
     pending, refused, known = None, None, {}
     try:
         server = Server(experimental=True, deadline=deadline)
@@ -680,19 +680,32 @@ def stop(args):
         for tid in loaded:
             pending = ("thread/backgroundTerminals/clean", tid)
             server.call("thread/backgroundTerminals/clean", {"threadId": tid})
-            cleaned.append(tid)
+            acknowledged.append(tid)
             pending = None
-        wait(lambda: [c for tid in loaded for c in terminals_of(server, tid)], "running")
+
+        def running():
+            busy = []
+            for tid in loaded:
+                commands = terminals_of(server, tid)
+                known[tid] = (known[tid][0], commands)
+                if not commands and tid not in cleaned:
+                    cleaned.append(tid)
+                elif commands and tid in cleaned:
+                    cleaned.remove(tid)
+                busy += [f"{tid}: {command}" for command in commands]
+            return busy
+
+        wait(running, "running")
         server.close()
     except Refusal as err:
         # What was done before the failure is part of the answer: the session is no longer as it was.
-        done = f"interrupted before that: {', '.join(interrupted) or 'none'}; background commands ended in: {', '.join(cleaned) or 'none'}"
+        done = f"interrupted before that: {', '.join(interrupted) or 'none'}; cleanup acknowledged in: {', '.join(acknowledged) or 'none'}; background commands ended in: {', '.join(cleaned) or 'none'}"
         if isinstance(err, RpcError) and pending:
             refused, pending = pending, None
         action = f"; uncertain: {pending[0]} for {pending[1]} (may have taken effect)" if pending else ""
         if refused and not pending:
             action += f"; refused: {refused[0]} for {refused[1]}"
-        unresolved = [f"{tid} (last observed {word}; commands: {', '.join(commands) or 'none'})" for tid, (word, commands) in known.items() if (word in ACTIVE and tid not in interrupted) or (commands and tid not in cleaned)]
+        unresolved = [f"{tid} (last observed {word}; commands: {', '.join(commands) or 'none'})" for tid, (word, commands) in known.items() if (word in ACTIVE and tid not in interrupted) or commands]
         raise Refusal(f"{err}; {done}{action}; unresolved: {'; '.join(unresolved) or args.id}; no window was closed") from None
     return {"session": args.id, "interrupted": interrupted, "cleaned": cleaned, **({"until": deadline.end} if args.with_deadline else {})}
 

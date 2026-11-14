@@ -1206,6 +1206,7 @@ fresh; windows
 HELPER_BUDGET=0.2 FAKE_TMUX_LIST_DELAY=0.3 run_lane --close --force --archive lane-a
 check "a deadline spent refreshing windows prevents removal and archive" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1//0"
 contains "late window observation reports expiry" "${ERR}" "stop deadline expired"
+contains "expiry names verified command termination" "${ERR}" "background commands ended in: ${SID_L}"
 fresh; windows
 HELPER_BUDGET=0.6 FAKE_TMUX_CONFIRM_DELAY=0.8 run_lane --close --force --archive lane-a
 check "expiry after a timely removal prevents archive" "${RC}/$(kills)/$(grep -c '^archive' "${HELPER_LOG}")" "1/kill-window -t @6 /0"

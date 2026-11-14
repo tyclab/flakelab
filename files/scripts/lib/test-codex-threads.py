@@ -791,6 +791,64 @@ class CloseTest(Case):
         self.assertIn("no window was closed", err)
         self.assertEqual(self.fake.threads[T2]["state"], "working")
 
+    def test_acknowledged_cleanup_reports_the_surviving_commands_owner(self):
+        self.fake.add_thread(T1, state="unloaded")
+        self.fake.add_thread(T2, state="unloaded", parent=T1)
+        self.fake.add_thread(T3, state="error", parent=T2)
+        self.fake.terminals[T3] = ["original command"]
+        self.fake.sticky = True
+        original = self.fake._result
+
+        def result(session, method, params):
+            answer = original(session, method, params)
+            if method == "thread/backgroundTerminals/clean":
+                self.fake.terminals[T3] = ["sleep 300"]
+            return answer
+
+        self.fake._result = result
+        rc, out, err = self.run_helper("stop", T1, env={"FLAKELAB_CODEX_STOP_SECONDS": "1"})
+        self.assertEqual((rc, out), (1, None))
+        self.assertEqual(self.fake.terminals[T3], ["sleep 300"])
+        self.assertIn(f"still running: {T3}: sleep 300", err)
+        self.assertIn(f"cleanup acknowledged in: {T3}", err)
+        self.assertIn("background commands ended in: none", err)
+        self.assertIn(f"unresolved: {T3} (last observed error; commands: sleep 300)", err)
+        self.assertNotIn("original command", err)
+        self.assertNotIn(f"unresolved: {T1}", err)
+
+    def test_cleanup_is_ended_only_after_an_empty_terminal_list_is_read(self):
+        self.fake.add_thread(T1, state="error")
+        self.fake.add_thread(T2, state="error", parent=T1)
+        self.fake.terminals = {T1: ["parent command"], T2: ["child command"]}
+        self.fake.sticky = True
+        original = self.fake._result
+
+        def result(session, method, params):
+            answer = original(session, method, params)
+            if method == "thread/backgroundTerminals/clean":
+                self.fake.terminals[T1] = []
+            return answer
+
+        self.fake._result = result
+        rc, out, err = self.run_helper("stop", T1, env={"FLAKELAB_CODEX_STOP_SECONDS": "1"})
+        self.assertEqual((rc, out), (1, None))
+        self.assertIn(f"cleanup acknowledged in: {T1}, {T2}", err)
+        self.assertIn(f"background commands ended in: {T1};", err)
+        self.assertIn(f"unresolved: {T2} (last observed error; commands: child command)", err)
+        self.assertTrue(any(method == "thread/backgroundTerminals/list" and params["threadId"] == T1
+                            for method, params in self.fake.log[self.fake.methods().index("thread/backgroundTerminals/clean") + 1:]))
+
+    def test_cleanup_with_an_unreadable_final_list_is_only_acknowledged(self):
+        self.fake.add_thread(T1, state="error")
+        self.fake.terminals[T1] = ["sleep 300"]
+        self.fake.fail = {"thread/backgroundTerminals/list": ["ok", "error"]}
+        rc, out, err = self.run_helper("stop", T1)
+        self.assertEqual((rc, out), (1, None))
+        self.assertEqual(self.fake.terminals[T1], [])
+        self.assertIn(f"cleanup acknowledged in: {T1}", err)
+        self.assertIn("background commands ended in: none", err)
+        self.assertIn(f"unresolved: {T1} (last observed error; commands: sleep 300)", err)
+
     def test_a_server_without_the_turn_list_is_found_before_anything_is_interrupted(self):
         self.fake.add_thread(T1, state="working")
         self.fake.unknown = {"thread/turns/list"}

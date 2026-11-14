@@ -1189,7 +1189,7 @@ close_sessions() {
       # A stop that fails says what it had done; its windows stay.
       stopped="$(codex_threads stop --with-deadline "$sid")" || { rc=1; continue }
       FLAKELAB_CODEX_UNTIL="$(print -r -- "$stopped" | jq -r '.until // empty')"
-      LANE_STOP_DONE="$(print -r -- "$stopped" | jq -r '"interrupted: " + (.interrupted | join(", ")) + "; cleaned: " + (.cleaned | join(", "))')"
+      LANE_STOP_DONE="$(print -r -- "$stopped" | jq -r '"interrupted: " + (.interrupted | join(", ")) + "; background commands ended in: " + (.cleaned | join(", "))')"
       [[ -n "$FLAKELAB_CODEX_UNTIL" ]] || { print -ru2 -- "Error: stop named no deadline; ${LANE_STOP_DONE}; windows untouched"; rc=1; continue }
       # After a stop an error state no longer holds the window: what could be ended, was.
       check="$(codex_threads close-check --after-stop "$sid")" || { print -ru2 -- "not closed: ${sid}; ${LANE_STOP_DONE}; windows untouched"; rc=1; continue }

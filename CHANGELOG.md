@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- `flakelab sessions --close --force` reports surviving commands with their owning session and distinguishes acknowledged cleanup from verified termination.
+
 - `flakelab clone` also fetches and updates existing local clones outside discovery destinations, including second copies. Discovery exclusions prevent new clones; existing checkouts retain the usual rebase guards. Linked worktrees and the live overlay remain managed separately.
 
 - tycswap 0.11.2: a maintenance release without a change in behaviour. The binaries are built with the Go 1.27.4 toolchain and `go-isatty` is updated to 0.0.24.

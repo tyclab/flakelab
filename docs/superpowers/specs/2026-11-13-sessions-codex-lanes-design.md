@@ -295,7 +295,12 @@ For one session:
    has 30 s (an interrupt and a clean each took under 3 s when measured); on
    expiry exit 1, windows untouched, with what is still running. The 30 s begin
    before the connection, and no interrupt or clean is sent after them. A stop
-   that fails midway says what it had interrupted and cleaned. A session in
+   that fails midway names acknowledged interrupts and cleanups, and calls
+   background commands ended only after reading an empty terminal list for
+   their thread after cleanup. The final wait retains each command's owning
+   thread and latest observed commands, including owners whose cleanup was
+   acknowledged; surviving commands are reported with those owners as unresolved.
+   A session in
    `error` is not interrupted; its terminals are cleaned and its windows removed
    (the check after a stop does not count the error state against it).
    `--force` stops the conversation for every client that views it.
@@ -331,6 +336,13 @@ close-check  {"session","finished": bool,"state","reasons":[…],"cwd","name"}
 stop         {"session","interrupted":[ids],"cleaned":[ids]}
 archive      {"session","archived": true}
 ```
+
+On successful stop, `cleaned` names threads whose cleanup was acknowledged and
+whose terminal list was then read as empty. A failure distinguishes acknowledged
+cleanup from verified empty lists; an unreadable list does not verify termination.
+Ordinary close only observes work and reports reasons to refuse; it sends no
+cleanup. The shell's later deadline or verification failures describe successful
+stop results as interrupted turns and ended background commands.
 
 The client: a WebSocket client over the unix socket and a request layer.
 
@@ -488,7 +500,7 @@ were again checked by breaking them on purpose (39 breaks).
 | 6. The stop's 30 s and the per-call limits were not hard                                     | One deadline from before the connection; reads and writes end at it; nothing is sent after it.                                                |
 | 7. A session was archived although its window could not be removed                           | Not archived, not called closed; the output names what stayed.                                                                                |
 | 8. `--force` could not close a session in `error`                                            | The check after a stop does not count the error state.                                                                                        |
-| 9. A stop that failed midway hid what it had done                                            | The error names what was interrupted and cleaned.                                                                                             |
+| 9. A stop that failed midway hid what it had done                                            | The error names acknowledged interrupts and cleanups, verified empty terminal lists, and owners of surviving commands.                        |
 | 10. A window that could not be marked with its session counted as started                    | The mark is checked and read back; failure is exit 1 with the session's id. `--open` notes it.                                                |
 | 11. A tycswap handover dropped the lane's `CODEX_HOME`                                       | Kept.                                                                                                                                         |
 | 12. The folder's symlink spelling was lost before the trust lookup                           | The caller's spelling reaches the helper and the window.                                                                                      |
@@ -517,7 +529,7 @@ breaks run only on copies of the scripts.
 | R4. Malformed RPC error                  | An accepted turn with an invalid error envelope was called empty.       | Only an exclusive structured error with an integer code and string message proves refusal; malformed or contradictory replies retain the uncertain outcome and turn recovery command.                                                                                                                                                                                          |
 | R5. Stop deadline lost between processes | Final verification, removal and archive received fresh time.            | `stop --with-deadline` returns its absolute monotonic `until`; the shell carries it as `FLAKELAB_CODEX_UNTIL` through verification and archive, and checks it after window observations and before each removal or archive. Expiry reports completed stop actions and prevents further mutations from being sent. Windows already removed within the budget are not recreated. |
 | R6. Failed window observations           | Failed refresh or confirmation looked like successful absence.          | Each tmux read and guarded operation must succeed; an unreadable observation preserves the unverified target, skips archive and never reports successful closure.                                                                                                                                                                                                              |
-| R7. Unacknowledged stop actions          | Lost replies hid attempted mutations and unresolved work.               | Stop retains the method and target before sending, distinguishes refusal from uncertainty, and reports confirmed completions plus last observed unresolved sessions and commands.                                                                                                                                                                                              |
+| R7. Unacknowledged stop actions          | Lost replies hid attempted mutations and unresolved work.               | Stop retains the method and target before sending, distinguishes refusal from uncertainty, and separates cleanup acknowledgements from verified empty terminal lists. The final wait retains the owners and latest observed commands as unresolved even after acknowledged cleanup.                                                                                            |
 | R8. Error-state descendant               | The after-stop error policy applied only to the root.                   | Descendants use the same policy; active descendants and remaining commands still block closure.                                                                                                                                                                                                                                                                                |
 | Assertion: last read                     | A previous mutation once survived.                                      | The existing changing-root case detects removal of the final read; verified again without changing its rule.                                                                                                                                                                                                                                                                   |
 | Assertion: display name                  | A previous mutation once survived.                                      | Existing ambiguity and distinct-name cases detect dropping display-name matching; verified again.                                                                                                                                                                                                                                                                              |
