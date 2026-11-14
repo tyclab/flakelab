@@ -159,6 +159,7 @@ in
   nix-overlay-generate = suiteCheck "nix-overlay-generate";
   # The --help sweep runs `mcp`, a python3 program.
   flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
+  claude-start = suiteCheckWith [ pkgs.python3 ] "claude-start";
   # One block of cases runs lib/codex_threads.py against its stand-in server.
   claude-sessions = suiteCheckWith [ pkgs.python3 ] "claude-sessions";
   codex-threads = suiteCheckWith [ pkgs.python3 ] "codex-threads";
@@ -1773,6 +1774,50 @@ in
       grep -q 'Add it to ~/.config/flakelab/secrets.env' err
       grep -q 'Add it to the sops secrets file' ${withSops}/bin/nix-clone-repos
       touch $out
+    '';
+
+  # The launcher is separate from the installer's self-updating binary, only
+  # enabled with both tools. It wins over npm and the native install on PATH.
+  claude-start-launcher =
+    let
+      inherit (nixpkgs) lib;
+      ext =
+        attrs: self.nixosConfigurations.default.extendModules { modules = [ { flakelab = attrs; } ]; };
+      hmOf = sys: sys.config.home-manager.users.${sys.config.flakelab.username};
+      hm = hmOf self.nixosConfigurations.default;
+      noClaude = hmOf (ext {
+        installClaude = false;
+      });
+      noTycswap = hmOf (ext {
+        installTycswap = false;
+      });
+      key = ".local/share/flakelab/claude/bin/claude";
+      dir = "$HOME/.local/share/flakelab/claude/bin";
+      launcher = hm.home.file.${key};
+    in
+    assert launcher.executable;
+    assert !(hm.home.file ? ".local/bin/claude");
+    assert !(noClaude.home.file ? ${key});
+    assert !(noTycswap.home.file ? ${key});
+    assert builtins.head hm.home.sessionPath == dir;
+    assert !(lib.elem dir noClaude.home.sessionPath);
+    assert !(lib.elem dir noTycswap.home.sessionPath);
+    assert !(lib.hasInfix dir noClaude.programs.zsh.envExtra);
+    assert !(lib.hasInfix dir noTycswap.programs.zsh.envExtra);
+    pkgs.runCommandLocal "flakelab-check-claude-start-launcher" { nativeBuildInputs = [ pkgs.zsh ]; } ''
+      export HOME="$TMPDIR/home"
+      mkdir -p "$HOME/${builtins.dirOf key}" "$HOME/.local/bin" "$HOME/.npm-global/bin"
+      cp ${launcher.source} "$HOME/${key}"
+      chmod +x "$HOME/${key}"
+      touch "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude"
+      chmod +x "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude"
+      printf '%s' ${lib.escapeShellArg hm.programs.zsh.envExtra} > zshenv
+      got=$(PATH="$HOME/.local/bin:$PATH" zsh -fc '. ./zshenv; command -v claude')
+      test "$got" = "$HOME/${key}"
+      grep -q '^# tycswap-start-launcher$' "$got"
+      test "$(head -n1 "$got")" = '#!${pkgs.bash}/bin/bash'
+      grep -q '${pkgs.coreutils}/bin/realpath' "$got"
+      touch "$out"
     '';
 
   # The auto-switch timer is tycswap's `tycswap auto --once` on a user timer,

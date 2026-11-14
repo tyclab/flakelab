@@ -611,9 +611,28 @@ the status line run print theirs under `-t flakelab-tycswap-hook` and
 `-t flakelab-tycswap-observe` (an observed tick only what it decided, not the
 reading). A box that ships its journal ships all of it.
 
-Plain `claude` needs no group or launcher: the status line feeds
-`tycswap auto --observe`, so the live login follows the model each session
-runs. tycswap retired its Fable and Opus/other session groups; a former group's
+With `installClaude` and `installTycswap`, plain `claude` goes through a managed
+launcher at `~/.local/share/flakelab/claude/bin/claude`, ahead of the native
+installer's untouched `~/.local/bin/claude` on PATH. `tycswap start --allow ID`
+marks a login for new sessions; `--disallow ID` clears the mark and `--list`
+shows the marks. Before launch, `tycswap start` may select a usable marked
+login from cached usage while auto-switch is on. No marks, an already-marked
+live login, a pinned profile, auth overrides or `--bare` leave selection alone.
+Selection failures report the reason and launch on the current login; cached
+usage and concurrent switches mean the selected login is best effort. Existing
+sessions share any switch. Arguments and inherited auth settings pass through,
+and a nonzero result never causes a second launch. Without tycswap on PATH,
+the launcher executes native Claude directly.
+
+The launcher passes the verified real executable explicitly:
+`tycswap start -- "$(realpath -e ~/.local/bin/claude)" [Claude arguments]`.
+Direct `tycswap start` skips the known launcher when finding native Claude;
+an alias such as `claude='tycswap start -- claude'` can recurse. A missing native
+installation or a native link pointing back to the launcher fails with a repair
+hint. `flakelab update` installs the launcher; open a new shell to pick up PATH.
+
+The status line feeds `tycswap auto --observe`, so the live login follows the
+model each session runs. tycswap retired its Fable and Opus/other session groups; a former group's
 conversations are copied into `~/.claude` when it retires, so `flakelab
 sessions --resume` resumes them with `claude --resume` (in the group's own
 profile until that copy exists).
