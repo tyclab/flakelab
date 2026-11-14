@@ -202,7 +202,8 @@ while (( $# > 0 )); do
       print -ru2 -- "Error: --group is retired; plain claude switches accounts by model"; exit 2 ;;
     --detach) START_DETACH=true ;;
     --model|--effort|--name|--prompt|--prompt-file)
-      (( $# >= 2 )) || { print -ru2 -- "Error: $1 needs a value"; exit 2 }
+      # An empty value is none: it would silently become the default.
+      (( $# >= 2 )) && [[ -n "$2" ]] || { print -ru2 -- "Error: $1 needs a value"; exit 2 }
       LANE_FLAGS+=("$1")
       case $1 in
         --model) LANE_MODEL="$2" ;;
@@ -347,14 +348,14 @@ typeset -a WINDOW_ENV=()
 new_window() {
   local name="$1" dir="$2" cmd="$3" handover_cwd="${TYCSWAP_HANDOVER_CWD:-}" digest="${TYCSWAP_HANDOVER_DIGEST:-}"
   local -a env_args=(-e "PATH=${PATH}" -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST=)
-  # A lane's window must reach the Codex home its session was created in.
-  (( ${#WINDOW_ENV} > 0 )) && env_args+=("${WINDOW_ENV[@]}")
   if [[ -n "$handover_cwd" || -n "$digest" ]]; then
     [[ "$handover_cwd" == /* && -d "$handover_cwd" && "$digest" =~ '^[[:xdigit:]]{64}$' ]] || {
       print -ru2 -- "Error: handover needs an absolute existing directory and a 64-hex digest"; return 2
     }
     env_args=(-e "PATH=${PATH}" -e "TYCSWAP_HANDOVER_CWD=${handover_cwd}" -e "TYCSWAP_HANDOVER_DIGEST=${digest}")
   fi
+  # A lane's window must reach the Codex home its session was created in, handover or not.
+  (( ${#WINDOW_ENV} > 0 )) && env_args+=("${WINDOW_ENV[@]}")
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
   else
@@ -414,16 +415,24 @@ codex_threads() {
 # gives this command 60 s and polls every 15.
 load_states() {
   local out sid st model effort
+  local -i unanswered=0
   (( ${#ASK} > 0 )) || return 0
   for sid in "${(@k)ASK}"; do STATE_OF[$sid]="?"; done
   out="$(codex_threads state --deadline 5 "${(@k)ASK}" 2>/dev/null)" || {
     print -ru2 -- "note: Codex's shared server did not answer; STATE and MODEL are unknown"
     return 0
   }
+  # "none": the server gave no answer for this id in time, or an error. "missing": it
+  # does not know the id. Both show ?, only the first is worth a note.
   while IFS="$US" read -r sid st model effort; do
     [[ -n "$sid" ]] || continue
-    STATE_OF[$sid]="${st:-?}"; MODEL_OF[$sid]="$model"; EFFORT_OF[$sid]="$effort"
-  done < <(print -r -- "$out" | jq -r '.[] | [.session, (if .state == "missing" then "" else .state // "" end), (.model // ""), (.effort // "")] | join("\u001f")' 2>/dev/null)
+    case "$st" in
+      none) st="?"; (( unanswered++ )) ;;
+      missing) st="?" ;;
+    esac
+    STATE_OF[$sid]="$st"; MODEL_OF[$sid]="$model"; EFFORT_OF[$sid]="$effort"
+  done < <(print -r -- "$out" | jq -r '.[] | [.session, (.state // "none"), (.model // ""), (.effort // "")] | join("\u001f")' 2>/dev/null)
+  (( unanswered > 0 )) && print -ru2 -- "note: Codex's shared server answered for $(( ${#ASK} - unanswered )) of ${#ASK} sessions; the others show ?"
   return 0
 }
 
@@ -878,7 +887,9 @@ open_tabs() {
       if [[ -z "$wid" ]]; then
         wid="$(new_window "$(window_name "$tool" "$cwd")" "$tab_cwd" "$(resume_cmd "$tool" "$sid" "$group" "$profile")")" || { print -ru2 -- "tmux could not start a window for ${cwd} ${sid}"; continue }
         # So a session brought back after a restart can be found and closed like a lane.
-        [[ "$tool" == codex ]] && tmux set-option -w -t "$wid" @flakelab_session "$sid" >/dev/null 2>&1
+        if [[ "$tool" == codex ]] && ! tmux set-option -w -t "$wid" @flakelab_session "$sid" >/dev/null 2>&1; then
+          print -ru2 -- "note: window ${wid} could not be marked with session ${sid}: the table and --close will not know it"
+        fi
       fi
       view="$(new_view "$wid")" || { print -ru2 -- "tmux could not open a view on ${wid}"; continue }
       shown[$wid]=1
@@ -1000,17 +1011,19 @@ start_lane() {
   local -a helper_args=() taken=() alive=()
   [[ "$START_TOOL" == codex ]] || { print -ru2 -- "Error: ${LANE_FLAGS[1]} is for --start codex; ${START_TOOL} takes its own flags after --"; return 2 }
   (( ${#START_ARGS} == 0 )) || { print -ru2 -- "Error: ${LANE_FLAGS[1]} cannot be combined with -- args"; return 2 }
-  [[ -z "$LANE_PROMPT" || -z "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: --prompt and --prompt-file exclude each other"; return 2 }
+  (( ${LANE_FLAGS[(Ie)--prompt]} && ${LANE_FLAGS[(Ie)--prompt-file]} )) && { print -ru2 -- "Error: --prompt and --prompt-file exclude each other"; return 2 }
   [[ -n "$LANE_PROMPT" || -n "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: ${LANE_FLAGS[1]} needs --prompt or --prompt-file: a Codex session has no file, and keeps no effort, before its first turn"; return 2 }
   if [[ -n "$LANE_PROMPT_FILE" ]]; then
     [[ -f "$LANE_PROMPT_FILE" && -r "$LANE_PROMPT_FILE" && -s "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: --prompt-file ${LANE_PROMPT_FILE} is missing, unreadable or empty"; return 2 }
   fi
   if (( ${LANE_FLAGS[(Ie)--name]} )); then
-    [[ -n "$LANE_NAME" && "$LANE_NAME" != *[:.\ ]* && ${#LANE_NAME} -le 40 ]] || { print -ru2 -- "Error: --name must be a window name: no ':', '.' or space, at most 40 characters"; return 2 }
+    # A name tmux targets take and the window list can carry: the list is read line by line.
+    [[ "$LANE_NAME" != -* && "$LANE_NAME" != *[[:space:][:cntrl:]:.]* && ${#LANE_NAME} -le 40 ]] || { print -ru2 -- "Error: --name must be a window name: no ':', '.', space or control character, no leading '-', at most 40 characters"; return 2 }
   fi
   have_tmux || { print -ru2 -- "Error: --start needs tmux on PATH"; return 2 }
   [[ -d "$dir" ]] || { print -ru2 -- "Error: no such directory: ${dir}"; return 2 }
-  dir="${dir:A}"
+  # Absolute, in the caller's spelling: Codex may hold the trust decision under a symlink's name.
+  dir="${dir:a}"
   name="${LANE_NAME:-$(window_name codex "$dir")}"
   # Read into an array, then look: a pipe into grep -q can fail a match under pipefail.
   taken=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null)}" )
@@ -1018,9 +1031,10 @@ start_lane() {
     print -ru2 -- "Error: a window named ${LANE_NAME} exists in ${TMUX_SESSION}"; return 1
   fi
   helper_args=(start --cwd "$dir")
-  [[ -n "$LANE_MODEL" ]] && helper_args+=(--model "$LANE_MODEL")
-  [[ -n "$LANE_EFFORT" ]] && helper_args+=(--effort "$LANE_EFFORT")
-  [[ -n "$LANE_NAME" ]] && helper_args+=(--name "$LANE_NAME")
+  # As one word each: a value that begins with a dash stays a value.
+  [[ -n "$LANE_MODEL" ]] && helper_args+=("--model=${LANE_MODEL}")
+  [[ -n "$LANE_EFFORT" ]] && helper_args+=("--effort=${LANE_EFFORT}")
+  [[ -n "$LANE_NAME" ]] && helper_args+=("--name=${LANE_NAME}")
   $LANE_TRUST && helper_args+=(--trust)
   # The prompt goes to the helper on stdin, byte for byte, never on its command line.
   if [[ -n "$LANE_PROMPT_FILE" ]]; then
@@ -1035,7 +1049,12 @@ start_lane() {
   wid="$(new_window "$name" "$dir" "$(tool_command codex resume "$sid")")" || {
     print -ru2 -- "Error: tmux could not start the window; the session runs without one: codex resume ${sid}"; return 1
   }
-  tmux set-option -w -t "$wid" @flakelab_session "$sid" >/dev/null 2>&1
+  # Written and read back: without the mark the table does not know the window, and --close refuses it.
+  if ! tmux set-option -w -t "$wid" @flakelab_session "$sid" >/dev/null 2>&1 ||
+    [[ "$(tmux show-options -w -v -t "$wid" @flakelab_session 2>/dev/null)" != "$sid" ]]; then
+    print -ru2 -- "Error: window ${name} (${wid}) could not be marked with its session, so the table and --close will not know it; the session runs: codex resume ${sid}"
+    return 1
+  fi
   sleep "$LANE_SETTLE"
   alive=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_id}' 2>/dev/null)}" )
   (( ${alive[(Ie)$wid]} )) || {
@@ -1050,26 +1069,70 @@ start_lane() {
   attach_window "$wid"
 }
 
+# The windows of the agents session as tmux has them now: id, name, recorded session,
+# panes, start command.
+typeset -a LANE_ROWS=()
+lane_rows() {
+  local line
+  LANE_ROWS=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && LANE_ROWS+=("$line")
+  done < <(tmux list-windows -t "$TMUX_SESSION" -F "#{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}" 2>/dev/null)
+  return 0
+}
+
+# Why a window is not a lane flakelab may remove; nothing when it is one. It must record
+# a session id, have one pane, and that pane's start command must be exactly the
+# `codex resume <id>` flakelab starts lanes with: a command that merely contains those
+# words is someone else's. tmux reports a command with spaces in double quotes.
+lane_fault() {
+  local wsid="$1" panes="$2" startcmd="$3" want
+  if [[ -z "$wsid" ]]; then
+    print -r -- "records no Codex session; flakelab cannot judge what runs in it"
+  elif [[ ! "$wsid" =~ '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' ]]; then
+    print -r -- "records something that is no session id"
+  elif [[ "$panes" != 1 ]]; then
+    print -r -- "has ${panes} panes"
+  else
+    want="$(tool_command codex resume "$wsid")"
+    [[ "$startcmd" == "$want" || "$startcmd" == "\"${want}\"" ]] || print -r -- "was not started by flakelab on session ${wsid}"
+  fi
+  return 0
+}
+
+# Remove window wid if it still is the lane of session sid. tmux decides in one step: its
+# server compares pane count, recorded session and start command at the moment of the
+# kill, so a window that was split or reused after it was last read stays. 0: it is gone.
+kill_lane() {
+  local wid="$1" sid="$2" want fmt
+  local -a alive=()
+  want="$(tool_command codex resume "$sid")"
+  fmt="#{&&:#{==:#{window_panes},1},#{&&:#{==:#{@flakelab_session},${sid}},#{||:#{==:#{pane_start_command},${want}},#{==:#{pane_start_command},\"${want}\"}}}}"
+  tmux if-shell -F -t "$wid" "$fmt" "kill-window -t ${wid}" >/dev/null 2>&1
+  alive=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_id}' 2>/dev/null)}" )
+  (( ! ${alive[(Ie)$wid]} ))
+}
+
 # --close: a window is a view, the conversation lives on Codex's server. The
 # window goes when the session, its helper agents and its commands are
 # finished; --force stops those first, for every view of the session. Nothing
 # locks the conversation: another client can send it a prompt after the last
 # look, which lib/codex_threads.py takes immediately before this removes the
-# window.
+# window. The window itself is read again then, and tmux compares it once more
+# at the kill (kill_lane): what is removed is the lane that was judged.
 close_sessions() {
-  local line wid wname wsid panes startcmd target sid w check cwd bad
+  local line wid wname wsid panes startcmd target sid w check cwd fault
   local -i rc=0
-  local -a rows=() by_id=() by_name=() by_session=() chosen=() order=()
+  local bad found
+  local -a by_id=() by_name=() by_session=() chosen=() order=() removed=() kept=()
   local -A windows_of=()
   have_tmux || { print -ru2 -- "Error: --close needs tmux on PATH"; return 2 }
   (( ${#CLOSE_TARGETS} > 0 )) || { print -ru2 -- "Error: --close needs a window or a session id"; return 2 }
-  while IFS= read -r line; do
-    [[ -n "$line" ]] && rows+=("$line")
-  done < <(tmux list-windows -t "$TMUX_SESSION" -F "#{window_id}${US}#{window_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_start_command}" 2>/dev/null)
+  lane_rows
   # A target that selects no window is a usage error, found before anything is closed.
   for target in "${CLOSE_TARGETS[@]}"; do
     bad=true
-    for line in "${rows[@]}"; do
+    for line in "${LANE_ROWS[@]}"; do
       IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
       [[ "$wid" == "$target" || "$wname" == "$target" || ( -n "$wsid" && "$wsid" == "$target" ) ]] && { bad=false; break }
     done
@@ -1077,7 +1140,7 @@ close_sessions() {
   done
   for target in "${CLOSE_TARGETS[@]}"; do
     by_id=(); by_name=(); by_session=()
-    for line in "${rows[@]}"; do
+    for line in "${LANE_ROWS[@]}"; do
       IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
       [[ "$wid" == "$target" ]] && by_id+=("$line")
       [[ "$wname" == "$target" ]] && by_name+=("$line")
@@ -1090,17 +1153,11 @@ close_sessions() {
       rc=1; continue
     else chosen=("${by_session[@]}")
     fi
-    # Only what flakelab started: one pane, running `codex resume` on the recorded session.
     bad=false
     for line in "${chosen[@]}"; do
       IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
-      if [[ -z "$wsid" ]]; then
-        print -ru2 -- "not closed: window ${wname} (${wid}) records no Codex session; flakelab cannot judge what runs in it"; bad=true
-      elif [[ "$panes" != 1 ]]; then
-        print -ru2 -- "not closed: window ${wname} (${wid}) has ${panes} panes"; bad=true
-      elif [[ "$startcmd" != *"resume ${wsid}"* ]]; then
-        print -ru2 -- "not closed: window ${wname} (${wid}) was not started on session ${wsid}"; bad=true
-      fi
+      fault="$(lane_fault "$wsid" "$panes" "$startcmd")"
+      [[ -n "$fault" ]] && { print -ru2 -- "not closed: window ${wname} (${wid}) ${fault}"; bad=true }
     done
     $bad && { rc=1; continue }
     for line in "${chosen[@]}"; do
@@ -1111,17 +1168,47 @@ close_sessions() {
   done
   for sid in "${order[@]}"; do
     if $CLOSE_FORCE; then
+      # A stop that fails says what it had done; its windows stay.
       codex_threads stop "$sid" >/dev/null || { rc=1; continue }
+      # After a stop an error state no longer holds the window: what could be ended, was.
+      check="$(codex_threads close-check --after-stop "$sid")" || { rc=1; continue }
+    else
+      check="$(codex_threads close-check "$sid")" || { rc=1; continue }
     fi
-    check="$(codex_threads close-check "$sid")" || { rc=1; continue }
     if [[ "$(print -r -- "$check" | jq -r '.finished')" != true ]]; then
       print -ru2 -- "not closed: ${sid}: $(print -r -- "$check" | jq -r '.reasons | join("; ")')$($CLOSE_FORCE || print -r -- " — --force stops that first")"
       rc=1; continue
     fi
     cwd="$(print -r -- "$check" | jq -r '.cwd // ""')"
+    # The windows as they are now: the check above took time, and so did earlier targets.
+    lane_rows
+    removed=(); kept=()
     for w in ${=windows_of[$sid]}; do
-      tmux kill-window -t "$w" 2>/dev/null || { print -ru2 -- "Error: could not remove window ${w}"; rc=1 }
+      found=false; fault=""
+      for line in "${LANE_ROWS[@]}"; do
+        IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
+        [[ "$wid" == "$w" ]] || continue
+        found=true
+        fault="$(lane_fault "$wsid" "$panes" "$startcmd")"
+        [[ -z "$fault" && "$wsid" != "$sid" ]] && fault="now records session ${wsid}"
+        break
+      done
+      if ! $found; then
+        removed+=("$w")  # it went by itself
+      elif [[ -n "$fault" ]]; then
+        print -ru2 -- "not closed: window ${w} changed since it was judged: it ${fault}"
+        kept+=("$w")
+      elif kill_lane "$w" "$sid"; then
+        removed+=("$w")
+      else
+        print -ru2 -- "not closed: window ${w} could not be removed, or changed at the last moment"
+        kept+=("$w")
+      fi
     done
+    if (( ${#kept} > 0 )); then
+      print -ru2 -- "session ${sid}: still there: ${(j: :)kept}; removed: ${${(j: :)removed}:-none}; nothing was archived"
+      rc=1; continue
+    fi
     if $CLOSE_ARCHIVE; then
       if codex_threads archive "$sid" >/dev/null; then
         print -r -- "codex unarchive ${sid}"

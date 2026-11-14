@@ -137,8 +137,10 @@ class Live(unittest.TestCase):
 
     def remove(self, tid):
         """Stop and delete a test session, and its copy under the state root."""
+        rc, _, err = helper("stop", tid)
+        if rc:
+            LEFT.append(f"session {tid} could not be stopped: {err.strip()}")
         try:
-            helper("stop", tid)
             call("thread/delete", {"threadId": tid})
         except codex_threads.Refusal as err:
             LEFT.append(f"session {tid}: {err}")
@@ -156,6 +158,8 @@ class Live(unittest.TestCase):
         tid = found.group(1) if found else ""
         if tid:
             self.addCleanup(self.remove, tid)
+        # A start that fails without naming a session created at most an empty conversation,
+        # which leaves no file: there is nothing to remove then.
         self.assertEqual(rc, 0, err)
         self.assertTrue(tid, err)
         return tid
@@ -223,6 +227,39 @@ class Live(unittest.TestCase):
         self.assertEqual(running(), [])
         self.assertEqual(state(tid)["state"], "idle")
         self.assertNotIn("live-l3", windows())
+        self.assertIn(f"codex resume {tid}", out)
+
+
+    def test_L4_close_removes_only_a_window_that_still_is_the_lane(self):
+        """Window safety on a real tmux: its pane count and its report of the start command."""
+        tid = self.start("live-l4", OK_PROMPT, "--trust")
+        wait_for("the first turn finished", lambda: state(tid)["state"] == "idle", 180)
+        target = f"{TMUX_SESSION}:live-l4"
+
+        def tmux(*args):
+            return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+        # Another window that carries the same mark and holds the words, and is no lane.
+        tmux("new-window", "-d", "-t", f"{TMUX_SESSION}:", "-n", "live-fake", f"sh -c 'echo resume {tid}; sleep 120'")
+        tmux("set-option", "-w", "-t", f"{TMUX_SESSION}:live-fake", "@flakelab_session", tid)
+        rc, out, err = sessions("--close", "live-fake")
+        self.assertEqual((rc, out), (1, ""), err)
+        self.assertIn("was not started by flakelab", err)
+        self.assertIn("live-fake", windows())
+        tmux("kill-window", "-t", f"{TMUX_SESSION}:live-fake")
+        # The lane itself, split: two panes are not what flakelab started.
+        tmux("split-window", "-d", "-t", target, "sleep 120")
+        rc, out, err = sessions("--close", "live-l4")
+        self.assertEqual((rc, out), (1, ""), err)
+        self.assertIn("has 2 panes", err)
+        self.assertIn("live-l4", windows())
+        extra = [line.split(" ", 1)[0] for line in tmux("list-panes", "-t", target, "-F", "#{pane_id} #{pane_start_command}").stdout.splitlines() if "sleep 120" in line]
+        self.assertEqual(len(extra), 1)
+        tmux("kill-pane", "-t", extra[0])
+        # One pane again, with the start command as tmux reports it: now it goes.
+        rc, out, err = sessions("--close", "live-l4")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("live-l4", windows())
         self.assertIn(f"codex resume {tid}", out)
 
 

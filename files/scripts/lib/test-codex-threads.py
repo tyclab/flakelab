@@ -116,6 +116,39 @@ class FramesTest(unittest.TestCase):
             self.assertIn(word, str(caught.exception))
 
 
+    def test_frames_out_of_order_or_of_another_kind_end_the_read(self):
+        f = fake_server.frame
+        for data, word in (
+            (f(0x0, b"orphan"), "never began"),
+            (f(0x1, b"first", fin=False) + f(0x1, b"second"), "unfinished"),
+            (f(0x2, b"binary"), "not text"),
+            (f(0x9, b"x" * 126), "control frame"),
+            (f(0x9, b"hi", fin=False), "control frame"),
+            (f(0xB, b""), "control frame"),
+            (f(0x1, b"\xff\xfe"), "UTF-8"),
+        ):
+            with self.assertRaises(codex_threads.Refusal, msg=word) as caught:
+                self.reader(data).recv_text(codex_threads.Deadline(5))
+            self.assertIn(word, str(caught.exception))
+
+    def test_the_message_limit_counts_the_message_and_not_a_ping_inside_it(self):
+        f = fake_server.frame
+        self.addCleanup(setattr, codex_threads, "MAX_MESSAGE", codex_threads.MAX_MESSAGE)
+        codex_threads.MAX_MESSAGE = 1000
+        whole = f(0x1, b"x" * 1000, fin=False) + f(0x9, b"p") + f(0x0, b"")
+        self.assertEqual(len(self.reader(whole).recv_text(codex_threads.Deadline(5))), 1000)
+        over = f(0x1, b"x" * 1000, fin=False) + f(0x0, b"y")
+        with self.assertRaises(codex_threads.Refusal) as caught:
+            self.reader(over).recv_text(codex_threads.Deadline(5))
+        self.assertIn("16 MiB", str(caught.exception))
+
+    def test_a_deadline_that_has_passed_ends_the_read_even_with_data_waiting(self):
+        ws = self.reader(fake_server.frame(0x1, b'{"late": true}'))
+        ws.buffer = ws.sock.recv(4096)
+        with self.assertRaises(codex_threads.NoAnswer):
+            ws.recv_text(codex_threads.Deadline(0))
+
+
 class PreflightTest(Case):
     """U-preflight: what the command needs is asked for before anything is changed."""
 
@@ -142,6 +175,22 @@ class PreflightTest(Case):
             self.assertIn(word, err)
             self.assertIn("0.169.0", err, "the server's version is named")
             self.assertNotIn("thread/start", self.fake.methods())
+
+    def test_a_projects_table_that_is_missing_means_no_decisions_and_one_that_is_no_table_is_refused(self):
+        for shape in ("absent", "null"):
+            self.fake.projects_shape = shape
+            self.fake.log.clear()
+            rc, _, err = self.start("--model", LUNA)
+            self.assertEqual(rc, 1, shape)
+            self.assertIn("--trust", err)
+            self.assertNotIn("thread/start", self.fake.methods())
+            self.assertEqual(self.start("--model", LUNA, "--trust")[0], 0, shape)
+        self.fake.projects_shape = "list"
+        self.fake.log.clear()
+        rc, out, err = self.start("--model", LUNA, "--trust")
+        self.assertEqual((rc, out), (1, None))
+        self.assertIn("projects", err)
+        self.assertNotIn("thread/start", self.fake.methods())
 
     def test_answers_in_fragments_with_notifications_and_server_requests_between(self):
         self.fake.fragment = self.fake.noise = True
@@ -176,12 +225,22 @@ class ValidateTest(Case):
     def test_a_spelling_two_models_share_is_refused_with_both(self):
         self.fake.models[0]["displayName"] = self.fake.models[1]["displayName"] = "Shared Name"
         err = self.refused("--model", "shared name")
-        self.assertIn(self.fake.models[0]["id"], err)
-        self.assertIn(self.fake.models[1]["id"], err)
+        self.assertIn(f"names several models: {self.fake.models[0]['id']}, {self.fake.models[1]['id']}", err)
 
-    def test_model_by_display_name_and_without_case(self):
+    def test_model_by_id_without_case(self):
         rc, out, err = self.start("--model", "gpt-6-LUNA", "--effort", "LOW")
         self.assertEqual((rc, out["model"], out["effort"]), (0, LUNA, "low"), err)
+
+    def test_model_by_a_display_name_that_is_no_id(self):
+        self.fake.models[2]["displayName"] = "Night Owl"
+        rc, out, err = self.start("--model", "night owl")
+        self.assertEqual((rc, out["model"]), (0, self.fake.models[2]["model"]), err)
+        self.assertEqual(self.called("thread/start")[0]["model"], self.fake.models[2]["model"])
+
+    def test_an_id_wins_over_another_model_s_display_name(self):
+        self.fake.models[0]["displayName"] = self.fake.models[2]["id"]
+        rc, out, err = self.start("--model", self.fake.models[2]["id"])
+        self.assertEqual((rc, out["model"]), (0, self.fake.models[2]["model"]), err)
 
     def test_defaults(self):
         cases = (
@@ -263,6 +322,23 @@ class TrustTest(Case):
             self.fake.projects = {str(self.lane): level}
             self.assertEqual(self.verdict()[:2], (0, True), level)
 
+    def test_an_entry_without_a_decision_decides_nothing(self):
+        for level in (None, "sometimes"):
+            self.fake.projects = {str(self.lane): level}
+            self.assertEqual(self.verdict()[:2], (1, False), level)
+
+    def test_codex_filling_in_an_existing_entry_fails_the_start_and_names_it(self):
+        repo = self.root / "repo"
+        (repo / "sub").mkdir(parents=True)
+        self.git("init", "-q", cwd=repo)
+        # The root's decision lets the start pass; the folder's own entry decides nothing yet.
+        self.fake.projects = {str(repo): "trusted", str(repo / "sub"): None}
+        self.fake.auto_trust = True
+        rc, started, err = self.verdict(repo / "sub")
+        self.assertEqual((rc, started), (1, True))
+        self.assertIn(f"{repo / 'sub'} (was undecided, now trusted)", err)
+        self.assertNotIn("turn/start", self.fake.methods())
+
     def test_a_decision_for_the_repository_root_covers_a_subfolder_and_a_worktree(self):
         repo = self.root / "repo"
         (repo / "sub").mkdir(parents=True)
@@ -340,7 +416,12 @@ class PartialTest(Case):
         for method, plan, words in (
             ("thread/start", "error", ["thread/start"]),
             ("thread/start", "silent", ["no answer", "may have created"]),
+            ("thread/start", "lost", ["no answer", "may have created"]),
+            ("thread/start", "close", ["closed the connection", "may have created"]),
+            ("thread/start", "garbage", ["not JSON", "may have created"]),
+            ("thread/start", "drop:thread.id", ["'id'", "may have created"]),
             ("thread/name/set", "error", ["thread/name/set", "leaves no file"]),
+            ("thread/name/set", "lost", ["thread/name/set", "leaves no file"]),
             ("turn/start", "error", ["turn/start", "leaves no file"]),
             ("turn/start", "silent", ["may be running", "codex resume "]),
         ):
@@ -351,6 +432,41 @@ class PartialTest(Case):
             for word in words:
                 self.assertIn(word, err, f"{method} {plan}")
             self.assertLessEqual(len(self.called("turn/start")), 1, "the prompt is never sent twice")
+            if method != "turn/start":
+                self.assertEqual(self.called("turn/start"), [], f"{method} {plan}: no prompt after a failed step")
+
+    def test_a_second_config_read_that_fails_stops_before_the_prompt(self):
+        self.fake.fail = {"config/read": ["ok", "error"]}
+        rc, out, err = self.start("--model", LUNA)
+        self.assertEqual((rc, out), (1, None))
+        self.assertIn("leaves no file", err)
+        self.assertEqual(self.called("turn/start"), [])
+
+    def test_a_turn_that_started_and_whose_answer_was_lost_names_the_session(self):
+        # The server has started the turn in every case; only its answer differs.
+        for plan, word in (("lost", "no answer"), ("close", "closed the connection"), ("garbage", "not JSON"), ("drop:turn.id", "'id'")):
+            self.fake.threads.clear()
+            self.fake.log.clear()
+            self.fake.fail = {"turn/start": [plan]}
+            rc, out, err = self.start("--model", LUNA, env={"FLAKELAB_CODEX_CALL_SECONDS": "1"})
+            self.assertEqual((rc, out), (1, None), plan)
+            (tid,) = self.fake.threads
+            self.assertEqual(self.fake.threads[tid]["state"], "working", plan)
+            self.assertIn(word, err, plan)
+            self.assertIn(f"the prompt may be running in session {tid} and is not sent again: codex resume {tid}", err, plan)
+            self.assertIn("0.169.0", err, plan)
+            self.assertNotIn("leaves no file", err, plan)
+            self.assertEqual(len(self.called("turn/start")), 1, plan)
+
+    def test_a_server_that_stops_reading_does_not_hold_the_command(self):
+        # initialize, initialized, config/read, model/list, thread/start, config/read: then deaf.
+        self.fake.deaf_after = 6
+        began = time.monotonic()
+        rc, out, err = self.start("--model", LUNA, stdin=b"x" * (2 * 1024 * 1024), env={"FLAKELAB_CODEX_CALL_SECONDS": "1"}, timeout=30)
+        self.assertEqual((rc, out), (1, None))
+        self.assertLess(time.monotonic() - began, 5)
+        self.assertIn("does not take the request", err)
+        self.assertIn("the prompt may be running", err)
 
 
 class StateTest(Case):
@@ -365,6 +481,13 @@ class StateTest(Case):
         self.assertEqual(out[0], {"session": ids[0], "state": "idle", "model": SOL, "effort": "xhigh", "name": "lane-idle"})
         self.assertEqual(out[-1]["model"], None)
         self.assertEqual(len(self.called("thread/read")), len(ids) + 1, "each id is asked once")
+
+    def test_an_error_of_the_server_is_no_answer_and_not_an_unknown_id(self):
+        ids = [self.fake.add_thread(T1), self.fake.add_thread(T2)]
+        self.fake.fail = {"thread/read": ["error"]}
+        rc, out, err = self.run_helper("state", *ids)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([o["state"] for o in out], [None, "idle"])
 
     def test_an_unknown_status_word_is_named(self):
         self.fake.add_thread(T1, state="strange")
@@ -405,7 +528,50 @@ class CloseTest(Case):
         rc, out, err = self.check()
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, {"session": T1, "finished": True, "state": "idle", "reasons": [], "cwd": "/work/lane", "name": None})
-        self.assertEqual(self.called("thread/read")[-1], {"threadId": T1, "includeTurns": False}, "the state is read once more at the end")
+
+    def test_a_session_that_starts_working_during_the_check_is_caught_by_the_last_look(self):
+        self.fake.add_thread(T1)
+        self.fake.flip = {T1: [1, "working"]}  # idle at the first look, working from then on
+        _, out, err = self.check()
+        self.assertEqual((out["finished"], out["state"], out["reasons"]), (False, "working", ["the session is working"]), err)
+
+    def test_helpers_on_a_later_page_of_the_loaded_list_are_found_at_any_depth(self):
+        self.fake.add_thread(T1)
+        self.fake.add_thread(T2, parent=T1)
+        self.fake.add_thread(T3, state="working", parent=T2, name="Arendt")
+        self.fake.page_size = 1
+        _, out, err = self.check()
+        self.assertEqual((out["finished"], out["reasons"]), (False, ["helper agent Arendt is working"]), err)
+        self.assertEqual(len(self.called("thread/loaded/list")), 3)
+
+    def test_a_helper_set_that_cannot_be_established_refuses(self):
+        for attr, value, word in (("repeat_cursor", True, "repeats its page cursor"), ("no_parent", {T2}, "parentThreadId")):
+            self.fake.threads.clear()
+            self.fake.repeat_cursor, self.fake.no_parent = False, set()
+            self.fake.add_thread(T1)
+            self.fake.add_thread(T2, state="working", parent=T1)
+            setattr(self.fake, attr, value)
+            rc, out, err = self.check()
+            self.assertEqual((rc, out), (1, None), attr)
+            self.assertIn(word, err)
+            self.assertEqual(self.run_helper("stop", T1)[0], 1, attr)
+            self.assertEqual(self.called("turn/interrupt"), [], attr)
+
+    def test_a_conversation_unloaded_while_the_helpers_are_read_is_passed_over(self):
+        self.fake.add_thread(T1)
+        self.fake.ghosts = [T3]
+        rc, out, err = self.check()
+        self.assertEqual((rc, out["finished"]), (0, True), err)
+
+    def test_after_a_stop_an_error_state_no_longer_counts_but_work_still_does(self):
+        self.fake.add_thread(T1, state="error")
+        self.assertEqual(self.check()[1]["finished"], False)
+        rc, out, err = self.run_helper("close-check", "--after-stop", T1)
+        self.assertEqual((rc, out["finished"], out["state"]), (0, True, "error"), err)
+        self.fake.terminals = {T1: ["sleep 300"]}
+        self.assertEqual(self.run_helper("close-check", "--after-stop", T1)[1]["reasons"], ["runs: sleep 300"])
+        self.fake.threads[T1]["state"] = "working"
+        self.assertEqual(self.run_helper("close-check", "--after-stop", T1)[1]["finished"], False)
 
     def test_unloaded_asks_for_no_helpers_and_no_terminals(self):
         self.fake.add_thread(T1, state="unloaded")
@@ -458,6 +624,36 @@ class CloseTest(Case):
         rc, out, err = self.run_helper("stop", T1)
         self.assertEqual((rc, out["interrupted"]), (0, [T1]), err)
         self.assertEqual(len(self.called("turn/interrupt")), 3)
+
+    def test_no_interrupt_and_no_clean_is_sent_after_the_time_is_up(self):
+        self.fake.add_thread(T1, state="working")
+        self.fake.terminals = {T1: ["sleep 300"]}
+        self.fake.delay = 0.4  # every answer takes longer than a third of the time there is
+        began = time.monotonic()
+        rc, out, err = self.run_helper("stop", T1, env={"FLAKELAB_CODEX_STOP_SECONDS": "1"}, timeout=30)
+        self.assertEqual((rc, out), (1, None))
+        self.assertLess(time.monotonic() - began, 3)
+        self.assertEqual(self.called("turn/interrupt") + self.called("thread/backgroundTerminals/clean"), [])
+        self.assertIn("no window was closed", err)
+
+    def test_a_stop_that_fails_midway_says_what_it_had_done(self):
+        self.fake.add_thread(T1, state="working")
+        self.fake.add_thread(T2, state="working", parent=T1)
+        self.fake.fail = {"turn/interrupt": ["ok", "error"]}
+        rc, out, err = self.run_helper("stop", T1)
+        self.assertEqual((rc, out), (1, None))
+        self.assertIn(f"interrupted before that: {T1}", err)
+        self.assertIn("background commands ended in: none", err)
+        self.assertIn("no window was closed", err)
+        self.assertEqual(self.fake.threads[T2]["state"], "working")
+
+    def test_a_server_without_the_turn_list_is_found_before_anything_is_interrupted(self):
+        self.fake.add_thread(T1, state="working")
+        self.fake.unknown = {"thread/turns/list"}
+        rc, out, err = self.run_helper("stop", T1)
+        self.assertEqual((rc, out), (1, None))
+        self.assertIn("thread/turns/list", err)
+        self.assertEqual(self.called("turn/interrupt") + self.called("thread/backgroundTerminals/clean"), [])
 
     def test_work_that_does_not_stop_ends_at_the_deadline(self):
         for attr, word in (("stubborn", "working"), ("sticky", "sleep 300")):

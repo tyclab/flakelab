@@ -79,6 +79,15 @@ class FakeCodex:
         self.turn_changes = 0  # the active turn is replaced this many times before an interrupt
         self.stall_after = None  # answer this many thread/read, then stop answering them
         self.reads = 0
+        self.delay = 0.0  # seconds every answer takes
+        self.deaf_after = None  # after this many messages the server stops reading, for deaf_seconds
+        self.deaf_seconds = 6.0
+        self.repeat_cursor = False  # a paged list names the same next page for ever
+        self.no_parent = set()  # thread ids whose answers lack parentThreadId
+        self.ghosts = []  # thread ids listed as loaded once and never readable: unloaded in between
+        self.flip = {}  # thread id -> [reads answered as it is, the state from then on]
+        self.reads_of = {}
+        self.projects_shape = "table"  # or "absent", "null", "list": what config/read carries as projects
         self.bad_accept = False
         self.sink = None  # type: ignore[assignment]  # file: one JSON line per request (program mode)
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -90,7 +99,8 @@ class FakeCodex:
     # -- state helpers a case uses -------------------------------------------------
 
     def add_thread(self, tid, state="idle", parent=None, model="gpt-6-luna", effort="low", cwd="/work/lane", name=None, turn=None):
-        turns = [[turn or f"turn-{tid[:8]}", "inProgress" if state in ACTIVE else "completed"]]
+        # An older, finished turn first: only the newest one may be interrupted.
+        turns = [[f"old-{tid[:8]}", "completed"], [turn or f"turn-{tid[:8]}", "inProgress" if state in ACTIVE else "completed"]]
         self.threads[tid] = {"state": state, "model": model, "effort": effort, "name": name, "cwd": cwd, "parent": parent, "turns": turns}
         return tid
 
@@ -135,11 +145,16 @@ class FakeCodex:
                 ).encode()
             )
             session = {"experimental": False}
+            handled = 0
             while True:
+                if self.deaf_after is not None and handled >= self.deaf_after:
+                    time.sleep(self.deaf_seconds)
+                    return
                 message = self._read(conn)
                 if message is None:
                     return
                 self._handle(conn, session, json.loads(message))
+                handled += 1
         except OSError:
             return
         finally:
@@ -190,10 +205,15 @@ class FakeCodex:
                 self.sink.flush()
         if rid is None:
             return
+        # Plans. Before the request takes effect: "silent" (it never arrives), "error". After
+        # it took effect: "lost" (no answer), "close" (the connection ends), "garbage" (an
+        # answer that is no JSON), "drop:<path>" (an answer without that field).
         planned = self.fail.get(method) or []
         plan = planned.pop(0) if planned else ""
         if plan == "silent":
             return
+        if self.delay:
+            time.sleep(self.delay)
         if self.noise:
             self._send(conn, {"method": "thread/status/changed", "params": {"threadId": "x"}})
             self._send(conn, {"method": "item/commandExecution/requestApproval", "id": rid, "params": {}})
@@ -211,7 +231,13 @@ class FakeCodex:
         except LookupError as err:
             self._send(conn, {"id": rid, "error": {"code": -32600, "message": str(err)}})
             return
-        if result is None:
+        if result is None or plan == "lost":
+            return
+        if plan == "close":
+            conn.sendall(frame(0x8, b""))
+            raise OSError("closed on purpose")
+        if plan == "garbage":
+            conn.sendall(frame(0x1, b"{this is no json"))
             return
         if plan.startswith("drop:"):
             target = result
@@ -235,6 +261,8 @@ class FakeCodex:
             "strange": {"type": "somethingNew"},
         }[t["state"]]
         obj.update(id=tid, sessionId=tid, status=status, model=t["model"], reasoningEffort=t["effort"], name=t["name"], cwd=t["cwd"], parentThreadId=t["parent"])
+        if tid in self.no_parent:
+            del obj["parentThreadId"]
         return obj
 
     def _need(self, tid, loaded=False):
@@ -245,6 +273,8 @@ class FakeCodex:
         return self.threads[tid]
 
     def _page(self, items, params):
+        if self.repeat_cursor:
+            return items[:1], "again"
         start = int(params.get("cursor") or 0)
         if not self.page_size:
             return items, None
@@ -260,6 +290,10 @@ class FakeCodex:
             result = copy.deepcopy(x["config-read"]["answer"]["result"])
             result["config"].update(self.config)
             result["config"]["projects"] = {k: {"trust_level": v} for k, v in self.projects.items()}
+            if self.projects_shape == "absent":
+                del result["config"]["projects"]
+            elif self.projects_shape != "table":
+                result["config"]["projects"] = None if self.projects_shape == "null" else ["not", "a", "table"]
             return result
         if method == "model/list":
             data, cursor = self._page(self.models, params)
@@ -292,18 +326,28 @@ class FakeCodex:
             self.reads += 1
             if self.stall_after is not None and self.reads > self.stall_after:
                 return None
-            self._need(params["threadId"])
-            return {"thread": self._thread_object(params["threadId"])}
+            tid = params["threadId"]
+            t = self._need(tid)
+            count = self.reads_of[tid] = self.reads_of.get(tid, 0) + 1
+            if tid in self.flip and count > self.flip[tid][0]:
+                t["state"] = self.flip[tid][1]
+            return {"thread": self._thread_object(tid)}
         if method == "thread/turns/list":
             t = self._need(params["threadId"])
+            # Oldest first unless asked otherwise, and every turn unless a limit is given:
+            # a caller that wants the newest one has to say so.
             sample = x["turns-list-active"]["answer"]["result"]
-            newest = copy.deepcopy(sample["data"][0])
-            if not t["turns"]:
-                return {**sample, "data": []}
-            newest.update(id=t["turns"][-1][0], rootTurnId=t["turns"][-1][0], status=t["turns"][-1][1])
-            return {**sample, "data": [newest]}
+            turns = [{**copy.deepcopy(sample["data"][0]), "id": i, "rootTurnId": i, "status": status} for i, status in t["turns"]]
+            if params.get("sortDirection") == "desc":
+                turns.reverse()
+            if isinstance(params.get("limit"), int):
+                turns = turns[: params["limit"]]
+            return {**sample, "data": turns}
         if method == "thread/loaded/list":
-            return {"data": [tid for tid, t in self.threads.items() if t["state"] != "unloaded"], "nextCursor": None}
+            loaded = [tid for tid, t in self.threads.items() if t["state"] != "unloaded"]
+            loaded, self.ghosts = self.ghosts + loaded, []
+            data, cursor = self._page(loaded, params)
+            return {"data": data, "nextCursor": cursor}
         if method in ("thread/backgroundTerminals/list", "thread/backgroundTerminals/clean"):
             if not session["experimental"]:
                 raise LookupError(f"{method} requires experimentalApi capability")

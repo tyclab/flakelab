@@ -1,8 +1,9 @@
 # `flakelab sessions`: Codex lanes with a model, an effort, a state and a close
 
-Status: built, 2026-11-13. Revision 2 of the design, after an independent review
+Status: built, 2026-11-14. Revision 2 of the design, after an independent review
 (its findings and what became of each are listed at the end), plus what building
-it showed ("Found while building"). Measured against codex-cli 0.169.0; source
+it showed ("Found while building") and what a second independent review, of the
+code, changed ("What the code review changed"). Measured against codex-cli 0.169.0; source
 references are to the tag `rust-v0.169.0` of `openai/codex`.
 
 ## Problem
@@ -183,22 +184,30 @@ One helper call does steps 1 to 6 on one connection.
 2. Trust (G3). Decision keys are the folder (canonical and as given) and its
    repository root: the parent of `git rev-parse --git-common-dir` when that
    ends in `/.git`, else `git rev-parse --show-toplevel`, else none. If
-   `projects` holds no entry for any key, refuse: "Codex holds no trust decision
-   for `<dir>`: open it once with `codex` and answer, or pass `--trust`". With
-   `--trust` go on; Codex may then save an entry for the folder's root.
+   `projects` holds no decision (`trust_level` `trusted` or `untrusted`) for any
+   key, refuse: "Codex holds no trust decision for `<dir>`: open it once with
+   `codex` and answer, or pass `--trust`". An entry without one of the two words
+   decides nothing. A `projects` that is absent means no decisions (Codex's schema
+   makes the table optional); one that is no table is refused, with `--trust` too.
+   With `--trust` go on; Codex may then save an entry for the folder's root.
 3. `thread/start {cwd, model, config: {model_reasoning_effort}}`. The answer must
    echo the model and effort.
-4. `config/read` again. Without `--trust`, a `projects` key that is new and is the
-   folder or one of its ancestors means Codex judged differently: the command
-   stops with exit 1 and names the entry (the conversation has no turn and so
+4. `config/read` again. Without `--trust`, a decision that changed (a new entry,
+   or an existing one that now decides) at the folder, one of its ancestors or a
+   lookup key means Codex judged differently: the command stops with exit 1 and
+   names the entry with what it was and is (the conversation has no turn and so
    leaves no file, F4). This is an alarm, not a rollback: the entry is saved and
    the folder's settings were loaded in step 3.
 5. `thread/name/set` when `--name` was given.
 6. `turn/start` with the prompt and explicit `model` and `effort`. From here the
    session is running; the helper prints its id, model, effort and turn id.
 7. The window: `codex resume <id>` in the folder, through the existing
-   `new_window`, with `CODEX_HOME` passed on when the caller has it set. The id
-   is recorded on the window as the tmux option `@flakelab_session`.
+   `new_window`, with `CODEX_HOME` passed on when the caller has it set (also
+   during a tycswap handover). The folder keeps the spelling the caller gave: a
+   trust decision may be keyed by a symlink's name. The id is recorded on the
+   window as the tmux option `@flakelab_session` and read back; a window that
+   cannot be marked is exit 1 with the session's id, because neither the table nor
+   `--close` would know it.
 8. After 3 s the window must still exist (a `codex resume` that cannot open its
    conversation ended, and tmux removed the window, within 1.0 s in three runs).
 9. Attach or print the attach line, as `--start` does today.
@@ -235,7 +244,8 @@ What a failure leaves, and what the command prints:
   `state`, `model`, `effort`, each null when unknown. Existing keys and types stay.
 - States: `idle`, `working` (`active`, no flag), `approval`, `question`
   (`approval` wins when both flags are set), `unloaded`, `error`. In the table
-  `-` means not asked, `?` asked and not answered; one note on stderr, exit 0.
+  `-` means not asked, `?` asked and not answered or not known to the server; one
+  note on stderr when the server answered for only some, exit 0.
 - `--open` records the id on every Codex window it creates, so a session brought
   back after a restart can be found and closed like one just started.
 
@@ -253,8 +263,14 @@ name that matches several windows is refused with their ids. A target that
 selects no window is an error (exit 2).
 
 A window is closed only if it still is what flakelab started: it records a
-session, has exactly one pane, and that pane's start command is `codex resume`
-with the recorded id. Otherwise it is refused. If the operator has switched the
+session id, has exactly one pane, and that pane's start command is exactly the
+`codex resume <id>` flakelab starts lanes with (a command that merely contains
+those words is someone else's). Otherwise it is refused. The window is judged
+three times: when the targets are resolved, again after the session was judged
+(which takes time), and by tmux itself at the kill: the window is removed with
+`if-shell -F`, whose condition compares pane count, recorded session and start
+command inside the tmux server, so a window split or reused at the last moment
+stays. If the operator has switched the
 view to another conversation inside Codex, flakelab cannot see that; that other
 conversation is not touched and stays in the table through the server's row.
 
@@ -276,12 +292,17 @@ For one session:
    because the turn changed is answered by reading again. Then
    `thread/backgroundTerminals/clean` for each, then steps 1 to 4. The whole stop
    has 30 s (an interrupt and a clean each took under 3 s when measured); on
-   expiry exit 1, windows untouched, with what is still running. A session in
-   `error` is not interrupted; its terminals are cleaned and its windows removed.
+   expiry exit 1, windows untouched, with what is still running. The 30 s begin
+   before the connection, and no interrupt or clean is sent after them. A stop
+   that fails midway says what it had interrupted and cleaned. A session in
+   `error` is not interrupted; its terminals are cleaned and its windows removed
+   (the check after a stop does not count the error state against it).
    `--force` stops the conversation for every client that views it.
 7. `--archive`: after the windows are gone, `thread/archive`; the printed line is
    then `codex unarchive <id>` and the resume line. If archiving fails, exit 1
-   and say that the window is gone and the session is not archived.
+   and say that the window is gone and the session is not archived. If a window
+   could not be removed, nothing is archived and the session is not reported
+   closed; the output names the windows that stayed and those that went.
 
 All targets are processed; exit 1 if any was refused or failed.
 
@@ -294,7 +315,7 @@ the other suites' seams); `CODEX_HOME` names the socket's home.
 ```
 codex_threads.py start --cwd DIR [--model M] [--effort E] [--name N] [--trust]   # prompt on stdin
 codex_threads.py state [--deadline SECONDS] ID...
-codex_threads.py close-check ID            # steps 1 to 4 above, read only
+codex_threads.py close-check [--after-stop] ID   # steps 1 to 4 above, read only
 codex_threads.py stop ID                   # step 6
 codex_threads.py archive ID
 ```
@@ -321,7 +342,17 @@ The client: a WebSocket client over the unix socket and a request layer.
   an answer. The client answers no server request (it approves nothing) and
   disconnects after its last call.
 - 5 s to connect, 30 s per call unless a command sets a deadline for the whole of
-  its work (`state`, `stop`). The slowest measured call took under 2 s.
+  its work (`state`, `stop`), connecting included; then no call is sent after it.
+  Reads and writes both end at the deadline (the socket never blocks): a server
+  that stops reading does not hold the command. The slowest measured call took
+  under 2 s.
+- Frames: a continuation without a message, a message inside an unfinished one,
+  a binary frame, a malformed control frame and text that is not UTF-8 end the
+  connection with an error; the size limit counts a message's own bytes.
+- Only an error answer says a call did not take effect. After `thread/start` or
+  `turn/start` was sent, every other failure (no answer, a closed connection, an
+  answer that cannot be read) is reported as "may have created" and "may be
+  running", with the session's id once it is known.
 - Every answer is checked for the fields the command reads; a missing field or an
   unknown status word names the method, the field and the server's version.
 
@@ -355,8 +386,10 @@ does not send is not in them.
 - U-frames: recorded bytes (the handshake answer, a short message, one above
   125 bytes, one above 64 KiB, one in two fragments with a ping between); a wrong
   accept value, a truncated frame, a close, a message above the limit.
-- U-preflight: a server without `model/list`, without `thread/turns/list`, or
-  whose `config/read` lacks `projects`: exit 1 before any `thread/start`.
+- U-preflight: a server without `model/list`, or whose `config/read` lacks
+  `config` or carries a `projects` that is no table: exit 1 before any
+  `thread/start`. (`thread/turns/list` is no part of a start: `stop` reads it
+  before it interrupts anything, and its absence ends the stop there.)
 - U-validate: unknown model, effort the model lacks, a spelling two models share:
   exit 2, the offered list, no `thread/start`. Defaults: null config model, null
   config effort, a config effort the chosen model lacks, a model on the second
@@ -435,6 +468,39 @@ may change meanwhile.
   does not know shows `?`, like one that got no answer.
 - A lane in a folder that does not exist is a usage error (exit 2), like any
   `--start`.
+
+## What the code review changed
+
+The code of PR #392 was reviewed on 2026-11-14 by an independent model session
+(read-only apart from its own folder, no access to the real server or tmux),
+which reproduced each finding with a script against the stand-in server. Every
+finding was taken; each now has a case that fails without its fix, and the fixes
+were again checked by breaking them on purpose (39 breaks).
+
+| Finding                                                                                      | Outcome                                                                                                                                       |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. `--close` accepted any start command that contained `resume <id>`                         | The command must be exactly flakelab's `codex resume <id>`; the recorded value must be a session id.                                          |
+| 2. The window was not looked at again before it was removed                                  | Read again after the session was judged; the kill itself is guarded inside tmux (`if-shell -F`).                                              |
+| 3. Helper agents on a later page of the loaded list, or without a parent field, were missed  | The whole list is read, a repeated cursor is an error, the parent field is required, helpers are found at any depth.                          |
+| 4. An entry without a decision passed the trust gate, and Codex filling it in went unnoticed | The gate asks for `trusted` or `untrusted`; the alarm compares decisions, not keys.                                                           |
+| 5. A turn whose answer was lost could be reported as "nothing started" or lose its id        | Only an error answer means "not started"; every other outcome names the session and `codex resume`.                                           |
+| 6. The stop's 30 s and the per-call limits were not hard                                     | One deadline from before the connection; reads and writes end at it; nothing is sent after it.                                                |
+| 7. A session was archived although its window could not be removed                           | Not archived, not called closed; the output names what stayed.                                                                                |
+| 8. `--force` could not close a session in `error`                                            | The check after a stop does not count the error state.                                                                                        |
+| 9. A stop that failed midway hid what it had done                                            | The error names what was interrupted and cleaned.                                                                                             |
+| 10. A window that could not be marked with its session counted as started                    | The mark is checked and read back; failure is exit 1 with the session's id. `--open` notes it.                                                |
+| 11. A tycswap handover dropped the lane's `CODEX_HOME`                                       | Kept.                                                                                                                                         |
+| 12. The folder's symlink spelling was lost before the trust lookup                           | The caller's spelling reaches the helper and the window.                                                                                      |
+| 13. Promised preflight cases were missing                                                    | `projects` is validated (absent means none, see step 2); the design's claim about `thread/turns/list` was wrong and is corrected under Tests. |
+| 14. Empty flag values and odd window names were accepted                                     | Empty values, a leading `-` and control characters are usage errors; values reach the helper as one word.                                     |
+| 15. Every server error showed as an unknown id; a partial answer gave no note                | Only "thread not loaded" is an unknown id; a partial answer gets one note.                                                                    |
+| 16. Frames out of order, binary frames, a ping counted against a message                     | Refused; the limit counts the message.                                                                                                        |
+
+Its test findings were taken too: the last look, display-name matching and the
+turn-list arguments each had a case that could not fail and now have one that
+does; "this before that" is asserted on one event log shared by the stand-ins;
+the stand-in server can lose an answer after applying a request; the tmux
+stand-in records any call it does not know and the suite asserts there was none.
 
 ## What the review changed
 

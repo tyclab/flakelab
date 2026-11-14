@@ -56,7 +56,9 @@ Read for this topic; paths below are relative to the repository root unless stat
     modes. Codex saves a trust entry by itself when a protocol start names a
     folder it holds no decision for, so a lane is refused there unless
     `--trust`. `--close [--force] [--archive] <window|session-id>...` removes a
-    window flakelab started (one pane, `codex resume` on the recorded id) once
+    window flakelab started (one pane whose start command is exactly
+    `codex resume <recorded id>`; read again before the removal, which tmux
+    itself guards with `if-shell -F` on pane count, mark and command) once
     the session, its helper agents and its commands are finished, and prints
     the resume line; `--force` interrupts and cleans first, for every window of
     that session. It locks nothing. A lane flag without a prompt, with
