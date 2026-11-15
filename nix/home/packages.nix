@@ -53,11 +53,6 @@ in
   home.packages =
     with pkgs;
     [
-      kubectl
-      kubernetes-helm
-      k9s
-      kubectx # provides kubectx + kubens
-      kubelogin-oidc # int128 kubectl oidc-login, not the Azure AD one
       opentofu
       tofu-ls
       tflint
@@ -114,7 +109,6 @@ in
 
   home.sessionVariables = {
     EDITOR = "nano";
-    KUBE_EDITOR = "code --wait";
     GOPATH = "${config.home.homeDirectory}/git/go";
     GOBIN = "${config.home.homeDirectory}/git/go/bin";
     # ~/.npm-global is writable, unlike the nix store npm defaults to.
@@ -130,6 +124,9 @@ in
   // lib.optionalAttrs (whatsappMcpDir != null) {
     # Expanded as ${WHATSAPP_MCP_DIR} by the mcp-whatsapp plugin's .mcp.json.
     WHATSAPP_MCP_DIR = whatsappMcpDir;
+  }
+  // lib.optionalAttrs (builtins.elem "kubectl" profileCliTools) {
+    KUBE_EDITOR = "code --wait";
   }
   // lib.optionalAttrs (builtins.elem "ansible" profileCliTools) {
     # Collections ship in the ansible distribution, not pkgs.ansible (ansible-core); naming them lets pre-commit's ansible-lint

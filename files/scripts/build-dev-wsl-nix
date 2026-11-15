@@ -163,7 +163,7 @@ if ${VERIFY}; then
   check_contains "locale ${_locale}"                     "${_locale}"   zsh -lc "locale | head -1"
   check "docker service active"   zsh -lc "systemctl is-active docker"
   check "user in docker group"    zsh -lc "id -nG | tr ' ' '\n' | grep -qx docker"
-  for t in kubectl helm k9s kubectx kubens yq jq go node bun uv glab gitleaks tofu trivy tflint; do
+  for t in yq jq go node bun uv glab gitleaks tofu trivy tflint; do
     check "$t on PATH" zsh -lc "command -v $t >/dev/null"
   done
   check_flakelab_cli "${0:A:h}/flakelab"
