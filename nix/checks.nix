@@ -924,7 +924,7 @@ in
   # name that is no package. `path` would pass home.packages' own type check.
   profile-cli-tools =
     let
-      installed =
+      hm =
         tools:
         let
           sys =
@@ -938,7 +938,9 @@ in
               }
             )).config;
         in
-        map (p: p.pname or p.name) sys.home-manager.users.${sys.flakelab.username}.home.packages;
+        sys.home-manager.users.${sys.flakelab.username};
+      installed = tools: map (p: p.pname or p.name) (hm tools).home.packages;
+      plugins = tools: (hm tools).programs.zsh.oh-my-zsh.plugins;
       aborts = tools: !(builtins.tryEval (builtins.deepSeq (installed tools) null)).success;
       names = installed [
         "hello"
@@ -951,6 +953,14 @@ in
     # The map sends helm to the Kubernetes CLI, not to pkgs.helm, a synthesizer.
     assert builtins.elem "kubernetes-helm" names;
     assert !(builtins.elem "helm" names);
+    # Kubernetes tools come only from a profile, and their oh-my-zsh plugins follow them.
+    assert !(builtins.elem "kubectl" (installed [ ]));
+    assert !(builtins.elem "kubectl" (plugins [ ]));
+    assert !(builtins.elem "helm" (plugins [ ]));
+    assert builtins.elem "kubectl" (installed [ "kubectl" ]);
+    assert builtins.elem "kubectl" (plugins [ "kubectl" ]);
+    assert builtins.elem "helm" (plugins [ "kubernetes-helm" ]);
+    assert builtins.elem "helm" (plugins [ "helm" ]);
     assert aborts [ "ansibel" ];
     assert aborts [ "lib" ];
     assert aborts [ "callPackage" ];

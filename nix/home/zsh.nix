@@ -68,12 +68,16 @@ in
       enable = true;
       # For the git segment's colours: git_prompt_info is plain without a theme. The PROMPT below replaces the theme's.
       theme = lib.mkDefault "robbyrussell";
+      # kubectl and helm only with the tool: each runs its `completion zsh` at every shell start.
       plugins = [
         "git"
-        "kubectl"
+      ]
+      ++ lib.optional (builtins.elem "kubectl" cfg.profileCliTools) "kubectl"
+      ++ lib.optional (lib.any (t: builtins.elem t cfg.profileCliTools) [
         "helm"
-        "docker"
-      ];
+        "kubernetes-helm"
+      ]) "helm"
+      ++ [ "docker" ];
     };
     # .zshenv, so it applies to every zsh context, not just interactive shells.
     envExtra = ''

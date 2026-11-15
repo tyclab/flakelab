@@ -36,6 +36,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- The Kubernetes CLIs (`kubectl`, `kubernetes-helm`, `k9s`, `kubectx`, `kubelogin-oidc`) are no longer installed on every box; a profile that needs them lists them in `profileCliTools` (`helm` maps to `kubernetes-helm`). The oh-my-zsh `kubectl` and `helm` plugins and `KUBE_EDITOR` follow those names, so a box without them no longer runs `kubectl completion zsh` and `helm completion zsh` at every interactive shell start, which every Claude Code session and shell snapshot paid. The provisioning checks stop requiring them on PATH. `flakelab backup` keeps carrying `~/.kube` and k9s state where they exist.
 - Pin tycswap and its Windows tray to v0.12.0, providing the marked startup-login command used by the new Claude launcher.
 - `flakelab sessions --close --force` reports surviving commands with their owning session and distinguishes acknowledged cleanup from verified termination.
 
