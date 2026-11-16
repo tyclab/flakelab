@@ -2,7 +2,8 @@
 # claude-wake-parked: a Claude Code session that hit a usage limit parks until the reset its error
 # named and never re-reads the login before; after tycswap moved the shared login, this tells each
 # parked session in tmux to go on, when the live account has room for the limit that session hit.
-# Once per pane, account and window; never into a pane that works, shows a dialog or holds typed text.
+# Once per pane, account and window; never into a pane that works, shows a dialog, is in copy mode
+# or holds typed text, and Enter only after the pane shows the line.
 emulate -L zsh
 setopt pipefail extended_glob
 
@@ -17,43 +18,101 @@ bar() { local v; v="$(awk -v k="$1" '$1 == k {print $2; exit}' <<<"$cfg")"; prin
 # tycswap's own defaults when its settings cannot be read.
 b5="$(bar autoswitch.fiveHourThreshold 85)" b7="$(bar autoswitch.sevenDayThreshold 97)" bm="$(bar autoswitch.modelThreshold 95)"
 
-read -r p5 r5 p7 r7 pf rf < <(jq -r '.active.usage as $u | [
+read -r fetched p5 r5 p7 r7 pf rf < <(jq -r '.active as $a | $a.usage as $u | [
+  ($a.usageStatus // "-"),
   ($u.fiveHour.pct // "-"), ($u.fiveHour.resetsAt // "-"),
   ($u.sevenDay.pct // "-"), ($u.sevenDay.resetsAt // "-"),
   ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.pct // "-")),
   ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.resetsAt // "-"))
 ] | map(tostring) | join(" ")' <<<"$st" 2>/dev/null)
-under() { [[ "$1" == - ]] || (( $1 < $2 )) }
-session_room() { under "${p5:--}" "$b5" && under "${p7:--}" "$b7" }
+# Usage that is not known is not room; only a missing 5-hour window is (an account without one).
+[[ "$fetched" == ok && "${p7:--}" != - ]] || exit 0
+session_room() { (( p7 < b7 )) && { [[ "${p5:--}" == - ]] || (( p5 < b5 )) } }
 fable_room() { session_room && [[ "${pf:--}" != - ]] && (( pf < bm )) }
-
-mkdir -p "$STATE" 2>/dev/null || exit 0
-typeset -a screen at
-typeset -i i
-msg="flakelab: the shared login is on an account with room now (account ${acct}); go on where you stopped."
-tmux list-panes -a -F '#{pane_id} #{pane_current_command}' 2>/dev/null | while read -r pane cmd; do
-  [[ "$cmd" == claude || "$cmd" == [0-9]##.[0-9]##.[0-9]## ]] || continue
-  last="$(tmux capture-pane -p -t "$pane" 2>/dev/null | grep -av '^[[:space:]]*$' | tail -n 12)" || continue
-  grep -qaE 'Usage limit reached|hit your [A-Za-z0-9 -]*limit|Automatic continue stopped' <<<"$last" || continue
-  grep -qaE '… \(|esc to interrupt|requests your input|Accept +Decline|Do you want|Compacting' <<<"$last" && continue
-  if grep -qa 'Fable limit' <<<"$last"; then
-    fable_room || continue; key="${acct}|${rf}|${r5}"
+# One name per window: tycswap's reset time differs by a fraction of a second from fetch to fetch.
+window() {
+  local s
+  if [[ "$1" == [0-9](#c4)-[0-9](#c2)-[0-9](#c2)T* ]] && s="$(date -u -d "$1" +%s 2>/dev/null)"; then
+    print -r -- $(( (s + 30) / 60 ))
   else
-    session_room || continue; key="${acct}|${r5}|${r7}"
+    print -r -- "$1"
   fi
-  # The input box is the line between the last two rules; it must be empty or a dim placeholder.
-  screen=("${(@f)$(tmux capture-pane -e -p -t "$pane" 2>/dev/null)}")
-  at=()
-  for (( i = 1; i <= ${#screen}; i++ )); do
-    [[ "${screen[i]//$'\e'\[[0-9;]#m/}" == [[:space:]]#(─)(#c3,)* ]] && at+=($i)
+}
+w5="$(window "${r5:--}")" w7="$(window "${r7:--}")" wf="$(window "${rf:--}")"
+
+# The text of a captured line outside dim runs (a placeholder or hint is dim; typed text is not).
+# Anything that is not a colour or attribute sequence counts as text.
+visible() {
+  local s="$1" out part params text
+  local -a parts ps
+  integer dim=0 k
+  parts=("${(@ps:\e[:)s}")
+  out="${parts[1]}"
+  for part in "${(@)parts[2,-1]}"; do
+    params="${part%%m*}" text="${part#*m}"
+    if [[ "$part" != *m* || "$params" != [0-9\;]# ]]; then out+="?${part}"; continue; fi
+    ps=("${(@s:;:)params}"); (( ${#ps} )) || ps=(0)
+    for (( k = 1; k <= ${#ps}; k++ )); do
+      case "${ps[k]}" in
+        (|0|22) dim=0 ;;
+        (2) dim=1 ;;
+        (38|48|58) if [[ "${ps[k+1]}" == 2 ]]; then (( k += 4 )); elif [[ "${ps[k+1]}" == 5 ]]; then (( k += 2 )); fi ;;
+      esac
+    done
+    (( dim )) || out+="$text"
   done
-  (( ${#at} >= 2 && at[-1] - at[-2] == 2 )) || continue
-  box="${screen[at[-1] - 1]}"
-  # Byte sequences, not a character class: the timer's service may run without a UTF-8 locale.
-  plain="${box//$'\e'\[[0-9;]#m/}"; plain="${plain//$'\xc2\xa0'/}"; plain="${plain//❯/}"; plain="${plain//[[:space:]]/}"
-  [[ -z "$plain" || "$box" == *$'\e[2m'* ]] || continue
+  print -r -- "$out"
+}
+# Byte sequences, not a character class: the timer's service may run without a UTF-8 locale.
+bare() { local t="$1"; t="${t//$'\xc2\xa0'/}"; t="${t//❯/}"; t="${t//[[:space:]]/}"; print -r -- "$t" }
+
+typeset -a screen plain at
+typeset -i i
+# Captures pane $1; the input box is what sits between the last two rules.
+look() {
+  screen=("${(@f)$(tmux capture-pane -e -p -t "$1" 2>/dev/null)}")
+  plain=("${(@)screen//$'\e'\[[0-9;]#m/}")
+  at=()
+  for (( i = 1; i <= ${#plain}; i++ )); do
+    [[ "${plain[i]}" == [[:space:]]#(─)(#c3,)* ]] && at+=($i)
+  done
+  (( ${#at} >= 2 ))
+}
+box() { # the box's text outside dim runs, without prompt and blanks
+  local out=""
+  for (( i = at[-2] + 1; i < at[-1]; i++ )); do out+="$(visible "${screen[i]}")"; done
+  bare "$out"
+}
+
+# Claude Code's own lines, by their shape: with their mark anywhere near the end of the screen,
+# without it only below the input box, where no reply's text can stand.
+shape="(Usage limit reached · |You've hit your [A-Za-z0-9 -]*limit · resets |Automatic continue stopped · )"
+mkdir -p "$STATE" 2>/dev/null || exit 0
+msg="flakelab: the shared login is on an account with room now (account ${acct}); go on where you stopped."
+tmux list-panes -a -F '#{pane_id} #{pane_in_mode} #{pane_current_command}' 2>/dev/null | while read -r pane mode cmd; do
+  [[ "$cmd" == claude || "$cmd" == [0-9]##.[0-9]##.[0-9]## ]] || continue
+  [[ "$mode" == 0 ]] || continue
+  look "$pane" || continue
+  last="$(print -rl -- "${plain[@]}" | grep -av '^[[:space:]]*$' | tail -n 12)"
+  foot="$(print -rl -- "${(@)plain[at[-1] + 1,-1]}")"
+  hit="$(grep -aE "^[[:space:]]*(⚠|⎿)[[:space:]]+${shape}" <<<"$last"; grep -aE "^[[:space:]]*${shape}" <<<"$foot")"
+  [[ -n "$hit" ]] || continue
+  grep -qaE '… \(|esc to interrupt|requests your input|Accept +Decline|Do you want|Compacting|Enter to select|to navigate' <<<"$last" && continue
+  if grep -qa 'Fable limit' <<<"$hit"; then
+    fable_room || continue; key="${acct}|${wf}|${w5}"
+  else
+    session_room || continue; key="${acct}|${w5}|${w7}"
+  fi
+  # One line between the rules, empty or a dim placeholder.
+  (( at[-1] - at[-2] == 2 )) && [[ -z "$(box)" ]] || continue
   [[ "$(<"$STATE/${pane#%}" 2>/dev/null)" == "$key" ]] && continue
-  tmux send-keys -t "$pane" -l "$msg" && tmux send-keys -t "$pane" Enter || continue
+  tmux send-keys -t "$pane" -l "$msg" || continue
+  sleep "${FLAKELAB_WAKE_SETTLE:-0.5}"
+  if ! look "$pane" || [[ "$(box)" != "$(bare "$msg")" ]]; then
+    print -r -- "not submitted in ${pane}: its input box does not show the line"
+    continue
+  fi
+  tmux send-keys -t "$pane" Enter || continue
   print -r -- "$key" >"$STATE/${pane#%}"
   print -r -- "woke ${pane} (account ${acct}, ${key})"
 done

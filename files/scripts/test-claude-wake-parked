@@ -16,12 +16,27 @@ excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
 STUBS="${BASE}/bin" PANES="${BASE}/panes"
 mkdir -p "$STUBS" "$PANES"
 export TMUX_LOG="${BASE}/tmux.log" PANE_DIR="$PANES" STATUS_JSON="${BASE}/status.json" FLAKELAB_WAKE_STATE="${BASE}/state"
+export FLAKELAB_WAKE_SETTLE=0
+# The stub pane shows typed text in its input box (line 3 of a screen) unless <pane>.swallow exists.
 cat > "${STUBS}/tmux" <<'STUB'
 #!/usr/bin/env zsh
 case "$1" in
   list-panes) cat "${PANE_DIR}/list" ;;
-  capture-pane) cat "${PANE_DIR}/${@[-1]#%}" ;;
-  send-keys) print -r -- "$*" >> "${TMUX_LOG}" ;;
+  capture-pane)
+    n="${@[-1]#%}"
+    if [[ -r "${PANE_DIR}/${n}.typed" ]]; then
+      awk -v t="$(<"${PANE_DIR}/${n}.typed")" 'NR == 3 { print "❯ " t; next } { print }' "${PANE_DIR}/${n}"
+    else
+      cat "${PANE_DIR}/${n}"
+    fi ;;
+  send-keys)
+    print -r -- "$*" >> "${TMUX_LOG}"
+    n="${3#%}"
+    if [[ "$4" == -l ]]; then
+      [[ -e "${PANE_DIR}/${n}.swallow" ]] || print -r -- "$5" > "${PANE_DIR}/${n}.typed"
+    else
+      rm -f "${PANE_DIR}/${n}.typed"
+    fi ;;
   *) exit 1 ;;
 esac
 STUB
@@ -36,8 +51,10 @@ STUB
 chmod +x "${STUBS}"/*
 export PATH="${STUBS}:${PATH}"
 
+# The reset times as tycswap prints them; their fraction differs from fetch to fetch.
+R5="2026-11-16T05:29:59.564684+00:00" R7="2026-11-18T22:59:59.866924+00:00" RF="2026-11-18T22:59:59.867090+00:00"
 status() { # five-hour pct, seven-day pct, fable pct
-  print -r -- "{\"active\":{\"number\":7,\"usage\":{\"fiveHour\":{\"pct\":$1,\"resetsAt\":\"R5\"},\"sevenDay\":{\"pct\":$2,\"resetsAt\":\"R7\"},\"scoped\":[{\"name\":\"Fable\",\"pct\":$3,\"resetsAt\":\"RF\"}]}}}" > "$STATUS_JSON"
+  print -r -- "{\"active\":{\"number\":7,\"usageStatus\":\"ok\",\"usage\":{\"fiveHour\":{\"pct\":$1,\"resetsAt\":\"$R5\"},\"sevenDay\":{\"pct\":$2,\"resetsAt\":\"$R7\"},\"scoped\":[{\"name\":\"Fable\",\"pct\":$3,\"resetsAt\":\"$RF\"}]}}}" > "$STATUS_JSON"
 }
 RULE='────────────────────────────────'
 screen() { # file, input line, footer lines...
@@ -52,7 +69,20 @@ screen 4 "❯ " "${PARKED[@]}"
 screen 5 "❯ " "  ⎿  You've hit your Fable limit · resets Nov 18, 10pm" "${PARKED[@]}"
 screen 6 "❯ "
 screen 7 $'❯ \e[2mTry "fix lint errors"\e[0m' "${PARKED[@]}"
-print -rl -- "%1 claude" "%2 claude" "%3 claude" "%4 codex" "%5 2.1.325" "%6 claude" "%7 claude" > "${PANES}/list"
+# A finished session whose last reply only talks about a limit.
+print -rl -- "● The lane stopped because you hit your 5-hour limit; nothing is merged." "  Usage limit reached earlier, waiting for your go." "$RULE lane ─" "❯ " "$RULE" "  ⏵⏵ auto mode on" > "${PANES}/8"
+screen 9 $'❯ /model \e[2m[model]\e[0m' "${PARKED[@]}"
+screen 10 "❯ " "${PARKED[@]}"
+# A question dialog drawn where the input box sits.
+print -rl -- "● Which one?" "$RULE" "" "$RULE" "  Enter to select · ↑/↓ to navigate · Esc to cancel" "${PARKED[@]}" > "${PANES}/11"
+# Something taller than an input box between the last two rules.
+print -rl -- "● Done." "$RULE" "" "" "" "$RULE" "${PARKED[@]}" > "${PANES}/12"
+screen 13 "❯ " "${PARKED[@]}"
+: > "${PANES}/13.swallow"
+# The banner as the last line of the conversation, above the input box.
+print -rl -- "● Working on it." "  ⎿  You've hit your 5-hour limit · resets 3:40am (Europe/Berlin)" "$RULE lane ─" "❯ " "$RULE" "  ⏵⏵ auto mode on" > "${PANES}/14"
+print -rl -- "%1 0 claude" "%2 0 claude" "%3 0 claude" "%4 0 codex" "%5 0 2.1.325" "%6 0 claude" "%7 0 claude" \
+  "%8 0 claude" "%9 0 claude" "%10 1 claude" "%11 0 claude" "%12 0 claude" "%13 0 claude" "%14 0 claude" > "${PANES}/list"
 run() { OUT="$("$CMD" 2>&1)"; RC=$?; SENT="$(cat "$TMUX_LOG" 2>/dev/null)"; }
 
 print -r -- "the live account has 5-hour and weekly room, Fable spent"
@@ -67,12 +97,26 @@ excludes "never into a Codex pane" "$SENT" "-t %4 "
 excludes "a Fable-limit session waits while the account has no Fable" "$SENT" "-t %5 "
 excludes "a session that is not parked is left alone" "$SENT" "-t %6 "
 contains "a dim placeholder counts as an empty input box" "$SENT" "send-keys -t %7 -l"
+excludes "a reply that only mentions a limit is no banner" "$SENT" "-t %8 "
+excludes "typed text before a dim hint is typed text" "$SENT" "-t %9 "
+excludes "never into a pane in copy mode" "$SENT" "-t %10 "
+excludes "never into a question dialog" "$SENT" "-t %11 "
+excludes "never where more than an input line sits between the rules" "$SENT" "-t %12 "
+contains "a pane that does not show the line is typed into" "$SENT" "send-keys -t %13 -l"
+excludes "but gets no Enter" "$SENT" "send-keys -t %13 Enter"
+contains "and is reported" "$OUT" "not submitted in %13"
+contains "a banner at the end of the conversation counts" "$SENT" "send-keys -t %14 -l"
 contains "each wake is reported" "$OUT" "woke %1 (account 7"
 
 print -r -- "once per pane, account and window"
 : > "$TMUX_LOG"
 run
-check "a second run wakes nobody again" "$SENT" ""
+excludes "a second run wakes nobody again" "$SENT" "Enter"
+R5="2026-11-16T05:30:00.120000+00:00" R7="2026-11-18T22:59:59.101010+00:00" RF="2026-11-18T23:00:00.000001+00:00"
+status 4 88 100
+: > "$TMUX_LOG"
+run
+excludes "nor does a new fetch of the same window, whose reset time differs by a fraction" "$SENT" "Enter"
 
 print -r -- "Fable room on the live account"
 status 4 88 50
@@ -80,6 +124,13 @@ status 4 88 50
 run
 contains "a Fable-limit session is woken once the account has Fable" "$SENT" "send-keys -t %5 -l"
 excludes "the others keep their earlier wake" "$SENT" "-t %1 "
+
+print -r -- "a new window"
+R5="2026-11-16T10:29:59.564684+00:00"
+status 4 88 100
+: > "$TMUX_LOG"
+run
+contains "wakes a still parked session again" "$SENT" "send-keys -t %1 -l"
 
 print -r -- "no room"
 rm -rf "$FLAKELAB_WAKE_STATE"
@@ -91,8 +142,23 @@ status 10 97 10
 run
 check "the live account at its weekly bar wakes nobody" "$SENT" ""
 
+print -r -- "usage that is not known is not room"
+print -r -- '{"active":{"number":7,"usageStatus":"ok","usage":null}}' > "$STATUS_JSON"
+run
+check "no usage wakes nobody" "$SENT" ""
+print -r -- '{"active":{"number":7,"usageStatus":"ok","usage":{"fiveHour":{"pct":4,"resetsAt":"'"$R5"'"}}}}' > "$STATUS_JSON"
+run
+check "no weekly figure wakes nobody" "$SENT" ""
+print -r -- '{"active":{"number":7,"usageStatus":"error","usage":{"fiveHour":{"pct":4,"resetsAt":"'"$R5"'"},"sevenDay":{"pct":50,"resetsAt":"'"$R7"'"}}}}' > "$STATUS_JSON"
+run
+check "a failed fetch wakes nobody" "$SENT" ""
+print -r -- '{"active":{"number":7,"usageStatus":"ok","usage":{"sevenDay":{"pct":50,"resetsAt":"'"$R7"'"}}}}' > "$STATUS_JSON"
+run
+contains "an account without a 5-hour window has room" "$SENT" "send-keys -t %1 -l"
+
 print -r -- "tycswap cannot answer"
 rm -f "$STATUS_JSON"
+: > "$TMUX_LOG"
 run
 check "exits 0" "$RC" "0"
 check "and touches nothing" "$SENT" ""
