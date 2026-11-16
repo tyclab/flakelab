@@ -793,10 +793,14 @@ collect_pairs() {
 typeset -a RESUME_ARGS=()
 # A retired tycswap group's history is copied into ~/.claude when the group
 # retires, so its sessions resume on the default login; until then, in the
-# group's own profile.
+# group's own profile. A run/env profile (retired, tycswap 0.13) never pins a
+# session again: its conversation is copied into ~/.claude where missing and
+# resumes on the shared default login.
 resume_args() {
   local tool="$1" sid="$2" group="${3:-}" profile="${4:-}"
   if [[ "$tool" == claude && -n "$group" ]] && default_copy "$sid"; then
+    RESUME_ARGS=(claude --resume "$sid")
+  elif [[ "$tool" == claude && -n "$profile" && -z "$group" ]] && profile_to_default "$sid" "$profile"; then
     RESUME_ARGS=(claude --resume "$sid")
   elif [[ "$tool" == claude && -n "$profile" ]]; then
     RESUME_ARGS=(env "CLAUDE_CONFIG_DIR=${profile}" claude --resume "$sid")
@@ -810,6 +814,20 @@ resume_args() {
 default_copy() {
   local -a copies=("${HOME}"/.claude/projects/*/${1}.jsonl(N))
   (( ${#copies} > 0 ))
+}
+
+# Copies a profile's transcript (and its sibling folder) into the same project
+# folder under ~/.claude unless one is there already; fails when the profile has none.
+profile_to_default() {
+  local sid="$1" profile="$2" src dst
+  default_copy "$sid" && return 0
+  for src in "${profile}"/projects/*/${sid}.jsonl(N); do
+    dst="${HOME}/.claude/projects/${src:h:t}"
+    mkdir -p "$dst" && cp -n "$src" "$dst/" || return 1
+    if [[ -d "${src:r}" ]]; then cp -rn "${src:r}" "$dst/" || return 1; fi
+    return 0
+  done
+  return 1
 }
 
 resume_cmd() {

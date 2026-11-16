@@ -3,7 +3,7 @@
 # Codex can run a command on a pty.
 #
 # Everything is drawn on stderr and answers land in globals, not on stdout, so
-# a caller whose stdout is captured (`eval "$(tycswap env 2)"`) still
+# a caller whose stdout is captured (`x="$(cmd)"`) still
 # gets its prompt and its stdout stays data:
 #   PROMPT_INDEX  the 1-based index prompt_choose picked
 #   PROMPT_TEXT   the line prompt_input read
