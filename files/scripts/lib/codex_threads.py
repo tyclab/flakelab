@@ -18,8 +18,8 @@ work. Nothing here answers a request the server sends (it approves nothing).
 
 The server is the one behind $CODEX_HOME/app-server-control/app-server-control.sock
 (~/.codex without CODEX_HOME): a WebSocket carrying one JSON message per text frame.
-What this file relies on was measured on codex-cli 0.169.0 and is written down in
-docs/superpowers/specs/2026-11-13-sessions-codex-lanes-design.md (facts F1 to F13).
+What this file relies on was measured on codex-cli 0.169.0; what the code does not show
+is in docs/agents/cli-development.md.
 """
 
 import argparse

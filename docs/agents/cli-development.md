@@ -42,8 +42,9 @@ Read for this topic; paths below are relative to the repository root unless stat
     sessions keep `<tool>  <dir>  <id>` lines; legacy lines without the tool
     column still mean Claude Code. A Codex **lane** is `--start codex [dir]
 --prompt TEXT|--prompt-file FILE [--model M] [--effort E] [--name N]
-[--trust]`: Codex has no flag for the reasoning effort that keeps a session
-    on its shared server, so the lane is created through Codex's own protocol
+[--trust]`: `codex -c model_reasoning_effort=…` leaves the shared server unless
+    the window also gets `--remote unix://<socket>`, and then nothing tells the
+    caller the session's id, so the lane is created through Codex's own protocol
     (`lib/codex_threads.py`, python3 stdlib, a WebSocket on
     `$CODEX_HOME/app-server-control/app-server-control.sock`): conversation
     with model and effort, first turn with both, and only then the window, which
@@ -66,8 +67,12 @@ Read for this topic; paths below are relative to the repository root unless stat
     (the helper against `lib/codex_fake_server.py`, whose answers are recorded
     ones under `lib/testdata/codex-app-server/`; `FLAKELAB_CODEX_LIVE=1` runs
     the live checks instead, after a Codex update) and the lane cases of
-    `test-claude-sessions`. Design and the measured Codex behaviour:
-    `docs/superpowers/specs/2026-11-13-sessions-codex-lanes-design.md`.
+    `test-claude-sessions`. Measured on codex-cli 0.169.0: the server accepts an
+    unknown model name without an error; a turn runs on after its client
+    disconnects, and a command it started outlives `turn/interrupt` until
+    `thread/backgroundTerminals/clean`; at effort `ultra` a session starts helper
+    conversations (`parentThreadId`) that stay loaded; a conversation started over
+    the socket reads back the same `originator` and `source` as a window's.
     Saves go to the state root's `claude/sessions/`
     when one is set, else `~/.local/state/flakelab/sessions/`, never into
     `~/.claude/sessions`; they are named `<hostname>-<machine>-…` (twelve hex
