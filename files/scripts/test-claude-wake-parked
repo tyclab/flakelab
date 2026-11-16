@@ -1,0 +1,102 @@
+#!/usr/bin/env zsh
+# Offline tests for claude-wake-parked: stub tmux panes and a stub tycswap status.
+emulate -L zsh
+setopt pipefail
+SCRIPT_DIR="${0:A:h}"
+CMD="${SCRIPT_DIR}/claude-wake-parked"
+BASE="$(mktemp -d)"
+trap 'rm -rf "$BASE"' EXIT
+typeset -i PASS=0 FAIL=0
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in: $2" } }
+excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
+
+STUBS="${BASE}/bin" PANES="${BASE}/panes"
+mkdir -p "$STUBS" "$PANES"
+export TMUX_LOG="${BASE}/tmux.log" PANE_DIR="$PANES" STATUS_JSON="${BASE}/status.json" FLAKELAB_WAKE_STATE="${BASE}/state"
+cat > "${STUBS}/tmux" <<'STUB'
+#!/usr/bin/env zsh
+case "$1" in
+  list-panes) cat "${PANE_DIR}/list" ;;
+  capture-pane) cat "${PANE_DIR}/${@[-1]#%}" ;;
+  send-keys) print -r -- "$*" >> "${TMUX_LOG}" ;;
+  *) exit 1 ;;
+esac
+STUB
+cat > "${STUBS}/tycswap" <<'STUB'
+#!/usr/bin/env zsh
+case "$1 $2" in
+  "status --json") [[ -r "${STATUS_JSON}" ]] && cat "${STATUS_JSON}" || exit 1 ;;
+  "config list") print -r -- "autoswitch.fiveHourThreshold    90"; print -r -- "autoswitch.sevenDayThreshold    97             (default)"; print -r -- "autoswitch.modelThreshold       95             (default)" ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "${STUBS}"/*
+export PATH="${STUBS}:${PATH}"
+
+status() { # five-hour pct, seven-day pct, fable pct
+  print -r -- "{\"active\":{\"number\":7,\"usage\":{\"fiveHour\":{\"pct\":$1,\"resetsAt\":\"R5\"},\"sevenDay\":{\"pct\":$2,\"resetsAt\":\"R7\"},\"scoped\":[{\"name\":\"Fable\",\"pct\":$3,\"resetsAt\":\"RF\"}]}}}" > "$STATUS_JSON"
+}
+RULE='────────────────────────────────'
+screen() { # file, input line, footer lines...
+  local f="$1" input="$2"; shift 2
+  print -rl -- "● Done with the step." "$RULE lane ─" "$input" "$RULE" "$@" "  ⏵⏵ auto mode on" > "${PANES}/$f"
+}
+PARKED=("  ⚠ Usage limit reached · limit resets 3am" "    Continuing automatically at 3am · Esc to cancel")
+screen 1 $'❯\u00a0' "${PARKED[@]}"
+screen 2 "❯ please also check the logs" "${PARKED[@]}"
+screen 3 "❯ " "✻ Thinking… (12s · esc to interrupt)" "${PARKED[@]}"
+screen 4 "❯ " "${PARKED[@]}"
+screen 5 "❯ " "  ⎿  You've hit your Fable limit · resets Nov 18, 10pm" "${PARKED[@]}"
+screen 6 "❯ "
+screen 7 $'❯ \e[2mTry "fix lint errors"\e[0m' "${PARKED[@]}"
+print -rl -- "%1 claude" "%2 claude" "%3 claude" "%4 codex" "%5 2.1.325" "%6 claude" "%7 claude" > "${PANES}/list"
+run() { OUT="$("$CMD" 2>&1)"; RC=$?; SENT="$(cat "$TMUX_LOG" 2>/dev/null)"; }
+
+print -r -- "the live account has 5-hour and weekly room, Fable spent"
+status 4 88 100
+run
+check "exits 0" "$RC" "0"
+contains "a session parked on its usage limit is told to go on (Claude Code's no-break space after the prompt is empty)" "$SENT" "send-keys -t %1 -l flakelab: the shared login is on an account with room now (account 7)"
+contains "followed by Enter" "$SENT" "send-keys -t %1 Enter"
+excludes "never into typed text" "$SENT" "-t %2 "
+excludes "never into a session at work" "$SENT" "-t %3 "
+excludes "never into a Codex pane" "$SENT" "-t %4 "
+excludes "a Fable-limit session waits while the account has no Fable" "$SENT" "-t %5 "
+excludes "a session that is not parked is left alone" "$SENT" "-t %6 "
+contains "a dim placeholder counts as an empty input box" "$SENT" "send-keys -t %7 -l"
+contains "each wake is reported" "$OUT" "woke %1 (account 7"
+
+print -r -- "once per pane, account and window"
+: > "$TMUX_LOG"
+run
+check "a second run wakes nobody again" "$SENT" ""
+
+print -r -- "Fable room on the live account"
+status 4 88 50
+: > "$TMUX_LOG"
+run
+contains "a Fable-limit session is woken once the account has Fable" "$SENT" "send-keys -t %5 -l"
+excludes "the others keep their earlier wake" "$SENT" "-t %1 "
+
+print -r -- "no room"
+rm -rf "$FLAKELAB_WAKE_STATE"
+status 92 50 10
+: > "$TMUX_LOG"
+run
+check "the live account above its 5-hour bar wakes nobody" "$SENT" ""
+status 10 97 10
+run
+check "the live account at its weekly bar wakes nobody" "$SENT" ""
+
+print -r -- "tycswap cannot answer"
+rm -f "$STATUS_JSON"
+run
+check "exits 0" "$RC" "0"
+check "and touches nothing" "$SENT" ""
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

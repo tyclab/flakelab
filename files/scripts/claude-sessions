@@ -823,8 +823,9 @@ profile_to_default() {
   default_copy "$sid" && return 0
   for src in "${profile}"/projects/*/${sid}.jsonl(N); do
     dst="${HOME}/.claude/projects/${src:h:t}"
-    mkdir -p "$dst" && cp -n "$src" "$dst/" || return 1
-    if [[ -d "${src:r}" ]]; then cp -rn "${src:r}" "$dst/" || return 1; fi
+    mkdir -p "$dst" || return 1
+    [[ -e "$dst/${src:t}" ]] || cp "$src" "$dst/" || return 1
+    if [[ -d "${src:r}" && ! -e "$dst/${src:r:t}" ]]; then cp -r "${src:r}" "$dst/" || return 1; fi
     return 0
   done
   return 1

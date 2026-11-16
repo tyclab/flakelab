@@ -162,6 +162,7 @@ in
   claude-start = suiteCheckWith [ pkgs.python3 ] "claude-start";
   # One block of cases runs lib/codex_threads.py against its stand-in server.
   claude-sessions = suiteCheckWith [ pkgs.python3 ] "claude-sessions";
+  claude-wake-parked = suiteCheckWith [ pkgs.jq pkgs.gawk ] "claude-wake-parked";
   codex-threads = suiteCheckWith [ pkgs.python3 ] "codex-threads";
   notify = suiteCheck "notify";
   questions = suiteCheckWith [ pkgs.python3 ] "questions";
@@ -1880,6 +1881,13 @@ in
       builtins.match ".*/bin/(cswap|tycswap) auto --once --json" (
         lib.concatStringsSep " " (
           lib.toList (hmOf on).systemd.user.services.flakelab-tycswap-autoswitch.Service.ExecStart
+        )
+      ) != null;
+    # After every tick the parked-session waker runs, its failure never failing the tick.
+    assert
+      builtins.match "-.*/bin/claude-wake-parked" (
+        lib.concatStringsSep " " (
+          lib.toList (hmOf on).systemd.user.services.flakelab-tycswap-autoswitch.Service.ExecStartPost
         )
       ) != null;
     assert lib.any (a: !a.assertion && lib.hasInfix "tycswapAutoSwitchInterval" a.message)

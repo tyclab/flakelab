@@ -1,0 +1,59 @@
+#!/usr/bin/env zsh
+# claude-wake-parked: a Claude Code session that hit a usage limit parks until the reset its error
+# named and never re-reads the login before; after tycswap moved the shared login, this tells each
+# parked session in tmux to go on, when the live account has room for the limit that session hit.
+# Once per pane, account and window; never into a pane that works, shows a dialog or holds typed text.
+emulate -L zsh
+setopt pipefail extended_glob
+
+STATE="${FLAKELAB_WAKE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/flakelab/wake-parked}"
+command -v tmux >/dev/null 2>&1 && command -v tycswap >/dev/null 2>&1 || exit 0
+st="$(tycswap status --json 2>/dev/null)" || exit 0
+acct="$(jq -r '.active.number // empty' <<<"$st" 2>/dev/null)"
+[[ -n "$acct" ]] || exit 0
+
+cfg="$(tycswap config list 2>/dev/null)"
+bar() { local v; v="$(awk -v k="$1" '$1 == k {print $2; exit}' <<<"$cfg")"; print -r -- "${v:-$2}" }
+# tycswap's own defaults when its settings cannot be read.
+b5="$(bar autoswitch.fiveHourThreshold 85)" b7="$(bar autoswitch.sevenDayThreshold 97)" bm="$(bar autoswitch.modelThreshold 95)"
+
+read -r p5 r5 p7 r7 pf rf < <(jq -r '.active.usage as $u | [
+  ($u.fiveHour.pct // "-"), ($u.fiveHour.resetsAt // "-"),
+  ($u.sevenDay.pct // "-"), ($u.sevenDay.resetsAt // "-"),
+  ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.pct // "-")),
+  ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.resetsAt // "-"))
+] | map(tostring) | join(" ")' <<<"$st" 2>/dev/null)
+under() { [[ "$1" == - ]] || (( $1 < $2 )) }
+session_room() { under "${p5:--}" "$b5" && under "${p7:--}" "$b7" }
+fable_room() { session_room && [[ "${pf:--}" != - ]] && (( pf < bm )) }
+
+mkdir -p "$STATE" 2>/dev/null || exit 0
+typeset -a screen at
+typeset -i i
+msg="flakelab: the shared login is on an account with room now (account ${acct}); go on where you stopped."
+tmux list-panes -a -F '#{pane_id} #{pane_current_command}' 2>/dev/null | while read -r pane cmd; do
+  [[ "$cmd" == claude || "$cmd" == [0-9]##.[0-9]##.[0-9]## ]] || continue
+  last="$(tmux capture-pane -p -t "$pane" 2>/dev/null | grep -av '^[[:space:]]*$' | tail -n 12)" || continue
+  grep -qaE 'Usage limit reached|hit your [A-Za-z0-9 -]*limit|Automatic continue stopped' <<<"$last" || continue
+  grep -qaE '… \(|esc to interrupt|requests your input|Accept +Decline|Do you want|Compacting' <<<"$last" && continue
+  if grep -qa 'Fable limit' <<<"$last"; then
+    fable_room || continue; key="${acct}|${rf}|${r5}"
+  else
+    session_room || continue; key="${acct}|${r5}|${r7}"
+  fi
+  # The input box is the line between the last two rules; it must be empty or a dim placeholder.
+  screen=("${(@f)$(tmux capture-pane -e -p -t "$pane" 2>/dev/null)}")
+  at=()
+  for (( i = 1; i <= ${#screen}; i++ )); do
+    [[ "${screen[i]//$'\e'\[[0-9;]#m/}" == [[:space:]]#(─)(#c3,)* ]] && at+=($i)
+  done
+  (( ${#at} >= 2 && at[-1] - at[-2] == 2 )) || continue
+  box="${screen[at[-1] - 1]}"
+  plain="${${box//$'\e'\[[0-9;]#m/}//[❯[:space:]$'\u00a0']/}"
+  [[ -z "$plain" || "$box" == *$'\e[2m'* ]] || continue
+  [[ "$(<"$STATE/${pane#%}" 2>/dev/null)" == "$key" ]] && continue
+  tmux send-keys -t "$pane" -l "$msg" && tmux send-keys -t "$pane" Enter || continue
+  print -r -- "$key" >"$STATE/${pane#%}"
+  print -r -- "woke ${pane} (account ${acct}, ${key})"
+done
+exit 0
