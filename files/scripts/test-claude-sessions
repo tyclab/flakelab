@@ -637,7 +637,7 @@ check "a doubled saved file resumes once" "$(print -r -- "$OUT" | grep -c 'claud
 
 # ---------------------------------------------------------------------------
 print -r -- ""
-print -r -- "a session on a tycswap profile (tycswap run / tycswap env)"
+print -r -- "a session on a retired tycswap run/env profile"
 SID_P=facefeed-0000-0000-0000-000000000009
 PROFILE="${HOME}/.local/share/tycswap/sessions/2-b_example.com"
 mkdir -p "${PROFILE}/sessions" "${PROFILE}/projects/-other"
@@ -655,7 +655,18 @@ excludes "and leaves the running profile session out" "${OUT}" "${SID_P}"
 run --save "${BASE}/legacy-profile.txt"
 check "a legacy profile snapshot retains the profile" "$(jq -Rr --arg id "$SID_P" 'fromjson? | select(.session == $id) | .profile' "${BASE}/legacy-profile.txt")" "$PROFILE"
 run --resume "${BASE}/legacy-profile.txt"
-contains "a legacy profile resumes in its original config directory" "$OUT" "env CLAUDE_CONFIG_DIR=${PROFILE} claude --resume ${SID_P}"
+contains "a legacy profile without a transcript keeps its config directory" "$OUT" "env CLAUDE_CONFIG_DIR=${PROFILE} claude --resume ${SID_P}"
+mkdir -p "${PROFILE}/projects/-other/${SID_P}"
+print -r -- "{\"type\":\"user\",\"cwd\":\"${BASE}/other\"}" > "${PROFILE}/projects/-other/${SID_P}.jsonl"
+print -r -- "tool-result" > "${PROFILE}/projects/-other/${SID_P}/note.txt"
+run --resume "${BASE}/legacy-profile.txt"
+contains "a legacy profile session resumes on the default login" "$OUT" "&& claude --resume ${SID_P}"
+excludes "never in the profile again" "$OUT" "CLAUDE_CONFIG_DIR=${PROFILE}"
+check "its transcript is copied into ~/.claude" "$(cat "${HOME}/.claude/projects/-other/${SID_P}.jsonl" 2>/dev/null)" "$(<"${PROFILE}/projects/-other/${SID_P}.jsonl")"
+check "with its sibling folder" "$(cat "${HOME}/.claude/projects/-other/${SID_P}/note.txt" 2>/dev/null)" "tool-result"
+print -r -- "default-copy-wins" > "${HOME}/.claude/projects/-other/${SID_P}.jsonl"
+run --resume "${BASE}/legacy-profile.txt"
+check "an existing default copy is never overwritten" "$(<"${HOME}/.claude/projects/-other/${SID_P}.jsonl")" "default-copy-wins"
 # A profile that shares the history (tycswap's default) links projects/ to
 # ~/.claude's: the same transcript is globbed twice and listed once.
 mkdir -p "${PROFILE:h}/3-c_example.com"
