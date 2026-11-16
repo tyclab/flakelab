@@ -593,9 +593,9 @@ beside it (the tool's own login in a scratch profile, nothing logged out),
 `tycswap switch <n|email|alias>` makes another one live and a running Claude
 Code session carries on with its next message; `tycswap list` shows every
 login's windows, `tycswap switch --strategy best` takes the one with the most
-headroom, `tycswap run 2` runs a second account in a second terminal on a
-profile of its own and `eval "$(tycswap env 2)"` pins a shell to it;
-`tycswap codex …` does the same for Codex. `flakelab.tycswapAutoSwitchInterval
+headroom; every session shares that one rotating login (per-account
+profiles, `tycswap run` / `env`, are retired); `tycswap codex …` does the
+same for Codex. `flakelab.tycswapAutoSwitchInterval
 = "2min";` installs a user timer that runs `tycswap auto --once`, moving the
 live login before it hits a limit while auto-switch is on (`tycswap auto
 on|off`, the tray's toggle); the thresholds, the strategy and the cooldown

@@ -14,6 +14,10 @@ let
   on = cfg.installTycswap && cfg.tycswapAutoSwitchInterval != null;
   app = cfg.installTycswap && cfg.tycswapAppPort != null;
   inherit (flakelab) neverRestartedByActivation;
+  scripts = import ../scripts.nix { inherit pkgs cfg; };
+  # A Claude session that hit a limit parks until its reset and never re-reads the login, so a
+  # switch alone leaves it waiting: after every tick, parked sessions on room are told to go on.
+  wake = on && cfg.installClaude;
   # tycswap keeps its own record (every switch whoever made it, usage fetch failures, credential
   # warnings) in a private file; the journal is the record a box reads and ships, so it is followed.
   # journald takes a leading <N> as the line's priority.
@@ -65,6 +69,8 @@ in
           # A tick is a few usage requests and at most one switch per tool.
           TimeoutStartSec = "3min";
           ExecStart = "${lib.getExe pkgs.tycswap} auto --once --json";
+          # "-": a wake that fails never marks the tick failed.
+          ExecStartPost = lib.optional wake "-${scripts.claude-wake-parked}/bin/claude-wake-parked";
           # tycswap's "no action" (2) and "blocked" (3) are outcomes, not failures.
           SuccessExitStatus = "2 3";
           Nice = 10;

@@ -197,6 +197,22 @@ rec {
     exec ${zsh} ${s}/claude-sessions "$@"
   '';
 
+  # After an auto-switch tick: tells Claude sessions parked on a usage-limit banner
+  # to go on once the live account has room for the limit they hit.
+  claude-wake-parked = pkgs.writeShellScriptBin "claude-wake-parked" ''
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gawk
+        pkgs.jq
+        pkgs.tmux
+      ]
+    }${lib.optionalString cfg.installTycswap ":${pkgs.tycswap}/bin"}:$PATH
+    exec ${zsh} ${s}/claude-wake-parked "$@"
+  '';
+
   # What a bare `flakelab` opens at a terminal. stty is the one tool it runs;
   # the caller's PATH is kept aside and restored before the chosen command runs,
   # so that command's own wrapper sees the PATH a typed `flakelab <command>` has.

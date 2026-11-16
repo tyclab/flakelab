@@ -89,9 +89,11 @@ Mechanics worth knowing:
 - **Retired rotation groups resume plainly.** A snapshot of a session from a
   retired tycswap group keeps its group and actual conversation id, and
   resumes with `claude --resume` on the default login.
-- **A profile session is a session.** One started by `tycswap run`
-  keeps its registry entry under the profile; the table finds it there and
-  `--recent` reads the transcripts a profile kept for itself.
+- **A former profile session resumes on the shared login.** One started by
+  the retired `tycswap run` / `env` keeps its registry entry under the profile;
+  the table finds it there, `--recent` reads the transcripts a profile kept for
+  itself, and a resume copies the conversation into `~/.claude` where missing
+  and continues it with plain `claude --resume`, never in the profile.
 
 `flakelab.questions.enable = true;` registers `flakelab-questions` in both
 Claude and Codex. Its `ask_question` tool posts the full question, optional
