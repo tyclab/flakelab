@@ -83,7 +83,7 @@ set -uo pipefail
 # option @flakelab_session: the table shows it, with the session's state, and
 # --close judges by it. Codex saves a trust entry by itself for a folder it
 # holds no decision for, so a lane starts only where it holds one, or with
-# --trust. Design: docs/superpowers/specs/2026-11-13-sessions-codex-lanes-design.md
+# --trust. Measured Codex behaviour: docs/agents/cli-development.md.
 #
 
 # The terminal prompts: --start without a tool and --attach without a target
