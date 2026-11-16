@@ -49,7 +49,8 @@ tmux list-panes -a -F '#{pane_id} #{pane_current_command}' 2>/dev/null | while r
   done
   (( ${#at} >= 2 && at[-1] - at[-2] == 2 )) || continue
   box="${screen[at[-1] - 1]}"
-  plain="${${box//$'\e'\[[0-9;]#m/}//[❯[:space:]$'\u00a0']/}"
+  # Byte sequences, not a character class: the timer's service may run without a UTF-8 locale.
+  plain="${box//$'\e'\[[0-9;]#m/}"; plain="${plain//$'\xc2\xa0'/}"; plain="${plain//❯/}"; plain="${plain//[[:space:]]/}"
   [[ -z "$plain" || "$box" == *$'\e[2m'* ]] || continue
   [[ "$(<"$STATE/${pane#%}" 2>/dev/null)" == "$key" ]] && continue
   tmux send-keys -t "$pane" -l "$msg" && tmux send-keys -t "$pane" Enter || continue

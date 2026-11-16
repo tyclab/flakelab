@@ -45,7 +45,7 @@ screen() { # file, input line, footer lines...
   print -rl -- "● Done with the step." "$RULE lane ─" "$input" "$RULE" "$@" "  ⏵⏵ auto mode on" > "${PANES}/$f"
 }
 PARKED=("  ⚠ Usage limit reached · limit resets 3am" "    Continuing automatically at 3am · Esc to cancel")
-screen 1 $'❯\u00a0' "${PARKED[@]}"
+screen 1 $'❯\xc2\xa0' "${PARKED[@]}"
 screen 2 "❯ please also check the logs" "${PARKED[@]}"
 screen 3 "❯ " "✻ Thinking… (12s · esc to interrupt)" "${PARKED[@]}"
 screen 4 "❯ " "${PARKED[@]}"
