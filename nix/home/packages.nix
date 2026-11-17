@@ -102,6 +102,8 @@ in
     ++ lib.optional cfg.installClaude pkgs.socat
     # The account switcher for Claude Code and Codex, pinned in flake.nix.
     ++ lib.optional cfg.installTycswap pkgs.tycswap
+    # The terminal runtime the Herdr app attaches to, pinned in flake.nix.
+    ++ lib.optional cfg.installHerdrCore pkgs.herdr-core
     ++ profilePkgs;
 
   # ~/.local/bin for Claude Code, Codex, and `uv tool` installs.

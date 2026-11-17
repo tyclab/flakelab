@@ -180,6 +180,52 @@
       };
       tycswapOverlay = _final: _prev: { inherit tycswap tycswapWindows; };
 
+      # herdr-core (`hc`): the terminal runtime the Herdr app attaches to. Upstream
+      # ships one static binary per release and no source tag to build from, so
+      # this is a fixed-output fetch: `hash` is the sha256 that
+      # https://releases.herdr.dev/core/<version>/manifest.json names for
+      # linux-x86_64 (`nix hash convert --hash-algo sha256 --to sri <hex>`). hc
+      # leaves a copy it cannot write to whoever installed it, so a bump here is
+      # the only update a box gets; checks.herdr-core fails on a stale hash.
+      herdrCore =
+        let
+          version = "0.1.21";
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "herdr-core";
+          inherit version;
+          src = pkgs.fetchurl {
+            url = "https://releases.herdr.dev/core/${version}/herdr-core-linux-x86_64.tar.gz";
+            hash = "sha256-eEJHVcEKQN3jigvbVcIKwZcG6a4F7Wj8Ks8fz/DZQcE=";
+          };
+          # The tarball has no top-level directory.
+          sourceRoot = ".";
+          dontConfigure = true;
+          dontBuild = true;
+          # static-pie: nothing to patch, and a strip would only change the pinned bytes.
+          dontFixup = true;
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 herdr-core $out/bin/herdr-core
+            ln -s herdr-core $out/bin/hc
+            install -Dm644 -t $out/share/licenses/herdr-core LICENSE THIRD-PARTY-NOTICES
+            runHook postInstall
+          '';
+          doInstallCheck = true;
+          installCheckPhase = ''
+            [ "$($out/bin/hc --version)" = "hc ${version}" ]
+          '';
+          meta = {
+            description = "Terminal runtime for coding agents: terminals that outlive their client";
+            homepage = "https://herdr.dev/core/";
+            license = nixpkgs.lib.licenses.asl20;
+            sourceProvenance = [ nixpkgs.lib.sourceTypes.binaryNativeCode ];
+            platforms = [ "x86_64-linux" ];
+            mainProgram = "hc";
+          };
+        };
+      herdrCoreOverlay = _final: _prev: { herdr-core = herdrCore; };
+
       # Resolves profiles before the modules see the value, so the merged effective
       # values are what reaches them.
       resolveUserData = import ./profiles/merge.nix { inherit (nixpkgs) lib; };
@@ -311,6 +357,7 @@
                         preCommitOverlay
                         bubblewrapOverlay
                         tycswapOverlay
+                        herdrCoreOverlay
                       ];
                     }
                     {
@@ -369,6 +416,7 @@
           system
           tycswap
           tycswapWindows
+          herdrCore
           resolveUserData
           mkSystem
           ;
@@ -405,6 +453,9 @@
 
         # `nix run .#tycswap -- --version` builds the switcher the distro installs.
         inherit tycswap;
+
+        # `nix run .#herdr-core -- --version`: the hc `installHerdrCore` puts on PATH.
+        herdr-core = herdrCore;
       };
 
       # The fork-and-edit path; the overlay template below is the recommended one.

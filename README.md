@@ -737,6 +737,24 @@ page's mark and tab icon.
 [`remote-sessions.md`](remote-sessions.md) has
 the whole picture, the phone included.
 
+### Herdr
+
+`installHerdrCore = true;` puts herdr-core (`hc`, <https://herdr.dev/core/>) on
+PATH: the terminal runtime the Herdr app attaches to, pinned to a release in
+`flake.nix` as upstream's static binary. hc does not update a copy it cannot
+write, so a new release reaches a box through a bump of that pin.
+
+On a wsl box the Herdr app runs on Windows and reaches the distro through
+`wsl.exe`; no SSH server runs in the distro. Once, in a Windows terminal
+(`flakelab distro-name` prints the distro):
+
+```powershell
+hc machine add --via "wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc" --name wsl
+```
+
+The login shell is needed: the core keeps the environment of the connection
+that started it, and only the login PATH has Claude Code and Codex.
+
 ## Proxmox VM
 
 `nix build .#proxmoxImage` produces a generic qcow2 **seed**: cloud-init, the
