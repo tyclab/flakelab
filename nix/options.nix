@@ -224,6 +224,12 @@ in
       description = "Port of `tycswap app --headless`, tycswap's dashboard as the user service flakelab-tycswap-app on 127.0.0.1, for the Windows tray: a distro has no tray, so the Windows binary shows the icon and drives this dashboard over WSL2's localhost forwarding (`tycswap.exe app --remote http://127.0.0.1:<port> --token-file \\\\wsl.localhost\\<distro>\\home\\<user>\\.local\\share\\tycswap\\remote.token`). On the wsl target `flakelab tray` installs that binary from the flake's pin and registers it as an at-logon scheduled task; `flakelab update` runs it after every switch. The app writes that token on every start and the tray reads it again by itself. With tycswapAutoSwitchInterval set the timer ticks and the service sets TYCSWAP_AUTO_MANAGED_BY, so the app hosts no second engine and the tray's and dashboard's auto-switch toggle writes tycswap's `autoswitch.enabled`, which every tick honours; without the timer the toggle also starts and stops the engine inside the app. null (the default) installs no service. Needs installTycswap.";
     };
 
+    installHerdrCore = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Install herdr-core (`hc`, https://herdr.dev/core/), the terminal runtime the Herdr app attaches to: programs and coding agents run in terminals that outlive the client. Pinned to a release in flake.nix as upstream's static binary; hc does not update a copy it cannot write, so the pin is the only update a box gets. No service: a client starts the core on its first connect. On wsl the Herdr app on Windows reaches the distro through wsl.exe, with no SSH server; once, in a Windows terminal: `hc machine add --via \"wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc\" --name wsl`. The login shell is needed: the core keeps the environment of the connection that started it, and only the login PATH has Claude Code and Codex.";
+    };
+
     # The tiering is the whole point, and it is easy to get backwards:
     #   hard_deny  cannot be cleared by anything, including a direct operator
     #              instruction. Reserve it for boundaries that are never legitimate.

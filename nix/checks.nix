@@ -10,6 +10,7 @@
   system,
   tycswap,
   tycswapWindows,
+  herdrCore,
   resolveUserData,
   mkSystem,
 }:
@@ -80,6 +81,8 @@ in
   # a stale hash fails here, not on a box's `flakelab update`.
   inherit tycswap;
   tycswap-windows = tycswapWindows;
+  # The pinned hc fetches under its hash and answers with the pinned version.
+  herdr-core = herdrCore;
   # Build the same sandbox runtime installed on boxes; patch failures gate CI.
   inherit (pkgsDev) bubblewrap;
   # The distro's pre-commit gives a hook installer no GIT_* of the commit: npm's
