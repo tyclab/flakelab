@@ -159,7 +159,7 @@ export TMUX_PANES="${BASE}/panes"
 with_tmux() { PATH="${TMUXBIN}:${PATH}" "$@" }
 
 export FLAKELAB_PROC_ROOT="${PROC}"
-unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME TMUX TYCSWAP_HANDOVER_CWD TYCSWAP_HANDOVER_DIGEST
+unset FLAKELAB_STATE_ROOT WSL_DISTRO_NAME TMUX
 # The box: the hostname plus the first twelve hex digits of the machine id —
 # two distros built from one overlay share the hostname and the state root.
 export FLAKELAB_MACHINE_ID_FILE="${BASE}/machine-id"
@@ -275,7 +275,7 @@ OPEN_WID="$(awk -F"$US" -v sid="$SID_X" '$2 == "codex resume " sid {print $1}' "
 check "--open marks the actual created Codex window" "$(PATH="${TMUXBIN}:${PATH}" tmux show-options -w -v -t "$OPEN_WID" @flakelab_session)" "$SID_X"
 PATH="${TMUXBIN}:${PATH}" tmux set-option -w -t @999 @flakelab_session "$SID_X" >/dev/null 2>&1
 check "the recovery stand-in refuses a mark on a nonexistent window" "$?" 1
-contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --resume ${SID_A}"
+contains "the window runs the resume command in the session's directory" "$(<"${TMUX_LOG}")" "-n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude --resume ${SID_A}"
 check "with the caller's PATH handed to it, whoever started the server" "$(grep -c '^new-window -d -P -F #{window_id} -t agents -n [a-z_-]* -e PATH=' "${TMUX_LOG}")" "3"
 check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "3"
 check "the view is set to go away with its client, by a hook" "$(grep -c -E '^set-hook -t agents-10-[0-9]+ client-detached kill-session -t agents-10-[0-9]+$' "${TMUX_LOG}")" "1"
@@ -357,7 +357,7 @@ check "--start with a missing directory exits 2" "${RC}" "2"
 export FAKE_TMUX_HAS=1
 run_tmux --start claude "${WORK}" --detach -- --model opus
 check "--start --detach exits 0" "${RC}" "0"
-contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude --model opus"
+contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude --model opus"
 contains "--start reports the window" "${ERR}" "started claude in ${WORK} as agents:claude-work_dir (@10)"
 contains "--start --detach says how to attach" "${ERR}" "attach with: flakelab sessions --attach claude-work_dir"
 excludes "--start --detach opens no view" "$(<"${TMUX_LOG}")" "attach-session"
@@ -369,7 +369,7 @@ contains "--start with no terminal still says how to attach" "${ERR}" "attach wi
 unset FAKE_TMUX_HAS
 : > "${TMUX_LOG}"
 run_tmux --start claude "${WORK}" --detach
-contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST= -c ${WORK} claude"
+contains "the first --start creates the agents session itself" "$(<"${TMUX_LOG}")" "new-session -d -P -F #{window_id} -s agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude"
 
 # ---------------------------------------------------------------------------
 print -r -- ""
@@ -687,25 +687,6 @@ run_tmux --start claude --group fable "${WORK}" --detach -- --model fable
 check "--group is retired" "$RC" 2
 contains "and says plain claude switches by model" "$ERR" "--group is retired"
 excludes "a retired group starts nothing" "$(<"${TMUX_LOG}")" new-window
-: > "$TMUX_LOG"
-HANDOVER_DIGEST="$(printf '%064d' 0)"
-TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" FAKE_TMUX_HAS=1 run_tmux --start claude "$WORK" --detach
-check "an attested handover starts on an existing tmux server" "$RC" 0
-contains "the new window receives exactly the handover directory and digest" "$(<"$TMUX_LOG")" "-e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
-: > "$TMUX_LOG"
-TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" run_tmux --start codex "$WORK" --detach
-contains "the first server window also receives the attestation" "$(<"$TMUX_LOG")" "-s agents -n codex-work_dir -e PATH=${TMUXBIN}:${PATH} -e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
-: > "$TMUX_LOG"
-run_tmux --start codex "$WORK" --detach
-contains "an ordinary launch clears stale server handover variables" "$(<"$TMUX_LOG")" '-e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST='
-: > "$TMUX_LOG"
-TYCSWAP_HANDOVER_CWD="$WORK" TYCSWAP_HANDOVER_DIGEST=bad run_tmux --start codex "$WORK" --detach
-check "an invalid digest refuses the window" "$RC" 1
-excludes "an invalid attestation starts no process" "$(<"$TMUX_LOG")" new-session
-TYCSWAP_HANDOVER_CWD=relative TYCSWAP_HANDOVER_DIGEST="$HANDOVER_DIGEST" run_tmux --start codex "$WORK" --detach
-check "a relative handover directory refuses the window" "$RC" 1
-TYCSWAP_HANDOVER_CWD="$WORK" run_tmux --start codex "$WORK" --detach
-check "a partial handover pair refuses the window" "$RC" 1
 run --resume --group fable
 check "a retired group on --resume is a usage error" "$RC" 2
 
@@ -1080,11 +1061,9 @@ FAKE_TMUX_WRONG_MARK=1 run_lane --start codex "${WORK}" --prompt go --detach
 check "a mark that reads back as something else exits 1 too" "${RC}" "1"
 
 fresh
-HANDOVER_DIGEST="${(l:64::a:):-}"
-CODEX_HOME="${BASE}/codex home" TYCSWAP_HANDOVER_CWD="${WORK}" TYCSWAP_HANDOVER_DIGEST="${HANDOVER_DIGEST}" run_lane --start codex "${WORK}" --prompt go --detach
-check "a lane started during a handover exits 0" "${RC}" "0"
-contains "its window keeps the handover" "$(<"${TMUX_LOG}")" "-e TYCSWAP_HANDOVER_CWD=${WORK} -e TYCSWAP_HANDOVER_DIGEST=${HANDOVER_DIGEST}"
-contains "and the caller's Codex home" "$(<"${TMUX_LOG}")" "-e CODEX_HOME=${BASE}/codex home"
+CODEX_HOME="${BASE}/codex home" run_lane --start codex "${WORK}" --prompt go --detach
+check "a lane started with its own Codex home exits 0" "${RC}" "0"
+contains "and its window gets the caller's Codex home" "$(<"${TMUX_LOG}")" "-e PATH=${LANEBIN}:${PATH} -e CODEX_HOME=${BASE}/codex home"
 
 fresh
 ln -s "${WORK}" "${BASE}/link to work"

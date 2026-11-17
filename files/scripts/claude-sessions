@@ -346,15 +346,9 @@ tool_command() {
 typeset -a WINDOW_ENV=()
 # The window gets the caller's PATH: it runs with the server's env, and any client may have started the server.
 new_window() {
-  local name="$1" dir="$2" cmd="$3" handover_cwd="${TYCSWAP_HANDOVER_CWD:-}" digest="${TYCSWAP_HANDOVER_DIGEST:-}"
-  local -a env_args=(-e "PATH=${PATH}" -e TYCSWAP_HANDOVER_CWD= -e TYCSWAP_HANDOVER_DIGEST=)
-  if [[ -n "$handover_cwd" || -n "$digest" ]]; then
-    [[ "$handover_cwd" == /* && -d "$handover_cwd" && "$digest" =~ '^[[:xdigit:]]{64}$' ]] || {
-      print -ru2 -- "Error: handover needs an absolute existing directory and a 64-hex digest"; return 2
-    }
-    env_args=(-e "PATH=${PATH}" -e "TYCSWAP_HANDOVER_CWD=${handover_cwd}" -e "TYCSWAP_HANDOVER_DIGEST=${digest}")
-  fi
-  # A lane's window must reach the Codex home its session was created in, handover or not.
+  local name="$1" dir="$2" cmd="$3"
+  local -a env_args=(-e "PATH=${PATH}")
+  # A lane's window must reach the Codex home its session was created in.
   (( ${#WINDOW_ENV} > 0 )) && env_args+=("${WINDOW_ENV[@]}")
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
