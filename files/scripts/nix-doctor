@@ -642,7 +642,7 @@ else
       log_ok "Fable login and store directories are owner-only (0700)"
     fi
     _cs_loose=()
-    for _cs_f in "${TYCSWAP_STORE}"/credentials/*(N.) "${TYCSWAP_STORE}"/codex/credentials/*(N.) "${TYCSWAP_STORE}"/sessions/*/.credentials.json(N.) \
+    for _cs_f in "${TYCSWAP_STORE}"/credentials/*(N.D) "${TYCSWAP_STORE}"/codex/credentials/*(N.D) "${TYCSWAP_STORE}"/sessions/*/.credentials.json(N.) \
       "${TYCSWAP_STORE}"/credentials-fable/*.enc*(N.D) "${TYCSWAP_STORE}"/fable/store/.credentials.json(N.); do
       [[ "$(stat -c %a "${_cs_f}" 2> /dev/null)" == 600 ]] || _cs_loose+=("${_cs_f}")
     done

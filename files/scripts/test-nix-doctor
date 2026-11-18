@@ -476,6 +476,15 @@ contains "with the chmod"      "${out}" "chmod 600 ${CS}/credentials/account_1.e
 contains "a failing list warns with tycswap's last line" "${out}" "[WARN] tycswap list --json failed: Error: sequence.json is not valid JSON"
 chmod 700 "${CS}"; chmod 600 "${CS}/credentials/account_1.enc"
 
+print -r -- "switcher: tycswap's own login files start with a dot"
+print -r -- 'enc' > "${CS}/credentials/.creds-2-b@example.com.enc"; chmod 644 "${CS}/credentials/.creds-2-b@example.com.enc"
+print -r -- 'enc' > "${CS}/codex/credentials/.creds-1-c@example.com.enc"; chmod 644 "${CS}/codex/credentials/.creds-1-c@example.com.enc"
+out="$(switcher_section)"
+contains "a loose dot-file login warns"  "${out}" "[WARN] 2 stored credential file(s) are not 0600"
+contains "and names it"                  "${out}" "chmod 600 ${CS}/credentials/.creds-2-b@example.com.enc"
+contains "a loose Codex dot-file too"    "${out}" "chmod 600 ${CS}/codex/credentials/.creds-1-c@example.com.enc"
+rm -f "${CS}/credentials/.creds-2-b@example.com.enc" "${CS}/codex/credentials/.creds-1-c@example.com.enc"
+
 print -r -- "switcher: a store without Fable logins"
 lacks "adds no Fable line" "$(switcher_section)" "Fable"
 
