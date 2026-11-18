@@ -1,32 +1,23 @@
 #!/usr/bin/env zsh
 # claude-wake-parked: a Claude Code session that hit a usage limit parks until the reset its error
-# named and never re-reads the login before; after tycswap moved the shared login, this tells each
-# parked session in tmux to go on, when the live account has room for the limit that session hit.
-# Once per pane, account and window; never into a pane that works, shows a dialog, is in copy mode
-# or holds typed text, and Enter only after the pane shows the line.
+# named and never re-reads the login before; after tycswap moved a login, this tells each parked
+# session in tmux to go on, when the live account of the session's own store has room for the limit
+# that session hit. A session on tycswap's Fable store is judged on the Fable login's account, every
+# other one on the shared login's. Once per pane, store, account and window; never into a pane that
+# works, shows a dialog, is in copy mode or holds typed text, and Enter only after the pane shows the line.
 emulate -L zsh
 setopt pipefail extended_glob
 
 STATE="${FLAKELAB_WAKE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/flakelab/wake-parked}"
+PROC="${FLAKELAB_WAKE_PROC:-/proc}"
 command -v tmux >/dev/null 2>&1 && command -v tycswap >/dev/null 2>&1 || exit 0
 st="$(tycswap status --json 2>/dev/null)" || exit 0
-acct="$(jq -r '.active.number // empty' <<<"$st" 2>/dev/null)"
-[[ -n "$acct" ]] || exit 0
 
 cfg="$(tycswap config list 2>/dev/null)"
 bar() { local v; v="$(awk -v k="$1" '$1 == k {print $2; exit}' <<<"$cfg")"; print -r -- "${v:-$2}" }
 # tycswap's own defaults when its settings cannot be read.
 b5="$(bar autoswitch.fiveHourThreshold 85)" b7="$(bar autoswitch.sevenDayThreshold 97)" bm="$(bar autoswitch.modelThreshold 95)"
 
-read -r fetched p5 r5 p7 r7 pf rf < <(jq -r '.active as $a | $a.usage as $u | [
-  ($a.usageStatus // "-"),
-  ($u.fiveHour.pct // "-"), ($u.fiveHour.resetsAt // "-"),
-  ($u.sevenDay.pct // "-"), ($u.sevenDay.resetsAt // "-"),
-  ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.pct // "-")),
-  ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.resetsAt // "-"))
-] | map(tostring) | join(" ")' <<<"$st" 2>/dev/null)
-# Usage that is not known is not room; only a missing 5-hour window is (an account without one).
-[[ "$fetched" == ok && "${p7:--}" != - ]] || exit 0
 session_room() { (( p7 < b7 )) && { [[ "${p5:--}" == - ]] || (( p5 < b5 )) } }
 fable_room() { session_room && [[ "${pf:--}" != - ]] && (( pf < bm )) }
 # One name per window: tycswap's reset time differs by a fraction of a second from fetch to fetch.
@@ -38,7 +29,49 @@ window() {
     print -r -- "$1"
   fi
 }
-w5="$(window "${r5:--}")" w7="$(window "${r7:--}")" wf="$(window "${rf:--}")"
+
+# Each store's live account and windows: the shared login's from .active, the Fable store's from
+# .fable while it is on. Usage that is not known is not room; only a missing 5-hour window is.
+typeset -A ROOM
+load() {
+  local n fetched p5 r5 p7 r7 pf rf
+  read -r n fetched p5 r5 p7 r7 pf rf < <(jq -r "$2"' as $a | $a.usage as $u | [
+    ($a.number // "-"), ($a.usageStatus // "-"),
+    ($u.fiveHour.pct // "-"), ($u.fiveHour.resetsAt // "-"),
+    ($u.sevenDay.pct // "-"), ($u.sevenDay.resetsAt // "-"),
+    ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.pct // "-")),
+    ([$u.scoped[]? | select(.name | test("fable"; "i"))] | max_by(.pct) | (.resetsAt // "-"))
+  ] | map(tostring) | join(" ")' <<<"$st" 2>/dev/null)
+  [[ "${n:--}" != - && "$fetched" == ok && "${p7:--}" != - ]] || return 0
+  ROOM[$1]="$n ${p5:--} $p7 ${pf:--} $(window "${r5:--}") $(window "${r7:--}") $(window "${rf:--}")"
+}
+load default .active
+# Without .fable (tycswap before the Fable store, or no Fable login) every pane is the shared login's.
+fdir="$(jq -r '.fable.storeDir // empty' <<<"$st" 2>/dev/null)"
+[[ -n "$fdir" && "$(jq -r '.fable.state // empty' <<<"$st" 2>/dev/null)" == on ]] && load fable .fable
+(( ${#ROOM} )) || exit 0
+
+# The CLAUDE_SECURESTORAGE_CONFIG_DIR of the pane's Claude: the pane's process or its nearest
+# descendant whose executable is Claude's (claude-sessions' claude_pids test). Empty when unreadable.
+pane_store() {
+  local p f item exe
+  local -a queue=("$1")
+  local -A seen
+  while (( ${#queue} )); do
+    p="${queue[1]}"; shift queue
+    [[ "$p" == <-> && -z "${seen[$p]:-}" ]] || continue
+    seen[$p]=1
+    if exe="$(readlink "${PROC}/${p}/exe" 2>/dev/null)" && [[ "${exe:t}" == claude || "$exe" == */claude/versions/* ]]; then
+      [[ -r "${PROC}/${p}/environ" ]] || return 0
+      for item in "${(@0)$(<"${PROC}/${p}/environ")}"; do
+        [[ "$item" == CLAUDE_SECURESTORAGE_CONFIG_DIR=* ]] && { print -r -- "${item#*=}"; return 0 }
+      done
+      return 0
+    fi
+    for f in "${PROC}/${p}"/task/*/children(N); do queue+=(${=$(<"$f")}); done 2>/dev/null
+  done
+  return 0
+}
 
 # The text of a captured line outside dim runs (a placeholder or hint is dim; typed text is not).
 # Anything that is not a colour or attribute sequence counts as text.
@@ -88,8 +121,7 @@ box() { # the box's text outside dim runs, without prompt and blanks
 # without it only below the input box, where no reply's text can stand.
 shape="(Usage limit reached · |You've hit your [A-Za-z0-9 -]*limit · resets |Automatic continue stopped · )"
 mkdir -p "$STATE" 2>/dev/null || exit 0
-msg="flakelab: the shared login is on an account with room now (account ${acct}); go on where you stopped."
-tmux list-panes -a -F '#{pane_id} #{pane_in_mode} #{pane_current_command}' 2>/dev/null | while read -r pane mode cmd; do
+tmux list-panes -a -F '#{pane_id} #{pane_in_mode} #{pane_current_command} #{pane_pid}' 2>/dev/null | while read -r pane mode cmd top; do
   [[ "$cmd" == claude || "$cmd" == [0-9]##.[0-9]##.[0-9]## ]] || continue
   [[ "$mode" == 0 ]] || continue
   look "$pane" || continue
@@ -98,14 +130,23 @@ tmux list-panes -a -F '#{pane_id} #{pane_in_mode} #{pane_current_command}' 2>/de
   hit="$(grep -aE "^[[:space:]]*(⚠|⎿)[[:space:]]+${shape}" <<<"$last"; grep -aE "^[[:space:]]*${shape}" <<<"$foot")"
   [[ -n "$hit" ]] || continue
   grep -qaE '… \(|esc to interrupt|requests your input|Accept +Decline|Do you want|Compacting|Enter to select|to navigate' <<<"$last" && continue
+  store=default
+  [[ -n "$fdir" && "$(pane_store "$top")" == "$fdir" ]] && store=fable
+  [[ -n "${ROOM[$store]:-}" ]] || continue
+  read -r acct p5 p7 pf w5 w7 wf <<<"${ROOM[$store]}"
   if grep -qa 'Fable limit' <<<"$hit"; then
-    fable_room || continue; key="${acct}|${wf}|${w5}"
+    fable_room || continue; key="${store}|${acct}|${wf}|${w5}"
   else
-    session_room || continue; key="${acct}|${w5}|${w7}"
+    session_room || continue; key="${store}|${acct}|${w5}|${w7}"
   fi
   # One line between the rules, empty or a dim placeholder.
   (( at[-1] - at[-2] == 2 )) && [[ -z "$(box)" ]] || continue
-  [[ "$(<"$STATE/${pane#%}" 2>/dev/null)" == "$key" ]] && continue
+  # A key written before the stores were named is the shared login's.
+  old="$(<"$STATE/${pane#%}" 2>/dev/null)"
+  [[ -z "$old" || "$old" == (default|fable)\|* ]] || old="default|${old}"
+  [[ "$old" == "$key" ]] && continue
+  [[ "$store" == fable ]] && login="Fable login" || login="shared login"
+  msg="flakelab: the ${login} is on an account with room now (account ${acct}); go on where you stopped."
   tmux send-keys -t "$pane" -l "$msg" || continue
   sleep "${FLAKELAB_WAKE_SETTLE:-0.5}"
   if ! look "$pane" || [[ "$(box)" != "$(bare "$msg")" ]]; then

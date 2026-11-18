@@ -198,7 +198,7 @@ rec {
   '';
 
   # After an auto-switch tick: tells Claude sessions parked on a usage-limit banner
-  # to go on once the live account has room for the limit they hit.
+  # to go on once the live account of their store has room for the limit they hit.
   claude-wake-parked = pkgs.writeShellScriptBin "claude-wake-parked" ''
     export PATH=${
       bin [

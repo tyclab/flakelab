@@ -1201,7 +1201,7 @@ do_restore() {
       [[ "${tycswap_f}" == codex/* ]] && ensure_private_dir "${TYCSWAP_STORE}/codex"
       restore_private_file "${BACKUP_TYCSWAP}/${tycswap_f}" "${TYCSWAP_STORE}/${tycswap_f}" true
     done
-    for tycswap_d in credentials configs codex/credentials; do
+    for tycswap_d in credentials credentials-fable configs codex/credentials; do
       [[ -d "${BACKUP_TYCSWAP}/${tycswap_d}" ]] || continue
       [[ "${tycswap_d}" == codex/* ]] && ensure_private_dir "${TYCSWAP_STORE}/codex"
       ensure_private_dir "${TYCSWAP_STORE}/${tycswap_d}"
@@ -1373,8 +1373,10 @@ do_backup() {
   if [[ -d "${TYCSWAP_STORE}" ]]; then
     # tycswap's store (its README, "Data locations"): the Claude and Codex
     # rosters, the settings, the directory mappings and one credential and
-    # config snapshot per account, 0700 and 0600 like ~/.codex/auth.json. The
-    # usage caches, the switch log and the session profiles are this box's
+    # config snapshot per account, its Fable login too, 0700 and 0600 like
+    # ~/.codex/auth.json. The usage caches, the switch log, the session
+    # profiles and the Fable store (fable/: its live login belongs to the
+    # running sessions, as ~/.claude/.credentials.json does) are this box's
     # own and stay here; a snapshot gone from the store leaves the payload.
     local tycswap_d tycswap_f
     ensure_private_dir "${BACKUP_TYCSWAP}"
@@ -1383,7 +1385,7 @@ do_backup() {
       [[ "${tycswap_f}" == codex/* ]] && ensure_private_dir "${BACKUP_TYCSWAP}/codex"
       backup_private_file "${TYCSWAP_STORE}/${tycswap_f}" "${BACKUP_TYCSWAP}/${tycswap_f}"
     done
-    for tycswap_d in credentials configs codex/credentials; do
+    for tycswap_d in credentials credentials-fable configs codex/credentials; do
       [[ -d "${TYCSWAP_STORE}/${tycswap_d}" ]] || continue
       [[ "${tycswap_d}" == codex/* ]] && ensure_private_dir "${BACKUP_TYCSWAP}/codex"
       ensure_private_dir "${BACKUP_TYCSWAP}/${tycswap_d}"

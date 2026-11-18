@@ -637,6 +637,19 @@ conversations are copied into `~/.claude` when it retires, so `flakelab
 sessions --resume` resumes them with `claude --resume` (in the group's own
 profile until that copy exists).
 
+**Fable store** (tycswap 0.16). A session started on a Fable model uses a
+second login per account, the Fable login, which lives in tycswap's Fable
+store beside the shared login; `tycswap start` picks the store by the
+session's model, so the launcher and `flakelab sessions --resume` need nothing
+more. Sign each account in once per box with `tycswap add --login --lineage
+fable --slot N`; a box without a Fable login runs as before. The waker that
+tells parked sessions to go on after a tick (`claude-wake-parked`) follows
+each pane's store: a session on the Fable store goes on when the Fable login's
+account has room, every other one when the shared login's has. `flakelab
+backup` carries the Fable logins (`credentials-fable/`) but not the Fable
+store, whose live login belongs to the running sessions, and `flakelab doctor`
+checks their modes. The rest is in tycswap's README.
+
 A distro has no tray, so `flakelab.tycswapAppPort = 7337;` runs `tycswap app
 --headless --port 7337` as the user service `flakelab-tycswap-app`, and the
 same release's Windows binary is the tray for it. The flake owns that side

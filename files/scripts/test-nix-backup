@@ -3906,6 +3906,7 @@ absent  "the usage cache stays on the box"         "${CS_BAK}/cache"
 absent  "the switch log too"                       "${CS_BAK}/tycswap.log"
 absent  "profiles never enter the payload"         "${CS_BAK}/sessions"
 absent  "nor does the Codex cache"                 "${CS_BAK}/codex/cache"
+absent  "a store without Fable logins makes no Fable payload" "${CS_BAK}/credentials-fable"
 
 print -r -- "a snapshot gone from the store leaves the payload"
 rm "${CS}/credentials/.creds-2-b@example.com.enc"
@@ -3938,6 +3939,37 @@ run_backup --force
 check   "the backup exits clean"                   "${RC}" "0"
 same    "the Codex roster is archived"             "${CS}/codex/sequence.json" "${CS_BAK}/codex/sequence.json"
 absent  "no Claude roster is invented"             "${CS_BAK}/sequence.json"
+
+print -r -- "Fable logins ride the payload as the default ones do; the Fable store's live login stays on the box"
+fixture tycswap-fable
+CS="${FIX_HOME}/.local/share/tycswap"
+CS_BAK="${FIX_ROOT}/instances/TestDistro/tycswap"
+mkdir -p "${CS}/credentials" "${CS}/credentials-fable" "${CS}/fable/store"
+chmod 700 "${CS}" "${CS}/credentials-fable"
+print -r -- '{"accounts":{"1":{"email":"a@example.com"},"2":{"email":"b@example.com"}}}' > "${CS}/sequence.json"
+print -r -- 'enc-1'        > "${CS}/credentials/.creds-1-a@example.com.enc"
+print -r -- 'fable-1'      > "${CS}/credentials-fable/.creds-1-a@example.com.enc"
+print -r -- 'fable-1-prev' > "${CS}/credentials-fable/.creds-1-a@example.com.enc.prev"
+print -r -- 'fable-2'      > "${CS}/credentials-fable/.creds-2-b@example.com.enc"
+print -r -- '{}'           > "${CS}/fable/store/.credentials.json"
+print -r -- '{}'           > "${CS}/fable/autoswitch_state.json"
+run_backup --force
+check   "the backup exits clean"                   "${RC}" "0"
+same    "a Fable login is archived"                "${CS}/credentials-fable/.creds-1-a@example.com.enc" "${CS_BAK}/credentials-fable/.creds-1-a@example.com.enc"
+same    "with its previous generation"             "${CS}/credentials-fable/.creds-1-a@example.com.enc.prev" "${CS_BAK}/credentials-fable/.creds-1-a@example.com.enc.prev"
+same    "beside the default login's snapshot"      "${CS}/credentials/.creds-1-a@example.com.enc" "${CS_BAK}/credentials/.creds-1-a@example.com.enc"
+check   "the archived Fable login and its directory are owner-only" "$(stat -c '%a' "${CS_BAK}/credentials-fable/.creds-1-a@example.com.enc") $(stat -c '%a' "${CS_BAK}/credentials-fable")" "600 700"
+absent  "the Fable store and its live login stay on the box" "${CS_BAK}/fable"
+rm "${CS}/credentials-fable/.creds-2-b@example.com.enc"
+run_backup --force
+absent  "a Fable login gone from the store leaves the payload" "${CS_BAK}/credentials-fable/.creds-2-b@example.com.enc"
+exists  "the other stays"                          "${CS_BAK}/credentials-fable/.creds-1-a@example.com.enc"
+mv "${CS}" "${FIX_HOME}/store-aside"
+run_restore
+check   "the restore exits clean"                  "${RC}" "0"
+same    "a Fable login comes back"                 "${CS_BAK}/credentials-fable/.creds-1-a@example.com.enc" "${CS}/credentials-fable/.creds-1-a@example.com.enc"
+check   "owner-only, in an owner-only directory"   "$(stat -c '%a' "${CS}/credentials-fable") $(stat -c '%a' "${CS}/credentials-fable/.creds-1-a@example.com.enc")" "700 600"
+absent  "the Fable store is not made by a restore" "${CS}/fable"
 
 print -r -- "without a store nothing is archived"
 fixture tycswap-none
