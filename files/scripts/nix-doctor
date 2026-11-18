@@ -628,8 +628,22 @@ else
       log_warn "store is mode ${_cs_mode}, expected 700: ${TYCSWAP_STORE}"
       log_hint "chmod 700 ${TYCSWAP_STORE}"
     fi
+    # The Fable logins and the Fable store, checked only where tycswap made them.
+    _cs_fdirs=("${TYCSWAP_STORE}"/{credentials-fable,fable,fable/store}(N/))
+    _cs_open=0
+    for _cs_d in "${_cs_fdirs[@]}"; do
+      _cs_mode="$(stat -c %a "${_cs_d}" 2> /dev/null)"
+      [[ "${_cs_mode}" == 700 ]] && continue
+      log_warn "Fable directory is mode ${_cs_mode}, expected 700: ${_cs_d}"
+      log_hint "chmod 700 ${_cs_d}"
+      (( _cs_open++ ))
+    done
+    if (( ${#_cs_fdirs} > 0 && _cs_open == 0 )); then
+      log_ok "Fable login and store directories are owner-only (0700)"
+    fi
     _cs_loose=()
-    for _cs_f in "${TYCSWAP_STORE}"/credentials/*(N.) "${TYCSWAP_STORE}"/codex/credentials/*(N.) "${TYCSWAP_STORE}"/sessions/*/.credentials.json(N.); do
+    for _cs_f in "${TYCSWAP_STORE}"/credentials/*(N.) "${TYCSWAP_STORE}"/codex/credentials/*(N.) "${TYCSWAP_STORE}"/sessions/*/.credentials.json(N.) \
+      "${TYCSWAP_STORE}"/credentials-fable/*.enc*(N.D) "${TYCSWAP_STORE}"/fable/store/.credentials.json(N.); do
       [[ "$(stat -c %a "${_cs_f}" 2> /dev/null)" == 600 ]] || _cs_loose+=("${_cs_f}")
     done
     if (( ${#_cs_loose} == 0 )); then
