@@ -226,8 +226,10 @@ in
       test "$(head -n 1 "$claude")" = 'user line kept'
       test "$(head -n 1 "$codex")" = 'hand-written codex rule'
       grep -q '^## Permissions and auto mode$' "$claude"
+      grep -q 'AskUserQuestion' "$claude"
       grep -q 'ask_question' "$claude"
       if grep -q 'Permissions and auto mode' "$codex"; then exit 1; fi
+      if grep -q 'AskUserQuestion' "$codex"; then exit 1; fi
       if grep -q 'ask_question' "$codex"; then exit 1; fi
       # A path another module links into the store: warned about, left alone.
       export CODEX_HOME="$TMPDIR/owned"
