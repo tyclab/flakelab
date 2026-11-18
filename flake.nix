@@ -147,7 +147,7 @@
       tycswap =
         let
           # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
-          version = "0.15.1";
+          version = "0.16.0";
         in
         pkgs.buildGo127Module {
           pname = "tycswap";
@@ -156,7 +156,7 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-xgoxtgyiNSAIqH9R6CWEze8cv2xoPlo0HAqL32JI3BI=";
+            hash = "sha256-PFROwG/bk2y/PXknasen0eyfi25WNkVKiceNsXdy8Ho=";
           };
           vendorHash = "sha256-oJSlApM1YfgI5zlx/dw6Q+Z8HBFOLvPC49LF8B/w3i4=";
           subPackages = [ "cmd/tycswap" ];
@@ -176,7 +176,7 @@
       # fixed-output fetch, so the exe a box runs is the one the hash names.
       tycswapWindows = pkgs.fetchurl {
         url = "https://github.com/tyclab/tycswap/releases/download/v${tycswap.version}/tycswap_v${tycswap.version}_windows_amd64.exe";
-        hash = "sha256-zvX/JD8+IWH5wViZhYDZ3LWwzcFC7Gqu+D6skuyNoW8=";
+        hash = "sha256-wDiy+sCv/00sj28OvXT4x7INQICycMjUI4KG4C6simM=";
       };
       tycswapOverlay = _final: _prev: { inherit tycswap tycswapWindows; };
 
