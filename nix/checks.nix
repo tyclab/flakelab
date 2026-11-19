@@ -1926,6 +1926,9 @@ in
     assert lib.hasInfix "--arg tycswapHook" (settingsOf on);
     assert !(lib.hasInfix "--arg tycswapHook" (settingsOf self.nixosConfigurations.default));
     assert lib.hasInfix "-accounts/bin/accounts auto " (settingsOf on);
+    # A started session reports to tycswap wherever tycswap is installed.
+    assert lib.hasInfix "/bin/tycswap start --started" (settingsOf self.nixosConfigurations.default);
+    assert !(lib.hasInfix "--arg tycswapStarted" (settingsOf bad));
     # The statusline is the plugin command itself: the retired tee was a store
     # script whose text (and its accounts ingest) the activation never carried.
     assert lib.hasInfix "statusline-command.sh" (settingsOf statusline);
