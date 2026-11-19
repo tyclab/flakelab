@@ -615,9 +615,14 @@ With `installClaude` and `installTycswap`, plain `claude` goes through a managed
 launcher at `~/.local/share/flakelab/claude/bin/claude`, ahead of the native
 installer's untouched `~/.local/bin/claude` on PATH. `tycswap start --allow ID`
 marks a login for new sessions; `--disallow ID` clears the mark and `--list`
-shows the marks. Before launch, `tycswap start` may select a usable marked
-login from cached usage while auto-switch is on. No marks, an already-marked
-live login, a pinned profile, auth overrides or `--bare` leave selection alone.
+shows the marks. Before launch, `tycswap start` may select a marked login from
+cached usage while auto-switch is on: one with room first, else one at its
+limit, which a session needs only while it comes up. tycswap then holds
+auto-switch until the session reports through the SessionStart hook flakelab
+writes into Claude Code's settings (`tycswap start --started`), and moves the
+shared login on before the session's first request; without a report the hold
+ends after 30 seconds. No marks, an already-marked live login with room, a
+pinned profile, auth overrides or `--bare` leave selection alone.
 Selection failures report the reason and launch on the current login; cached
 usage and concurrent switches mean the selected login is best effort. Existing
 sessions share any switch. Arguments and inherited auth settings pass through,

@@ -154,6 +154,28 @@ let
     | if .hooks == {} then del(.hooks) else . end
   '';
 
+  # A session that `tycswap start` started on a start login at its limit holds
+  # tycswap's engine until it is up: this SessionStart hook reports that, and
+  # tycswap then moves the shared login on before the session's first request.
+  # Without tycswap's variable in the session it does nothing. Owned by its
+  # command, like the hooks above.
+  tycswapStartedHook = cfg.installTycswap;
+  tycswapStartedCmd = "${lib.getExe pkgs.tycswap} start --started";
+  tycswapStartedArg = lib.optionalString tycswapStartedHook "--arg tycswapStarted ${lib.escapeShellArg tycswapStartedCmd}";
+  tycswapStartedJq = ''
+    | .hooks = ((.hooks // {})
+        | .SessionStart = (((.SessionStart // [])
+            | map(select((.hooks // []) | any((.command // "") | test("^/nix/store/[^/ ]+/bin/tycswap start --started$")) | not)))
+            + ${
+              if tycswapStartedHook then
+                ''[{hooks: [{type: "command", command: $tycswapStarted, timeout: 45}]}]''
+              else
+                "[]"
+            })
+        | if .SessionStart == [] then del(.SessionStart) else . end)
+    | if .hooks == {} then del(.hooks) else . end
+  '';
+
   # The push when a session waits on you (remote-sessions.md): a
   # Notification hook on the configured types runs `flakelab notify`, which
   # reads the endpoints from the secrets at use time. Owned by its command:
@@ -484,7 +506,7 @@ in
           mkdir -p "$HOME/.claude"
           # `-s`, not `-f`, so a zero-byte settings.json heals.
           [ -s "$_settings" ] || printf '{}' > "$_settings"
-          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --argjson dm "$_deniedMcp" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${notifyHookArg} ${claudeStatuslineArg} '
+          if jq --argjson a "$_attrs" --argjson e "$_env" --argjson prev "$_prev" --argjson d "$_deny" --argjson dm "$_deniedMcp" --slurpfile am ${claudeAutoModeFile} ${claudeStatePushArg} ${tycswapHookArg} ${tycswapStartedArg} ${notifyHookArg} ${claudeStatuslineArg} '
             .attribution = ($a + (.attribution // {}))
             | .feedbackSurveyRate = 0
             | .cleanupPeriodDays = ${toString claudeCleanupPeriodDays}
@@ -502,6 +524,7 @@ in
             ${claudeRemoteControlJq}
             ${claudeStatePushJq}
             ${tycswapHookJq}
+            ${tycswapStartedJq}
             ${notifyHookJq}
             ${claudeStatuslineJq}
           ' "$_settings" > "$_settings.tmp" && mv "$_settings.tmp" "$_settings"; then
