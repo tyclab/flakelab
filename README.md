@@ -585,7 +585,11 @@ in the last day.
 
 On WSL, TycSnap registers each top-level zsh pane in Windows Terminal. When
 Terminal reopens a saved layout, each recognized pane restores its directory,
-saved title and any recorded foreground Claude, Codex or tmux session. Use
+saved title and any recorded foreground Claude, Codex or tmux session. A live
+tmux window reattaches with its current conversation. For a direct Codex TUI,
+TycSnap can resume an unambiguous rollout held by the foreground process.
+A shared-server TUI can change tasks inside the same process, so its pane
+reopens at the saved directory when the displayed thread cannot be identified. Use
 `flakelab tycsnap --name "My project"` to name the current pane, or
 `flakelab tycsnap --name ""` to clear its title. An intentional shell exit
 removes the pane from recovery.
