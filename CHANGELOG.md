@@ -47,6 +47,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- Pin tycswap and its Windows tray to v0.19.0. The terminal account menu includes model allocations, separate sign-ins and status checks. Restored independent sessions keep their original login across long breaks.
+
 - Claude's generated user instructions now load from `~/.claude/rules/AGENTS.md`. Activation removes the old flakelab block from `~/.claude/CLAUDE.md`, retaining personal instructions. Restoring an older backup to a migrated installation also retains its personal instructions.
 
 - The managed Claude instructions' "Permissions and auto mode" block says what to do on a classifier denial: ask in the same turn with the native AskUserQuestion dialog, naming the action and its target; never retry it unchanged, take another route to the same effect or hand it back; a subagent returns the denied command to its caller.
