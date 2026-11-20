@@ -61,6 +61,18 @@ screen() { # file, input line, footer lines...
   local f="$1" input="$2"; shift 2
   print -rl -- "● Done with the step." "$RULE lane ─" "$input" "$RULE" "$@" "  ⏵⏵ auto mode on" > "${PANES}/$f"
 }
+PROC="${BASE}/proc" FDIR="${BASE}/tycswap/fable/store" CV="/home/u/.local/share/claude/versions/2.1.325"
+export FLAKELAB_WAKE_PROC="$PROC"
+proc() { # pid, exe, children, environ entries (none: no environ file)
+  local p="$1"
+  mkdir -p "${PROC}/${p}/task/${p}"
+  ln -sfn "$2" "${PROC}/${p}/exe"
+  print -r -- "$3" > "${PROC}/${p}/task/${p}/children"
+  shift 3
+  (( $# )) && printf '%s\0' "$@" > "${PROC}/${p}/environ"
+  return 0
+}
+proc 1100 "$CV" "" "PATH=/bin"
 PARKED=("  ⚠ Usage limit reached · limit resets 3am" "    Continuing automatically at 3am · Esc to cancel")
 screen 1 $'❯\xc2\xa0' "${PARKED[@]}"
 screen 2 "❯ please also check the logs" "${PARKED[@]}"
@@ -81,8 +93,8 @@ screen 13 "❯ " "${PARKED[@]}"
 : > "${PANES}/13.swallow"
 # The banner as the last line of the conversation, above the input box.
 print -rl -- "● Working on it." "  ⎿  You've hit your 5-hour limit · resets 3:40am (Europe/Berlin)" "$RULE lane ─" "❯ " "$RULE" "  ⏵⏵ auto mode on" > "${PANES}/14"
-print -rl -- "%1 0 claude" "%2 0 claude" "%3 0 claude" "%4 0 codex" "%5 0 2.1.325" "%6 0 claude" "%7 0 claude" \
-  "%8 0 claude" "%9 0 claude" "%10 1 claude" "%11 0 claude" "%12 0 claude" "%13 0 claude" "%14 0 claude" > "${PANES}/list"
+print -rl -- "%1 0 claude 1100" "%2 0 claude 1100" "%3 0 claude 1100" "%4 0 codex 1100" "%5 0 2.1.325 1100" "%6 0 claude 1100" "%7 0 claude 1100" \
+  "%8 0 claude 1100" "%9 0 claude 1100" "%10 1 claude 1100" "%11 0 claude 1100" "%12 0 claude 1100" "%13 0 claude 1100" "%14 0 claude 1100" > "${PANES}/list"
 run() { OUT="$("$CMD" 2>&1)"; RC=$?; SENT="$(cat "$TMUX_LOG" 2>/dev/null)"; }
 
 print -r -- "the live account has 5-hour and weekly room, Fable spent"
@@ -165,17 +177,6 @@ check "and touches nothing" "$SENT" ""
 
 # The Fable store: each pane's Claude is found under its pane pid in a fake /proc, and its
 # CLAUDE_SECURESTORAGE_CONFIG_DIR names the store it runs on.
-PROC="${BASE}/proc" FDIR="${BASE}/tycswap/fable/store" CV="/home/u/.local/share/claude/versions/2.1.325"
-export FLAKELAB_WAKE_PROC="$PROC"
-proc() { # pid, exe, children, environ entries (none: no environ file)
-  local p="$1"
-  mkdir -p "${PROC}/${p}/task/${p}"
-  ln -sfn "$2" "${PROC}/${p}/exe"
-  print -r -- "$3" > "${PROC}/${p}/task/${p}/children"
-  shift 3
-  (( $# )) && printf '%s\0' "$@" > "${PROC}/${p}/environ"
-  return 0
-}
 proc 2100 /run/current-system/sw/bin/zsh "2102 2101" "PATH=/bin"
 proc 2102 /nix/store/x-nodejs/bin/node "" "CLAUDE_SECURESTORAGE_CONFIG_DIR=/elsewhere"
 proc 2101 "$CV" "" "PATH=/bin" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${FDIR}"
@@ -183,14 +184,22 @@ proc 2200 /home/u/.local/bin/claude "" "PATH=/bin"
 proc 2300 "$CV" ""
 proc 2400 "$CV" "" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${FDIR}"
 proc 2500 /run/current-system/sw/bin/zsh "2501"
-proc 2501 "$CV" "" "CLAUDE_SECURESTORAGE_CONFIG_DIR=/home/u/own-store"
+proc 2501 "$CV" "" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${BASE}/tycswap/mythos/store"
+proc 2600 "$CV" "" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${FDIR}" "ANTHROPIC_AUTH_TOKEN=fixture"
+proc 2700 "$CV" "" "CLAUDE_CONFIG_DIR=${BASE}/custom"
+proc 2900 "$CV" ""
+: > "${PROC}/2900/environ"
 FABLE_HIT="  ⎿  You've hit your Fable limit · resets Nov 18, 10pm"
 screen 21 "❯ " "$FABLE_HIT" "${PARKED[@]}"
 screen 22 "❯ " "$FABLE_HIT" "${PARKED[@]}"
 screen 23 "❯ " "$FABLE_HIT" "${PARKED[@]}"
 screen 24 "❯ " "${PARKED[@]}"
 screen 25 "❯ " "${PARKED[@]}"
-print -rl -- "%21 0 claude 2100" "%22 0 claude 2200" "%23 0 2.1.325 2300" "%24 0 claude 2400" "%25 0 claude 2500" > "${PANES}/list"
+screen 26 "❯ " "${PARKED[@]}"
+screen 27 "❯ " "${PARKED[@]}"
+screen 28 "❯ " "  ⎿  You've hit your Mythos limit · resets Nov 18, 10pm" "${PARKED[@]}"
+screen 29 "❯ " "${PARKED[@]}"
+print -rl -- "%29 0 claude 2900" "%26 0 claude 2600" "%27 0 claude 2700" "%28 0 claude 2200" "%21 0 claude 2100" "%22 0 claude 2200" "%23 0 2.1.325 2300" "%24 0 claude 2400" "%25 0 claude 2500" > "${PANES}/list"
 status2() { # the shared login's 5-hour, weekly, Fable pct; the Fable store's state, account, 5-hour, weekly, Fable pct
   jq -n --arg r5 "$R5" --arg r7 "$R7" --arg rf "$RF" --arg dir "$FDIR" --arg state "$4" --argjson n "$5" \
     --argjson a "[$1,$2,$3]" --argjson f "[$6,$7,$8]" '
@@ -214,8 +223,8 @@ contains "and reported with that account" "$OUT" "woke %21 (account 3"
 check "its state key names the store" "$(<"${FLAKELAB_WAKE_STATE}/21")" "fable|3|$(( ($(date -u -d "$RF" +%s) + 30) / 60 ))|$(( ($(date -u -d "$R5" +%s) + 30) / 60 ))"
 contains "a Fable-store pane whose own process is Claude, parked on its 5-hour limit, is woken on the Fable store's room" "$SENT" "send-keys -t %24 -l ${FMSG}"
 excludes "a default pane is not woken by the Fable store's room" "$SENT" "-t %22 "
-excludes "a pane whose environ is unreadable is judged on the shared login" "$SENT" "-t %23 "
-excludes "a pane on its own CLAUDE_SECURESTORAGE_CONFIG_DIR is judged on the shared login" "$SENT" "-t %25 "
+excludes "a pane whose environment is unreadable waits" "$SENT" "-t %23 "
+excludes "a dedicated Mythos store gets no wake on Fable room" "$SENT" "-t %25 "
 
 print -r -- "the shared login has room, the Fable store none"
 rm -rf "$FLAKELAB_WAKE_STATE"
@@ -223,8 +232,12 @@ status2 4 88 50 on 3 95 20 100
 : > "$TMUX_LOG"
 run
 contains "a default pane parked on its Fable limit is woken on the shared login's account" "$SENT" "send-keys -t %22 -l ${SMSG}"
-contains "a pane whose environ is unreadable is woken on the shared login's room" "$SENT" "send-keys -t %23 -l ${SMSG}"
-contains "a pane on its own CLAUDE_SECURESTORAGE_CONFIG_DIR is woken on the shared login's room" "$SENT" "send-keys -t %25 -l ${SMSG}"
+excludes "an empty process environment does not identify a store" "$SENT" "-t %29 "
+excludes "unreadable credentials get no wake on default room" "$SENT" "-t %23 "
+excludes "a dedicated Mythos store gets no wake on default room" "$SENT" "-t %25 "
+excludes "an API token overrides the apparent Fable store" "$SENT" "-t %26 "
+excludes "a private profile gets no wake on default room" "$SENT" "-t %27 "
+excludes "shared room does not resolve a named Mythos limit" "$SENT" "-t %28 "
 excludes "a Fable-store pane is not woken because the shared login has room" "$SENT" "-t %21 "
 excludes "nor is one parked on its 5-hour limit" "$SENT" "-t %24 "
 check "a default pane's state key names the store" "${$(<"${FLAKELAB_WAKE_STATE}/22")%%|*}" "default"
@@ -257,8 +270,8 @@ rm -rf "$FLAKELAB_WAKE_STATE"
 status 4 88 50
 : > "$TMUX_LOG"
 run
-contains "every pane is judged on the shared login, whatever its environment" "$SENT" "send-keys -t %21 -l ${SMSG}"
-contains "the same for a pane whose own process is Claude" "$SENT" "send-keys -t %24 -l ${SMSG}"
+excludes "a store missing from status gets no wake" "$SENT" "-t %21 "
+excludes "a direct Claude pane with an unknown store also waits" "$SENT" "-t %24 "
 excludes "and no Fable message is sent" "$SENT" "Fable login"
 
 print -r -- ""
