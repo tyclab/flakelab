@@ -3,6 +3,7 @@
 import concurrent.futures
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -48,7 +49,7 @@ class Tabs(unittest.TestCase):
 
     def stub(self, name, cmd):
         file = self.bin / name
-        file.write_text("#!/usr/bin/env sh\n" + cmd + "\n")
+        file.write_text("#!" + shutil.which("sh") + "\n" + cmd + "\n")
         file.chmod(0o755)
 
     def process(self, pid, ppid, pane, pg=None, fg=None, args=()):
