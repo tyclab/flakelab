@@ -240,6 +240,35 @@ contains "clearing the title supplies the name flag" "${OUT}" "ran:claude-sessio
 contains "clearing passes the explicit empty title" "${OUT}" 'argv-word: []'
 run_router wsl tycsnap --name
 check "naming a pane needs a title argument" "${RC}" "2"
+
+# An installed profile puts only the router on PATH. Its session helper lives
+# in the private dispatch directory. Exercise the interactive shell hook at
+# that boundary, including the first prompt of a natively restored pane.
+public="${BASE}/public-bin"
+private="${BASE}/private-dispatch"
+mkdir -p "$public" "$private"
+ln -s "${commands[zsh]}" "$public/zsh"
+ln -s "${commands[jq]}" "$public/jq"
+ln -s "$ROUTER" "$public/flakelab"
+cat > "$private/claude-sessions" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "$HOOK_LOG"
+case "$*" in
+  '--tab-state enter') print -r -- '{"action":"restore","cwd":"/","name":"my pane"}' ;;
+  '--tab-state update '*) print -r -- 'my pane' ;;
+esac
+STUB
+chmod +x "$private/claude-sessions"
+hooklog="${BASE}/hook-operations"
+at_tty '' env -u TMUX -u SSH_CONNECTION -u FLAKELAB_TYCSNAP_ACTIVE \
+  PATH="$public" HOOK_LOG="$hooklog" FLAKELAB_TARGET=wsl FLAKELAB_DISPATCH_DIR="$private" \
+  WSL_DISTRO_NAME=fixture WT_SESSION=11111111-1111-1111-1111-111111111111 \
+  zsh -dfi -c 'source "$1"; _tycsnap_prompt; tycsnap-name "new title"; print -r -- "restored: $PWD|$_tycsnap_name"' \
+  zsh "${SCRIPT_DIR}/lib/tycsnap.zsh"
+contains "a restored shell sets its directory and title using the public router" "$OUT" 'restored: /|my pane'
+for op in '--tab-state enter' '--restore-tab' '--tab-state update /' '--restore-tab --name new title' '--tab-state exit'; do
+  contains "the shell reaches $op through private dispatch" "$(cat "$hooklog")" "$op"
+done
 at_tty 'mcp\rlogin\rAccount\rpersonal\r--fresh\rUndo\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "undo keeps the previous argument and removes the selected flag" "${OUT}" "ran:flakelab-mcp login personal"
 excludes "a removed flag is absent from dispatch" "${OUT}" "ran:flakelab-mcp login personal --fresh"

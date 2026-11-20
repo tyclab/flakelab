@@ -9,14 +9,14 @@ typeset -g _tycsnap_name="" _tycsnap_dirty="" _tycsnap_ready=""
 
 _tycsnap_update() {
   [[ -n "$_tycsnap_ready" ]] || return 0
-  _tycsnap_name="$(command claude-sessions --tab-state update "$PWD")"
+  _tycsnap_name="$(command flakelab sessions --tab-state update "$PWD")"
 }
 
 # A custom shell title survives a fresh Windows Terminal window as well as a
 # native layout restore. Clearing it gives title control back to oh-my-zsh.
 tycsnap-name() {
   [[ $# == 1 ]] || { print -ru2 -- 'Usage: tycsnap-name "tab title"'; return 2 }
-  command claude-sessions --restore-tab --name "$1"
+  command flakelab tycsnap --name "$1"
 }
 
 _tycsnap_preexec() {
@@ -26,7 +26,7 @@ _tycsnap_preexec() {
 _tycsnap_prompt() {
   local entry action dir name
   if [[ -z "$_tycsnap_ready" ]]; then
-    entry="$(command claude-sessions --tab-state enter)" || return 0
+    entry="$(command flakelab sessions --tab-state enter)" || return 0
     unset FLAKELAB_TYCSNAP_SOURCE
     action="$(jq -r '.action // empty' <<<"$entry")"
     [[ "$action" != superseded ]] || exit 0
@@ -39,7 +39,7 @@ _tycsnap_prompt() {
     _tycsnap_ready=1
     if [[ -n "$action" ]]; then
       [[ -z "$_tycsnap_name" ]] || printf '\033]2;%s\007' "$_tycsnap_name"
-      FLAKELAB_TYCSNAP_START=1 command claude-sessions --restore-tab
+      FLAKELAB_TYCSNAP_START=1 command flakelab tycsnap
       _tycsnap_update
     fi
   elif [[ -n "$_tycsnap_dirty" ]]; then
@@ -52,7 +52,7 @@ _tycsnap_prompt() {
 _tycsnap_exit() {
   # On a terminal hangup its PTY can no longer answer tcgetattr. A typed
   # exit or Ctrl-D reaches zshexit with a working tty.
-  [[ -n "$_tycsnap_ready" && -t 0 ]] && command claude-sessions --tab-state exit
+  [[ -n "$_tycsnap_ready" && -t 0 ]] && command flakelab sessions --tab-state exit
   return 0
 }
 
