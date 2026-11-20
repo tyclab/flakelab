@@ -52,12 +52,16 @@
         # glab: stable predates the `ci status --wait` and `--jq` the agent skills use.
         # pre-commit: stable's installs node hooks with a flag current npm rejects
         # (EUNKNOWNCONFIG), so every node hook is unbuildable with it.
+        # uv: the Python builds it downloads are listed in its binary, and stable's
+        # 0.11 predates CPython 3.15.0, so a 3.15 project got 3.15.0b2, on which the
+        # cp315 wheels of lxml and hypothesis crash or do not load.
         inherit (pkgsUnstable)
           bitwarden-cli
           glab
           opentofu
           playwright-driver
           pre-commit
+          uv
           ;
       };
 

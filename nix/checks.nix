@@ -995,7 +995,7 @@ in
       };
     in
     assert builtins.length pythons == 1;
-    pkgs.runCommandLocal "flakelab-check-python3-pyyaml" { nativeBuildInputs = [ pkgs.uv ]; } ''
+    pkgs.runCommandLocal "flakelab-check-python3-pyyaml" { nativeBuildInputs = [ system.pkgs.uv ]; } ''
       test -x ${beside}/bin/python3
       ${py}/bin/python3 -c 'import yaml; assert yaml.safe_load("a: 1") == {"a": 1}'
       ${py}/bin/python3 -m venv --without-pip "$TMPDIR/venv"
