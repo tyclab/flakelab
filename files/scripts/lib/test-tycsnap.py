@@ -63,6 +63,12 @@ class Tabs(unittest.TestCase):
         if not (directory / "cwd").exists():
             (directory / "cwd").symlink_to(self.base)
 
+    def rollout(self, pid, sid):
+        transcript = self.home / f"rollout-2026-11-20-{sid}.jsonl"
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"cwd": self.cwd, "source": "cli"}}) + "\n")
+        fd = self.proc / pid / "fd"
+        (fd / str(3 + len(list(fd.iterdir())))).symlink_to(transcript)
+
     def cli(self, *args, pane=A, pid="10", env=None):
         run = subprocess.run([CMD, *args], cwd=self.cwd, capture_output=True, text=True,
                              env=dict(self.env, WT_SESSION=pane, FLAKELAB_TYCSNAP_OWNER=pid, **(env or {})))
@@ -214,7 +220,8 @@ esac
         self.process("102", "10", A, pg="102", fg="101", args=["claude"])
         (reg / "102.json").write_text(json.dumps(dict(sessionId=C)))
         (self.home / "pids-claude").write_text("101\n102")
-        self.process("202", "20", B, args=["codex", "resume", C])
+        self.process("202", "20", B, args=["codex", "--no-daemon", "resume", SID])
+        self.rollout("202", C)
         (self.home / "pids-codex").write_text("202")
         self.cli("--autosave")
         self.assertEqual(self.panes()[A]["agent"]["session"], SID)
@@ -241,6 +248,83 @@ esac
             self.cli("--restore-tab", pane=pane, pid=pid)
             self.assertNotIn("pending", self.panes()[pane])
             self.assertEqual((self.home / f"{tool}-args").read_text().splitlines(), [command, sid])
+
+    def test_codex_shared_clients_and_tmux_lane_tags_cannot_identify_the_displayed_thread(self):
+        self.state("enter")
+        self.state("enter", pane=B, pid="20")
+        self.process("101", "10", A, args=["codex", "resume", C])
+        self.process("303", "1", A, args=["tmux", "server"])
+        self.process("304", "20", B, args=["tmux", "attach"])
+        self.process("305", "303", A, args=["codex", "resume", C])
+        self.process("400", "1", A, args=["codex", "app-server", "--listen", "unix://"])
+        self.rollout("400", C)
+        self.rollout("400", SID)
+        self.stub("tmux", 'case "$1" in -V) echo tmux;; list-clients) cat "$HOME/clients";; list-panes) cat "$HOME/panes";; *) exit 1;; esac')
+        (self.home / "clients").write_text(US.join(["304", "303", "agents", "@4", "lane", "305"]))
+        (self.home / "panes").write_text(US.join(["305", "agents", "@4", "lane", C]) + "\n")
+        (self.home / "pids-codex").write_text("101\n305\n400")
+        self.cli("--autosave")
+        self.assertNotIn("agent", self.panes()[A])
+        self.assertNotIn("agent", self.panes()[B])
+        self.assertEqual(self.panes()[B]["tmux"]["window"], "@4")
+        self.boot.write_text("bbbbbbbbbbbb")
+        self.state("enter", pane=B, pid="20")
+        self.cli("--restore-tab", pane=B, pid="20")
+        self.assertFalse((self.home / "codex-args").exists())
+
+    def test_explicitly_opening_codex_is_possible_when_only_the_daemon_holds_its_rollout(self):
+        self.stub("tmux", "exit 1")
+        self.stub("wt.exe", 'printf "%s\\n" "$@" > "$HOME/wt-args"')
+        self.process("400", "1", A, args=["codex", "app-server", "--listen", "unix://"])
+        self.rollout("400", SID)
+        (self.home / "pids-codex").write_text("400")
+        saved = self.base / "requested.txt"
+        saved.write_text(f"codex  {self.cwd}  {SID}\n")
+        self.cli("--open", str(saved))
+        token = (self.home / "wt-args").read_text().splitlines()[10].split("=", 1)[1]
+        self.state("enter", env={"FLAKELAB_TYCSNAP_SOURCE": token})
+        self.cli("--restore-tab")
+        self.assertEqual((self.home / "codex-args").read_text().splitlines(), ["resume", SID])
+
+    def test_ambiguous_native_rollouts_clear_a_previously_known_codex_thread(self):
+        self.state("enter")
+        self.process("101", "10", A, args=["codex", "--no-daemon"])
+        (self.home / "pids-codex").write_text("101")
+        self.rollout("101", SID)
+        self.cli("--autosave")
+        self.assertEqual(self.panes()[A]["agent"]["session"], SID)
+        self.rollout("101", C)
+        self.cli("--autosave")
+        self.assertNotIn("agent", self.panes()[A])
+
+    def test_running_codex_restore_tracks_an_unknown_foreground_and_keeps_failed_start_retry(self):
+        self.state("enter")
+        token = self.cli("--tab-state", "launch", "codex", self.cwd, C, "", "", "", "", "").strip()
+        self.state("enter", pane=B, pid="20", env={"FLAKELAB_TYCSNAP_SOURCE": token})
+        worker = str(os.getpid())
+        self.assertEqual(self.state("take", worker, pane=B, pid="20")["agent"]["session"], C)
+        self.process("202", "20", B, args=["codex", "resume", C])
+        (self.home / "pids-codex").write_text("202")
+        self.cli("--autosave")
+        self.assertEqual(self.panes()[B]["observed"], {})
+        self.state("finish", worker, "1", pane=B, pid="20")
+        self.assertEqual(self.state("take", worker, pane=B, pid="20")["agent"]["session"], C)
+        self.cli("--autosave")
+        self.boot.write_text("bbbbbbbbbbbb")
+        self.state("enter", pane=B, pid="20")
+        self.cli("--restore-tab", pane=B, pid="20")
+        self.assertFalse((self.home / "codex-args").exists())
+
+    def test_previously_saved_codex_ids_need_native_evidence_after_upgrade(self):
+        self.state("enter")
+        file, = (self.base / "claude/sessions").glob("*.txt")
+        prior = {"panes": self.panes(), "used": {}}
+        prior["panes"][A]["agent"] = dict(tool="codex", session=SID, cwd=self.cwd, group="", profile="")
+        file.write_text("# tycsnap " + json.dumps(prior) + "\n")
+        self.boot.write_text("bbbbbbbbbbbb")
+        self.state("enter")
+        self.cli("--restore-tab")
+        self.assertFalse((self.home / "codex-args").exists())
 
     def test_tmux_client_wins_over_inherited_old_tab_environment(self):
         self.state("enter")

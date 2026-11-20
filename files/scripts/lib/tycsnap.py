@@ -41,13 +41,6 @@ def proc_stat(pid, root=PROC):
         return None
 
 
-def arguments(pid):
-    try:
-        return (PROC / str(pid) / "cmdline").read_bytes().decode(errors="replace").split("\0")
-    except OSError:
-        return []
-
-
 def client_pane(pid, panes):
     try:
         env = (PROC / str(pid) / "environ").read_bytes().split(b"\0")
@@ -96,6 +89,12 @@ def read(path):
     for line in lines:
         if line.startswith(MARKER):
             state = json.loads(line[len(MARKER):])
+    # Older pane snapshots used the native launch argument or tmux lane tag.
+    # Neither identifies what a shared client displayed after switching tasks.
+    for pane in state["panes"].values():
+        agent = pane.get("agent", {})
+        if agent.get("tool") == "codex" and not agent.get("native"):
+            pane.pop("agent")
     return state, [line for line in lines if not line.startswith("#")]
 
 
@@ -127,6 +126,25 @@ def atomically_save(path, box, boot, state, lines, keep):
         old.unlink(missing_ok=True)
 
 
+def set_foreground(pane, agents, host=None):
+    view = {"tmux": host} if host else {}
+    if len(agents) == 1 and agents[0]:
+        view["agent"] = agents[0]
+    if pane.get("pending"):
+        # The requested target stays available if native startup fails. A
+        # tab closed during the running restore recovers its observed view.
+        if active_attempt(pane):
+            pane["observed"] = view
+    else:
+        apply_view(pane, view)
+
+
+def apply_view(pane, view):
+    pane.pop("agent", None)
+    pane.pop("tmux", None)
+    pane.update(view)
+
+
 def foreground(rows, panes, boot):
     agents_by_pid = {}
     direct = {}
@@ -140,23 +158,16 @@ def foreground(rows, panes, boot):
             pane.pop("tmux", None)
     for row in rows:
         tool, pid, _, sid, cwd, wid, _, group, profile = row.split(US)
-        args = arguments(pid)
-        if tool == "codex" and "app-server" in args[1:2]:
-            continue
-        if not sid and tool == "codex" and "resume" in args:
-            index = args.index("resume") + 1
-            if index < len(args):
-                sid = uuid(args[index])
-        if not uuid(sid):
-            continue
-        agent = dict(tool=tool, session=sid, cwd=cwd, group=group, profile=profile)
+        agent = None
+        if uuid(sid):
+            agent = dict(tool=tool, session=sid, cwd=cwd, group=group, profile=profile)
+            if tool == "codex":
+                agent["native"] = True
         agents_by_pid.setdefault(pid, []).append(agent)
         if not wid and (ident := client_pane(pid, panes)):
             direct.setdefault(ident, []).append(agent)
     for ident, agents in direct.items():
-        if len(agents) == 1 and not panes[ident].get("pending"):
-            panes[ident]["agent"] = agents[0]
-            panes[ident].pop("tmux", None)
+        set_foreground(panes[ident], agents)
     # For hosted agents only the attached client belongs to a terminal. The
     # server and its children keep the environment from the day it started.
     fields = ["client_pid", "pid", "session_name", "window_id", "window_name", "pane_pid"]
@@ -175,15 +186,11 @@ def foreground(rows, panes, boot):
         if not ident or not stat or not re.fullmatch(r"@[0-9]+", wid):
             continue
         pane = panes[ident]
-        if pane.get("pending"):
-            continue
-        pane["tmux"] = dict(boot=boot, server=[server, stat[3]], session=session, window=wid, name=name)
+        host = dict(boot=boot, server=[server, stat[3]], session=session, window=wid, name=name)
         # tmux tells us which pane is selected, even when a split window
         # or a session outside the managed agents group contains other tools.
         agents = [agent for pid, group in agents_by_pid.items() if descends_from(pid, active) for agent in group]
-        pane.pop("agent", None)
-        if len(agents) == 1:
-            pane["agent"] = agents[0]
+        set_foreground(pane, agents, host)
 
 
 def command(path, box, boot, keep, op, args):
@@ -211,6 +218,8 @@ def command(path, box, boot, keep, op, args):
         name = Path(cwd).name
         record = dict(cwd=cwd, name=name if valid_title(name) else "",
                       agent=dict(tool=tool, cwd=cwd, session=sid, group=group, profile=profile))
+        if tool == "codex":
+            record["agent"]["native"] = True  # --open explicitly requested this UUID.
         if wid:
             server = proc_stat(server_pid)
             if not re.fullmatch(r"@[0-9]+", wid) or not server:
@@ -254,6 +263,9 @@ def command(path, box, boot, keep, op, args):
             launch_state = state if source_boot == boot else previous if old and source_boot == boot_of(old, prefix) else {}
             if not restored and token and source_id in launch_state.get("launches", {}) and key not in used:
                 restored = launch_state["launches"][source_id]
+                if restored.get("agent", {}).get("tool") == "codex":
+                    # An unclaimed --open request can predate the pane format.
+                    restored["agent"]["native"] = True
                 used[key] = ident
                 if source_boot == boot:
                     del launch_state["launches"][source_id]
@@ -270,6 +282,8 @@ def command(path, box, boot, keep, op, args):
                 response = {}
             else:
                 pane = dict(restored or {}, owner=owner)
+                if "observed" in pane:
+                    apply_view(pane, pane.pop("observed"))
                 pane.pop("attempt", None)
                 pane.setdefault("cwd", os.getcwd())
                 if not valid_title(pane.setdefault("name", "")):
@@ -320,7 +334,10 @@ def command(path, box, boot, keep, op, args):
         elif op == "finish":
             if pane.get("attempt", [""])[0] == args[0]:
                 pane.pop("attempt")
+                observed = pane.pop("observed", None)
                 if args[1] == "0":
+                    if observed is not None:
+                        apply_view(pane, observed)
                     pane.pop("pending", None)
         elif op in ("available", "reserve"):
             old = prior(path, prefix)

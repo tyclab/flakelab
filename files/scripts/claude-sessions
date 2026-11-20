@@ -434,7 +434,7 @@ attach_window() {
 # ---------------------------------------------------------------------------
 # The live sessions.
 
-typeset -a ROWS=()
+typeset -a ROWS=() TAB_ROWS=()
 US=$'\x1f'
 # Codex session ids whose state the table asks Codex's shared server for: the
 # ones recorded on windows and the ones the shared server's own process holds.
@@ -555,7 +555,7 @@ process_profile() {
 
 # Records are unit-separator delimited: a tab is IFS whitespace to `read`, so an empty id would shift the cwd.
 gather() {
-  local tool p cwd sid age reg started now host wid wname record group profile
+  local tool p cwd sid age reg started now host wid wname record group profile prefix suffix foreground_sid
   local -a pids args sessions
   now="$(date +%s)"
   load_panes
@@ -609,13 +609,22 @@ gather() {
       IFS="$US" read -r wid wname <<<"$host"
       for record in "${sessions[@]}"; do
         IFS="$US" read -r sid cwd <<<"$record"
+        prefix="${tool}${US}${p}${US}${age:-0}${US}"
+        suffix="${US}${cwd}${US}${wid:-}${US}${wname:-}${US}${group}${US}${profile}"
+        # A managed window names the lane it launched. Codex can change the
+        # displayed thread without changing that name or its startup arguments.
+        if [[ "$MODE" == (autosave|restore-tab|open) && ( "$tool" != codex || ${args[(Ie)app-server]} == 0 ) ]]; then
+          foreground_sid="$sid"
+          [[ "$tool" == codex && ${#sessions} -ne 1 ]] && foreground_sid=""
+          TAB_ROWS+=("${prefix}${foreground_sid}${suffix}")
+        fi
         if [[ "$tool" == codex ]]; then
           # The client in a lane's window holds no rollout: its window names its session.
           [[ -z "$sid" && -n "${wid:-}" && -n "${WINDOW_SESSION[${wid:-none}]:-}" ]] && sid="${WINDOW_SESSION[$wid]}"
           [[ -n "$sid" ]] && { [[ "${args[2]:-}" == app-server || -n "${WINDOW_SESSION[${wid:-none}]:-}" ]] && ASK[$sid]=1 }
         fi
         [[ -z "$sid" ]] && print -ru2 -- "note: ${tool} pid ${p} in ${cwd} has no local session id: starting or a client of a shared server; nothing to save or resume by this pid"
-        ROWS+=("${tool}${US}${p}${US}${age:-0}${US}${sid}${US}${cwd}${US}${wid:-}${US}${wname:-}${US}${group}${US}${profile}")
+        ROWS+=("${prefix}${sid}${suffix}")
       done
     done
   done
@@ -734,7 +743,7 @@ write_autosave() {
     IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     lines+=("$(save_line "$tool" "$cwd" "$sid" "$group" "$profile")")
   done
-  { (( ${#lines} == 0 )) || printf '%s\0' "${lines[@]}"; printf '\0'; (( ${#ROWS} == 0 )) || printf '%s\0' "${ROWS[@]}"; } |
+  { (( ${#lines} == 0 )) || printf '%s\0' "${lines[@]}"; printf '\0'; (( ${#TAB_ROWS} == 0 )) || printf '%s\0' "${TAB_ROWS[@]}"; } |
     tab_state autosave
 }
 
@@ -897,9 +906,9 @@ open_tabs() {
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
   have_tmux && use_tmux=true
   collect_pairs || return 1
-  ROWS=()
+  TAB_ROWS=()
   gather 2>/dev/null
-  for row in "${ROWS[@]}"; do
+  for row in "${TAB_ROWS[@]}"; do
     IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     [[ -n "$sid" ]] || continue
     key="${tool}${US}${sid}${US}${profile}"
@@ -1598,9 +1607,9 @@ restore_tab_foreground() {
   group="$(jq -r '.agent.group' <<<"$plan")"
   profile="$(jq -r '.agent.profile' <<<"$plan")"
   dir="$(jq -r '.agent.cwd' <<<"$plan")"
-  ROWS=()
+  TAB_ROWS=()
   gather 2>/dev/null
-  for record in "${ROWS[@]}"; do
+  for record in "${TAB_ROWS[@]}"; do
     IFS="$US" read -r found p age file dir_unused wid unused_name unused_group profile_found <<<"$record"
     [[ "$found" == "$tool" && "$file" == "$sid" && "$profile_found" == "$profile" ]] || continue
     [[ -n "$wid" ]] && { attach_window "$wid"; return $? }
