@@ -125,6 +125,8 @@ LANE_TRUST=false
 typeset -a LANE_FLAGS=() CLOSE_TARGETS=()
 CLOSE_FORCE=false
 CLOSE_ARCHIVE=false
+CLAUDE_TARGET=""
+WAIT_SECONDS=""
 # Seconds a lane's window must survive: a `codex resume` that cannot open its
 # conversation ended within 1.0 s in three runs. The env var is a test seam.
 LANE_SETTLE="${FLAKELAB_SESSIONS_SETTLE:-3}"
@@ -137,8 +139,9 @@ typeset -A TOOL_CMD=(claude claude codex codex)
 usage() {
   cat <<'USAGE'
 Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
-                         [--start codex [dir] (--prompt TEXT | --prompt-file FILE)
-                            [--model M] [--effort E] [--name NAME] [--trust] [--detach]]
+                         [--start <tool> [dir] (--prompt TEXT | --prompt-file FILE)
+                            [--model M] [--effort E] [--name NAME] [--detach]]
+                         [--wait <claude-session-id> [--timeout SECONDS] | --read <claude-session-id>]
                          [--close [--force] [--archive] <window|session-id>...]
                          [--attach [id|window]] [--save [file]] [--resume [file]]
                          [--open [file]] [--autosave] [--recent [hours]] [--json]
@@ -156,6 +159,17 @@ Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
                     The model and effort hold for this session only. A folder
                     Codex holds no trust decision for is refused: --trust
                     starts there, and Codex may then save it as trusted
+  --start claude [dir] --prompt TEXT | --prompt-file FILE
+                    start an interactive Claude task with optional --model,
+                    --effort and --name; stdout gives its native session and
+                    window as JSON. Use --detach to leave the terminal free.
+  --wait <claude-session-id> [--timeout SECONDS]
+                    wait for idle, blocked, error or exit; print the state as
+                    JSON. A timeout is distinct and leaves the session alone.
+  --read <claude-session-id>
+                    print the managed Claude pane's terminal output and history
+  --close <claude-session-id>
+                    ask an idle Claude task to exit and print its resume command
   --close [--force] [--archive] <window|session-id>...
                     remove a lane's window when its session is finished, and
                     print the command that reopens it. A session that works,
@@ -214,6 +228,13 @@ while (( $# > 0 )); do
       esac
       shift ;;
     --trust) LANE_TRUST=true; LANE_FLAGS+=("$1") ;;
+    --wait|--read)
+      MODE="${1#--}"
+      [[ -n "${2:-}" && "$2" != -* ]] || { print -ru2 -- "Error: $1 needs a Claude session id"; exit 2 }
+      CLAUDE_TARGET="$2"; shift ;;
+    --timeout)
+      [[ "${2:-}" == <0-> ]] || { print -ru2 -- "Error: --timeout needs a nonnegative number of seconds"; exit 2 }
+      WAIT_SECONDS="$2"; shift ;;
     --close) MODE=close ;;
     --force) CLOSE_FORCE=true ;;
     --archive) CLOSE_ARCHIVE=true ;;
@@ -239,7 +260,10 @@ while (( $# > 0 )); do
 done
 
 if (( ${#LANE_FLAGS} > 0 )) && [[ "$MODE" != start ]]; then
-  print -ru2 -- "Error: ${LANE_FLAGS[1]} belongs to --start codex"; exit 2
+  print -ru2 -- "Error: ${LANE_FLAGS[1]} belongs to --start claude or --start codex"; exit 2
+fi
+if [[ -n "$WAIT_SECONDS" && "$MODE" != wait ]]; then
+  print -ru2 -- "Error: --timeout belongs to --wait"; exit 2
 fi
 if [[ "$MODE" != close ]] && { $CLOSE_FORCE || $CLOSE_ARCHIVE }; then
   print -ru2 -- "Error: --force and --archive belong to --close"; exit 2
@@ -343,17 +367,31 @@ tool_command() {
   print -r -- "$cmd"
 }
 
-typeset -a WINDOW_ENV=()
+typeset -a WINDOW_ENV=() PRIVATE_WINDOW_ENV=()
+tmux_window() {
+  if (( ${#PRIVATE_WINDOW_ENV} )); then
+    python3 "${SCRIPT_DIR}/lib/claude_lane.py" window "${PRIVATE_WINDOW_ENV[@]}" -- "$@"
+  else
+    tmux "$@"
+  fi
+}
 # The window gets the caller's PATH: it runs with the server's env, and any client may have started the server.
 new_window() {
-  local name="$1" dir="$2" cmd="$3"
+  local name="$1" dir="$2" cmd="$3" result
   local -a env_args=(-e "PATH=${PATH}")
   # A lane's window must reach the Codex home its session was created in.
   (( ${#WINDOW_ENV} > 0 )) && env_args+=("${WINDOW_ENV[@]}")
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    tmux new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
+    tmux_window new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
   else
-    tmux new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
+    # Another start can create the session after has-session returned false.
+    if result="$(tmux_window new-session -d -P -F '#{window_id}' -s "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd" 2>&1)"; then
+      print -r -- "$result"
+    elif tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+      tmux_window new-window -d -P -F '#{window_id}' -t "$TMUX_SESSION" -n "$name" "${env_args[@]}" -c "$dir" "$cmd"
+    else
+      print -ru2 -- "$result"; return 1
+    fi
   fi
 }
 
@@ -1019,13 +1057,53 @@ ask_start() {
 # --start: a window in the agents session running the tool, then a view on it.
 # A lane: the session is created and its first turn started through Codex's
 # protocol, then its window opens on it. The order is the point: see the header.
+# A managed task's pane execs the regular launcher, which execs Claude on Linux.
+# Its pane PID is therefore the native registry PID, including on a routed login.
+start_claude_lane() {
+  local dir="$1" name="$2" sid wid var cmd
+  local -a args=()
+  $LANE_TRUST && { print -ru2 -- "Error: --trust is for --start codex; Claude handles its own trust dialog"; return 2 }
+  sid="$(python3 -c 'import uuid; print(uuid.uuid4())')" || return 1
+  args=(--session-id "$sid")
+  [[ -n "$LANE_MODEL" ]] && args+=(--model "$LANE_MODEL")
+  [[ -n "$LANE_EFFORT" ]] && args+=(--effort "$LANE_EFFORT")
+  [[ -n "$LANE_NAME" ]] && args+=(--name "$LANE_NAME")
+  local -a provider_keys=()
+  local helper="${SCRIPT_DIR}/lib/claude_lane.py" keys
+  keys="$(python3 "$helper" keys)" || return 1
+  [[ -z "$keys" ]] || provider_keys=("${(@f)keys}")
+  for var in "${provider_keys[@]}"; do
+    case "$var" in
+      CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR|CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR)
+        [[ -z "${(P)var}" ]] || { print -ru2 -- "Error: tmux cannot inherit the caller's open file descriptor in ${var}"; return 2 } ;;
+      CLAUDE_CONFIG_DIR|CLAUDE_SECURESTORAGE_CONFIG_DIR) WINDOW_ENV+=(-e "${var}=${(P)var}") ;;
+      *) PRIVATE_WINDOW_ENV+=("$var") ;;
+    esac
+  done
+  local -a command=(python3 "$helper" launch "${provider_keys[@]}" -- "${args[@]}" --)
+  cmd="exec ${(j: :)${(@q)command}}"
+  if [[ -n "$LANE_PROMPT_FILE" ]]; then
+    # Only the file name is stored in tmux's pane_start_command.
+    cmd+=' "$(cat -- '${(q)${LANE_PROMPT_FILE:a}}')"'
+  else
+    cmd+=" ${(q)LANE_PROMPT}"
+  fi
+  wid="$(new_window "$name" "$dir" "$cmd")" || return 1
+  if ! tmux set-option -w -t "$wid" @flakelab_session "claude:${sid}" ||
+    [[ "$(tmux show-options -w -v -t "$wid" @flakelab_session 2>/dev/null)" != "claude:${sid}" ]]; then
+    print -ru2 -- "Error: window ${wid} started session ${sid}, but tmux could not record its id"; return 1
+  fi
+  jq -nc --arg window "$wid" --arg session "$sid" '{window:$window,session:$session}'
+  $START_DETACH || [[ ! -t 0 || ! -t 1 ]] || attach_window "$wid"
+}
+
 start_lane() {
   local dir="${START_DIR:-$PWD}" name out sid model effort wid
   local -a helper_args=() taken=() alive=()
-  [[ "$START_TOOL" == codex ]] || { print -ru2 -- "Error: ${LANE_FLAGS[1]} is for --start codex; ${START_TOOL} takes its own flags after --"; return 2 }
+  is_tool "$START_TOOL" || { print -ru2 -- "Error: unknown tool: ${START_TOOL}"; return 2 }
   (( ${#START_ARGS} == 0 )) || { print -ru2 -- "Error: ${LANE_FLAGS[1]} cannot be combined with -- args"; return 2 }
   (( ${LANE_FLAGS[(Ie)--prompt]} && ${LANE_FLAGS[(Ie)--prompt-file]} )) && { print -ru2 -- "Error: --prompt and --prompt-file exclude each other"; return 2 }
-  [[ -n "$LANE_PROMPT" || -n "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: ${LANE_FLAGS[1]} needs --prompt or --prompt-file: a Codex session has no file, and keeps no effort, before its first turn"; return 2 }
+  [[ -n "$LANE_PROMPT" || -n "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: ${LANE_FLAGS[1]} needs --prompt or --prompt-file"; return 2 }
   if [[ -n "$LANE_PROMPT_FILE" ]]; then
     [[ -f "$LANE_PROMPT_FILE" && -r "$LANE_PROMPT_FILE" && -s "$LANE_PROMPT_FILE" ]] || { print -ru2 -- "Error: --prompt-file ${LANE_PROMPT_FILE} is missing, unreadable or empty"; return 2 }
   fi
@@ -1037,12 +1115,13 @@ start_lane() {
   [[ -d "$dir" ]] || { print -ru2 -- "Error: no such directory: ${dir}"; return 2 }
   # Absolute, in the caller's spelling: Codex may hold the trust decision under a symlink's name.
   dir="${dir:a}"
-  name="${LANE_NAME:-$(window_name codex "$dir")}"
+  name="${LANE_NAME:-$(window_name "$START_TOOL" "$dir")}"
   # Read into an array, then look: a pipe into grep -q can fail a match under pipefail.
   taken=( "${(@f)$(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null)}" )
   if [[ -n "$LANE_NAME" ]] && (( ${taken[(Ie)$LANE_NAME]} )); then
     print -ru2 -- "Error: a window named ${LANE_NAME} exists in ${TMUX_SESSION}"; return 1
   fi
+  if [[ "$START_TOOL" == claude ]]; then start_claude_lane "$dir" "$name"; return $?; fi
   helper_args=(start --cwd "$dir")
   # As one word each: a value that begins with a dash stays a value.
   [[ -n "$LANE_MODEL" ]] && helper_args+=("--model=${LANE_MODEL}")
@@ -1095,10 +1174,141 @@ lane_rows() {
   return 0
 }
 
-# Why a window is not a lane flakelab may remove; nothing when it is one. It must record
-# a session id, have one pane, and that pane's start command must be exactly the
-# `codex resume <id>` flakelab starts lanes with: a command that merely contains those
-# words is someone else's. tmux reports a command with spaces in double quotes.
+# The native id is the handle: reusing a tmux window number after a server
+# restart cannot make a read or close target someone else's conversation.
+claude_pane() {
+  local rows owner mark count in_mode dead startcmd
+  rows="$(tmux list-panes -a -F "#{session_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_id}${US}#{pane_pid}${US}#{pane_in_mode}${US}#{pane_dead}${US}#{pane_start_command}" 2>/dev/null)" || return 1
+  while IFS="$US" read -r owner mark count pane pid in_mode dead startcmd; do
+    [[ "$owner" == "$TMUX_SESSION" && "$mark" == "claude:$sid" ]] || continue
+    [[ "$count" == 1 ]] || { pane=""; state=blocked; return 0 }
+    # A respawned pane can retain its window's mark and show another command.
+    startcmd="${startcmd#\"}"
+    # A flakelab update gives this script a new Nix store path while an older
+    # lane stays on the generation in which it started.
+    [[ "$startcmd" == "exec python3 "("${(q)SCRIPT_DIR}"|/nix/store/[0-9a-z](#c32)-scripts)"/lib/claude_lane.py launch "([A-Za-z0-9_]##" ")#"-- --session-id ${sid} "* ]] || { pane=""; state=unknown; return 0 }
+    [[ "$in_mode" == 0 ]] || { state=blocked; return 0 }
+    if [[ "$dead" == 1 ]]; then state=exited; else state=starting; fi
+    return 0
+  done <<<"$rows"
+  return 1
+}
+
+# Linux start ticks distinguish a recycled PID from this particular process.
+claude_start_ticks() {
+  local stat
+  [[ -r "${PROC_ROOT}/$1/stat" ]] || return 1
+  stat="$(<"${PROC_ROOT}/$1/stat")" || return 1
+  stat="${stat##*) }"
+  print -r -- "${${(s: :)stat}[20]:-}"
+}
+
+claude_record() {
+  local record
+  profile="$(process_profile "$pid")"
+  reg="${profile:-${HOME}/.claude}/sessions/${pid}.json"
+  [[ -r "$reg" ]] || return 1
+  record="$(jq -er '[.sessionId,.pid,.procStart,.status,.cwd] | join("\u001f")' "$reg" 2>/dev/null)" || return 1
+  local native_id native_pid
+  IFS="$US" read -r native_id native_pid actual st cwd <<<"$record"
+  # Claude's PID record can exist before it publishes its id or status.
+  [[ -n "$native_id" && -n "$actual" && -n "$st" ]] || return 1
+  [[ "$native_id" == "$sid" && "$native_pid" == "$pid" && "$actual" == "$(claude_start_ticks "$pid")" ]] || { state=unknown; return 1 }
+}
+
+claude_observe() {
+  local line startup_ui
+  state=unknown
+  if ! claude_pane; then
+    if [[ -z "$observed_pid" ]]; then state=absent
+    elif [[ "$(claude_start_ticks "$observed_pid")" != "$observed_start" ]]; then state=exited
+    fi
+    return 0
+  fi
+  [[ "$state" == starting ]] || return 0
+  # A folder trust or sign-in screen can precede creation of the native PID
+  # record. Leave the choice to the terminal's operator.
+  look "$pane" || true
+  startup_ui="$(print -rl -- "${plain[@]}" | grep -a -v '^[[:space:]]*$' | tail -n 6)"
+  if grep -qE '^[[:space:]]*(Enter to (confirm|select|continue)|[^[:alnum:]]*to navigate.*Enter to select)' <<<"$startup_ui"; then
+    state=blocked; return 0
+  fi
+  claude_record || return 0
+  observed_pid="$pid"
+  observed_start="$actual"
+  case "$st" in
+    starting) state=starting ;;
+    waiting|shell) state=blocked ;;
+    busy) state=working ;;
+    idle)
+      local -a logs=("${profile:-${HOME}/.claude}"/projects/*/${sid}.jsonl(N))
+      (( ${#logs} == 1 )) || { state=starting; return; }
+      state="$(python3 "${SCRIPT_DIR}/lib/claude_lane.py" turn "${logs[1]}")" || { state=unknown; return; }
+      if [[ "$state" == idle ]]; then
+        # A command picker, confirmation or unsent input retains its terminal.
+        if (( ${#at} < 2 || at[-1] - at[-2] != 2 )); then state=blocked; return; fi
+        line="$(visible "${screen[at[-2]+1]}")"
+        [[ "$line" == [[:space:]]#❯[[:space:]$'\xc2\xa0']# ]] || state=blocked
+      fi ;;
+    *) state=unknown ;;
+  esac
+}
+
+claude_lifecycle() {
+  setopt localoptions extendedglob
+  local action="$1" sid="$2" pane="" pid="" profile="" cwd="" state="" closed_pane=""
+  local reg="" st="" actual="" observed_pid="" observed_start=""
+  local -i start=$SECONDS
+  local -a screen plain at
+  [[ "$sid" =~ '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' ]] || { print -ru2 -- "Error: $action needs the native Claude session id printed by --start"; return 2 }
+  source "${SCRIPT_DIR}/lib/claude_input.zsh" || return 1
+  if [[ "$action" == read ]]; then
+    claude_pane || { print -ru2 -- "Error: no managed Claude pane for ${sid}"; return 1 }
+    [[ -n "$pane" ]] || return 1
+    tmux capture-pane -p -J -S - -t "$pane"
+    return $?
+  fi
+  while true; do
+    claude_observe
+    [[ "$action" == wait && "$state" == (starting|working) ]] || break
+    if [[ -n "$WAIT_SECONDS" ]] && (( SECONDS - start >= WAIT_SECONDS )); then state=timeout; break; fi
+    sleep 1
+  done
+  if [[ "$action" == wait ]]; then
+    [[ "$state" == unknown ]] && state=error
+    jq -nc --arg session "$sid" --arg state "$state" '{session:$session,state:$state}'
+    [[ "$state" == idle ]]; return $?
+  fi
+  [[ "$state" == idle ]] || { print -ru2 -- "not closed: ${sid} is ${state}"; return 1 }
+  # Render the same native configuration while this PID still owns it.
+  local resume
+  resume="$(python3 "${SCRIPT_DIR}/lib/claude_lane.py" resume "${PROC_ROOT}/${pid}/environ" "$cwd" "$sid")" || return 1
+  closed_pane="$pane"
+  tmux send-keys -t "$pane" -l /exit || return 1
+  # Submit only if the same live pane shows exactly the command we typed.
+  local -i tries=0
+  while (( ++tries <= 20 )); do
+    claude_pane && [[ "$pane" == "$closed_pane" && "$state" == starting ]] || break
+    if look "$pane" && (( at[-1] - at[-2] == 2 )) && [[ "$(visible "${screen[at[-2]+1]}")" == [[:space:]]#❯[[:space:]$'\xc2\xa0']#/exit[[:space:]]# ]] &&
+      claude_record && [[ "$st" == idle && "$pid" == "$observed_pid" && "$actual" == "$observed_start" ]]; then
+      tmux send-keys -t "$pane" Enter || return 1
+      # Claude owns exit, including any confirmation. Never escalate to a kill.
+      for tries in {1..30}; do
+        if [[ "$(claude_start_ticks "$observed_pid")" != "$observed_start" ]]; then
+          print -r -- "$resume"
+          return 0
+        fi
+        sleep 0.1
+      done
+      break
+    fi
+    sleep 0.1
+  done
+  print -ru2 -- "not closed: Claude has not confirmed exit; inspect session ${sid} with --read"
+  return 1
+}
+
+# A Codex window must have one pane running the exact recorded resume command.
 lane_fault() {
   local wsid="$1" panes="$2" startcmd="$3" want
   if [[ -z "$wsid" ]]; then
@@ -1164,7 +1374,7 @@ close_sessions() {
     bad=true
     for line in "${LANE_ROWS[@]}"; do
       IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
-      [[ "$wid" == "$target" || "$wname" == "$target" || ( -n "$wsid" && "$wsid" == "$target" ) ]] && { bad=false; break }
+      [[ "$wid" == "$target" || "$wname" == "$target" || ( -n "$wsid" && ( "$wsid" == "$target" || "$wsid" == "claude:$target" ) ) ]] && { bad=false; break }
     done
     $bad && { print -ru2 -- "Error: no window of ${TMUX_SESSION} is named '${target}' or holds that session — flakelab sessions lists them"; return 2 }
   done
@@ -1174,7 +1384,7 @@ close_sessions() {
       IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
       [[ "$wid" == "$target" ]] && by_id+=("$line")
       [[ "$wname" == "$target" ]] && by_name+=("$line")
-      [[ -n "$wsid" && "$wsid" == "$target" ]] && by_session+=("$line")
+      [[ -n "$wsid" && ( "$wsid" == "$target" || "$wsid" == "claude:$target" ) ]] && by_session+=("$line")
     done
     if (( ${#by_id} > 0 )); then chosen=("${by_id[@]}")
     elif (( ${#by_name} == 1 )); then chosen=("${by_name[@]}")
@@ -1186,6 +1396,14 @@ close_sessions() {
     bad=false
     for line in "${chosen[@]}"; do
       IFS="$US" read -r wid wname wsid panes startcmd <<<"$line"
+      if [[ "$wsid" == claude:* ]]; then
+        if [[ "$wsid" != "claude:$target" ]] || $CLOSE_FORCE || $CLOSE_ARCHIVE; then
+          print -ru2 -- "not closed: use --close ${wsid#claude:} for this Claude session"; rc=1
+        else
+          claude_lifecycle close "$target" || rc=1
+        fi
+        continue 2
+      fi
       fault="$(lane_fault "$wsid" "$panes" "$startcmd")"
       [[ -n "$fault" ]] && { print -ru2 -- "not closed: window ${wname} (${wid}) ${fault}"; bad=true }
     done
@@ -1359,4 +1577,5 @@ case "$MODE" in
   start)    start_session ;;
   attach)   attach_session ;;
   close)    close_sessions ;;
+  wait|read) claude_lifecycle "$MODE" "$CLAUDE_TARGET" ;;
 esac

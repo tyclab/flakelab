@@ -2,8 +2,8 @@
 # claude-wake-parked: a Claude Code session that hit a usage limit parks until the reset its error
 # named and never re-reads the login before; after tycswap moved a login, this tells each parked
 # session in tmux to go on, when the live account of the session's own store has room for the limit
-# that session hit. A session on tycswap's Fable store is judged on the Fable login's account, every
-# other one on the shared login's. Once per pane, store, account and window; never into a pane that
+# that session hit. A store must match the reported login. An unknown store waits for native recovery.
+# Once per pane, store, account and window; never into a pane that
 # works, shows a dialog, is in copy mode or holds typed text, and Enter only after the pane shows the line.
 emulate -L zsh
 setopt pipefail extended_glob
@@ -46,15 +46,15 @@ load() {
   ROOM[$1]="$n ${p5:--} $p7 ${pf:--} $(window "${r5:--}") $(window "${r7:--}") $(window "${rf:--}")"
 }
 load default .active
-# Without .fable (tycswap before the Fable store, or no Fable login) every pane is the shared login's.
+# Only a positively identified default pane can use the shared login.
 fdir="$(jq -r '.fable.storeDir // empty' <<<"$st" 2>/dev/null)"
 [[ -n "$fdir" && "$(jq -r '.fable.state // empty' <<<"$st" 2>/dev/null)" == on ]] && load fable .fable
 (( ${#ROOM} )) || exit 0
 
-# The CLAUDE_SECURESTORAGE_CONFIG_DIR of the pane's Claude: the pane's process or its nearest
-# descendant whose executable is Claude's (claude-sessions' claude_pids test). Empty when unreadable.
+# Identify the credential store from the native Claude process. Private stores,
+# custom providers and unreadable processes cannot use either account's room.
 pane_store() {
-  local p f item exe
+  local p f item exe store profile process_env
   local -a queue=("$1")
   local -A seen
   while (( ${#queue} )); do
@@ -62,60 +62,30 @@ pane_store() {
     [[ "$p" == <-> && -z "${seen[$p]:-}" ]] || continue
     seen[$p]=1
     if exe="$(readlink "${PROC}/${p}/exe" 2>/dev/null)" && [[ "${exe:t}" == claude || "$exe" == */claude/versions/* ]]; then
-      [[ -r "${PROC}/${p}/environ" ]] || return 0
-      for item in "${(@0)$(<"${PROC}/${p}/environ")}"; do
-        [[ "$item" == CLAUDE_SECURESTORAGE_CONFIG_DIR=* ]] && { print -r -- "${item#*=}"; return 0 }
+      [[ -r "${PROC}/${p}/environ" ]] || return 1
+      process_env="$(<"${PROC}/${p}/environ")" || return 1
+      [[ -n "$process_env" ]] || return 1
+      store="" profile=""
+      for item in "${(@0)process_env}"; do
+        case "$item" in
+          CLAUDE_SECURESTORAGE_CONFIG_DIR=*) store="${item#*=}" ;;
+          CLAUDE_CONFIG_DIR=*) profile="${item#*=}" ;;
+          ANTHROPIC_*KEY=?*|ANTHROPIC_*TOKEN=?*|ANTHROPIC_*URL=?*|ANTHROPIC_CUSTOM_HEADERS=?*|CLAUDE_CODE_OAUTH_TOKEN=?*|CLAUDE_CODE_*FILE_DESCRIPTOR=?*|CLAUDE_CODE_USE_*=?*) return 1 ;;
+        esac
       done
+      [[ -z "$profile" || "$profile" == "${HOME}/.claude" ]] || return 1
+      if [[ -z "$store" || "$store" == "${HOME}/.claude" ]]; then print -r -- default
+      elif [[ -n "$fdir" && "$store" == "$fdir" ]]; then print -r -- fable
+      else return 1
+      fi
       return 0
     fi
     for f in "${PROC}/${p}"/task/*/children(N); do queue+=(${=$(<"$f")}); done 2>/dev/null
   done
-  return 0
+  return 1
 }
 
-# The text of a captured line outside dim runs (a placeholder or hint is dim; typed text is not).
-# Anything that is not a colour or attribute sequence counts as text.
-visible() {
-  local s="$1" out part params text
-  local -a parts ps
-  integer dim=0 k
-  parts=("${(@ps:\e[:)s}")
-  out="${parts[1]}"
-  for part in "${(@)parts[2,-1]}"; do
-    params="${part%%m*}" text="${part#*m}"
-    if [[ "$part" != *m* || "$params" != [0-9\;]# ]]; then out+="?${part}"; continue; fi
-    ps=("${(@s:;:)params}"); (( ${#ps} )) || ps=(0)
-    for (( k = 1; k <= ${#ps}; k++ )); do
-      case "${ps[k]}" in
-        (|0|22) dim=0 ;;
-        (2) dim=1 ;;
-        (38|48|58) if [[ "${ps[k+1]}" == 2 ]]; then (( k += 4 )); elif [[ "${ps[k+1]}" == 5 ]]; then (( k += 2 )); fi ;;
-      esac
-    done
-    (( dim )) || out+="$text"
-  done
-  print -r -- "$out"
-}
-# Byte sequences, not a character class: the timer's service may run without a UTF-8 locale.
-bare() { local t="$1"; t="${t//$'\xc2\xa0'/}"; t="${t//❯/}"; t="${t//[[:space:]]/}"; print -r -- "$t" }
-
-typeset -a screen plain at
-typeset -i i
-# Captures pane $1; the input box is what sits between the last two rules.
-look() {
-  screen=("${(@f)$(tmux capture-pane -e -p -t "$1" 2>/dev/null)}")
-  plain=("${(@)screen//$'\e'\[[0-9;]#m/}")
-  at=()
-  for (( i = 1; i <= ${#plain}; i++ )); do
-    [[ "${plain[i]}" == [[:space:]]#(─)(#c3,)* ]] && at+=($i)
-  done
-  (( ${#at} >= 2 ))
-}
-box() { # the box's text outside dim runs, without prompt and blanks
-  local out=""
-  for (( i = at[-2] + 1; i < at[-1]; i++ )); do out+="$(visible "${screen[i]}")"; done
-  bare "$out"
-}
+source "${0:A:h}/lib/claude_input.zsh" || exit 1
 
 # Claude Code's own lines, by their shape: with their mark anywhere near the end of the screen,
 # without it only below the input box, where no reply's text can stand.
@@ -130,10 +100,11 @@ tmux list-panes -a -F '#{pane_id} #{pane_in_mode} #{pane_current_command} #{pane
   hit="$(grep -aE "^[[:space:]]*(⚠|⎿)[[:space:]]+${shape}" <<<"$last"; grep -aE "^[[:space:]]*${shape}" <<<"$foot")"
   [[ -n "$hit" ]] || continue
   grep -qaE '… \(|esc to interrupt|requests your input|Accept +Decline|Do you want|Compacting|Enter to select|to navigate' <<<"$last" && continue
-  store=default
-  [[ -n "$fdir" && "$(pane_store "$top")" == "$fdir" ]] && store=fable
+  store="$(pane_store "$top")" || continue
   [[ -n "${ROOM[$store]:-}" ]] || continue
   read -r acct p5 p7 pf w5 w7 wf <<<"${ROOM[$store]}"
+  # Shared 5-hour and weekly usage do not establish room on a separate model limit.
+  if grep -aF "You've hit your " <<<"$hit" | grep -aviE "You've hit your (Fable|5-hour|weekly|seven-day|7-day) limit" >/dev/null; then continue; fi
   if grep -qa 'Fable limit' <<<"$hit"; then
     fable_room || continue; key="${store}|${acct}|${wf}|${w5}"
   else

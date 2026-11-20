@@ -649,8 +649,9 @@ session's model, so the launcher and `flakelab sessions --resume` need nothing
 more. Sign each account in once per box with `tycswap add --login --lineage
 fable --slot N`; a box without a Fable login runs as before. The waker that
 tells parked sessions to go on after a tick (`claude-wake-parked`) follows
-each pane's store: a session on the Fable store goes on when the Fable login's
-account has room, every other one when the shared login's has. `flakelab
+the store reported for the pane’s Claude process. It uses the shared or Fable
+login’s reported room. Dedicated stores, private profiles and processes it
+cannot identify stay on Claude’s native recovery schedule. `flakelab
 backup` carries the Fable logins (`credentials-fable/`) but not the Fable
 store, whose live login belongs to the running sessions, and `flakelab doctor`
 checks their modes. The rest is in tycswap's README.
