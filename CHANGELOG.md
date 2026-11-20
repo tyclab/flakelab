@@ -9,7 +9,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
-- The terminal menu offers the commands available on this target, including MCP accounts, notifications, the Windows tray, provisioning and repository tools. Choose an action and its flags to run the same command as in a shell. On WSL, `flakelab tycsnap` opens the pane restore action from `flakelab sessions --restore-tab`.
+- The terminal menu offers the commands available on this target, including MCP accounts, notifications, the Windows tray, provisioning and repository tools. Choose an action and its flags to run the same command as in a shell.
+- On WSL, TycSnap remembers Windows Terminal panes across restarts, including shell directories, saved titles, foreground sessions and attached tmux windows. Use `flakelab tycsnap` to recover saved tabs or retry a restore. Use `flakelab tycsnap --name TITLE` to name a pane.
 
 - `flakelab sessions --start claude` accepts a task or brief and returns its native Claude session ID. Use `--wait`, `--read` and `--close` with that ID to check the turn, read its terminal and close a finished task. Parked sessions on dedicated or unidentified credential stores wait for Claude’s own reset.
 

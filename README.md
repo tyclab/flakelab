@@ -583,6 +583,17 @@ hostname and a synced state root never read each other's). After a crash,
 session that was open here; `flakelab sessions --recent` lists the ones closed
 in the last day.
 
+On WSL, TycSnap registers each top-level zsh pane in Windows Terminal. When
+Terminal reopens a saved layout, each recognized pane restores its directory,
+saved title and any recorded foreground Claude, Codex or tmux session. Use
+`flakelab tycsnap --name "My project"` to name the current pane, or
+`flakelab tycsnap --name ""` to clear its title. An intentional shell exit
+removes the pane from recovery.
+
+If Terminal opens a fresh pane after a reboot, the first shell offers to reopen
+saved tabs. Run `flakelab tycsnap` to request recovery manually or retry a
+failed restore. Both actions are also in the terminal menu.
+
 ### Account switcher
 
 More than one claude.ai or ChatGPT login on the box is tycswap's job: the
