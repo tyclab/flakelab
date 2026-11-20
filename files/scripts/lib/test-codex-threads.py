@@ -14,7 +14,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).parent
 HELPER = HERE / "codex_threads.py"
@@ -890,10 +892,23 @@ class CloseTest(Case):
             self.assertEqual((rc, result), (1, None), command)
             self.assertIn("time for this command is up", err)
             self.assertNotIn("thread/archive", self.fake.methods())
-        self.fake.read_delays = {str(self.fake.connections + 1): 0.4}
-        rc, out, err = self.run_helper("close-check", T1, env={"FLAKELAB_CODEX_UNTIL": str(time.monotonic() + 0.2)})
-        self.assertEqual((rc, out), (1, None))
-        self.assertIn("no answer in time", err)
+        # Expire the carried budget after the actual thread/read is sent.
+        # Interpreter startup and scheduler delays cannot consume it first.
+        clock = mock.Mock()
+        clock.monotonic.return_value = 0.0
+        send_text = codex_threads.WebSocket.send_text
+
+        def send_and_advance(ws, message, deadline):
+            send_text(ws, message, deadline)
+            if json.loads(message).get("method") == "thread/read":
+                self.addCleanup(ws.sock.close)
+                clock.monotonic.return_value = 2.0
+
+        env = {"CODEX_HOME": str(self.home), "FLAKELAB_CODEX_UNTIL": "1"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(codex_threads, "time", clock), \
+                mock.patch.object(codex_threads.WebSocket, "send_text", send_and_advance):
+            with self.assertRaisesRegex(codex_threads.NoAnswer, "thread/read: no answer in time"):
+                codex_threads.close_check(SimpleNamespace(id=T1, after_stop=False))
 
     def test_archive(self):
         self.fake.add_thread(T1)

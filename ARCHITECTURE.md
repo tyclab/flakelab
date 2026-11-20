@@ -204,9 +204,12 @@ default, need the flag — so an agent's shell, a pipe, a hook, a timer and ever
 
 A bare `flakelab` at a terminal opens `flakelab-menu`, which re-enters the
 router with the chosen flags, so the target gate and the command's wrapper apply
-as they do to a typed command. The menu asks nothing a command asks itself: a
-command missing a required argument asks for it and prints the full command it
-amounts to, so the flags are there to copy next time.
+as they do to a typed command. The router supplies the available commands and their
+descriptions. The menu offers each command’s actions and options, accepts each
+argument as one literal value, and prints the invocation before dispatch. Session
+start and attach can also use the native picker. On WSL, `flakelab tycsnap`
+uses the sessions wrapper with `--restore-tab`. Use `flakelab tycsnap --name TITLE`
+to save a pane title, or pass an empty title to clear it.
 
 ## Why two switches
 

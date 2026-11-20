@@ -33,17 +33,24 @@ mkdir -p "${DISPATCH}"
 typeset -a WRAPPERS=(
   nix-update nix-update-all nix-doctor nix-backup claude-sessions notify web flakelab-mcp nix-clone-repos
   nix-provision nix-overlay-generate build-dev-wsl-nix test-provision-nix
-  get_current_wsl_distro_name clone-repos activate-hooks report-stale-repos
+  get_current_wsl_distro_name nix-tycswap-tray clone-repos activate-hooks report-stale-repos
   glab-group-projects
 )
 for w in "${WRAPPERS[@]}"; do
   cat > "${DISPATCH}/${w}" <<STUB
 #!/usr/bin/env zsh
 print -r -- "ran:${w}\${*:+ \$*}"
+for arg in "\$@"; do print -r -- "argv-word: [\$arg]"; done
 print -r -- "env: router=\${FLAKELAB_ROUTER:-unset} caller=\${FLAKELAB_CALLER_PATH:-unset} path=\${PATH}"
 STUB
   chmod +x "${DISPATCH}/${w}"
 done
+# This stdin consumer gives the menu's redirection a real destination.
+cat >> "${DISPATCH}/clone-repos" <<'STUB'
+if [[ ! -t 0 ]]; then
+  IFS= read -r record && print -r -- "input record: [$record]"
+fi
+STUB
 # The menu as the gate sees it: a stand-in naming itself and what it was handed.
 cat > "${DISPATCH}/flakelab-menu" <<'STUB'
 #!/usr/bin/env zsh
@@ -67,9 +74,9 @@ chmod +x "${MENUDISPATCH}/flakelab-menu"
 typeset -a ORDER=(
   update update-all doctor backup sessions notify web mcp clone provision overlay-gen build-distro
   test-provision distro-name tray clone-repos activate-hooks stale-repos
-  glab-projects
+  glab-projects tycsnap
 )
-typeset -a WSL_ONLY=( provision build-distro test-provision distro-name tray )
+typeset -a WSL_ONLY=( provision build-distro test-provision distro-name tray tycsnap )
 
 # run_router <target|""> <args...> — sets OUT and RC; an empty target leaves the env
 # var genuinely unset, which is what checkout mode looks like.
@@ -97,9 +104,14 @@ count_listed() {
   print -r -- "$n"
 }
 
+# Every public router command must have a usable action menu when offered.
+# The standalone Git tools and internal hook callbacks are outside this table.
+listed="$(sed -n 's/^actions\[\([^]]*\)\]=.*/\1/p' "${SCRIPT_DIR}/flakelab-menu" | sort)"
+check "menu entries cover every public router command" "$listed" "$(printf '%s\n' "${ORDER[@]}" | sort)"
+
 print -r -- "no FLAKELAB_TARGET (checkout mode): every verb available"
 run_router "" --help
-check "--help lists all 19 commands" "$(count_listed)" "19"
+check "--help lists all 20 commands" "$(count_listed)" "20"
 check "--help exits 0" "${RC}" "0"
 
 run_router "" mcp
@@ -111,9 +123,9 @@ contains "build-distro dispatches with no target set" "${OUT}" "ran:build-dev-ws
 check "build-distro exits 0 with no target set" "${RC}" "0"
 
 print -r -- ""
-print -r -- "FLAKELAB_TARGET=proxmox-vm: the five wsl-only verbs are gated"
+print -r -- "FLAKELAB_TARGET=proxmox-vm: the six wsl-only verbs are gated"
 run_router "proxmox-vm" --help
-check "--help lists 14 commands (19 minus the five wsl-only verbs)" "$(count_listed)" "14"
+check "--help lists 14 commands (20 minus the six wsl-only verbs)" "$(count_listed)" "14"
 for c in "${WSL_ONLY[@]}"; do
   excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
 done
@@ -195,23 +207,77 @@ at_tty 'ses\r--recent\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "an action is found by the flags it adds, not only by its wording" "${OUT}" "ran:claude-sessions --recent"
 at_tty 'ses\r\e\e' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "which the list shows beside each action, to copy next time" "${OUT}" "--recent"
-at_tty 'update\rn\e' "${MENUENV[@]}" zsh "${ROUTER}"
+at_tty 'update\r\rn\e\e' "${MENUENV[@]}" zsh "${ROUTER}"
 excludes "a declined rebuild runs nothing" "${OUT}" "ran:nix-update"
 check "and Esc then leaves with 130" "${RC}" "130"
-at_tty 'update\ry' "${MENUENV[@]}" zsh "${ROUTER}"
+at_tty 'update\r\ry' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "a confirmed rebuild runs update" "${OUT}" "ran:nix-update"
-at_tty 'help\r' "${MENUENV[@]}" zsh "${ROUTER}"
+at_tty 'help\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "help prints the list" "${OUT}" "Commands:"
 at_tty '\e' "${MENUENV[@]}" zsh "${ROUTER}"
 check "Esc at the top exits 130" "${RC}" "130"
-at_tty '\e' "${MENUENV[@]}" zsh "${ROUTER}"
-excludes "the menu offers no plumbing" "${OUT}" "clone-repos"
-excludes "no interop-wiping builder" "${OUT}" "build-distro"
-excludes "and none of the commands a person does not run by hand" "${OUT}" "notify"
-at_tty '\e' env -u FLAKELAB_DISPATCH_DIR -u FLAKELAB_TARGET zsh "${ROUTER}"
-contains "a checkout opens the menu beside the router" "${OUT}" "every command and its flags"
-excludes "without clone, which only an installed distro has" "${OUT}" "clone and refresh"
+at_tty 'glab-projects\rmy/group\r--per-page\r25\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "a required operand and an optional value reach the group helper" "${OUT}" "ran:glab-group-projects --group my/group --per-page 25"
+print -r -- 'fixture input line' > "${BASE}/repos list"
+at_tty "clone-repos\r${BASE}/work dir\r${BASE}/key file\r${BASE}/repos list\r\r" "${MENUENV[@]}" zsh "${ROUTER}"
+contains "the repository list reaches the normal clone helper on standard input" "${OUT}" "input record: [fixture input line]"
+contains "a path with spaces remains one option value" "${OUT}" "argv-word: [${BASE}/work dir]"
+at_tty 'tray\rstatus\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "the Windows tray is reachable on a WSL target" "${OUT}" "ran:nix-tycswap-tray status"
+at_tty 'notify\rhello; $(false) terminal\r--title\r~/literal title\r--dry-run\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "notification preview goes through the normal dispatcher" "${OUT}" "ran:notify --message hello; \$(false) terminal --title ~/literal title --dry-run"
+contains "spaces and shell syntax stay together as one literal value" "${OUT}" 'argv-word: [hello; $(false) terminal]'
+contains "a notification title beginning with a tilde is literal" "${OUT}" 'argv-word: [~/literal title]'
+at_tty 'ses\r--wait\rfixture-id\r--timeout\r0\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "the native session and timeout are distinct arguments" "${OUT}" "ran:claude-sessions --wait fixture-id --timeout 0"
+at_tty 'tycsnap\rrestore\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "tycsnap uses the regular sessions wrapper and the pane restore operation" "${OUT}" "ran:claude-sessions --restore-tab"
+at_tty 'tycsnap\rset\r~/a title; literal\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "naming a terminal pane goes through the sessions command" "${OUT}" 'ran:claude-sessions --restore-tab --name ~/a title; literal'
+contains "the chosen title remains one literal argument" "${OUT}" 'argv-word: [~/a title; literal]'
+at_tty 'tycsnap\rclear\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "clearing the title supplies the name flag" "${OUT}" "ran:claude-sessions --restore-tab --name"
+contains "clearing passes the explicit empty title" "${OUT}" 'argv-word: []'
+run_router wsl tycsnap --name
+check "naming a pane needs a title argument" "${RC}" "2"
 
+# An installed profile puts only the router on PATH. Its session helper lives
+# in the private dispatch directory. Exercise the interactive shell hook at
+# that boundary, including the first prompt of a natively restored pane.
+public="${BASE}/public-bin"
+private="${BASE}/private-dispatch"
+mkdir -p "$public" "$private"
+ln -s "${commands[zsh]}" "$public/zsh"
+ln -s "${commands[jq]}" "$public/jq"
+ln -s "$ROUTER" "$public/flakelab"
+cat > "$private/claude-sessions" <<'STUB'
+#!/usr/bin/env zsh
+print -r -- "$*" >> "$HOOK_LOG"
+case "$*" in
+  '--tab-state enter') print -r -- '{"action":"restore","cwd":"/","name":"my pane"}' ;;
+  '--tab-state update '*) print -r -- 'my pane' ;;
+esac
+STUB
+chmod +x "$private/claude-sessions"
+hooklog="${BASE}/hook-operations"
+at_tty '' env -u TMUX -u SSH_CONNECTION -u FLAKELAB_TYCSNAP_ACTIVE \
+  PATH="$public" HOOK_LOG="$hooklog" FLAKELAB_TARGET=wsl FLAKELAB_DISPATCH_DIR="$private" \
+  WSL_DISTRO_NAME=fixture WT_SESSION=11111111-1111-1111-1111-111111111111 \
+  zsh -dfi -c 'source "$1"; _tycsnap_prompt; tycsnap-name "new title"; print -r -- "restored: $PWD|$_tycsnap_name"' \
+  zsh "${SCRIPT_DIR}/lib/tycsnap.zsh"
+contains "a restored shell sets its directory and title using the public router" "$OUT" 'restored: /|my pane'
+for op in '--tab-state enter' '--restore-tab' '--tab-state update /' '--restore-tab --name new title' '--tab-state exit'; do
+  contains "the shell reaches $op through private dispatch" "$(cat "$hooklog")" "$op"
+done
+at_tty 'mcp\rlogin\rAccount\rpersonal\r--fresh\rUndo\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "undo keeps the previous argument and removes the selected flag" "${OUT}" "ran:flakelab-mcp login personal"
+excludes "a removed flag is absent from dispatch" "${OUT}" "ran:flakelab-mcp login personal --fresh"
+at_tty 'provision\rgenerate\rPowerShell argument\r-DryRun\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "provisioning receives native arguments after the separator" "${OUT}" "ran:nix-provision generate -- -DryRun"
+at_tty 'help\rbackup\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "help for a command runs its own public help" "${OUT}" "ran:nix-backup --help"
+at_tty '\e' env -u FLAKELAB_DISPATCH_DIR -u FLAKELAB_TARGET zsh "${ROUTER}"
+excludes "a checkout omits the generated clone sweep" "${OUT}" "discover and clone the configured"
 print -r -- ""
 print -r -- "lib/prompt.zsh"
 PLIB="${SCRIPT_DIR}/lib/prompt.zsh"

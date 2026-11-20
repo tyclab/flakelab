@@ -129,6 +129,7 @@ case "$1" in
   -V)          print -r -- "tmux 3.4"; exit 0 ;;
   list-panes)  [[ -r "${TMUX_PANES:-}" ]] && cat "${TMUX_PANES}"; exit 0 ;;
   list-sessions) [[ -r "${TMUX_SESSIONS:-}" ]] && cat "${TMUX_SESSIONS}"; exit 0 ;;
+  display-message) [[ "${@[-1]}" == '#{pid}' ]] && { print 20; exit 0 }; exit 1 ;;
   has-session) [[ -n "${FAKE_TMUX_HAS:-}" ]] ;;
   new-session|new-window)
     # Window ids count up from @10 per -P call, this one included.
@@ -256,15 +257,25 @@ print -r -- ""
 print -r -- "--open: one Windows Terminal tab per session"
 # Recovery: nothing in the save is running, as after a restart.
 export WT_LOG="${BASE}/wt.log"
+# Windows sees only a token. Resolve that token to the same local request the
+# new shell will claim, including directories a Windows command cannot carry.
+wt_rows() {
+  local line token file
+  while IFS= read -r line; do
+    token="${line##*FLAKELAB_TYCSNAP_SOURCE=}"; token="${token%% *}"
+    file="${HOME}/.local/state/flakelab/sessions/${BOX}-autosave-${token%/*}.txt"
+    sed -n 's/^# tycsnap //p' "$file" | jq -r --arg id "${token#*/}"       '.launches[$id] | [.agent.tool,.cwd,.agent.session,(.tmux.view // "-"),(.agent.group // "")] | @tsv'
+  done < "$WT_LOG"
+}
 run --open
 check "--open without a distro exits 2" "${RC}" "2"
 export WSL_DISTRO_NAME=flakelab
 FAKE_PGREP_NONE=1 run --open
 check "--open exits 0" "${RC}" "0"
 check "--open calls wt.exe once per session" "$(wc -l < "${WT_LOG}")" "3"
-contains "--open targets the current window, the distro, the directory and the id" \
-  "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab --cd ${WORK} -- claude --resume ${SID_A}"
-contains "--open runs the codex tab with codex resume" "$(<"${WT_LOG}")" "-- codex resume ${SID_X}"
+contains "--open starts a registered shell in this window and distro" "$(head -1 "$WT_LOG")" "-w 0 new-tab wsl.exe -d flakelab --shell-type login -- env FLAKELAB_TYCSNAP_SOURCE="
+contains "its saved request names the Claude directory and native ID" "$(wt_rows)" "claude"$'\t'"${WORK}"$'\t'"${SID_A}"
+contains "the Codex request carries its native ID" "$(wt_rows)" "codex"$'\t'"${BASE}/codex proj"$'\t'"${SID_X}"
 contains "--open reports the count" "${ERR}" "opened 3 tab(s)"
 excludes "--open does not report a failure for the first tab" "${ERR}" "wt.exe failed"
 
@@ -285,7 +296,7 @@ check "--open with tmux opens a view per window" "$(grep -c '^new-session -d -t 
 check "the view is set to go away with its client, by a hook" "$(grep -c -E '^set-hook -t agents-10-[0-9]+ client-detached kill-session -t agents-10-[0-9]+$' "${TMUX_LOG}")" "1"
 excludes "not by destroy-unattached, which tmux 3.4 applies before anything attaches" "$(<"${TMUX_LOG}")" "destroy-unattached"
 contains "the view's current window is the session's window" "$(<"${TMUX_LOG}")" "select-window -t agents-10-"
-contains "the tab attaches the view instead of running the tool" "$(head -1 "${WT_LOG}")" "-w 0 new-tab --title work dir wsl.exe -d flakelab -- tmux attach-session -t agents-10-"
+contains "the tab attaches the view instead of running the tool" "$(wt_rows)" "agents-10-"
 excludes "the tab does not resume the session itself" "$(<"${WT_LOG}")" "claude --resume"
 contains "--open with tmux reports the count" "${ERR}" "opened 3 tab(s)"
 unset FAKE_TMUX_HAS
@@ -316,7 +327,7 @@ excludes "--open never resumes a running session" "$(<"${TMUX_LOG}")$(<"${WT_LOG
 check "--open opens a view on each running window" "$(grep -c '^new-session -d -t agents -s agents-' "${TMUX_LOG}")" "2"
 contains "the view selects the claude session's own window" "$(<"${TMUX_LOG}")" "select-window -t agents-2-"
 contains "and the codex session's" "$(<"${TMUX_LOG}")" "select-window -t agents-5-"
-check "a tab attaches each of those views" "$(grep -c 'tmux attach-session -t agents-' "${WT_LOG}")" "2"
+check "a tab attaches each of those views" "$(wt_rows | grep -c 'agents-')" "2"
 contains "a running session outside the agents server is named, not resumed" "${ERR}" "claude ${SID_A} is already running (pid 100), not resumed again"
 contains "--open counts the tabs it opened" "${ERR}" "opened 2 tab(s)"
 
@@ -325,9 +336,9 @@ export TMUX_SESSIONS="${BASE}/tmux-sessions"
 print -r -- "agents-2-77${US}1${US}@2" > "${TMUX_SESSIONS}"
 : > "${WT_LOG}"; : > "${TMUX_LOG}"
 run_tmux --open
-check "--open opens no tab onto a window a client shows" "$(grep -c 'agents-2-' "${WT_LOG}")" "0"
+check "--open opens no tab onto a window a client shows" "$(wt_rows | grep -c 'agents-2-')" "0"
 contains "and says where the session is shown" "${ERR}" "claude ${SID_B} is already open in a tab (claude-work_dir)"
-check "a window no client shows still gets its tab" "$(grep -c 'tmux attach-session -t agents-5-' "${WT_LOG}")" "1"
+check "a window no client shows still gets its tab" "$(wt_rows | grep -c 'agents-5-')" "1"
 unset TMUX_SESSIONS
 
 # Some running, some not: only the stopped ones are resumed.
@@ -335,7 +346,7 @@ unset TMUX_SESSIONS
 FAKE_PGREP_ONLY=500 run_tmux --open
 check "--open resumes the stopped sessions" "$(grep -c '^new-window' "${TMUX_LOG}")" "2"
 excludes "but not the running codex session" "$(<"${TMUX_LOG}")" "codex resume"
-check "which gets a view on its window instead" "$(grep -c 'tmux attach-session -t agents-5-' "${WT_LOG}")" "1"
+check "which gets a view on its window instead" "$(wt_rows | grep -c 'agents-5-')" "1"
 contains "--open counts new and reattached tabs alike" "${ERR}" "opened 3 tab(s)"
 unset FAKE_TMUX_HAS WSL_DISTRO_NAME
 
@@ -475,7 +486,7 @@ excludes "--resume never cds into it" "${OUT}" "cd ${(q)GONE}"
 export WSL_DISTRO_NAME=flakelab
 : > "${WT_LOG}"
 FAKE_PGREP_NONE=1 run --open "${BASE}/elsewhere.txt"
-contains "--open starts that tab in the home directory" "$(head -1 "${WT_LOG}")" "--cd ~ -- claude --resume ${SID_A}"
+contains "--open starts that tab in the home directory" "$(wt_rows)" "claude"$'\t'"${HOME}"$'\t'"${SID_A}"
 : > "${WT_LOG}"; : > "${TMUX_LOG}"
 FAKE_PGREP_NONE=1 run_tmux --open "${BASE}/elsewhere.txt"
 contains "--open with tmux starts that window in the home directory" "$(<"${TMUX_LOG}")" "-c ${HOME} claude --resume ${SID_A}"
@@ -730,7 +741,7 @@ excludes "no resume goes through tycswap" "$OUT" 'tycswap run'
 export WSL_DISTRO_NAME=flakelab
 : > "$WT_LOG"
 FAKE_PGREP_NONE=1 with_stopped 310 320 -- run --open "${BASE}/groups.txt"
-contains "direct tabs resume a group session on the default login" "$(<"$WT_LOG")" "-- claude --resume ${SID_M}"
+contains "a direct tab carries the saved group into native resume selection" "$(wt_rows)" "${SID_M}"$'\t-\tfable'
 : > "$TMUX_LOG"
 FAKE_PGREP_NONE=1 with_stopped 310 320 -- run_tmux --open "${BASE}/groups.txt"
 contains "tmux tabs resume a group session on the default login" "$(<"$TMUX_LOG")" "claude --resume ${SID_N}"
@@ -1515,6 +1526,8 @@ else
 fi
 unset FAKE_TMUX_HAS FLAKELAB_SESSIONS_SETTLE
 rm -rf "${PROC}/8060" "${PROC}/8600" "${PROC}/8700"
+
+if python3 "${SCRIPT_DIR}/lib/test-tycsnap.py"; then ok "Windows Terminal pane registration and recovery"; else bad "TycSnap fixtures"; fi
 
 run --help
 check "--help exits 0" "${RC}" "0"

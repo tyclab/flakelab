@@ -160,7 +160,9 @@ Read for this topic; paths below are relative to the repository root unless stat
     fills an array (not `-a`), and `$path`/`$fpath` are live arrays.
   - At a terminal only, a person is asked instead of refused
     (`lib/prompt.zsh`, `ARCHITECTURE.md#at-a-terminal`): a bare `flakelab`
-    opens `flakelab-menu`, and a missing tool, session or login is picked from
+    opens `flakelab-menu`. Each public router verb has a menu with the fields its
+    command accepts. Keep piped, non-interactive and agent invocations on the
+    direct dispatch path. A missing tool, session or login is picked from
     a list. Without a terminal, and in an agent's shell even on a pty
     (`CLAUDECODE`, `CODEX_THREAD_ID`), nothing changed, so an agent always passes the
     flags; a prompt a person needs is never something to script around, and

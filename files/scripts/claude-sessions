@@ -144,7 +144,7 @@ Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
                          [--wait <claude-session-id> [--timeout SECONDS] | --read <claude-session-id>]
                          [--close [--force] [--archive] <window|session-id>...]
                          [--attach [id|window]] [--save [file]] [--resume [file]]
-                         [--open [file]] [--autosave] [--recent [hours]] [--json]
+                         [--open [file]] [--restore-tab [--name TITLE]] [--autosave] [--recent [hours]] [--json]
 
   (no flag)         list the running agent sessions (Claude Code, Codex)
   --start <tool> [dir] [--detach] [-- args...]
@@ -188,6 +188,8 @@ Usage: flakelab sessions [--start <tool> [dir] [--detach] [-- args...]]
                     tab (WSL only); with tmux on PATH, as a view on a window
                     that outlives the tab. A session still running is not
                     resumed again: its window gets a tab unless one shows it
+  --restore-tab     restore this Windows Terminal pane or offer saved tabs
+    --name TITLE    set its saved title (an empty title clears it)
   --autosave        snapshot the running sessions for crash recovery: one
                     file per boot, only when the set changed, never empty
   --recent [hours]  sessions not running whose transcript changed in the
@@ -243,6 +245,14 @@ while (( $# > 0 )); do
     --resume) MODE=resume; [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --open)   MODE=open;   [[ "${2:-}" == -* || -z "${2:-}" ]] || { FILE="$2"; shift } ;;
     --autosave) MODE=autosave ;;
+    --restore-tab)
+      MODE=restore-tab
+      if [[ "${2:-}" == --name ]]; then
+        (( $# >= 3 )) || { print -ru2 -- 'Error: --name needs a title ("" clears it)'; exit 2 }
+        MODE=tab-name; TAB_TITLE="$3"; shift 2
+      fi
+      ;;
+    --tab-state) MODE=tab-state; shift; break ;;
     --recent) MODE=recent; [[ "${2:-}" == <1-> ]] && { RECENT_HOURS="$2"; shift } ;;
     --json)   MODE=json ;;
     --) shift; START_ARGS=("$@"); break ;;
@@ -398,7 +408,7 @@ new_window() {
 # Not `destroy-unattached`: since tmux 3.4 it kills a detached-made view before anything attaches.
 new_view() {
   local wid="$1" view
-  view="${TMUX_SESSION}-${wid#@}-$$"
+  view="${TMUX_SESSION//[^A-Za-z0-9_-]/_}-${wid#@}-$$"
   tmux new-session -d -t "$TMUX_SESSION" -s "$view" >/dev/null 2>&1 || return 1
   tmux set-hook -t "$view" client-detached "kill-session -t ${view}" >/dev/null 2>&1 || true
   tmux select-window -t "${view}:${wid}" >/dev/null 2>&1 || true
@@ -716,37 +726,22 @@ write_save() {
 # save directory may be a synced folder. The temp name is one the state sync
 # already treats as scratch.
 write_autosave() {
-  local boot dir file tmp row tool p age sid cwd wid wname group profile
-  local -a lines=() old=()
-  boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
+  local row tool p age sid cwd wid wname group profile
+  local -a lines=()
   gather 2>/dev/null
   dedupe_sessions
   for row in "${SESSION_ROWS[@]}"; do
     IFS="$US" read -r tool p age sid cwd wid wname group profile <<<"$row"
     lines+=("$(save_line "$tool" "$cwd" "$sid" "$group" "$profile")")
   done
-  # Nothing running keeps the last snapshot: after a crash that is the record.
-  (( ${#lines[@]} > 0 )) || return 0
-  lines=("${(@o)lines}")
-  dir="$(save_dir)"
-  mkdir -p "$dir" || { print -ru2 -- "Error: cannot create ${dir}"; return 1 }
-  file="${dir}/$(autosave_name "$boot")"
-  if [[ -f "$file" && "$(grep -v '^#' "$file")" == "${(F)lines}" ]]; then
-    return 0
-  fi
-  tmp="$(mktemp "${dir}/.${file:t}.flakelab-tmp.XXXXXX")" || { print -ru2 -- "Error: cannot write in ${dir}"; return 1 }
-  if ! {
-    print -r -- "# claude-sessions autosave ${BOX}${WSL_DISTRO_NAME:+ distro=${WSL_DISTRO_NAME}} boot=${boot} $(date -Is)" &&
-      print -rl -- "${lines[@]}"
-  } > "$tmp" || ! mv -fT -- "$tmp" "$file"; then
-    rm -f "$tmp"
-    print -ru2 -- "Error: cannot write ${file}"
-    return 1
-  fi
-  print -ru2 -- "autosaved ${#lines[@]} session(s) to ${file}"
-  old=("${dir}/${BOX}"-autosave-*.txt(Nom))
-  (( ${#old[@]} > AUTOSAVE_KEEP )) && rm -f -- "${old[@]:$AUTOSAVE_KEEP}"
-  return 0
+  { (( ${#lines} == 0 )) || printf '%s\0' "${lines[@]}"; printf '\0'; (( ${#ROWS} == 0 )) || printf '%s\0' "${ROWS[@]}"; } |
+    tab_state autosave
+}
+
+tab_state() {
+  local boot
+  boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
+  python3 "${SCRIPT_DIR}/lib/tycsnap.py" "$(save_dir)" "$BOX" "$boot" "$AUTOSAVE_KEEP" "$@"
 }
 
 # A saved line into tool, cwd and sid. The tool column is new; a line without
@@ -896,7 +891,7 @@ print_resume() {
 # to one transcript. Its agents window gets a view instead, unless a client
 # already shows it.
 open_tabs() {
-  local pair tool cwd sid group profile tab_cwd wid wname view key row p age att n=0 use_tmux=false
+  local pair tool cwd sid group profile tab_cwd wid wname view key row p age att n=0 use_tmux=false token server
   local -A live_pid=() live_wid=() live_wname=() shown=()
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
@@ -920,7 +915,7 @@ open_tabs() {
   for pair in "${PAIRS[@]}"; do
     IFS="$US" read -r tool cwd sid group profile <<<"$pair"
     key="${tool}${US}${sid}${US}${profile}"
-    wid=""
+    wid=""; view=""; server=""
     if (( ${+live_pid[$key]} )); then
       wid="${live_wid[$key]}"
       if ! $use_tmux || [[ -z "$wid" ]]; then
@@ -944,13 +939,18 @@ open_tabs() {
       fi
       view="$(new_view "$wid")" || { print -ru2 -- "tmux could not open a view on ${wid}"; continue }
       shown[$wid]=1
-      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" -- tmux attach-session -t "$view" </dev/null >/dev/null 2>&1 &&
-        (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+      server="$(tmux display-message -p -t "$wid" '#{pid}')"
+    fi
+    if ! token="$(tab_state launch "$tool" "$tab_cwd" "$sid" "$group" "$profile" "$wid" "$view" "$server")"; then
+      [[ -z "$view" ]] || tmux kill-session -t "$view"
+      continue
+    fi
+    if open_saved_tab "$token" </dev/null >/dev/null 2>&1; then
+      (( ++n ))
     else
-      [[ "$tab_cwd" == "$HOME" ]] && tab_cwd="~"
-      resume_args "$tool" "$sid" "$group" "$profile"
-      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- "${RESUME_ARGS[@]}" </dev/null >/dev/null 2>&1 &&
-        (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+      tab_state discard "$token"
+      [[ -z "$view" ]] || tmux kill-session -t "$view"
+      print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
     fi
   done
   print -ru2 -- "opened ${n} tab(s)"
@@ -1573,6 +1573,95 @@ attach_session() {
   attach_window "$found"
 }
 
+open_saved_tab() {
+  wt.exe -w 0 new-tab wsl.exe -d "$WSL_DISTRO_NAME" --shell-type login -- env "FLAKELAB_TYCSNAP_SOURCE=$1" zsh -il
+}
+
+restore_tab_foreground() {
+  local plan="$1" sid tool group profile dir wid record p age found host view file dir_unused profile_found unused_name unused_group
+  wid="$(jq -r 'select(.live) | .tmux.window // empty' <<<"$plan")"
+  if [[ -n "$wid" ]]; then
+    view="$(jq -r '.tmux.view // empty' <<<"$plan")"
+    if [[ -n "$view" && "$(tmux display-message -p -t "$view" '#{window_id}' 2>/dev/null)" == "$wid" ]]; then
+      exec tmux attach-session -t "$view"
+    fi
+    host="$(tmux display-message -p -t "$wid" '#{session_name}' 2>/dev/null)"
+    if [[ -n "$host" && "$(tmux display-message -p -t "$wid" '#{window_id}' 2>/dev/null)" == "$wid" ]]; then
+      TMUX_SESSION="$host"
+      attach_window "$wid"
+      return $?
+    fi
+  fi
+  sid="$(jq -r '.agent.session // empty' <<<"$plan")"
+  [[ -n "$sid" ]] || return 0
+  tool="$(jq -r '.agent.tool' <<<"$plan")"
+  group="$(jq -r '.agent.group' <<<"$plan")"
+  profile="$(jq -r '.agent.profile' <<<"$plan")"
+  dir="$(jq -r '.agent.cwd' <<<"$plan")"
+  ROWS=()
+  gather 2>/dev/null
+  for record in "${ROWS[@]}"; do
+    IFS="$US" read -r found p age file dir_unused wid unused_name unused_group profile_found <<<"$record"
+    [[ "$found" == "$tool" && "$file" == "$sid" && "$profile_found" == "$profile" ]] || continue
+    [[ -n "$wid" ]] && { attach_window "$wid"; return $? }
+    print -ru2 -- "${tool} ${sid} is already running (pid ${p})"
+    return 0
+  done
+  [[ ! -d "$dir" ]] || cd -- "$dir" || return 1
+  resume_args "$tool" "$sid" "$group" "$profile"
+  if jq -e '.tmux' <<<"$plan" >/dev/null && have_tmux; then
+    wid="$(new_window "$(window_name "$tool" "$PWD")" "$PWD" "$(resume_cmd "$tool" "$sid" "$group" "$profile")")" || return 1
+    if [[ "$tool" == codex ]]; then tmux set-option -w -t "$wid" @flakelab_session "$sid" || return 1; fi
+    attach_window "$wid"
+  else
+    "${RESUME_ARGS[@]}"
+  fi
+  return $?
+}
+
+# A restored shell handles its own cwd and title. Its foreground command uses
+# the session id obtained by gather, or the window that the tmux client showed.
+restore_tab() {
+  [[ -n "${WSL_DISTRO_NAME:-}" && -n "${WT_SESSION:-}" && -z "${TMUX:-}" ]] ||
+    { print -ru2 -- "TycSnap needs a Windows Terminal pane in WSL"; return 2 }
+  local plan token
+  local -a tokens retry
+  local -i failed=0
+  plan="$(tab_state take "$$")" || return 1
+  if [[ "$plan" != '{}' ]]; then
+    [[ "$(jq -r '.busy // false' <<<"$plan")" == true ]] && return 0
+    ( restore_tab_foreground "$plan" )
+    failed=$?
+    tab_state finish "$$" "$failed" || return 1
+    (( failed == 0 )) || print -ru2 -- "TycSnap could not restore the foreground command. Run flakelab tycsnap to retry."
+    return "$failed"
+  fi
+  [[ -n "${FLAKELAB_TYCSNAP_START:-}" ]] || retry=(retry)
+  plan="$(tab_state available "${retry[@]}")" || return 1
+  if [[ "$(jq '(.tokens | length) + (if .legacy == "" then 0 else 1 end)' <<<"$plan")" == 0 ]]; then
+    [[ -n "${FLAKELAB_TYCSNAP_START:-}" ]] || print -ru2 -- "No saved tabs to restore."
+    return 0
+  fi
+  prompt_tty || return 0
+  prompt_confirm "Restore saved Windows Terminal tabs?" || return 0
+  command -v wt.exe >/dev/null || { print -ru2 -- "TycSnap needs Windows Terminal interop (wt.exe)"; return 1 }
+  plan="$(tab_state reserve "${retry[@]}")" || return 1
+  tokens=( "${(@f)$(jq -r '.tokens[]' <<<"$plan")}" )
+  for token in "${tokens[@]}"; do
+    [[ -n "$token" ]] || continue
+    # Only the boot and pane ids cross the wt.exe command-line parser. The new
+    # shell reads its path and name locally, including quotes and semicolons.
+    if ! open_saved_tab "$token"; then
+      tab_state release "$token"
+      print -ru2 -- "Windows Terminal could not open the saved tab ${token#*/}"
+      failed=1
+    fi
+  done
+  FILE="$(jq -r .legacy <<<"$plan")"
+  if [[ -n "$FILE" ]]; then open_tabs || { tab_state release legacy; failed=1 }; fi
+  return "$failed"
+}
+
 case "$MODE" in
   list)     gather; load_states; print_table ;;
   json)     gather; load_states; print_json ;;
@@ -1580,6 +1669,11 @@ case "$MODE" in
   resume)   print_resume ;;
   open)     open_tabs ;;
   autosave) write_autosave ;;
+  restore-tab) restore_tab ;;
+  tab-name)
+    tab_state name "$TAB_TITLE" || exit 1
+    if [[ -t 1 ]]; then printf '\033]2;%s\007' "${TAB_TITLE:-${PWD:t}}"; fi ;;
+  tab-state) tab_state "$@" ;;
   recent)   print_recent ;;
   start)    start_session ;;
   attach)   attach_session ;;
