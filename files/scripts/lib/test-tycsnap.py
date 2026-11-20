@@ -136,6 +136,63 @@ class Tabs(unittest.TestCase):
         restored = self.state("enter", pane=C, pid="30", env=source)
         self.assertEqual(restored, {"action": "restore", "cwd": self.cwd, "name": "new name"})
 
+    def open_saved_request(self):
+        saved = self.base / "manual.txt"
+        saved.write_text(f"claude  {self.cwd}  {SID}\n")
+        self.stub("wt.exe", 'printf "%s\\n" "$@" > "$HOME/wt-args"')
+        self.cli("--open", str(saved))
+        argv = (self.home / "wt-args").read_text().splitlines()
+        self.assertEqual(argv[:10], ["-w", "0", "new-tab", "wsl.exe", "-d", "test", "--shell-type", "login", "--", "env"])
+        self.assertEqual(argv[11:], ["zsh", "-il"])
+        self.assertNotIn(self.cwd, argv)
+        key, token = argv[10].split("=", 1)
+        self.assertEqual(key, "FLAKELAB_TYCSNAP_SOURCE")
+        return {key: token}
+
+    def test_open_bootstraps_native_session_then_restores_its_edited_pane(self):
+        self.stub("tmux", "exit 1")
+        source = self.open_saved_request()
+        entry = self.state("enter", env=source)
+        self.assertEqual(entry, {"action": "restore", "cwd": self.cwd, "name": Path(self.cwd).name})
+        self.cli("--restore-tab")
+        self.assertEqual((self.home / "claude-args").read_text().splitlines(), ["--resume", SID])
+        self.cli("--restore-tab", "--name", "edited")
+        self.boot.write_text("bbbbbbbbbbbb")
+        self.assertEqual(self.state("enter", env=source)["name"], "edited")
+
+    def test_open_reattaches_the_same_live_tmux_window_after_reopen(self):
+        self.process("303", "1", "", args=["tmux", "server"])
+        self.stub("tmux", """
+printf '%s\\n' "$*" >> "$HOME/tmux-log"
+case "$1" in
+  -V|has-session|set-hook|select-window|list-panes|list-sessions) exit 0;;
+  new-window) echo '@7';;
+  new-session) exit 0;;
+  attach-session) printf '%s\\n' "$3" > "$HOME/attached";;
+  display-message)
+    case "$5" in
+      '#{pid}') echo 303;;
+      '#{session_name}') echo agents;;
+      '#{window_id}') if [ "$4" = '@7' ] || [ ! -e "$HOME/attached" ]; then echo '@7'; fi;;
+    esac;;
+  *) exit 1;;
+esac
+""")
+        source = self.open_saved_request()
+        self.state("enter", env=source)
+        self.cli("--restore-tab")
+        first = (self.home / "attached").read_text()
+        self.assertTrue(first.startswith("agents-7-"))
+        (self.proc / "10/stat").unlink()
+        entry = self.state("enter", pid="20", env=source)
+        self.assertEqual(entry["action"], "restore")
+        self.cli("--restore-tab", pid="20")
+        self.assertNotEqual((self.home / "attached").read_text(), first)
+        log = (self.home / "tmux-log").read_text().splitlines()
+        self.assertEqual(sum(line.startswith("new-window ") for line in log), 1)
+        self.assertEqual(sum(line.startswith("attach-session ") for line in log), 2)
+        self.assertFalse((self.home / "claude-args").exists())
+
     def test_mistaken_tab_close_this_boot(self):
         self.state("enter")
         self.state("enter", pane=B, pid="20")
