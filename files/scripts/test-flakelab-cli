@@ -230,8 +230,16 @@ contains "spaces and shell syntax stay together as one literal value" "${OUT}" '
 contains "a notification title beginning with a tilde is literal" "${OUT}" 'argv-word: [~/literal title]'
 at_tty 'ses\r--wait\rfixture-id\r--timeout\r0\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "the native session and timeout are distinct arguments" "${OUT}" "ran:claude-sessions --wait fixture-id --timeout 0"
-at_tty 'tycsnap\r' "${MENUENV[@]}" zsh "${ROUTER}"
+at_tty 'tycsnap\rrestore\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "tycsnap uses the regular sessions wrapper and the pane restore operation" "${OUT}" "ran:claude-sessions --restore-tab"
+at_tty 'tycsnap\rset\r~/a title; literal\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "naming a terminal pane goes through the sessions command" "${OUT}" 'ran:claude-sessions --restore-tab --name ~/a title; literal'
+contains "the chosen title remains one literal argument" "${OUT}" 'argv-word: [~/a title; literal]'
+at_tty 'tycsnap\rclear\r' "${MENUENV[@]}" zsh "${ROUTER}"
+contains "clearing the title supplies the name flag" "${OUT}" "ran:claude-sessions --restore-tab --name"
+contains "clearing passes the explicit empty title" "${OUT}" 'argv-word: []'
+run_router wsl tycsnap --name
+check "naming a pane needs a title argument" "${RC}" "2"
 at_tty 'mcp\rlogin\rAccount\rpersonal\r--fresh\rUndo\r\r' "${MENUENV[@]}" zsh "${ROUTER}"
 contains "undo keeps the previous argument and removes the selected flag" "${OUT}" "ran:flakelab-mcp login personal"
 excludes "a removed flag is absent from dispatch" "${OUT}" "ran:flakelab-mcp login personal --fresh"

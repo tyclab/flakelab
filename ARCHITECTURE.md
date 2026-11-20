@@ -208,7 +208,8 @@ as they do to a typed command. The router supplies the available commands and th
 descriptions. The menu offers each command’s actions and options, accepts each
 argument as one literal value, and prints the invocation before dispatch. Session
 start and attach can also use the native picker. On WSL, `flakelab tycsnap`
-uses the sessions wrapper with `--restore-tab`.
+uses the sessions wrapper with `--restore-tab`. Use `flakelab tycsnap --name TITLE`
+to save a pane title, or pass an empty title to clear it.
 
 ## Why two switches
 

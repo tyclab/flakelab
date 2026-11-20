@@ -267,11 +267,17 @@ fi
 # tycsnap is the short name for the pane restore operation in sessions. Reuse
 # the same wrapper and target arguments in both checkout and installed modes.
 if [[ "$_cmd" == tycsnap ]]; then
-  case "${1:-}" in
-    -h|--help) print -r -- "Usage: flakelab tycsnap"; print -r -- "${_desc[tycsnap]}"; exit 0 ;;
-  esac
-  (( $# == 0 )) || { print -ru2 -- "Usage: flakelab tycsnap"; exit 2 }
-  set -- --restore-tab
+  usage="Usage: flakelab tycsnap [--name TITLE]"
+  if (( $# == 1 )) && [[ "$1" == -h || "$1" == --help ]]; then
+    print -rl -- "$usage" "${_desc[tycsnap]}"
+    print -r -- 'Use --name "" to clear the saved title.'
+    exit 0
+  fi
+  if (( $# != 0 )) && ! { (( $# == 2 )) && [[ "$1" == --name ]]; }; then
+    print -ru2 -- "$usage"
+    exit 2
+  fi
+  set -- --restore-tab "$@"
 fi
 
 # Installed mode: exec the wrapper verbatim. No `_args` here — the wrapper name

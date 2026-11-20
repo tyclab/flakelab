@@ -34,7 +34,9 @@ actions[sessions]='|list the running sessions
 --save|save the running list to a file|!@=/Snapshot_file
 --resume|print resume commands from a file|!@=/Snapshot_file
 --autosave|take a recovery snapshot
---restore-tab|restore this Windows Terminal pane||wsl'
+--restore-tab|restore this Windows Terminal pane||wsl
+--restore-tab|set this pane’s saved title|!--name=Tab_title|wsl
+--restore-tab|clear this pane’s saved title|!--name=|wsl'
 actions[update]='|rebuild this distro||rebuild
 --all|rebuild this distro and run the clone sweep||rebuild-all'
 actions[update-all]='|rebuild, then run the clone sweep||rebuild-all'
@@ -50,7 +52,9 @@ actions[backup]='|back up now
 --state-gc|list orphaned project directories in the state root|--force --dry-run
 |backup options|--dry-run --force --keep=Snapshots_to_retain --revisit-keeps'
 actions[clone]='|clone and refresh the configured repositories||clone'
-actions[tycsnap]='|restore this Windows Terminal pane'
+actions[tycsnap]='|restore this Windows Terminal pane
+|set this pane’s saved title|!--name=Tab_title
+|clear this pane’s saved title|!--name='
 actions[notify]='|send a notification|!--message=Message --title=Title --priority=Priority_1_to_5 --tags=Comma_separated_tags --dry-run'
 actions[web]='|serve the dashboard|--bind=Bind_address --port=Port --token-file=/Token_file --terminal-socket=/Terminal_socket --logo=/Logo_file
 --print-token|show the dashboard token|--token-file=/Token_file
@@ -84,6 +88,7 @@ add_field() {
   local field="${1#!}" key hint
   if [[ "$field" != *=* ]]; then args+=("$field"); return 0; fi
   key="${field%%=*}"; hint="${field#*=}"; hint="${hint//_/ }"
+  if [[ -z "$hint" ]]; then args+=("$key" ""); return 0; fi
   if [[ "$hint" == /* ]]; then prompt_input "${hint#/}" || return 1
   else prompt_input "$hint" "" literal || return 1
   fi
