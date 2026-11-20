@@ -714,6 +714,7 @@ in
         script=$(jq -r '.statusLine.command' "$settings")
         grep -q '/bin/tycswap auto --observe --json 2>/dev/null |$' "$script"
         grep -q '/bin/systemd-cat -t flakelab-tycswap-observe$' "$script"
+        grep -q '/bin/tycswap start --check 2>/dev/null$' "$script"
         grep -q '^) >/dev/null 2>&1 &$' "$script"
         jq -e '[.hooks.Notification[].hooks[].command] | any(test("/bin/tycswap auto --once --json 2>&1 \\| /nix/store/[^/ ]+/bin/systemd-cat -t flakelab-tycswap-hook \\|\\| true$"))' "$settings" > /dev/null
         grep -q 'statusline-command.sh"$' "$script"
