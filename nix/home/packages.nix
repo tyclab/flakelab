@@ -127,6 +127,10 @@ in
     # Expanded as ${WHATSAPP_MCP_DIR} by the mcp-whatsapp plugin's .mcp.json.
     WHATSAPP_MCP_DIR = whatsappMcpDir;
   }
+  // lib.optionalAttrs (cfg.installTycswap && cfg.questions.enable) {
+    TYCSWAP_PLACEMENT_BROKER =
+      (import ../mcp-clients.nix { inherit pkgs cfg; }).servers.flakelab-questions.command;
+  }
   // lib.optionalAttrs (builtins.elem "kubectl" profileCliTools) {
     KUBE_EDITOR = "code --wait";
   }

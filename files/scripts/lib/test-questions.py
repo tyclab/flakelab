@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import tempfile
 from pathlib import Path
 import threading
@@ -721,6 +722,54 @@ class QuestionTests(unittest.TestCase):
         [line] = [m for m in lines(self.output) if "result" in m and "method" not in m]
         self.assertTrue(line["result"]["isError"])
         self.assertIn("expired", line["result"]["content"][0]["text"])
+
+class OneQuestionTests(unittest.TestCase):
+    def start_bridge(self, transport, timeout=1):
+        read, write = os.pipe()
+        source, caller = os.fdopen(read), os.fdopen(write, "w", buffering=1)
+        self.addCleanup(source.close)
+        self.addCleanup(caller.close)
+        output = io.StringIO()
+        server = questions.OneQuestion("fixture", output, lambda: transport, interval=0.001, timeout=timeout)
+        thread = threading.Thread(target=server.run, args=(source,))
+        thread.start()
+        caller.write(json.dumps({"question": "Use the fixture account?", "options": ["Wait", "Use this time"]}) + "\n")
+        self.assertTrue(transport.created.wait(1))
+        return caller, output, thread
+
+    def test_one_question_returns_the_brokers_confirmed_answer(self):
+        transport = FakeTransport()
+        transport.answer.set()
+        caller, output, thread = self.start_bridge(transport)
+        for _ in range(100):
+            if output.getvalue():
+                break
+            time.sleep(0.01)
+        caller.close()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(json.loads(output.getvalue()), {
+            "status": "answered", "answer": "Use the blue one", "question_id": transport.calls[0]["id"],
+            "source": "inbox"})
+        self.assertEqual(transport.calls[-1]["op"], "delivered")
+
+    def test_one_question_expiry_and_caller_exit(self):
+        for expired in (True, False):
+            with self.subTest(expired=expired):
+                transport = FakeTransport()
+                caller, output, thread = self.start_bridge(transport, timeout=0.03 if expired else 10)
+                if expired:
+                    for _ in range(100):
+                        if output.getvalue():
+                            break
+                        time.sleep(0.01)
+                caller.close()
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(json.loads(output.getvalue()) if expired else output.getvalue(),
+                                 {"status": "unanswered"} if expired else "")
+                self.assertEqual(transport.calls[-1]["op"], "cancel")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

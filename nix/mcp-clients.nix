@@ -77,7 +77,7 @@ let
   '';
   ports = lib.mapAttrsToList (_: server: server.callbackPort) cfg.mcpShared.servers;
   questions = pkgs.writeShellScriptBin "flakelab-questions" ''
-    exec ${pkgs.python3}/bin/python3 ${../files/scripts/lib/questions.py}
+    exec ${pkgs.python3}/bin/python3 ${../files/scripts/lib/questions.py} "$@"
   '';
 
   # Playwright's MCP server from the nixpkgs build, not @playwright/mcp from npm:

@@ -27,6 +27,7 @@ excludes() { [[ "$2" != *"$3"* ]] && ok "$1" || bad "$1 (unexpected: $3)" }
 BASE="$(mktemp -d)"
 trap 'rm -rf "${BASE}"' EXIT
 export HOME="${BASE}/home"
+unset TYCSWAP_PLACEMENT_BROKER
 mkdir -p "${HOME}"
 US=$'\x1f'
 
@@ -359,6 +360,8 @@ run_tmux --start claude "${WORK}" --detach -- --model opus
 check "--start --detach exits 0" "${RC}" "0"
 contains "the window is named after the tool and the directory" "$(<"${TMUX_LOG}")" "new-window -d -P -F #{window_id} -t agents -n claude-work_dir -e PATH=${TMUXBIN}:${PATH} -c ${WORK} claude --model opus"
 contains "--start reports the window" "${ERR}" "started claude in ${WORK} as agents:claude-work_dir (@10)"
+TYCSWAP_PLACEMENT_BROKER=/fixture/questions run_tmux --start claude "${WORK}" --detach -- --model mythos
+contains "a detached Claude start forwards its broker to the unattended pane" "$(<"${TMUX_LOG}")" "-e TYCSWAP_PLACEMENT_BROKER=/fixture/questions -e TYCSWAP_NO_PROMPT=1 -c ${WORK} claude --model mythos"
 contains "--start --detach says how to attach" "${ERR}" "attach with: flakelab sessions --attach claude-work_dir"
 excludes "--start --detach opens no view" "$(<"${TMUX_LOG}")" "attach-session"
 # Not at a terminal (the suite's stdin is not a tty): started, not attached.
