@@ -114,7 +114,9 @@ Read for this topic; paths below are relative to the repository root unless stat
     warning (README, "Migrating from flakelab accounts").
   - `questions.enable` registers the shared `flakelab-questions` MCP server in
     Claude and Codex (`files/scripts/lib/questions.py`, `test-questions`). Its
-    `ask_question` tool retains the question in HA and returns the phone/inbox
+    executable also serves unattended allocation questions through
+    `TYCSWAP_PLACEMENT_BROKER` on installations with tycswap.
+    The `ask_question` tool retains the question in HA and returns the phone/inbox
     answer to the originating call; in clients with MCP elicitation it also
     opens a terminal dialog, and the first answer wins. See
     `remote-sessions.md`. It does not intercept native dialogs or approve tools.

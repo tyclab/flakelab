@@ -1487,6 +1487,13 @@ close_sessions() {
 
 start_session() {
   if $START_ASK; then ask_start || return $?; fi
+  # The pane has a terminal even when nobody is attached to answer a placement.
+  if [[ "$START_TOOL" == claude && -n "${TYCSWAP_PLACEMENT_BROKER:-}" ]]; then
+    WINDOW_ENV+=(-e "TYCSWAP_PLACEMENT_BROKER=${TYCSWAP_PLACEMENT_BROKER}")
+    if $START_DETACH || [[ ! -t 0 || ! -t 1 ]]; then
+      WINDOW_ENV+=(-e TYCSWAP_NO_PROMPT=1)
+    fi
+  fi
   if (( ${#LANE_FLAGS} > 0 )); then start_lane; return $?; fi
   local dir="${START_DIR:-$PWD}" name cmd wid
   is_tool "$START_TOOL" || { print -ru2 -- "Error: unknown tool '${START_TOOL}' (${(j:|:)TOOLS})"; return 2 }

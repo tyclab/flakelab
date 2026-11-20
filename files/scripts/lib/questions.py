@@ -241,6 +241,13 @@ class Server:
     def send(self, ident, result=None, error=None):
         self.emit({"id": ident, **({"error": error} if error else {"result": result})})
 
+    def question_result(self, ident, answer=None, error=None):
+        text = error if error is not None else json.dumps(answer)
+        result = {"content": [{"type": "text", "text": text}]}
+        if error is not None:
+            result["isError"] = True
+        self.send(ident, result)
+
     def open_dialog(self, question):
         message, schema, options = dialog_form(question)
         dialog = Dialog(f"q-{next(self.ids)}", options)
@@ -362,7 +369,7 @@ class Server:
                                                                   failures)
                         if cancel.is_set():
                             break  # the client gave up meanwhile; the finally posts the inbox cancel
-                        self.send(ident, {"content": [{"type": "text", "text": json.dumps(payload)}]})
+                        self.question_result(ident, payload)
                         finished = True
                         if payload["source"] == "inbox":
                             transport.post({**auth, "op": "delivered"})
@@ -389,9 +396,9 @@ class Server:
                         break
                     if dialog and not dialog.done:
                         self.close_dialog(dialog, cancel=True)
-                    self.send(ident, {"content": [{"type": "text", "text": json.dumps({
+                    self.question_result(ident, {
                         "status": "answered", "answer": result["answer"], "question_id": auth["id"],
-                        "source": "inbox"})}]})
+                        "source": "inbox"})
                     finished = True
                     transport.post({**auth, "op": "delivered"})
                     return
@@ -405,7 +412,7 @@ class Server:
                 self.close_dialog(dialog, cancel=True, reason="question expired or closed"
                                   if isinstance(exc, ValueError) else "inbox unavailable")
             if not finished and not cancel.is_set():
-                self.send(ident, {"isError": True, "content": [{"type": "text", "text": str(exc)}]})
+                self.question_result(ident, error=str(exc))
         finally:
             if dialog and not dialog.done:
                 self.close_dialog(dialog, cancel=True, reason="call cancelled")
@@ -470,13 +477,41 @@ class Server:
                 except (ValueError, TypeError, AttributeError):
                     self.send(None, error={"code": -32600, "message": "Invalid JSON-RPC request."})
         finally:
-            with self.lock:
-                active = list(self.active.values())
-            for cancel, _ in active:
-                cancel.set()
-            for _, thread in active:
-                thread.join(timeout=12)
+            self.close()
+
+    def close(self):
+        with self.lock:
+            active = list(self.active.values())
+        for cancel, _ in active:
+            cancel.set()
+        for _, thread in active:
+            thread.join(timeout=12)
+
+
+class OneQuestion(Server):
+    """One JSON question and one JSON reply. Keep the input pipe open until answered; EOF cancels."""
+
+    def question_result(self, ident, answer=None, error=None):
+        print(json.dumps(answer if error is None else {"status": "unanswered"}), file=self.output, flush=True)
+
+    def run(self, source=sys.stdin):
+        try:
+            arguments = json.loads(source.readline())
+        except ValueError:
+            self.question_result(None, error="Invalid question.")
+            return
+        self.handle({"id": 1, "method": "tools/call", "params": {"name": "ask_question", "arguments": arguments}})
+        try:
+            for _ in source:
+                pass
+        finally:
+            self.close()
 
 
 if __name__ == "__main__":
-    Server(os.environ.get("FLAKELAB_QUESTIONS_AGENT", "agent")).run()
+    if sys.argv[1:] == ["--ask"]:
+        OneQuestion(os.environ.get("FLAKELAB_QUESTIONS_AGENT", "tycswap")).run()
+    elif sys.argv[1:]:
+        sys.exit("usage: flakelab-questions [--ask]")
+    else:
+        Server(os.environ.get("FLAKELAB_QUESTIONS_AGENT", "agent")).run()
