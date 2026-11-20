@@ -891,7 +891,7 @@ print_resume() {
 # to one transcript. Its agents window gets a view instead, unless a client
 # already shows it.
 open_tabs() {
-  local pair tool cwd sid group profile tab_cwd wid wname view key row p age att n=0 use_tmux=false
+  local pair tool cwd sid group profile tab_cwd wid wname view key row p age att n=0 use_tmux=false token server
   local -A live_pid=() live_wid=() live_wname=() shown=()
   [[ -n "${WSL_DISTRO_NAME:-}" ]] || { print -ru2 -- "Error: --open needs a WSL distro (WSL_DISTRO_NAME is unset)"; return 2 }
   command -v wt.exe >/dev/null 2>&1 || { print -ru2 -- "Error: wt.exe not on PATH — is WSL interop on? Use --resume instead"; return 2 }
@@ -915,7 +915,7 @@ open_tabs() {
   for pair in "${PAIRS[@]}"; do
     IFS="$US" read -r tool cwd sid group profile <<<"$pair"
     key="${tool}${US}${sid}${US}${profile}"
-    wid=""
+    wid=""; view=""; server=""
     if (( ${+live_pid[$key]} )); then
       wid="${live_wid[$key]}"
       if ! $use_tmux || [[ -z "$wid" ]]; then
@@ -939,13 +939,18 @@ open_tabs() {
       fi
       view="$(new_view "$wid")" || { print -ru2 -- "tmux could not open a view on ${wid}"; continue }
       shown[$wid]=1
-      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" -- tmux attach-session -t "$view" </dev/null >/dev/null 2>&1 &&
-        (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+      server="$(tmux display-message -p -t "$wid" '#{pid}')"
+    fi
+    if ! token="$(tab_state launch "$tool" "$tab_cwd" "$sid" "$group" "$profile" "$wid" "$view" "$server")"; then
+      [[ -z "$view" ]] || tmux kill-session -t "$view"
+      continue
+    fi
+    if open_saved_tab "$token" </dev/null >/dev/null 2>&1; then
+      (( ++n ))
     else
-      [[ "$tab_cwd" == "$HOME" ]] && tab_cwd="~"
-      resume_args "$tool" "$sid" "$group" "$profile"
-      wt.exe -w 0 new-tab --title "${cwd:t}" wsl.exe -d "${WSL_DISTRO_NAME}" --cd "${tab_cwd}" -- "${RESUME_ARGS[@]}" </dev/null >/dev/null 2>&1 &&
-        (( ++n )) || print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
+      tab_state discard "$token"
+      [[ -z "$view" ]] || tmux kill-session -t "$view"
+      print -ru2 -- "wt.exe failed for ${cwd} ${sid}"
     fi
   done
   print -ru2 -- "opened ${n} tab(s)"
@@ -1568,10 +1573,18 @@ attach_session() {
   attach_window "$found"
 }
 
+open_saved_tab() {
+  wt.exe -w 0 new-tab wsl.exe -d "$WSL_DISTRO_NAME" --shell-type login -- env "FLAKELAB_TYCSNAP_SOURCE=$1" zsh -il
+}
+
 restore_tab_foreground() {
-  local plan="$1" sid tool group profile dir wid record p age found host file dir_unused profile_found unused_name unused_group
+  local plan="$1" sid tool group profile dir wid record p age found host view file dir_unused profile_found unused_name unused_group
   wid="$(jq -r 'select(.live) | .tmux.window // empty' <<<"$plan")"
   if [[ -n "$wid" ]]; then
+    view="$(jq -r '.tmux.view // empty' <<<"$plan")"
+    if [[ -n "$view" && "$(tmux display-message -p -t "$view" '#{window_id}' 2>/dev/null)" == "$wid" ]]; then
+      exec tmux attach-session -t "$view"
+    fi
     host="$(tmux display-message -p -t "$wid" '#{session_name}' 2>/dev/null)"
     if [[ -n "$host" && "$(tmux display-message -p -t "$wid" '#{window_id}' 2>/dev/null)" == "$wid" ]]; then
       TMUX_SESSION="$host"
@@ -1638,7 +1651,7 @@ restore_tab() {
     [[ -n "$token" ]] || continue
     # Only the boot and pane ids cross the wt.exe command-line parser. The new
     # shell reads its path and name locally, including quotes and semicolons.
-    if ! wt.exe -w 0 new-tab wsl.exe -d "$WSL_DISTRO_NAME" --shell-type login -- env "FLAKELAB_TYCSNAP_SOURCE=$token" zsh -il; then
+    if ! open_saved_tab "$token"; then
       tab_state release "$token"
       print -ru2 -- "Windows Terminal could not open the saved tab ${token#*/}"
       failed=1

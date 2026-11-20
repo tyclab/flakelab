@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,10 @@ PROC = Path(os.environ.get("FLAKELAB_PROC_ROOT", "/proc"))
 def uuid(value):
     value = value.strip("{}").lower()
     return value if UUID.fullmatch(value) else ""
+
+
+def valid_title(title):
+    return not any(unicodedata.category(char) == "Cc" for char in title)
 
 
 def token_valid(token):
@@ -110,7 +115,7 @@ def atomically_save(path, box, boot, state, lines, keep):
             distro = os.environ.get("WSL_DISTRO_NAME")
             header = "# claude-sessions autosave " + box + (f" distro={distro}" if distro else "")
             print(header, f"boot={boot}", datetime.now().astimezone().isoformat(timespec="seconds"), file=stream)
-            if state["panes"] or state.get("offered") or state["used"]:
+            if state["panes"] or state.get("offered") or state["used"] or state.get("launches"):
                 print(MARKER + json.dumps(state, ensure_ascii=True, separators=(",", ":")), file=stream)
             for line in lines:
                 print(line, file=stream)
@@ -197,6 +202,26 @@ def command(path, box, boot, keep, op, args):
             lines = sorted(recorded)
         if panes:
             foreground(rows, panes, boot)
+    elif op == "launch":
+        # --open knows what it wants before Windows allocates a pane id.
+        # Only an opaque token crosses Windows' command-line parser.
+        tool, cwd, sid, group, profile, wid, view, server_pid = args
+        if tool not in ("claude", "codex") or not uuid(sid):
+            raise ValueError("saved session has no native id")
+        name = Path(cwd).name
+        record = dict(cwd=cwd, name=name if valid_title(name) else "",
+                      agent=dict(tool=tool, cwd=cwd, session=sid, group=group, profile=profile))
+        if wid:
+            server = proc_stat(server_pid)
+            if not re.fullmatch(r"@[0-9]+", wid) or not server:
+                raise ValueError("tmux server exited before the tab could open")
+            record["tmux"] = dict(boot=boot, server=[server_pid, server[3]], window=wid, view=view)
+        launches = state.setdefault("launches", {})
+        key = next((k for k, v in launches.items() if v == record), str(uuid4()))
+        launches[key] = record
+        response = boot + "/" + key
+    elif op == "discard":
+        state.get("launches", {}).pop(args[0].partition("/")[2], None)
     else:
         ident = uuid(os.environ.get("WT_SESSION", ""))
         owner = os.environ.get("FLAKELAB_TYCSNAP_OWNER", "")
@@ -226,6 +251,12 @@ def command(path, box, boot, keep, op, args):
                 source_boot, source_id = boot_of(old, prefix), ident
             source = panes if source_boot == boot else previous["panes"] if old and source_boot == boot_of(old, prefix) else {}
             key = source_boot + "/" + source_id
+            launch_state = state if source_boot == boot else previous if old and source_boot == boot_of(old, prefix) else {}
+            if not restored and token and source_id in launch_state.get("launches", {}) and key not in used:
+                restored = launch_state["launches"][source_id]
+                used[key] = ident
+                if source_boot == boot:
+                    del launch_state["launches"][source_id]
             if not restored and source_id in source and used.get(key) in (None, "opening", ident):
                 restored = source[source_id]
                 used[key] = ident
@@ -241,7 +272,8 @@ def command(path, box, boot, keep, op, args):
                 pane = dict(restored or {}, owner=owner)
                 pane.pop("attempt", None)
                 pane.setdefault("cwd", os.getcwd())
-                pane.setdefault("name", "")
+                if not valid_title(pane.setdefault("name", "")):
+                    pane["name"] = ""
                 panes[ident] = pane
                 if restored:
                     pane["pending"] = True
@@ -254,7 +286,7 @@ def command(path, box, boot, keep, op, args):
             raise ValueError("this shell does not own this Windows Terminal pane")
         elif op == "name":
             name, = args
-            if any(unicodedata.category(char) == "Cc" for char in name):
+            if not valid_title(name):
                 raise ValueError("tab titles must not contain terminal control characters")
             pane["name"] = name
         elif op == "update":
@@ -315,7 +347,7 @@ def command(path, box, boot, keep, op, args):
         if op == "autosave":
             print(f"autosaved {len(lines)} session(s) to {path}", file=sys.stderr)
     if response is not None:
-        print(response if op == "update" else json.dumps(response))
+        print(response if op in ("update", "launch") else json.dumps(response))
 
 
 def active_attempt(pane):
