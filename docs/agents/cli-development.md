@@ -40,7 +40,19 @@ Read for this topic; paths below are relative to the repository root unless stat
     matches helpers. Profile sessions use JSON lines with `tool`, `cwd`,
     `session` (the actual continuation id), `group` and `profile`. Unmanaged
     sessions keep `<tool>  <dir>  <id>` lines; legacy lines without the tool
-    column still mean Claude Code. A Codex **lane** is `--start codex [dir]
+    column still mean Claude Code. For a Claude task in tmux, pass
+    `--start claude [dir] --prompt TEXT` or `--prompt-file FILE`, with optional
+    `--model`, `--effort`, `--name` and `--detach`. Use the native `session` UUID
+    returned alongside its `window`. Ordinary starts use the configured PATH
+    launcher. Explicit credential stores, providers and API keys use the native
+    Claude executable with the caller’s configuration. The tmux server’s older
+    provider environment does not select a new lane’s identity.
+    `--wait UUID [--timeout SECONDS]` returns JSON and succeeds on an idle,
+    completed turn. `--read UUID` prints the
+    terminal history, including any question or trust dialog. `--close UUID`
+    checks for an idle Claude and empty input, submits its native exit command,
+    and prints the resume command once the process exits. A running turn or
+    interactive choice keeps its terminal. A Codex **lane** is `--start codex [dir]
 --prompt TEXT|--prompt-file FILE [--model M] [--effort E] [--name N]
 [--trust]`: `codex -c model_reasoning_effort=…` leaves the shared server unless
     the window also gets `--remote unix://<socket>`, and then nothing tells the

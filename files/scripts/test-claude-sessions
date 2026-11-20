@@ -4,7 +4,10 @@ set -uo pipefail
 
 # The terminal cases need prompts, and this suite may itself run in an agent's
 # shell, where lib/prompt.zsh's prompt_tty says no to any terminal.
-unset CLAUDECODE CODEX_THREAD_ID
+unset CLAUDECODE CODEX_THREAD_ID ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN
+unset CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR
+unset -m 'ANTHROPIC_*' 'CLAUDE_CODE_USE_*' 'AWS_*' 'GOOGLE_*' 'GCLOUD_*' 'CLOUDSDK_*' 'AZURE_*' 'FOUNDRY_*' 'VERTEX_*'
 
 # Offline suite for claude-sessions (files/scripts/claude-sessions): a fake
 # /proc tree plus stub pgrep/ps/tmux on PATH stand in for running sessions, so
@@ -875,6 +878,9 @@ case "$1" in
   -V) print -r -- "tmux 3.4"; exit 0 ;;
   has-session) [[ -n "${FAKE_TMUX_HAS:-}" ]]; exit $? ;;
   list-panes)
+    if [[ -n "${CLAUDE_PANES:-}" && "$*" == "list-panes -a -F #{session_name}${US}#{@flakelab_session}${US}#{window_panes}${US}#{pane_id}${US}#{pane_pid}${US}#{pane_in_mode}${US}#{pane_dead}${US}#{pane_start_command}" ]]; then
+      cat "$CLAUDE_PANES"; exit 0
+    fi
     [[ "$*" == "list-panes -a -F #{pane_pid}${US}#{session_name}${US}#{window_id}${US}#{window_name}${US}#{@flakelab_session}" ]] || unknown "$@"
     [[ -r "${TMUX_PANES:-}" ]] && cat "${TMUX_PANES}"; exit 0 ;;
   list-windows)
@@ -900,6 +906,17 @@ case "$1" in
         exit 0 ;;
     esac
     unknown "$@" ;;
+  capture-pane)
+    [[ -n "${CLAUDE_CAPTURE:-}" && "$*" == (capture-pane" -e -p -t %28"|capture-pane" -p -J -S - -t %28") ]] || unknown "$@"
+    cat "$CLAUDE_CAPTURE"; exit 0 ;;
+  send-keys)
+    [[ -n "${CLAUDE_CAPTURE:-}" ]] || unknown "$@"
+    case "$*" in
+      'send-keys -t %28 -l /exit') printf '────\n❯ /exit\n────\n' > "$CLAUDE_CAPTURE" ;;
+      'send-keys -t %28 Enter') rm -f "${FLAKELAB_PROC_ROOT}/8059/stat"; : > "$CLAUDE_PANES" ;;
+      *) unknown "$@" ;;
+    esac
+    exit 0 ;;
   new-session|new-window)
     [[ -n "${FAKE_TMUX_NO_WINDOW:-}" ]] && exit 1
     [[ " $* " == *" -P -F #{window_id} "* ]] || unknown "$@"
@@ -987,7 +1004,7 @@ usage_error() {
   check "${label} exits 2" "${RC}" "2"
   contains "${label}: the reason" "${ERR}" "${reason}"
 }
-usage_error "a lane flag with --start claude" "is for --start codex" --start claude "${WORK}" --model opus --prompt go
+usage_error "Claude uses its native trust dialog" "--trust is for --start codex" --start claude "${WORK}" --trust --prompt go
 usage_error "a lane flag without a prompt" "needs --prompt or --prompt-file" --start codex "${WORK}" --model gpt-6.1-sol
 usage_error "both prompt flags" "exclude each other" --start codex "${WORK}" --prompt go --prompt-file "${BASE}/prompt.txt"
 usage_error "a lane flag with -- args" "cannot be combined with -- args" --start codex "${WORK}" --prompt go -- -m gpt-6.1-sol
@@ -997,7 +1014,7 @@ usage_error "an empty prompt file" "is missing, unreadable or empty" --start cod
 usage_error "a name tmux cannot target" "must be a window name" --start codex "${WORK}" --prompt go --name a.b
 usage_error "a name of 41 characters" "must be a window name" --start codex "${WORK}" --prompt go --name "${(l:41::x:):-}"
 usage_error "a lane flag without a value" "--prompt needs a value" --start codex "${WORK}" --prompt
-usage_error "a lane flag without --start" "belongs to --start codex" --model gpt-6.1-sol
+usage_error "a lane flag without --start" "belongs to --start claude or --start codex" --model gpt-6.1-sol
 usage_error "--force without --close" "belong to --close" --force
 usage_error "--close without a target" "needs a window or a session id" --close
 usage_error "a lane in a folder that does not exist" "no such directory" --start codex "${BASE}/nowhere" --prompt go
@@ -1025,6 +1042,102 @@ check "the helper has started the session before the window is created, and the 
 check "the mark is read back" "$(grep -c '^show-options -w -v -t @10 @flakelab_session$' "${TMUX_LOG}")" "1"
 contains "the report names model, effort, window and session" "${ERR}" "started codex gpt-6.1-sol xhigh in ${WORK} as agents:lane-a (@10), session ${SID_L}"
 contains "and how to close it" "${ERR}" "flakelab sessions --close lane-a"
+
+fresh
+CLAUDE_CONFIG_DIR="${BASE}/custom profile" run_lane --start claude "${WORK}" --prompt-file "${BASE}/prompt.txt" --model opus --effort medium --detach
+check "Claude start returns the allocated window" "$(jq -r .window <<<"${OUT}")" "@10"
+csid="$(jq -r .session <<<"${OUT}")"
+contains "the native id is also recorded on that window" "$(<"${TMUX_MARKS}")" "@10${US}claude:${csid}"
+contains "Claude uses the caller's custom profile" "$(<"${TMUX_LOG}")" "-e CLAUDE_CONFIG_DIR=${BASE}/custom profile"
+contains "Claude receives the native id and selection" "$(<"${TMUX_LOG}")" "launch CLAUDE_CONFIG_DIR -- --session-id ${csid} --model opus --effort medium"
+excludes "tmux retains the filename rather than the body of a brief" "$(<"${TMUX_LOG}")" "from a file"
+fresh
+FLAKELAB_TYCSWAP_ROOT="${BASE}/store" CLAUDE_CONFIG_DIR="${BASE}/store/groups/fable/profile" run_lane --start claude "${WORK}" --prompt task --detach
+contains "an explicitly selected managed profile passes through" "$(<"${TMUX_LOG}")" "-e CLAUDE_CONFIG_DIR=${BASE}/store/groups/fable/profile"
+
+# Pass only fixture values into the launch helper. os.execvpe is replaced so
+# no actual provider, tmux socket, or credentials can participate in this test.
+if python3 - "${SCRIPT_DIR}/lib/claude_lane.py" <<'FIXTURE'
+from pathlib import Path
+import os
+import runpy
+import sys
+from unittest.mock import patch
+
+lane = runpy.run_path(sys.argv[1])
+with patch.dict(os.environ, {
+    "HOME": "/fixture", "PATH": "/bin", "CLAUDE_CODE_USE_VERTEX": "1",
+    "GOOGLE_APPLICATION_CREDENTIALS": "/fixture/chosen", "AWS_PROFILE": "stale",
+    "ANTHROPIC_API_KEY": "stale", "CLAUDE_SECURESTORAGE_CONFIG_DIR": "stale",
+}, clear=True), patch("os.execvpe") as execute:
+    args = ["--session-id", "fixture"]
+    lane["launch"]([], args)
+    program, argv, env = execute.call_args.args
+    assert program == "claude" and argv == ["claude", *args]
+    assert env == {"HOME": "/fixture", "PATH": "/bin"}
+    chosen = ["CLAUDE_CODE_USE_VERTEX", "GOOGLE_APPLICATION_CREDENTIALS"]
+    lane["launch"](chosen, args)
+    program, argv, env = execute.call_args.args
+    assert program == str(Path("/fixture/.local/bin/claude"))
+    assert argv == [program, *args] and env["GOOGLE_APPLICATION_CREDENTIALS"] == "/fixture/chosen"
+    assert "AWS_PROFILE" not in env and "ANTHROPIC_API_KEY" not in env
+FIXTURE
+then ok "the caller selects the native backend and server-only settings are cleared"
+else bad "managed provider launch fixture"
+fi
+
+export CLAUDE_PANES="${BASE}/claude-panes" CLAUDE_CAPTURE="${BASE}/claude-capture"
+mk_proc 8059 "${WORK}" 1
+cprofile="${BASE}/custom profile"
+mkdir -p "${cprofile}/sessions" "${cprofile}/projects/fixture"
+printf '%s\0' "CLAUDE_CONFIG_DIR=${cprofile}" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${BASE}/native-store" "ANTHROPIC_API_KEY=only-in-fixture" > "${PROC}/8059/environ"
+crecord() { jq -nc --arg id "$csid" --arg st "$1" --arg start "${2:-0}" --arg cwd "$WORK" '{sessionId:$id,pid:8059,status:$st,procStart:$start,cwd:$cwd}' > "${cprofile}/sessions/8059.json" }
+cstate() { run_lane --wait "$csid" --timeout 0; print -r -- "$(jq -r .state <<<"$OUT")" }
+print -r -- "agents${US}claude:${csid}${US}1${US}%28${US}8059${US}0${US}0${US}exec python3 ${(q)SCRIPT_DIR}/lib/claude_lane.py launch CLAUDE_CONFIG_DIR -- --session-id ${csid} -- task" > "$CLAUDE_PANES"
+print -r -- "@10${US}claude-task${US}claude:${csid}${US}1${US}claude" > "$TMUX_WINDOWS"
+printf 'fixture reply\n────\n❯ \n────\n' > "$CLAUDE_CAPTURE"
+clog="${cprofile}/projects/fixture/${csid}.jsonl"
+print -r -- '{"type":"assistant","message":{"stop_reason":"end_turn"}}' > "$clog"
+crecord idle
+check "the completed native turn can be waited on" "$(cstate)" idle
+check "the native prompt’s nonbreaking space is idle in the C locale" "$(LC_ALL=C cstate)" idle
+run_lane --read "$csid"
+contains "read returns the terminal output for the native id" "$OUT" "fixture reply"
+older="/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-scripts"
+print -r -- "${$(<"$CLAUDE_PANES")//${(q)SCRIPT_DIR}/$older}" > "$CLAUDE_PANES"
+run_lane --read "$csid"
+contains "a lane from a previous installed generation retains its native handle" "$OUT" "fixture reply"
+crecord busy
+check "a working turn times out without claiming completion" "$(cstate)" timeout
+crecord waiting
+check "a native question returns blocked" "$(cstate)" blocked
+crecord idle
+printf 'fixture reply\n────\n❯ \n────\n Enter to select\n' > "$CLAUDE_CAPTURE"
+check "a native choice remains blocked even with an idle PID record" "$(cstate)" blocked
+printf 'fixture reply\n────\n❯ \n────\n' > "$CLAUDE_CAPTURE"
+crecord idle 12345
+check "a recycled PID is an error" "$(cstate)" error
+crecord idle
+print -r -- '{"type":"assistant","isApiErrorMessage":true}' >> "$clog"
+check "provider failure stays distinct from a finished reply" "$(cstate)" error
+print -r -- '{"type":"assistant","message":{"stop_reason":"refusal"}}' >> "$clog"
+check "a provider refusal reports an error on this session" "$(cstate)" error
+print -r -- '{"type":"assistant","message":{"stop_reason":"end_turn"}}' >> "$clog"
+printf 'fixture reply\n────\n❯ unsent words\n────\n' > "$CLAUDE_CAPTURE"
+check "unsent terminal input blocks closing an otherwise idle turn" "$(cstate)" blocked
+run_lane --close "$csid"
+check "close refuses that pending input" "${RC}" 1
+excludes "refusal sends no keys" "$(<"${TMUX_LOG}")" "send-keys"
+printf 'fixture reply\n────\n❯ \n────\n' > "$CLAUDE_CAPTURE"
+LC_ALL=C run_lane --close "$csid"
+check "a native graceful exit returns success in the C locale" "${RC}" 0
+contains "its resume stays on the custom profile" "${OUT}" "'CLAUDE_CONFIG_DIR=${cprofile}'"
+contains "its resume uses that credential store and native executable" "${OUT}" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${BASE}/native-store ${HOME}/.local/bin/claude --resume ${csid}"
+contains "its resume requires the caller's original provider configuration" "${OUT}" 'test "${ANTHROPIC_API_KEY+set}" = set'
+excludes "no provider credential is saved in the resume command" "${OUT}" "only-in-fixture"
+excludes "the Claude close does not kill the window" "$(<"${TMUX_LOG}")" "kill-window"
+unset CLAUDE_PANES CLAUDE_CAPTURE
+: > "${TMUX_WINDOWS}"
 
 fresh
 run_lane --start codex "${WORK}" --prompt-file "${BASE}/prompt.txt" --trust --detach
