@@ -1,5 +1,5 @@
 # Claude Code: installer, plugins/marketplaces, settings.json policy, ~/.claude.json
-# servers, and the managed block in ~/.claude/CLAUDE.md.
+# servers, and the managed block in ~/.claude/rules/AGENTS.md.
 # An activation entry added here must also be named in health.nix's
 # flakelabHealthCheck entryAfter list, or that check stops running last.
 {
@@ -621,7 +621,22 @@ in
     lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" "claudeSettings" ]
       (
         lib.optionalString installClaude (
-          flakelab.writeManagedBlock ''"$HOME/.claude/CLAUDE.md"'' flakelab.agentInstructions.claude
+          flakelab.writeManagedBlock ''"$HOME/.claude/rules/AGENTS.md"'' flakelab.agentInstructions.claude ''
+            _old="$HOME/.claude/CLAUDE.md"
+            if [ -z "$DRY_RUN_CMD" ] && [ -f "$_old" ] && [ ! -L "$_old" ]; then
+              (
+                _personal="$(mktemp "$_old.XXXXXX")" || exit 1
+                trap 'rm -f "$_personal"' EXIT
+                awk -f ${../../files/scripts/lib/unmanaged-instructions.awk} "$_old" > "$_personal" || exit 1
+                ${pkgs.diffutils}/bin/cmp -s "$_old" "$_personal" && exit 0
+                if [ -s "$_personal" ]; then
+                  chmod --reference="$_old" "$_personal" && mv -f "$_personal" "$_old"
+                else
+                  rm -- "$_old"
+                fi
+              ) || ${flakelabWarn} "could not retire the managed block from $_old."
+            fi
+          ''
         )
       );
 }

@@ -709,6 +709,18 @@ contains "and keeps the local copy"            "$(< "${FIX_HOME}/.claude/CLAUDE.
 run_backup_tty 'y' --restore
 contains "a yes overwrites it"                 "$(< "${FIX_HOME}/.claude/CLAUDE.md")" "from the backup"
 
+print -r -- "personal instructions from a pre-migration backup"
+fixture legacy_claude_rules
+mkdir -p "${FIX_HOME}/.claude/rules" "${FIX_ROOT}/instances/TestDistro/claude"
+old_claude="${FIX_ROOT}/instances/TestDistro/claude/CLAUDE.md"
+print -rl -- '<!-- BEGIN managed by flakelab -->' 'old target' '<!-- END managed by flakelab -->' > "${old_claude}"
+cp "${old_claude}" "${FIX_HOME}/.claude/rules/AGENTS.md"
+run_restore --force
+absent "managed-only legacy payload stays retired" "${FIX_HOME}/.claude/CLAUDE.md"
+printf 'my private rule' >> "${old_claude}"
+run_restore --force
+check "legacy user text restores without old target rules" "$(< "${FIX_HOME}/.claude/CLAUDE.md")" 'my private rule'
+
 print -r -- "colour: only at a terminal, and never with NO_COLOR"
 fixture colour
 run_backup

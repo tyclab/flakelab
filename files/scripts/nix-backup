@@ -62,6 +62,7 @@ state_unavailable() { ${STATE_CONFIGURED} && ! ${STATE_USABLE} }
 STATE_WROTE=false
 
 source "${0:A:h}/lib/state-sync.zsh" || exit 1
+UNMANAGED_INSTRUCTIONS_AWK="${0:A:h}/lib/unmanaged-instructions.awk"
 source "${0:A:h}/lib/transcript-fetch.zsh" || exit 1
 source "${0:A:h}/lib/state-gate.zsh" || exit 1
 # The y/N questions, asked the one way every flakelab command asks them.
@@ -1180,7 +1181,20 @@ do_restore() {
     # Rewritten from claudePlugins on every activation: local wins.
     restore_file "${BACKUP_CLAUDE}/plugins/installed_plugins.json"  "${HOME_DIR}/.claude/plugins/installed_plugins.json" true
     restore_file "${BACKUP_CLAUDE}/plugins/blocklist.json"          "${HOME_DIR}/.claude/plugins/blocklist.json"
-    restore_file "${BACKUP_CLAUDE}/CLAUDE.md"             "${HOME_DIR}/.claude/CLAUDE.md"
+    # Older payloads include the generated instructions. After activation they
+    # already load from rules/AGENTS.md. Restore only the old file's personal text.
+    local old_rules="${BACKUP_CLAUDE}/CLAUDE.md"
+    if [[ -f "${old_rules}" ]] && grep -Fxq '<!-- BEGIN managed by flakelab -->' \
+        "${HOME_DIR}/.claude/rules/AGENTS.md" 2>/dev/null; then
+      if gawk -f "${UNMANAGED_INSTRUCTIONS_AWK}" "${old_rules}" > "${RUN_TMP}/personal-claude.md"; then
+        [[ ! -s "${RUN_TMP}/personal-claude.md" ]] \
+          || restore_file "${RUN_TMP}/personal-claude.md" "${HOME_DIR}/.claude/CLAUDE.md"
+      else
+        record_failure "Cannot read personal instructions from ${old_rules}"
+      fi
+    else
+      restore_file "${old_rules}" "${HOME_DIR}/.claude/CLAUDE.md"
+    fi
     restore_file "${BACKUP_CLAUDE}/statusline-command.sh" "${HOME_DIR}/.claude/statusline-command.sh"
     # settings*.json carry env blocks; the pattern leaves statusline-command.sh executable.
     harden_restored_files "${HOME_DIR}/.claude" "settings*"

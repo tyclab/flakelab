@@ -201,9 +201,12 @@ in
     assert refused;
     pkgs.runCommandLocal "flakelab-check-agent-instructions" { nativeBuildInputs = [ pkgs.bash ]; } ''
       export fixtureHome="$TMPDIR/home" DRY_RUN_CMD=
-      claude="$fixtureHome/.claude/CLAUDE.md" codex="$fixtureHome/.codex/AGENTS.md"
-      mkdir -p "$fixtureHome/.claude"
+      claude="$fixtureHome/.claude/rules/AGENTS.md" codex="$fixtureHome/.codex/AGENTS.md"
+      legacy="$fixtureHome/.claude/CLAUDE.md"
+      mkdir -p "$fixtureHome/.claude/rules"
       echo 'user line kept' > "$claude"
+      printf '%s\n' '<!-- BEGIN managed by flakelab -->' 'old managed line' '<!-- END managed by flakelab -->' > "$legacy"
+      printf 'legacy private text' >> "$legacy"
       # No ~/.codex yet: the writer creates it, owner-only.
       bash -euo pipefail ${activation "codexAgentsMd"}
       test "$(stat -c %a "$fixtureHome/.codex")" = 700
@@ -224,6 +227,10 @@ in
         if awk 'prev == "" && $0 == "" && NR > 1 { found = 1 } { prev = $0 } END { exit !found }' "$f"; then exit 1; fi
       done
       test "$(head -n 1 "$claude")" = 'user line kept'
+      printf 'legacy private text' | cmp - "$legacy"
+      printf '%s\n' '<!-- BEGIN managed by flakelab -->' 'old managed line' '<!-- END managed by flakelab -->' > "$legacy"
+      bash -euo pipefail ${activation "claudeMd"}
+      test ! -e "$legacy"
       test "$(head -n 1 "$codex")" = 'hand-written codex rule'
       grep -q '^## Permissions and auto mode$' "$claude"
       grep -q 'AskUserQuestion' "$claude"
