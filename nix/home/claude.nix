@@ -213,7 +213,8 @@ let
   # An observation that ticks journals what the tick decided (a switch, an error, a quarantine);
   # the poll and the no-switch of every 15-second reading stay out, and so does stderr, which a
   # pinned shell repeats on every reading. The subshell gives up the statusline's stdout, or
-  # Claude Code would wait for the tick before it draws the line.
+  # Claude Code would wait for the tick before it draws the line. `start --check` prints one line
+  # first when the session runs on the other store than its model's (tycswap DESIGN A108).
   claudeStatuslineObserve = pkgs.writeShellScript "flakelab-claude-statusline" ''
     input=$(cat)
     (
@@ -221,6 +222,7 @@ let
         ${pkgs.gnugrep}/bin/grep -v -E '"event":"(poll|no-switch|all-exhausted)"')
       [ -n "$events" ] && printf '%s\n' "$events" | ${pkgs.systemd}/bin/systemd-cat -t flakelab-tycswap-observe
     ) >/dev/null 2>&1 &
+    printf '%s' "$input" | ${lib.getExe pkgs.tycswap} start --check 2>/dev/null
     printf '%s' "$input" | ${claudeStatuslinePlugin}
   '';
   claudeStatuslineArg = lib.optionalString (statuslineMarketplace != null) (
