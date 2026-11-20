@@ -401,8 +401,8 @@ that resolves to no package, such as a misspelt `ansibel`.
 | `templates/overlay/`                      | scaffold for the private overlay flake (`init`, `flake new`, `overlay-gen`)                       |
 | `files/`                                  | scripts + config consumed by the flake                                                            |
 | `files/config/user_data.example.yaml`     | provisioning config for `provision -Config` / `overlay-gen`                                       |
-| `files/config/claude/target-*.md`         | per-target facts appended into the managed `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`         |
-| `files/config/claude/auto-mode.md`        | Claude's permission tiers, in the managed `~/.claude/CLAUDE.md` only                              |
+| `files/config/claude/target-*.md`         | per-target facts appended into the managed `~/.claude/rules/AGENTS.md` and `~/.codex/AGENTS.md`   |
+| `files/config/claude/auto-mode.md`        | Claude's permission tiers, in the managed `~/.claude/rules/AGENTS.md` only                        |
 | `setup-wsl-nix.ps1`                       | Windows provisioning: status / generate / init / bootstrap / provision                            |
 | `.github/workflows/release.yml`           | tag push → builds and publishes the `.#proxmoxImage` seed asset                                   |
 

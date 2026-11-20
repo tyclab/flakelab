@@ -51,7 +51,7 @@ that defaults to off, because every activation here runs on every adopter's box:
   the dashboard, never on a port of its own.
 - `mcpShared.*` and `mcpBrowsers.headless` register their servers in Claude and
   Codex from one definition (`mcp.md`), so the two clients cannot drift.
-- `claudeMdExtra` keeps the shipped half of `~/.claude/CLAUDE.md` and
+- `claudeMdExtra` keeps the shipped half of `~/.claude/rules/AGENTS.md` and
   `~/.codex/AGENTS.md` limited to facts about the distro; personal workflow
   rules go there, from the overlay, and reach both agents.
 - `bitwardenServer = null` skips the `bw config server` activation entirely
@@ -327,8 +327,9 @@ symlinks, because Claude rewrites these files itself:
 - **Installed plugins** — activation uninstalls an `mcp-*` plugin the list
   stopped naming and a plugin it does not name that a declared marketplace no
   longer offers. A missing or empty catalogue prunes nothing and says so.
-- **`CLAUDE.md`** — a `<!-- BEGIN managed by flakelab -->` block; anything
-  outside the markers is left alone. Codex's `~/.codex/AGENTS.md` gets the same
+- **`~/.claude/rules/AGENTS.md`** — a `<!-- BEGIN managed by flakelab -->` block; anything
+  outside the markers is left alone. Activation retires only its own block from
+  the former `~/.claude/CLAUDE.md`. Codex's `~/.codex/AGENTS.md` gets the same
   block without the permission tiers and the question-tool text, which reach
   Codex through `developer_instructions`. An `AGENTS.override.md` beside it
   makes Codex skip the block, and a `home.file` for the path is refused at

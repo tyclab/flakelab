@@ -99,7 +99,7 @@
         # The agent-box bundle: turn on only for a box meant to run agents unattended.
         # claudeAgentDefaults = true;
 
-        # Your own rules, appended inside the managed blocks of ~/.claude/CLAUDE.md
+        # Your own rules, appended inside the managed blocks of ~/.claude/rules/AGENTS.md
         # and ~/.codex/AGENTS.md.
         # claudeMdExtra = ''
         #   ## Workflow Preferences

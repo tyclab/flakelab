@@ -87,7 +87,7 @@ let
 
   inherit (cfg) installClaude installCodex;
 
-  # One rule set for both agents: Claude Code reads ~/.claude/CLAUDE.md, Codex
+  # One rule set for both agents: Claude Code reads ~/.claude/rules/AGENTS.md, Codex
   # ~/.codex/AGENTS.md, and neither reads the other's user-level file. Codex leaves
   # out the Claude-only permission tiers and the question-tool text, which
   # nix/codex-config.nix already puts in its developer_instructions.
@@ -119,7 +119,7 @@ let
   # and anything outside the markers survives. Rewritten every activation. Every
   # failure is a warning, never an abort: activation runs under `set -e`, and a
   # store link (a home.file for the same path) must not stop the rest of it.
-  writeManagedBlock = target: body: ''
+  writeManagedBlock = target: body: afterWrite: ''
     export PATH="${
       lib.makeBinPath [
         pkgs.gawk
@@ -143,7 +143,7 @@ let
       } > "$_tmp.new" \
       && $DRY_RUN_CMD mkdir -p -m 700 "$(dirname "$_md")" \
       && $DRY_RUN_CMD install -m644 "$_tmp.new" "$_md"; then
-      :
+      ${if afterWrite == "" then ":" else afterWrite}
     else
       ${flakelabWarn} "could not refresh the managed block in $_md."
     fi

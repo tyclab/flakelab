@@ -1,5 +1,5 @@
 # Codex CLI: official installer into ~/.local/bin, and the managed block in
-# ~/.codex/AGENTS.md (the same rules ~/.claude/CLAUDE.md carries).
+# ~/.codex/AGENTS.md (the same rules ~/.claude/rules/AGENTS.md carries).
 # An activation entry added here must also be named in health.nix's
 # flakelabHealthCheck entryAfter list, or that check stops running last.
 {
@@ -69,11 +69,13 @@ in
   ];
 
   # Codex reads its user-level instructions from $CODEX_HOME/AGENTS.md only, never
-  # ~/.claude/CLAUDE.md, so without this block it runs on a different rule set.
+  # ~/.claude/rules/AGENTS.md, so without this block it runs on a different rule set.
   # CODEX_HOME counts only when the activation environment sets it.
   home.activation.codexAgentsMd = lib.hm.dag.entryAfter [ "writeBoundary" "flakelabWarnReset" ] (
     lib.optionalString installCodex (
-      flakelab.writeManagedBlock ''"''${CODEX_HOME:-$HOME/.codex}/AGENTS.md"'' flakelab.agentInstructions.codex
+      flakelab.writeManagedBlock ''"''${CODEX_HOME:-$HOME/.codex}/AGENTS.md"''
+        flakelab.agentInstructions.codex
+        ""
     )
   );
 }
