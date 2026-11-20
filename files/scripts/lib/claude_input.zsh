@@ -19,7 +19,9 @@ visible() {
     done
     (( dim )) || out+="$text"
   done
-  print -r -- "$out"
+  # Claude puts a nonbreaking space after its prompt. Match the byte sequence
+  # before using zsh's whitespace class, including in a service with LANG=C.
+  print -r -- "${out//$'\xc2\xa0'/ }"
 }
 # Byte sequences, not a character class: the timer's service may run without a UTF-8 locale.
 bare() { local t="$1"; t="${t//$'\xc2\xa0'/}"; t="${t//❯/}"; t="${t//[[:space:]]/}"; print -r -- "$t" }

@@ -1097,6 +1097,7 @@ clog="${cprofile}/projects/fixture/${csid}.jsonl"
 print -r -- '{"type":"assistant","message":{"stop_reason":"end_turn"}}' > "$clog"
 crecord idle
 check "the completed native turn can be waited on" "$(cstate)" idle
+check "the native prompt’s nonbreaking space is idle in the C locale" "$(LC_ALL=C cstate)" idle
 run_lane --read "$csid"
 contains "read returns the terminal output for the native id" "$OUT" "fixture reply"
 older="/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-scripts"
@@ -1125,8 +1126,8 @@ run_lane --close "$csid"
 check "close refuses that pending input" "${RC}" 1
 excludes "refusal sends no keys" "$(<"${TMUX_LOG}")" "send-keys"
 printf 'fixture reply\n────\n❯ \n────\n' > "$CLAUDE_CAPTURE"
-run_lane --close "$csid"
-check "a native graceful exit returns success" "${RC}" 0
+LC_ALL=C run_lane --close "$csid"
+check "a native graceful exit returns success in the C locale" "${RC}" 0
 contains "its resume stays on the custom profile" "${OUT}" "'CLAUDE_CONFIG_DIR=${cprofile}'"
 contains "its resume uses that credential store and native executable" "${OUT}" "CLAUDE_SECURESTORAGE_CONFIG_DIR=${BASE}/native-store ${HOME}/.local/bin/claude --resume ${csid}"
 contains "its resume requires the caller's original provider configuration" "${OUT}" 'test "${ANTHROPIC_API_KEY+set}" = set'

@@ -1248,7 +1248,7 @@ claude_observe() {
         # A command picker, confirmation or unsent input retains its terminal.
         if (( ${#at} < 2 || at[-1] - at[-2] != 2 )); then state=blocked; return; fi
         line="$(visible "${screen[at[-2]+1]}")"
-        [[ "$line" == [[:space:]]#❯[[:space:]$'\xc2\xa0']# ]] || state=blocked
+        [[ "$line" == [[:space:]]#❯[[:space:]]# ]] || state=blocked
       fi ;;
     *) state=unknown ;;
   esac
@@ -1289,7 +1289,7 @@ claude_lifecycle() {
   local -i tries=0
   while (( ++tries <= 20 )); do
     claude_pane && [[ "$pane" == "$closed_pane" && "$state" == starting ]] || break
-    if look "$pane" && (( at[-1] - at[-2] == 2 )) && [[ "$(visible "${screen[at[-2]+1]}")" == [[:space:]]#❯[[:space:]$'\xc2\xa0']#/exit[[:space:]]# ]] &&
+    if look "$pane" && (( at[-1] - at[-2] == 2 )) && [[ "$(visible "${screen[at[-2]+1]}")" == [[:space:]]#❯[[:space:]]#/exit[[:space:]]# ]] &&
       claude_record && [[ "$st" == idle && "$pid" == "$observed_pid" && "$actual" == "$observed_start" ]]; then
       tmux send-keys -t "$pane" Enter || return 1
       # Claude owns exit, including any confirmation. Never escalate to a kill.
