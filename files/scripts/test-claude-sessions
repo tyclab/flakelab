@@ -1516,6 +1516,8 @@ fi
 unset FAKE_TMUX_HAS FLAKELAB_SESSIONS_SETTLE
 rm -rf "${PROC}/8060" "${PROC}/8600" "${PROC}/8700"
 
+if python3 "${SCRIPT_DIR}/lib/test-tycsnap.py"; then ok "Windows Terminal pane registration and recovery"; else bad "TycSnap fixtures"; fi
+
 run --help
 check "--help exits 0" "${RC}" "0"
 run --bogus

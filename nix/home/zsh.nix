@@ -129,6 +129,7 @@ in
       fi
 
       ${homeJump}
+      ${lib.optionalString isWsl "source ${../../files/scripts/lib/tycsnap.zsh}"}
 
       # `bwu` unlocks on the TTY and parks the per-unlock token in a mode-600 file
       # every shell exports from, so it never rides a command line or a transcript.
