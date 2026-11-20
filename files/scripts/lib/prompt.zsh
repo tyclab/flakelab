@@ -161,7 +161,8 @@ prompt_choose() {
   return 1
 }
 
-# prompt_input <question> [default]: one zle line, default pre-typed, Tab completes files. Sets PROMPT_TEXT; rc 1 on ^C/^D.
+# prompt_input <question> [default] [literal]: one zle line, Tab completes files.
+# Path prompts expand a leading ~; literal prompts preserve the entered argument.
 prompt_input() {
   emulate -L zsh
   setopt localtraps
@@ -171,7 +172,7 @@ prompt_input() {
   zmodload zsh/zle 2>/dev/null
   trap 'return 130' INT
   vared -p "${_PQ}?${_PR} ${_PB}${question}${_PR} ${_PD}›${_PR} " value 2>/dev/null || { print -u2 -- ""; PROMPT_TEXT=""; return 1 }
-  [[ "$value" == "~" || "$value" == "~/"* ]] && value="${HOME}${value#\~}"
+  if [[ "${3:-}" != literal && ( "$value" == "~" || "$value" == "~/"* ) ]]; then value="${HOME}${value#\~}"; fi
   PROMPT_TEXT="$value"
   return 0
 }

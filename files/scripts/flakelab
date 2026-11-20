@@ -47,6 +47,7 @@ _order=(
   activate-hooks
   stale-repos
   glab-projects
+  tycsnap
 )
 
 typeset -A _bin _file _desc
@@ -56,6 +57,7 @@ _bin=(
   update-all      nix-update-all
   doctor          nix-doctor
   backup          nix-backup
+  tycsnap         claude-sessions
   sessions        claude-sessions
   notify          notify
   web             web
@@ -81,6 +83,7 @@ _file=(
   update-all      nix-update
   doctor          nix-doctor
   backup          nix-backup
+  tycsnap         claude-sessions
   sessions        claude-sessions
   notify          notify
   web             web
@@ -103,6 +106,7 @@ _desc=(
   update-all      'update, then re-run the clone sweep (GitLab groups, GitHub owners, repos)'
   doctor          'diagnose this distro and print what to run next'
   backup          'back up home-dir data to the backup root (--restore to read it back)'
+  tycsnap         'restore this Windows Terminal pane from its saved session or shell'
   sessions        'the running agent sessions; --start/--attach host one in tmux, --save before a restart, --open after'
   notify          'a push (ntfy, a JSON webhook) when a session waits on you; the Claude and Codex hooks call it'
   web             'the dashboard in a browser: the tycswap logins, sessions, switch and start; token-protected'
@@ -128,6 +132,7 @@ _targets=(
   test-provision  wsl
   distro-name     wsl
   tray            wsl
+  tycsnap         wsl
 )
 
 # FLAKELAB_TARGET is exported by the nix wrapper (nix/cli.nix) from
@@ -218,12 +223,16 @@ if (( $# == 0 )); then
     fi
     if [[ -x "$_menu" ]]; then
       _offered=()
+      _descriptions=()
       for _c in ${_order}; do
         # A checkout cannot run what has no sibling script (clone): not offered.
         [[ -z "${FLAKELAB_DISPATCH_DIR:-}" && -z "${_file[$_c]}" ]] && continue
-        _available "$_c" && _offered+=("$_c")
+        if _available "$_c"; then
+          _offered+=("$_c")
+          _descriptions+=("${_desc[$_c]}")
+        fi
       done
-      export FLAKELAB_ROUTER="${0:A}" FLAKELAB_MENU_COMMANDS="${_offered}"
+      export FLAKELAB_ROUTER="${0:A}" FLAKELAB_MENU_COMMANDS="${_offered}" FLAKELAB_MENU_DESCRIPTIONS="${(F)_descriptions}"
       exec "$_menu"
     fi
   fi
@@ -253,6 +262,16 @@ fi
 if ! _available "$_cmd"; then
   print -ru2 -- "${_self}: ${_cmd}: not available on target ${FLAKELAB_TARGET} (${_targets[$_cmd]} only)"
   exit 2
+fi
+
+# tycsnap is the short name for the pane restore operation in sessions. Reuse
+# the same wrapper and target arguments in both checkout and installed modes.
+if [[ "$_cmd" == tycsnap ]]; then
+  case "${1:-}" in
+    -h|--help) print -r -- "Usage: flakelab tycsnap"; print -r -- "${_desc[tycsnap]}"; exit 0 ;;
+  esac
+  (( $# == 0 )) || { print -ru2 -- "Usage: flakelab tycsnap"; exit 2 }
+  set -- --restore-tab
 fi
 
 # Installed mode: exec the wrapper verbatim. No `_args` here — the wrapper name

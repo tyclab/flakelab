@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- The terminal menu offers the commands available on this target, including MCP accounts, notifications, the Windows tray, provisioning and repository tools. Choose an action and its flags to run the same command as in a shell. On WSL, `flakelab tycsnap` opens the pane restore action from `flakelab sessions --restore-tab`.
+
 - `flakelab sessions --start claude` accepts a task or brief and returns its native Claude session ID. Use `--wait`, `--read` and `--close` with that ID to check the turn, read its terminal and close a finished task. Parked sessions on dedicated or unidentified credential stores wait for Claude’s own reset.
 
 - With `installTycswap`, Claude Code's settings carry a SessionStart hook, `tycswap start --started` (timeout 45 s): a session that `tycswap start` started on a marked start login at its limit reports that it is up, and tycswap, which held auto-switch for it, moves the shared login on before the session's first request. In a session tycswap holds nothing for, the hook does nothing. Owned by its command like the other hooks: a box without tycswap drops it, a hand-added SessionStart hook stays.
