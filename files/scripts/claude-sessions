@@ -750,6 +750,10 @@ write_autosave() {
 tab_state() {
   local boot
   boot="$(boot_id)" || { print -ru2 -- "Error: cannot read the boot id from ${BOOT_ID_FILE}"; return 1 }
+  if [[ "$1" == codex ]]; then
+    shift
+    exec python3 "${SCRIPT_DIR}/lib/tycsnap-codex.py" "$(save_dir)" "$BOX" "$boot" "$AUTOSAVE_KEEP" "$@"
+  fi
   python3 "${SCRIPT_DIR}/lib/tycsnap.py" "$(save_dir)" "$BOX" "$boot" "$AUTOSAVE_KEEP" "$@"
 }
 
@@ -1622,6 +1626,8 @@ restore_tab_foreground() {
     wid="$(new_window "$(window_name "$tool" "$PWD")" "$PWD" "$(resume_cmd "$tool" "$sid" "$group" "$profile")")" || return 1
     if [[ "$tool" == codex ]]; then tmux set-option -w -t "$wid" @flakelab_session "$sid" || return 1; fi
     attach_window "$wid"
+  elif [[ "$tool" == codex ]]; then
+    tab_state codex "${RESUME_ARGS[@]:1}"
   else
     "${RESUME_ARGS[@]}"
   fi

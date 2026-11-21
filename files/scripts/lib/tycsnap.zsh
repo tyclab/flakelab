@@ -19,6 +19,12 @@ tycsnap-name() {
   command flakelab tycsnap --name "$1"
 }
 
+# A single foreground executable lets zsh preserve stop/fg and the native
+# exit status. The launcher passes pipes, redirects and background jobs through.
+if (( ! ${+aliases[codex]} && ! ${+functions[codex]} )); then
+  alias codex='command flakelab sessions --tab-state codex'
+fi
+
 _tycsnap_preexec() {
   _tycsnap_dirty=1
 }

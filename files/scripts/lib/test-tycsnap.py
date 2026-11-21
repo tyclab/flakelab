@@ -1,11 +1,15 @@
 """Offline TycSnap coverage through the installed sessions script's interface."""
 
 import concurrent.futures
+import importlib.util
+import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
+from unittest.mock import Mock, patch
 import unittest
 from pathlib import Path
 
@@ -16,6 +20,92 @@ B = "22222222-2222-2222-2222-222222222222"
 C = "33333333-3333-3333-3333-333333333333"
 SID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 US = "\x1f"
+
+
+module = importlib.util.spec_from_file_location("tycsnap_codex", SCRIPTS / "lib/tycsnap-codex.py")
+relay = importlib.util.module_from_spec(module)
+module.loader.exec_module(relay)
+
+
+class CodexTitle(unittest.TestCase):
+    def test_fragmented_native_titles_only(self):
+        parser = relay.Titles()
+        prefix = SID[:29]
+        output = (f"ordinary text {A}\033]0;{prefix}...\007discard {B}\033]2;{C}\033\\"
+                  f"\033]0;{A[:16]}\007\033]0;{'long' * 4096}\007\033]0;\007").encode()
+        for size in (1, 2, 15, len(output)):
+            seen = [title for start in range(0, len(output), size)
+                    for title in parser.consume(output[start:start + size])]
+            self.assertEqual(seen, [prefix, C, "", "", ""])
+            self.assertEqual(parser.body, b"")
+
+    def test_other_control_strings_cannot_supply_a_title(self):
+        parser = relay.Titles()
+        for seq in (b"\x1bPp", b"\x1b_", b"\x1b]52;c;"):
+            self.assertEqual(parser.consume(seq + f"\x1b]0;{SID}".encode() + b"\x1b\\"), [])
+        self.assertEqual(parser.consume(b"\x1b]2;private words"), [])
+        self.assertEqual(parser.body, b"")
+        self.assertEqual(parser.consume(b"\x07"), [""])
+        self.assertEqual(parser.consume(f"\x1b]0;{SID}\x07".encode()), [SID])
+
+    def test_native_local_daemon_settings_and_directory(self):
+        self.assertEqual(relay.launch_directory(["--image", "-C", "--cd=directory with space", "--", "--cd=unused"]),
+                         os.path.abspath("directory with space"))
+        self.assertEqual(relay.launch_directory(["--", "-C", "other"]), os.getcwd())
+        with patch.object(relay.subprocess, "run") as run:
+            run.return_value = Mock(returncode=0, stdout=b"daemon_auto_start stable true\n")
+            self.assertTrue(relay.daemon_autostarts(os.getcwd()))
+            for disabled in (b"daemon_auto_start stable false", b"daemon_auto_start stable true\ngcp_setup_wizard stable true",
+                             b"daemon_auto_start stable true\ngateway_setup_wizard stable true"):
+                run.return_value.stdout = disabled
+                self.assertFalse(relay.daemon_autostarts(os.getcwd()))
+
+    def test_forwarded_and_stale_sockets_are_not_local_daemons(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME": tmp}):
+            alias = relay.control_socket()
+            alias.parent.mkdir()
+            private = Path(tmp) / "private"
+            private.mkdir(mode=0o700)
+            endpoint = private / hashlib.sha256(os.fsencode(alias)).hexdigest()
+            # Native's protected path and a mode-0700 real directory are required.
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(str(alias))
+                self.assertIsNone(relay.local_socket(alias, private))
+            alias.unlink()
+            alias.symlink_to(endpoint)
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(str(endpoint))
+                self.assertEqual(relay.local_socket(alias, private), endpoint)
+                private.chmod(0o755)
+                self.assertIsNone(relay.local_socket(alias, private))
+                private.chmod(0o700)
+            with patch.object(relay, "local_socket", return_value=endpoint):
+                self.assertFalse(relay.daemon_ready())  # Socket file remains after its server died.
+
+    def test_only_unique_native_loaded_ids_match(self):
+        server = Mock()
+        with (patch.object(relay, "local_socket", return_value=Path("/fixture")),
+              patch.object(relay.codex_threads, "Server", return_value=server),
+              patch.object(relay.codex_threads, "loaded_ids") as ids):
+            ids.return_value = [SID, B]
+            self.assertEqual(relay.loaded(SID[:29]), SID)
+            ids.return_value = [SID, SID[:-1] + "9", B]
+            self.assertEqual(relay.loaded(SID[:29]), "")
+            ids.return_value = []
+            self.assertEqual(relay.loaded(SID[:29]), "")
+            self.assertEqual(server.close.call_count, 3)
+
+    def test_commands_and_explicit_native_choices_keep_their_own_transport(self):
+        with patch.dict(os.environ, {}, clear=True):
+            for args in ([], ["resume", SID], ["--no-alt-screen", "--", "one argument with spaces"], ["--remote", "unix://"]):
+                self.assertTrue(relay.local_launch(args))
+            for args in (["--add-dir", "workspace"], ["--worktree"], ["--add-dir=directory with spaces"]):
+                self.assertEqual(relay.local_launch(args), "observe")
+            for args in (["exec", "prompt"], ["-m", "model", "app-server"], ["--no-daemon"], ["-p", "other"],
+                         ["--add-dir", "workspace", "--remote", "unix://"], ["--remote=ws://example.invalid"], ["--help"], ["--unknown"]):
+                self.assertFalse(relay.local_launch(args))
+            with patch.dict(os.environ, {"OPENAI_IDENTITY_TOKEN_FILE": "/fixture"}):
+                self.assertFalse(relay.local_launch([]))
 
 
 class Tabs(unittest.TestCase):
@@ -295,6 +385,27 @@ esac
         self.assertEqual(self.panes()[A]["agent"]["session"], SID)
         self.rollout("101", C)
         self.cli("--autosave")
+        self.assertNotIn("agent", self.panes()[A])
+
+    def test_native_client_title_survives_scans_and_a_different_client_cannot_write_it(self):
+        self.state("enter")
+        self.process("202", "10", A, args=["codex"])
+        self.process("203", "10", A, pg="203", fg="202", args=["codex"])
+        self.state("codex-title", "202", "606", SID, self.cwd)
+        self.cli("--autosave")
+        self.assertEqual(self.panes()[A]["agent"]["session"], SID)
+        self.state("codex-title", "203", "609", B, self.cwd)
+        self.state("codex-title", "202", "605", B, self.cwd)
+        self.assertEqual(self.panes()[A]["agent"]["session"], SID)
+        self.state("codex-title", "202", "606", B, self.cwd)
+        self.cli("--autosave")
+        self.assertEqual(self.panes()[A]["agent"]["session"], B)
+        self.state("codex-title", "202", "606", "", self.cwd)
+        self.cli("--autosave")
+        self.assertNotIn("agent", self.panes()[A])
+        self.state("codex-title", "202", "606", SID, self.cwd)
+        self.cli("--tab-state", "update", self.cwd)
+        self.assertNotIn("codex_client", self.panes()[A])
         self.assertNotIn("agent", self.panes()[A])
 
     def test_running_codex_restore_tracks_an_unknown_foreground_and_keeps_failed_start_retry(self):

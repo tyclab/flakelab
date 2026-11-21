@@ -148,12 +148,21 @@ def apply_view(pane, view):
 def foreground(rows, panes, boot):
     agents_by_pid = {}
     direct = {}
-    for pane in panes.values():
+    observed = set()
+    for ident, pane in panes.items():
         pid, start = pane["owner"]
         stat = proc_stat(pid)
         # A dead or hung-up shell keeps its last foreground for recovery.
         # An attached shell reflects this scan, including an ambiguous result.
-        if stat and stat[3] == start and int(stat[2]) > 0 and not pane.get("pending"):
+        if stat and stat[3] == start and int(stat[2]) > 0:
+            client = pane.get("codex_client", [])
+            if (client and (live := proc_stat(client[0])) and live[3] == client[1]
+                    and client_pane(client[0], panes) == ident):
+                observed.add(ident)
+                continue
+            if pane.get("pending"):
+                continue
+            pane.pop("codex_client", None)
             pane.pop("agent", None)
             pane.pop("tmux", None)
     for row in rows:
@@ -164,7 +173,7 @@ def foreground(rows, panes, boot):
             if tool == "codex":
                 agent["native"] = True
         agents_by_pid.setdefault(pid, []).append(agent)
-        if not wid and (ident := client_pane(pid, panes)):
+        if not wid and (ident := client_pane(pid, panes)) and ident not in observed:
             direct.setdefault(ident, []).append(agent)
     for ident, agents in direct.items():
         set_foreground(panes[ident], agents)
@@ -285,6 +294,7 @@ def command(path, box, boot, keep, op, args):
                 if "observed" in pane:
                     apply_view(pane, pane.pop("observed"))
                 pane.pop("attempt", None)
+                pane.pop("codex_client", None)
                 pane.setdefault("cwd", os.getcwd())
                 if not valid_title(pane.setdefault("name", "")):
                     pane["name"] = ""
@@ -303,7 +313,17 @@ def command(path, box, boot, keep, op, args):
             if not valid_title(name):
                 raise ValueError("tab titles must not contain terminal control characters")
             pane["name"] = name
+        elif op == "codex-title":
+            pid, start, sid, cwd = args
+            client = proc_stat(pid)
+            if not client or client[3] != start or client_pane(pid, panes) != ident:
+                return
+            pane["codex_client"] = [pid, start]
+            agents = ([dict(tool="codex", session=sid, cwd=cwd, group="", profile="", native=True)]
+                      if sid and uuid(sid) == sid else [])
+            set_foreground(pane, agents)
         elif op == "update":
+            pane.pop("codex_client", None)
             pane["cwd"], = args
             response = pane["name"]
             if not pane.get("pending"):
@@ -379,8 +399,7 @@ def is_alive(pane):
     return bool(stat and stat[3] == start)
 
 
-def main():
-    directory, box, boot, keep, op, *args = sys.argv[1:]
+def locked_command(directory, box, boot, keep, op, args):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     # The local lock is stable across snapshot replacements and stays out of sync.
@@ -389,6 +408,11 @@ def main():
     with (local / "tycsnap.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         command(directory / f"{box}-autosave-{boot}.txt", box, boot, int(keep), op, args)
+
+
+def main():
+    directory, box, boot, keep, op, *args = sys.argv[1:]
+    locked_command(directory, box, boot, keep, op, args)
 
 
 if __name__ == "__main__":

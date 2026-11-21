@@ -111,6 +111,7 @@ class WebSocket:
             while b"\r\n\r\n" not in self.buffer:
                 self._fill(deadline)
         except (OSError, Refusal) as err:
+            self.sock.close()
             raise Refusal(
                 f"Codex's shared server does not answer at {path} ({err}): start a Codex session, or run: codex app-server daemon start"
             ) from None
@@ -118,6 +119,7 @@ class WebSocket:
         lines = head.decode("latin-1").split("\r\n")
         headers = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
         if " 101 " not in lines[0] + " " or headers.get("sec-websocket-accept") != accept_for(key):
+            self.sock.close()
             raise Refusal(f"the WebSocket handshake at {path} was not accepted: {lines[0]}")
         self.sock.setblocking(False)
 
@@ -236,7 +238,7 @@ class Server:
     With a deadline, connecting and every call together end at it: a call is not even
     sent once it has passed, so nothing is changed after the time a command was given."""
 
-    def __init__(self, experimental=False, deadline=None):
+    def __init__(self, experimental=False, deadline=None, socket_path=None):
         home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
         self.version = "unknown"
         self.next_id = 0
@@ -248,15 +250,19 @@ class Server:
             raise NoAnswer(f"connect: not sent, the time for this command is up ({self.where()})")
         # Codex makes this a link into a short directory; the resolved path also fits
         # a socket address where a long CODEX_HOME would not.
-        path = os.path.realpath(os.path.join(home, "app-server-control", "app-server-control.sock"))
-        self.ws = WebSocket(path, min(CONNECT_SECONDS, deadline.left()) if deadline else CONNECT_SECONDS)
+        path = socket_path or os.path.realpath(os.path.join(home, "app-server-control", "app-server-control.sock"))
+        self.ws = WebSocket(os.fspath(path), min(CONNECT_SECONDS, deadline.left()) if deadline else CONNECT_SECONDS)
         params: dict = {"clientInfo": CLIENT}
         if experimental:
             params["capabilities"] = {"experimentalApi": True}
-        agent = self.need(self.call("initialize", params), "userAgent", "initialize", str)
-        # "codex-tui/0.169.0 (...)": the running server's version, which an installed CLI need not share.
-        self.version = agent.split(" ")[0].rpartition("/")[2] or agent
-        self.ws.send_text(json.dumps({"method": "initialized"}), self._limit("initialized"))
+        try:
+            agent = self.need(self.call("initialize", params), "userAgent", "initialize", str)
+            # "codex-tui/0.169.0 (...)": the running server's version, which an installed CLI need not share.
+            self.version = agent.split(" ")[0].rpartition("/")[2] or agent
+            self.ws.send_text(json.dumps({"method": "initialized"}), self._limit("initialized"))
+        except (OSError, Refusal):
+            self.ws.close()
+            raise
 
     def where(self):
         return f"Codex server {self.version}"
