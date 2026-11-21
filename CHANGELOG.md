@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Changed
 
+- Pin tycswap and its Windows tray to v0.20.0. On Linux and WSL, each native Claude session that `tycswap start` launches gets its own login link, so one session can move to the login for its model while the others stay: by itself when its model changes to one its login offers, and with `tycswap use <mythos|fable|default>` beforehand where Claude Code would refuse the model (`! tycswap use mythos`, then `/model claude-mythos-5-2`). The Mythos login moves at its limit when another ready Mythos login has room. Remote Control belongs to the signed-in account, so a session that moves to another account needs `/remote-control` again. A box without a tycswap store or without accounts behaves as v0.19.0.
 - Pin tycswap and its Windows tray to v0.19.0. The terminal account menu includes model allocations, separate sign-ins and status checks. Restored independent sessions keep their original login across long breaks.
 
 - Claude's generated user instructions now load from `~/.claude/rules/AGENTS.md`. Activation removes the old flakelab block from `~/.claude/CLAUDE.md`, retaining personal instructions. Restoring an older backup to a migrated installation also retains its personal instructions.
