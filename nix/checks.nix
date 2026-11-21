@@ -166,7 +166,7 @@ in
   # One block of cases runs lib/codex_threads.py against its stand-in server.
   claude-sessions = suiteCheckWith [ pkgs.python3 ] "claude-sessions";
   claude-wake-parked = suiteCheckWith [ pkgs.jq pkgs.gawk ] "claude-wake-parked";
-  codex-threads = suiteCheckWith [ pkgs.python3 ] "codex-threads";
+  codex-threads = suiteCheckWith [ pkgs.python3 pkgs.tmux ] "codex-threads";
   notify = suiteCheck "notify";
   questions = suiteCheckWith [ pkgs.python3 ] "questions";
   # Both managed blocks against a fixture home: text outside the markers survives
@@ -1828,21 +1828,33 @@ in
     assert !(lib.elem dir noTycswap.home.sessionPath);
     assert !(lib.hasInfix dir noClaude.programs.zsh.envExtra);
     assert !(lib.hasInfix dir noTycswap.programs.zsh.envExtra);
-    pkgs.runCommandLocal "flakelab-check-claude-start-launcher" { nativeBuildInputs = [ pkgs.zsh ]; } ''
-      export HOME="$TMPDIR/home"
-      mkdir -p "$HOME/${builtins.dirOf key}" "$HOME/.local/bin" "$HOME/.npm-global/bin"
-      cp ${launcher.source} "$HOME/${key}"
-      chmod +x "$HOME/${key}"
-      touch "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude"
-      chmod +x "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude"
-      printf '%s' ${lib.escapeShellArg hm.programs.zsh.envExtra} > zshenv
-      got=$(PATH="$HOME/.local/bin:$PATH" zsh -fc '. ./zshenv; command -v claude')
-      test "$got" = "$HOME/${key}"
-      grep -q '^# tycswap-start-launcher$' "$got"
-      test "$(head -n1 "$got")" = '#!${pkgs.bash}/bin/bash'
-      grep -q '${pkgs.coreutils}/bin/realpath' "$got"
-      touch "$out"
-    '';
+    assert lib.hasInfix "claude-model-prompt.zsh" hm.programs.zsh.initContent;
+    assert !(lib.hasInfix "claude-model-prompt.zsh" noClaude.programs.zsh.initContent);
+    assert !(lib.hasInfix "claude-model-prompt.zsh" noTycswap.programs.zsh.initContent);
+    pkgs.runCommandLocal "flakelab-check-claude-start-launcher"
+      {
+        nativeBuildInputs = [
+          pkgs.zsh
+          pkgs.python3
+        ];
+      }
+      ''
+        export HOME="$TMPDIR/home"
+        mkdir -p "$HOME/${builtins.dirOf key}" "$HOME/.local/bin" "$HOME/.npm-global/bin"
+        cp ${launcher.source} "$HOME/${key}"
+        chmod +x "$HOME/${key}"
+        touch "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude"
+        chmod +x "$HOME/.local/bin/claude" "$HOME/.npm-global/bin/claude"
+        printf '%s' ${lib.escapeShellArg hm.programs.zsh.envExtra} > zshenv
+        got=$(PATH="$HOME/.local/bin:$PATH" zsh -fc '. ./zshenv; command -v claude')
+        test "$got" = "$HOME/${key}"
+        grep -q '^# tycswap-start-launcher$' "$got"
+        test "$(head -n1 "$got")" = '#!${pkgs.bash}/bin/bash'
+        grep -q '${pkgs.coreutils}/bin/realpath' "$got"
+        FLAKELAB_TEST_CLAUDE_LAUNCHER="$got" python3 ${self}/files/scripts/lib/test-claude-start.py \
+          PickerTests.test_one_key_or_enter_selects_once_and_rereads_the_configured_model
+        touch "$out"
+      '';
 
   # The auto-switch timer is tycswap's `tycswap auto --once` on a user timer,
   # present only when an interval is set and the binary is installed; the

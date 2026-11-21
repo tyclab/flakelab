@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Added
 
+- Bare `claude` at an interactive zsh prompt offers Mythos, Fable and Opus. Enter keeps the configured model. A queued `tycswap start --next mythos` takes precedence.
 - The terminal menu offers the commands available on this target, including MCP accounts, notifications, the Windows tray, provisioning and repository tools. Choose an action and its flags to run the same command as in a shell.
 - On WSL, TycSnap remembers Windows Terminal panes across restarts, including shell directories, saved titles, foreground sessions and attached tmux windows. Use `flakelab tycsnap` to recover saved tabs or retry a restore. Use `flakelab tycsnap --name TITLE` to name a pane.
 
@@ -98,6 +99,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- The opt-in live Codex thread tests run on a private tmux socket for both launch and cleanup, including when invoked inside another tmux session.
 - In registered Windows Terminal panes, TycSnap resumes the conversation displayed by a direct local shared-server Codex TUI, including after `/new` or `/resume`. The TUI displays its thread ID in the pane title. A pane with an unidentified session restores its directory, and a surviving tmux window reattaches.
 
 - uv comes from nixpkgs-unstable (0.13.7 at the current pin; the stable channel holds 0.11.21). uv lists the Python builds it can download in its own binary, and 0.11 predates CPython 3.15.0, so a project that asks for 3.15 got 3.15.0b2, on which lxml's cp315 wheel crashes the interpreter on import and hypothesis's cannot load its native module (`No module named 'hypothesis._native'`). A box that already holds 3.15.0b2 keeps using it after the switch until `uv python upgrade 3.15`, which installs the newest 3.15 and moves the `cpython-3.15-linux-x86_64-gnu` link that existing virtual environments point at.

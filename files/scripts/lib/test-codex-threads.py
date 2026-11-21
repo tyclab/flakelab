@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -67,6 +68,45 @@ class Case(unittest.TestCase):
 
     def git(self, *args, cwd):
         subprocess.run(["git", "-c", "init.defaultBranch=main", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args], cwd=cwd, check=True, capture_output=True)
+
+
+class LiveTmuxTest(Case):
+    def test_live_windows_and_cleanup_are_private_even_inside_tmux(self):
+        live = load("codex_threads_live", "test-codex-threads-live.py")
+        socket_dir = self.root / f"tmux-{os.getuid()}"
+        socket_dir.mkdir(mode=0o700)
+        caller = str(socket_dir / "default")
+        env = {
+            "PATH": os.environ["PATH"],
+            "SHELL": shutil.which("bash"),
+            "CODEX_HOME": str(self.home),
+            "HOME": str(self.root),
+            "XDG_CONFIG_HOME": str(self.root / "config"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "FLAKELAB_CODEX_LIVE": "1",
+            "TMUX_TMPDIR": str(self.root),
+            "TMUX": f"{caller},1,0",
+        }
+        sentinel = ["tmux", "-f", "/dev/null", "-S", caller]
+        with mock.patch.dict(os.environ, env, clear=True):
+            subprocess.run([*sentinel, "new-session", "-d", "-s", live.TMUX_SESSION,
+                            "-n", "sentinel", "sleep 60"], check=True, capture_output=True)
+            self.addCleanup(subprocess.run, [*sentinel, "kill-server"], capture_output=True, env=env)
+            live.Live.setUpClass()
+            try:
+                # The real sessions script's tmux commands inherit its environment.
+                # Use tmux as its stand-in so this probe can never start a client.
+                with mock.patch.object(live, "SESSIONS", shutil.which("tmux")):
+                    rc, _, err = live.sessions("-f", "/dev/null", "new-session", "-d",
+                                               "-s", live.TMUX_SESSION, "-n", "probe", "sleep 60")
+                windows = live.windows()
+            finally:
+                live.Live.tearDownClass()
+                live.Live.doClassCleanups()
+            after = subprocess.run([*sentinel, "list-windows", "-F", "#{window_name}"],
+                                   capture_output=True, text=True)
+        self.assertEqual((rc, sorted(windows), after.stdout.splitlines()),
+                         (0, ["probe"], ["sentinel"]), err)
 
 
 class FramesTest(unittest.TestCase):

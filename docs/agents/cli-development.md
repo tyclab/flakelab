@@ -96,8 +96,13 @@ Read for this topic; paths below are relative to the repository root unless stat
     `nix/home/claude.nix` puts a marked-login launcher ahead of native Claude on
     PATH, at `~/.local/share/flakelab/claude/bin/claude`. It preserves the official
     `~/.local/bin/claude` link, resolves that real executable, rejects self-recursion
-    and execs `tycswap start -- <real> "$@"` once (native Claude once if tycswap is
-    absent). A nonzero result never retries. Its `# tycswap-start-launcher` marker
+    and normally execs `tycswap start -- <real> "$@"` once (native Claude once if
+    tycswap is absent). For a bare command, interactive zsh's preexec hook marks
+    its direct child. The launcher asks for a model only when all three streams
+    are terminals, agent/CI/opt-out flags are absent, and the read-only query
+    `tycswap start --next show` succeeds with `none`. An explicit Mythos choice
+    runs `tycswap start --mythos`. A nonzero start never retries. The launcher's
+    `# tycswap-start-launcher` marker
     lets direct `tycswap start` skip it during default-command resolution; never
     alias `claude` to `tycswap start -- claude`. Suite: `test-claude-start`.
     Other glue: `nix/home/tycswap.nix` (the

@@ -649,7 +649,21 @@ sessions share any switch. Arguments and inherited auth settings pass through,
 and a nonzero result never causes a second launch. Without tycswap on PATH,
 the launcher executes native Claude directly.
 
-The launcher passes the verified real executable explicitly:
+Type `claude` by itself at an interactive zsh prompt to choose a model for
+that session. Enter keeps the model shown. Press `m` for Mythos, `f` for Fable
+or `o` for Opus. The prompt lists the alternatives to the configured model.
+Any other key keeps that model, and Ctrl-C cancels the start. A Mythos choice
+runs `tycswap start --mythos` and reports the reason if the login is unavailable.
+A choice at startup applies to that launch only.
+
+To choose ahead of time, run `tycswap start --next mythos`. The next bare
+start uses that request without prompting. The chooser requires a tycswap
+that supports `start --next show`. Arguments, redirected streams, aliases,
+functions, agent sessions and shells configured for another identity or provider
+keep their ordinary startup behavior. Set `FLAKELAB_NO_PROMPT=1` to skip the
+chooser in an interactive shell.
+
+For an ordinary start, the launcher passes the verified real executable explicitly:
 `tycswap start -- "$(realpath -e ~/.local/bin/claude)" [Claude arguments]`.
 Direct `tycswap start` skips the known launcher when finding native Claude;
 an alias such as `claude='tycswap start -- claude'` can recurse. A missing native
