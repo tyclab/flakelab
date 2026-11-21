@@ -13,19 +13,27 @@ if [[ "$1" -ef "$0" ]]; then
   exit 126
 fi
 
+model_choice() {
+  local answer
+  # fd 3 carries the prompt. A failing picker gets one launcher diagnostic.
+  if answer=$("@python@" -I "@picker@" 3>&2 2>/dev/null); then
+    printf '%s' "$answer"
+  else
+    printf '%s\n' 'claude: model picker failed; starting with the configured model.' >&2
+  fi
+}
+
 # Keep the preexec marker in this shell only, including for the query.
 export -n FLAKELAB_CLAUDE_PROMPT_PID
 if command -v tycswap >/dev/null 2>&1; then
   if [[ $# == 1 && ${FLAKELAB_CLAUDE_PROMPT_PID:-} == "$PPID" && -t 0 && -t 1 && -t 2 &&
         ! -v CI && ! -v CLAUDECODE && ! -v CODEX_THREAD_ID &&
         ! -v TYCSWAP_NO_PROMPT && ! -v FLAKELAB_NO_PROMPT ]]; then
-    case "$("@python@" -I "@picker@")" in
-      default) ;;
+    case "$(model_choice)" in
       mythos) exec tycswap start --mythos ;;
       fable) set -- "$@" --model fable ;;
       opus) set -- "$@" --model opus ;;
       cancel) exit 130 ;;
-      *) exit 1 ;;
     esac
   fi
   exec tycswap start -- "$@"
