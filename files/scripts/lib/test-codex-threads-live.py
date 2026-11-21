@@ -15,8 +15,8 @@ version, and only this file asks the server that is really installed.
                               copies rollouts there and pulls a deleted one back, so
                               the copy of each test session is removed too.
 
-Every check works in a folder of its own and in a tmux session of its own
-(flakelab-live-<pid>), never in `agents`. The ids it creates are recorded and removed
+Each check uses a temporary folder. The suite runs flakelab-live-<pid> on its own
+tmux socket, including when invoked from inside tmux. Session ids are recorded and removed
 in a step that runs whatever happened before; a removal that fails is reported with
 what is left. Trust is compared per folder, not by comparing the whole of config.toml,
 which other sessions may change meanwhile.
@@ -68,13 +68,17 @@ def helper(*args):
 
 
 def sessions(*args):
-    env = {**os.environ, "FLAKELAB_TMUX_SESSION": TMUX_SESSION}
-    done = subprocess.run([str(SESSIONS), *args], capture_output=True, text=True, timeout=300, env=env, stdin=subprocess.DEVNULL)
+    done = subprocess.run([str(SESSIONS), *args], capture_output=True, text=True, timeout=300,
+                          env=Live.tmux_env, stdin=subprocess.DEVNULL)
     return done.returncode, done.stdout, done.stderr
 
 
+def tmux(*args):
+    return subprocess.run(["tmux", *args], env=Live.tmux_env, capture_output=True, text=True)
+
+
 def windows():
-    done = subprocess.run(["tmux", "list-windows", "-t", TMUX_SESSION, "-F", "#{window_name} #{@flakelab_session}"], capture_output=True, text=True)
+    done = tmux("list-windows", "-t", TMUX_SESSION, "-F", "#{window_name} #{@flakelab_session}")
     found: dict[str, str] = {}
     for line in done.stdout.splitlines():
         name, _, recorded = line.partition(" ")
@@ -115,6 +119,12 @@ class Live(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        socket_dir = cls.enterClassContext(tempfile.TemporaryDirectory(prefix="flakelab-tmux-"))
+        cls.tmux_env = {**os.environ, "TMUX_TMPDIR": socket_dir, "FLAKELAB_TMUX_SESSION": TMUX_SESSION}
+        # An inherited TMUX names its socket directly and takes precedence over TMUX_TMPDIR.
+        cls.tmux_env.pop("TMUX", None)
+        cls.tmux_env.pop("TMUX_PANE", None)
+        cls.addClassCleanup(tmux, "kill-session", "-t", TMUX_SESSION)
         s = server()
         try:
             config, _ = codex_threads.projects_of(s, os.getcwd())
@@ -126,10 +136,6 @@ class Live(unittest.TestCase):
         cls.effort = [e["reasoningEffort"] if isinstance(e, dict) else e for e in entry["supportedReasoningEfforts"]][0]
         cls.defaults = (config.get("model"), config.get("model_reasoning_effort"))
         print(f"live checks on {cls.model} {cls.effort}, Codex server {s.version}, tmux session {TMUX_SESSION}", file=sys.stderr)
-
-    @classmethod
-    def tearDownClass(cls):
-        subprocess.run(["tmux", "kill-session", "-t", TMUX_SESSION], capture_output=True)
 
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp(prefix="flakelab-live-")).resolve()
@@ -235,9 +241,6 @@ class Live(unittest.TestCase):
         tid = self.start("live-l4", OK_PROMPT, "--trust")
         wait_for("the first turn finished", lambda: state(tid)["state"] == "idle", 180)
         target = f"{TMUX_SESSION}:live-l4"
-
-        def tmux(*args):
-            return subprocess.run(["tmux", *args], capture_output=True, text=True)
 
         # Another window that carries the same mark and holds the words, and is no lane.
         tmux("new-window", "-d", "-t", f"{TMUX_SESSION}:", "-n", "live-fake", f"sh -c 'echo resume {tid}; sleep 120'")

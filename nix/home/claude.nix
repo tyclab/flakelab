@@ -347,12 +347,20 @@ in
       executable = true;
       text =
         builtins.replaceStrings
-          [ "#!/usr/bin/env bash" "@realpath@" ]
-          [ "#!${pkgs.bash}/bin/bash" "${pkgs.coreutils}/bin/realpath" ]
+          [ "#!/usr/bin/env bash" "@realpath@" "@python@" "@picker@" ]
+          [
+            "#!${pkgs.bash}/bin/bash"
+            "${pkgs.coreutils}/bin/realpath"
+            "${pkgs.python3}/bin/python3"
+            "${../../files/scripts/lib/claude-model-picker.py}"
+          ]
           (builtins.readFile ../../files/scripts/claude-start-launcher);
     };
   };
   home.sessionPath = lib.mkBefore (lib.optional startLauncher startLauncherDir);
+  programs.zsh.initContent = lib.mkAfter (
+    lib.optionalString startLauncher "source ${../../files/scripts/lib/claude-model-prompt.zsh}"
+  );
   # .zshenv also prepends npm's bin directory; the launcher must win there too.
   programs.zsh.envExtra = lib.mkAfter (
     lib.optionalString startLauncher ''
