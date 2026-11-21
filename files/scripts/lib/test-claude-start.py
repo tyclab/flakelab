@@ -42,6 +42,7 @@ if TOOL == "tycswap":
     assert sys.argv[1:3] == ["start", "--"], sys.argv
     os.execv(sys.argv[3], sys.argv[3:])
 if "RECEIVE_LINE" in os.environ:
+    print("fixture client ready", flush=True)
     with open(os.environ["RECEIVE_LINE"], "w") as receiver:
         receiver.write(sys.stdin.readline())
 sys.exit(int(os.environ.get("CHILD_EXIT", "0")))
@@ -64,12 +65,7 @@ class LauncherFixture(unittest.TestCase):
         if packaged:
             shutil.copyfile(packaged, self.launcher)
         else:
-            source = (SCRIPTS / "claude-start-launcher").read_text()
-            source = source.replace("#!/usr/bin/env bash", f"#!{shutil.which('bash')}")
-            source = source.replace("@realpath@", shutil.which("realpath"))
-            source = source.replace("@python@", sys.executable)
-            source = source.replace("@picker@", str(SCRIPTS / "lib/claude-model-picker.py"))
-            self.launcher.write_text(source)
+            self.render_launcher(SCRIPTS / "lib/claude-model-picker.py")
         self.launcher.chmod(0o755)
         self.write_recorder(self.native, "claude")
         self.write_recorder(self.bin / "tycswap", "tycswap")
@@ -82,6 +78,13 @@ class LauncherFixture(unittest.TestCase):
             "SHLVL": "3",
             "PWD": str(Path.cwd()),
         }
+
+    def render_launcher(self, picker):
+        source = (SCRIPTS / "claude-start-launcher").read_text()
+        source = source.replace("#!/usr/bin/env bash", f"#!{shutil.which('bash')}")
+        source = source.replace("@realpath@", shutil.which("realpath"))
+        source = source.replace("@python@", sys.executable)
+        self.launcher.write_text(source.replace("@picker@", str(picker)))
 
     def write_recorder(self, target, tool):
         target.write_text(f"#!{sys.executable}\nTOOL = {tool!r}\n" + RECORDER)
@@ -258,7 +261,7 @@ class PickerTests(LauncherFixture):
         os.write(self.fd, line.encode() + b"\n")
         return self.wait_for(SHELL_PROMPT)
 
-    def choose(self, model, key):
+    def wait_for_picker(self, model):
         os.write(self.fd, b"claude\n")
         # The last option completes the line. Send only the key, without Enter.
         last_option = "Fable" if "opus" in model.lower() else "Opus"
@@ -267,11 +270,12 @@ class PickerTests(LauncherFixture):
         self.assertEqual(echo, "claude")
         self.assertIn("Enter", line)
         self.assertIn(model.lower(), line.lower())
-        return line.lower(), self.finish_choice(key)
+        return line.lower()
 
-    def finish_choice(self, key):
+    def choose(self, model, key):
+        line = self.wait_for_picker(model)
         os.write(self.fd, key)
-        return self.wait_for(SHELL_PROMPT)
+        return line, self.wait_for(SHELL_PROMPT)
 
     def assert_calls(self, swap_args, native_args):
         calls = self.calls()
@@ -331,6 +335,7 @@ class PickerTests(LauncherFixture):
     def test_ctrl_c_starts_nothing_and_restores_the_terminal(self):
         before = termios.tcgetattr(self.fd)
         self.choose("opus", b"\x03")
+        self.assertEqual(self.command("print $?"), b"print $?\r\n130\r\n" + SHELL_PROMPT)
         self.assert_calls([QUERY], None)
         self.assertEqual(termios.tcgetattr(self.fd), before)
         self.assertIn(b"\r\nalive\r\n", self.command("print -r -- alive"))
@@ -341,6 +346,44 @@ class PickerTests(LauncherFixture):
         self.choose("opus", b"fthe first turn\r")
         self.assertEqual(received.read_text(), "the first turn\n")
         self.assert_calls([QUERY, self.normal_start("--model", "fable")], ["--model", "fable"])
+
+    def test_escape_key_discards_its_pending_bytes_before_start(self):
+        received = self.home / "received"
+        self.command('export RECEIVE_LINE="$HOME/received"')
+        for sequence in (b"\x1b[A", b"\x1b[<0;12;8M", b"\x1b[M !!", b"\x1b"):
+            with self.subTest(sequence=sequence):
+                self.calls_file.unlink(missing_ok=True)
+                self.wait_for_picker("opus")
+                typed_ahead = b"typed " if sequence != b"\x1b" else b""
+                os.write(self.fd, sequence + typed_ahead)
+                self.wait_for(b"fixture client ready")
+                os.write(self.fd, b"first turn\r")
+                self.wait_for(SHELL_PROMPT)
+                self.assertEqual(received.read_bytes(), typed_ahead + b"first turn\n")
+                self.assert_calls([QUERY, self.normal_start()], [])
+
+    def test_invalid_picker_answer_or_failed_picker_uses_ordinary_start(self):
+        picker = self.root / "fixture-picker.py"
+        self.render_launcher(picker)
+        self.command("export CHILD_EXIT=37")
+        for label, script, failure in (
+            ("raises", "raise RuntimeError('fixture picker error')", True),
+            ("empty", "", False),
+            ("unknown", "print('other')", False),
+            ("failed selection", "print('mythos'); raise SystemExit(2)", True),
+            ("failed cancellation", "print('cancel'); raise SystemExit(2)", True),
+        ):
+            with self.subTest(picker=label):
+                self.calls_file.unlink(missing_ok=True)
+                picker.write_text(script)
+                terminal = self.command("claude")
+                messages = terminal.removeprefix(b"claude\r\n").removesuffix(SHELL_PROMPT).splitlines()
+                if failure:
+                    self.assertEqual(len(messages), 1, terminal)
+                    self.assertTrue(messages[0].strip())
+                self.assertNotIn(b"Traceback", terminal)
+                self.assertEqual(self.command("print $?"), b"print $?\r\n37\r\n" + SHELL_PROMPT)
+                self.assert_calls([self.normal_start()], [])
 
     def test_refused_mythos_shows_the_reason_and_starts_nothing(self):
         self.command("export MYTHOS_REFUSED=1")
