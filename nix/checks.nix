@@ -2039,14 +2039,16 @@ in
     '';
 
   # flakelab-prune keeps the release `current` names, absolute or relative, and
-  # leaves a package whose link dangles alone.
+  # leaves a package whose link dangles alone. A uv cache it cannot prune fails the
+  # unit and names why: the process holding the cache's lock, or a folder it cannot
+  # write (root's __pycache__ on GamerTyc, 2026-11-20 to 22, behind `|| true`).
   prune =
     let
       sys = self.nixosConfigurations.default.config;
       svc = sys.home-manager.users.${sys.flakelab.username}.systemd.user.services.flakelab-prune;
       prune = builtins.head svc.Service.ExecStart;
     in
-    pkgs.runCommandLocal "flakelab-check-prune" { } ''
+    pkgs.runCommandLocal "flakelab-check-prune" { nativeBuildInputs = [ pkgs.util-linux ]; } ''
       set -eu
       export HOME="$TMPDIR/home"
       p="$HOME/.codex/packages"
@@ -2069,6 +2071,37 @@ in
       expect "$(ls "$p/b/releases")" "1" "a relative current link"
       expect "$(ls "$p/c/releases")" "1" "a dangling current link"
       expect "$(ls "$p/d/releases" | tr '\n' ' ')" "1 3 " "a release a process still runs"
+
+      # The uv cache the script finds through `uv cache dir`, as on a box.
+      cache="$HOME/.cache/uv"
+      mkdir -p "$cache"
+      export UV_LOCK_TIMEOUT=1
+      echo "a held uv cache fails the run and names its holder"
+      # -o: only flock holds the lock, so killing it frees the cache.
+      flock -o -s "$cache/.lock" sleep 60 &
+      holder=$!
+      while flock -n -x "$cache/.lock" true; do sleep 0.1; done
+      rc=0
+      ${prune} 2> held.err || rc=$?
+      kill "$holder"
+      expect "$rc" "1" "exit status with the cache held"
+      grep -q "^flakelab-prune: the uv cache is held by pid $holder: flock -o -s $cache/.lock sleep 60" held.err \
+        || { cat held.err >&2; echo "the holder is not named" >&2; exit 1; }
+
+      echo "a folder it cannot write fails the run and is named"
+      mkdir -p "$cache/archive-v0/entry/__pycache__"
+      touch "$cache/archive-v0/entry/__pycache__/oid.pyc"
+      chmod 555 "$cache/archive-v0/entry/__pycache__"
+      rc=0
+      ${prune} 2> stuck.err || rc=$?
+      chmod 755 "$cache/archive-v0/entry/__pycache__"
+      expect "$rc" "1" "exit status with an unwritable folder"
+      grep -q "^flakelab-prune: 1 folder(s) in the uv cache are not writable for $(id -un), the first $cache/archive-v0/entry/__pycache__ " stuck.err \
+        || { cat stuck.err >&2; echo "the unwritable folder is not named" >&2; exit 1; }
+
+      echo "with both gone it prunes and succeeds"
+      ${prune}
+      expect "$(ls "$cache/archive-v0" 2> /dev/null)" "" "the unused entry"
       touch "$out"
     '';
 

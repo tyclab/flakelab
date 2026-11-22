@@ -276,6 +276,9 @@ sparse image on a drive that ran out of space came back unreadable
 What runs inside the VM, by an agent or the daily timers:
 `sudo systemctl start nix-gc.service docker-prune.service` and the
 `flakelab-prune` user timer free the Nix store, Docker and the tool caches.
+A `flakelab-prune` that ends failed says why in `journalctl --user -u flakelab-prune`:
+the process that still holds the uv cache (a long-lived `uv run`), or the folders in it
+that a process running as root left and that need `sudo chown` back.
 `docker-prune` keeps whatever is younger than a week (`until=168h`), so images
 built or pulled in the last week survive it (10 GB on 2026-10-25); with no
 container running, `docker image prune -af` takes them too. `sudo fstrim -v /`
