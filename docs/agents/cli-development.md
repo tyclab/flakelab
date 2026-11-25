@@ -92,9 +92,13 @@ Read for this topic; paths below are relative to the repository root unless stat
     this box's: two distros from one overlay share the hostname and the synced
     directory, never the machine id.
   - tycswap is the account switcher (`installTycswap`, pinned in
-    `flake.nix`); flakelab carries the glue only. With `installClaude` as well,
-    `nix/home/claude.nix` puts a marked-login launcher ahead of native Claude on
-    PATH, at `~/.local/share/flakelab/claude/bin/claude`. It preserves the official
+    `flake.nix`); flakelab carries the glue only. The pin is not bumped by hand:
+    `.github/workflows/tycswap-pin.yml` moves `version`, both `hash`es and
+    `vendorHash` to each release in a pull request that merges itself
+    (`.github/scripts/tycswap_pin.py`, suite `test_tycswap_pin.py`). With
+    `installClaude` as well, `nix/home/claude.nix` puts a marked-login launcher
+    ahead of native Claude on PATH, at
+    `~/.local/share/flakelab/claude/bin/claude`. It preserves the official
     `~/.local/bin/claude` link, resolves that real executable, rejects self-recursion
     and normally execs `tycswap start -- <real> "$@"` once (native Claude once if
     tycswap is absent). For a bare command, interactive zsh's preexec hook marks

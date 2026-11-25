@@ -1,0 +1,41 @@
+---
+name: tycswap pin
+
+# .github/scripts/tycswap_pin.py moves flake.nix's pin to a new tycswap release in a
+# self-merging pull request. Polled: tyclab/tycswap holds no credential that could
+# start this run; a tick with nothing to do ends after the plan step.
+on:
+  schedule:
+    # Off the top of the hour, the time GitHub delays scheduled runs most.
+    - cron: "4,19,34,49 * * * *"
+  workflow_dispatch:
+
+# A pull request this token opens starts no pull_request run, so the script
+# dispatches ci.yml on its branch (actions: write) for lint, test and gitleaks.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: tycswap-pin
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/tycswap_pin.py plan
+
+      - if: steps.plan.outputs.action == 'pin'
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+
+      - if: steps.plan.outputs.action != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/tycswap_pin.py act

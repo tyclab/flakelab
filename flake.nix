@@ -166,12 +166,12 @@
       # tycswap: the account switcher for Claude Code and Codex logins, one static
       # Go binary named `tycswap`. Pinned to a release tag: `version` is the one
       # place it is written (the tag, the ldflag and the Windows asset derive from
-      # it), and a bump needs all three hashes with it - a build with a stale hash
-      # prints the new one, and checks.tycswap / checks.tycswap-windows fail in CI
-      # rather than on a box's update.
+      # it). .github/workflows/tycswap-pin.yml, polling every quarter hour, moves it
+      # with both `hash`es and `vendorHash` in a pull request that merges itself;
+      # checks.tycswap / checks.tycswap-windows fail in CI on a stale hash rather
+      # than on a box's update.
       tycswap =
         let
-          # renovate: datasource=github-releases depName=tyclab/tycswap extractVersion=^v(?<version>.*)$
           version = "0.23.3";
         in
         pkgs.buildGo127Module {
