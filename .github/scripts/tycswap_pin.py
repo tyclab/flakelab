@@ -19,6 +19,9 @@ from pathlib import Path
 UPSTREAM = "tyclab/tycswap"
 BRANCH_PREFIX = "tycswap-pin/"
 BOT_LOGIN = "github-actions[bot]"
+# The logins whose pin pull requests are this workflow's: the bot of the token that opens
+# them (the tyclab-release App's, or the workflow token's) and github-actions[bot].
+BOT_LOGINS = {BOT_LOGIN, *filter(None, os.environ.get("PIN_BOT_LOGINS", "").split(","))}
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 CI_WORKFLOW = "ci.yml"
 LABEL = "dependencies"
@@ -257,7 +260,7 @@ class GitHub:
         return [
             (PinPR(p["number"], p["head"]["ref"], p["head"]["sha"], pr_version(p["head"]["ref"]), bool(p.get("auto_merge"))), p)
             for p in (self.pulls(state) if raw is None else raw)
-            if (p.get("user") or {}).get("login") == BOT_LOGIN and self.here(p) and pr_version(p["head"]["ref"])
+            if (p.get("user") or {}).get("login") in BOT_LOGINS and self.here(p) and pr_version(p["head"]["ref"])
         ]
 
     def settled(self, version):
@@ -268,7 +271,7 @@ class GitHub:
             if raw.get("merged_at"):
                 return pr.number, "merged"
             closer = (self.api(f"repos/{self.repo}/issues/{pr.number}").get("closed_by") or {}).get("login")
-            if closer != BOT_LOGIN:
+            if closer not in BOT_LOGINS:
                 return pr.number, "closed by hand"
         return None
 

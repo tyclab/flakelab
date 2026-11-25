@@ -2,19 +2,22 @@
 name: tycswap pin
 
 # .github/scripts/tycswap_pin.py moves flake.nix's pin to a new tycswap release in a
-# self-merging pull request. Polled: tyclab/tycswap holds no credential that could
-# start this run; a tick with nothing to do ends after the plan step.
+# self-merging pull request. tycswap's Release workflow starts this run right after
+# publishing, with the tyclab-release App's token; the schedule is a fallback (it
+# has never fired for this workflow so far), and a tick with nothing to do ends
+# after the plan step.
 on:
   schedule:
     # Off the top of the hour, the time GitHub delays scheduled runs most.
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
-# GitHub holds ci.yml's pull_request run of a pull request this token opens until it
-# is approved; the script approves it (actions: write), and its lint, test and gitleaks
-# are what main's ruleset reads. A workflow_dispatch run of ci.yml on the branch
-# reports the same checks on the head, yet left #450 blocked. contents: write pushes
-# the pin branch; pull-requests: write opens, closes and arms the pull request.
+# With the tyclab-release App's token (vars.RELEASE_APP_CLIENT_ID and
+# secrets.RELEASE_APP_PRIVATE_KEY), the pin branch is pushed and its pull request
+# opened as the App, so ci.yml runs on it as on any pull request. Without the App the
+# workflow token does it: GitHub then holds the pull request's CI run until it is
+# approved, and the script approves it (actions: write). contents: write pushes the
+# branch; pull-requests: write opens, closes and arms the pull request.
 permissions:
   contents: write
   pull-requests: write
@@ -28,11 +31,21 @@ jobs:
   pin:
     runs-on: ubuntu-latest
     steps:
+      - id: app
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app.outputs.token || github.token }}
 
       - id: plan
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          PIN_BOT_LOGINS: ${{ steps.app.outputs.app-slug && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}
         run: python3 .github/scripts/tycswap_pin.py plan
 
       - if: steps.plan.outputs.action == 'pin'
@@ -40,5 +53,6 @@ jobs:
 
       - if: steps.plan.outputs.action != 'none'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          PIN_BOT_LOGINS: ${{ steps.app.outputs.app-slug && format('{0}[bot]', steps.app.outputs.app-slug) || '' }}
         run: python3 .github/scripts/tycswap_pin.py act

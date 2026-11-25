@@ -402,6 +402,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual([n for n, pr in box.gh.prs.items() if pr["state"] == "open"], [third])
         self.assertNotIn(first, (second, third))
 
+    def test_pull_requests_of_the_app_bot_are_the_workflows_own(self):
+        tp.BOT_LOGINS.add("tyclab-release[bot]")
+        try:
+            box = Box(self, [release("0.23.4")])
+            _, first = box.tick()
+            box.gh.prs[first]["author"] = "tyclab-release[bot]"
+            p, again = box.tick()
+            self.assertEqual(again, None)
+            self.assertNotEqual(p.action, "pin")
+            self.assertIn(f"#{first}", p.reason)
+            self.assertNotIn("did not open", p.reason)
+            box.gh.prs[first].update(state="closed", closed_by="tyclab-release[bot]")
+            box.gh.main = NEXT_MAIN
+            p, _ = box.tick()
+            self.assertEqual(p.action, "pin")
+        finally:
+            tp.BOT_LOGINS.discard("tyclab-release[bot]")
+
     def test_a_release_without_its_windows_line_waits(self):
         for rel in (release("0.23.4", exe=False), release("0.23.4", sums=False)):
             box = Box(self, [release("0.23.3"), rel])
