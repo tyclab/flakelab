@@ -23,6 +23,7 @@ CI_WORKFLOW = "ci.yml"
 LABEL = "dependencies"
 FAKE_HASH = "sha256-" + "A" * 43 + "="
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
 MISMATCH = re.compile(
     r"hash mismatch in fixed-output derivation '(?P<drv>[^']+)':\s*"
     r"specified:\s*\S+\s*got:\s*(?P<got>sha256-[A-Za-z0-9+/]+=*)"
@@ -134,9 +135,15 @@ def write_pin(text, values):
 
 
 def first_paragraph(body):
+    """The notes' first prose paragraph, or the first item's text when they open with a list."""
     for block in re.split(r"\n\s*\n", body.replace("\r\n", "\n")):
-        text = " ".join(line.strip() for line in block.strip().splitlines())
-        if text and not text.startswith("#"):
+        lines = block.strip().splitlines()
+        if not lines or lines[0].startswith("#"):
+            continue
+        if first := LIST_ITEM.match(lines[0]):
+            rest = next((i for i, line in enumerate(lines[1:], 1) if LIST_ITEM.match(line)), len(lines))
+            lines = [first[1], *lines[1:rest]]
+        if text := " ".join(line.strip() for line in lines).strip():
             return text
     return ""
 
@@ -150,7 +157,7 @@ def changelog_lines(pending):
             if rel is target
             else f"tycswap v{rel.version}, which the v{target.version} pin includes:"
         )
-        lines.append(f"- {head} {first_paragraph(rel.body)} ([release notes]({rel.url}))".replace("  ", " "))
+        lines.append(" ".join(part for part in ("-", head, first_paragraph(rel.body), f"([release notes]({rel.url}))") if part))
     return lines
 
 
@@ -180,7 +187,7 @@ def pr_body(plan, before, values, failure, run_url):
     vendor = "unchanged" if values["vendor"] == before["vendor"] else f"was `{before['vendor']}`"
     parts = [f"Pins tycswap and its Windows tray to [v{rel.version}]({rel.url})."]
     for r in reversed(plan.pending):
-        parts.append(f"**[v{r.version}]({r.url})**: {first_paragraph(r.body)}")
+        parts.append(f"**[v{r.version}]({r.url})**" + (f": {first_paragraph(r.body)}" if first_paragraph(r.body) else ""))
     if failure:
         parts.append(
             f"**This pin does not build ({failure.step}):** the run that opened it could not finish the pin, "
@@ -195,7 +202,10 @@ def pr_body(plan, before, values, failure, run_url):
                 f"`SHA256SUMS` (`{rel.windows_hex}`)",
                 f"- `vendorHash`: `{values['vendor']}` ({vendor}), nix's own hash of the Go module vendor directory",
                 f"\nComputed and opened by the tycswap pin workflow ({run_url}); it merges itself once "
-                "`lint`, `test` and `gitleaks` pass on an up-to-date branch. Close it to hold this release.",
+                "`lint`, `test` and `gitleaks` pass on an up-to-date branch.",
+                f"\nClosing this pull request, or reverting its pin after the merge, holds v{rel.version}: the "
+                "workflow opens no other pin for it and pins the next release as usual. To take a held release "
+                "after all, reopen this pull request and turn auto-merge on again, or pin it by hand.",
             ]
         )
     )
@@ -225,20 +235,34 @@ class GitHub:
     def asset_text(self, asset):
         return run(["gh", "api", "-H", "Accept: application/octet-stream", f"repos/{UPSTREAM}/releases/assets/{asset['id']}"]).stdout
 
-    def pin_prs(self, state):
-        prs = self.api(f"repos/{self.repo}/pulls?state={state}&per_page=100&sort=updated&direction=desc")
+    def api_list(self, path):
+        lines = run(["gh", "api", "--paginate", path, "--jq", ".[]"]).stdout.splitlines()
+        return [json.loads(line) for line in lines if line.strip()]
+
+    def pulls(self, state):
+        return self.api_list(f"repos/{self.repo}/pulls?state={state}&per_page=100")
+
+    def here(self, p):
+        return bool(p["head"]["repo"]) and p["head"]["repo"]["full_name"] == self.repo
+
+    def pin_prs(self, state, raw=None):
+        """This workflow's pin pull requests: opened by its bot from a branch of this repository."""
         return [
             (PinPR(p["number"], p["head"]["ref"], p["head"]["sha"], pr_version(p["head"]["ref"]), bool(p.get("auto_merge"))), p)
-            for p in prs
-            if p["head"]["repo"] and p["head"]["repo"]["full_name"] == self.repo and pr_version(p["head"]["ref"])
+            for p in (self.pulls(state) if raw is None else raw)
+            if (p.get("user") or {}).get("login") == BOT_LOGIN and self.here(p) and pr_version(p["head"]["ref"])
         ]
 
-    def declined(self, version):
+    def settled(self, version):
+        """A pin pull request for `version` that was merged, or closed by someone other than the workflow."""
         for pr, raw in self.pin_prs("closed"):
-            if pr.version == version and not raw.get("merged_at"):
-                closer = (self.api(f"repos/{self.repo}/issues/{pr.number}").get("closed_by") or {}).get("login")
-                if closer != BOT_LOGIN:
-                    return pr.number
+            if pr.version != version:
+                continue
+            if raw.get("merged_at"):
+                return pr.number, "merged"
+            closer = (self.api(f"repos/{self.repo}/issues/{pr.number}").get("closed_by") or {}).get("login")
+            if closer != BOT_LOGIN:
+                return pr.number, "closed by hand"
         return None
 
     def behind_by(self, base_sha, head_sha):
@@ -316,11 +340,16 @@ def ready(gh, rel):
     return bool(rel.windows_hex)
 
 
+def pin_branch(version, main_sha):
+    return f"{BRANCH_PREFIX}v{version}-{main_sha[:8]}"
+
+
 def plan(pinned, gh, main_sha):
     if vkey(pinned) is None:
         raise PinError(f"flake.nix pins tycswap {pinned!r}, not X.Y.Z")
     rels = [r for r in published(gh.releases()) if vkey(r.version) > vkey(pinned)]
-    open_prs = [pr for pr, _ in gh.pin_prs("open")]
+    raw_open = gh.pulls("open")
+    open_prs = [pr for pr, _ in gh.pin_prs("open", raw_open)]
     if not rels:
         if open_prs:
             return Plan("close", f"main pins v{pinned}", close=[(pr, f"main already pins v{pinned}.") for pr in open_prs])
@@ -331,9 +360,15 @@ def plan(pinned, gh, main_sha):
     keep = next((p for p in open_prs if p.version == target.version and gh.behind_by(main_sha, p.head_sha) == 0), None)
     stale = [(p, "main moved on." if p.version == target.version else f"v{target.version} is newer.") for p in open_prs if p is not keep]
     if keep is None:
-        declined = gh.declined(target.version)
-        if declined:
-            return Plan("none", f"#{declined} was closed by hand: v{target.version} is held until a newer release")
+        held = gh.settled(target.version)
+        if held and held[1] == "merged":
+            return Plan("none", f"v{target.version} is held: its pin #{held[0]} was merged and main pins v{pinned} again; pin it by hand to take it")
+        if held:
+            return Plan("none", f"v{target.version} is held: #{held[0]} was closed by hand; reopen it or pin by hand to take it")
+        branch = pin_branch(target.version, main_sha)
+        taken = [p["number"] for p in raw_open if gh.here(p) and p["head"]["ref"] == branch and p["number"] not in {o.number for o in open_prs}]
+        if taken:
+            return Plan("none", f"branch {branch} is the head of #{taken[0]}, which the workflow did not open")
         return Plan("pin", f"main pins v{pinned}, v{target.version} is out", target, rels, close=stale)
     if gh.ci_runs(keep.head_sha) == 0:
         return Plan("finish", f"#{keep.number} has no CI run yet", target, rels, keep, stale)
@@ -409,7 +444,7 @@ def act(p, repo, gh, nix, git, main_sha, run_url):
     if failure is None:
         ok, out = nix.lint_changelog()
         failure = None if ok else BuildFailure("lint of CHANGELOG.md", tail(out))
-    branch = f"{BRANCH_PREFIX}v{p.target.version}-{main_sha[:8]}"
+    branch = pin_branch(p.target.version, main_sha)
     git.commit_and_push(pr_title(p.target.version), branch)
     number = gh.create_pr(branch, pr_title(p.target.version), pr_body(p, before, values, failure, run_url))
     for pr, why in p.close:

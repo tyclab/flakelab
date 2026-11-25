@@ -25,8 +25,8 @@ overlay interface; personal values belong in a private overlay, while
   `git push` and `gh`, specifying `--repo tyclab/flakelab`. gitpublisher is
   GitLab-only. Never force-rewrite a shared branch.
 - A tycswap release is pinned by `.github/workflows/tycswap-pin.yml`, in a pull
-  request that merges itself; do not open a second one by hand (`known-issues.md`
-  says where the workflow can stop).
+  request that merges itself; pin by hand only a release it holds. Closing that
+  pull request or reverting its pin holds the release (`known-issues.md`).
 - Validate the affected offline suite after script changes; `make test` runs all
   offline suites. `nix flake check` is the full gate. Run `make lint` and `nix fmt`
   before publishing; CI also scans for secrets. Keep tests registered in both

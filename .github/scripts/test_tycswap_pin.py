@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tycswap_pin as tp  # noqa: E402
@@ -35,13 +36,13 @@ def hex_for(version):
     return WIN_HEX.get(version, f"{int(version.replace('.', '')):064x}")
 
 
-def release(version, body=None, exe=True, sums=True, draft=False, prerelease=False):
+def release(version, body=None, exe=True, sums=True, sums_line=True, draft=False, prerelease=False):
     hex_digest = hex_for(version)
     assets = []
     if exe:
         assets.append({"id": f"exe-{version}", "name": tp.windows_asset(version), "state": "uploaded", "digest": f"sha256:{hex_digest}"})
     if sums:
-        assets.append({"id": f"sums-{version}", "name": "SHA256SUMS", "state": "uploaded", "hex": hex_digest})
+        assets.append({"id": f"sums-{version}", "name": "SHA256SUMS", "state": "uploaded", "hex": hex_digest if sums_line else None})
     return {
         "tag_name": f"v{version}",
         "html_url": f"https://github.com/tyclab/tycswap/releases/tag/v{version}",
@@ -59,7 +60,7 @@ class FakeGitHub(tp.GitHub):
         super().__init__(REPO)
         self.release_list, self.main = releases, MAIN
         self.prs, self.runs, self.branches, self.calls = {}, {}, {}, []
-        self.number, self.fail = 500, set()
+        self.number, self.fail, self.dispatched = 500, set(), []
 
     def _maybe_fail(self, name):
         self.calls.append(name)
@@ -71,7 +72,8 @@ class FakeGitHub(tp.GitHub):
         if path.startswith(f"repos/{tp.UPSTREAM}/releases?"):
             return self.release_list
         if m := re.match(rf"repos/{REPO}/pulls\?state=(\w+)", path):
-            return [self._raw(p) for p in sorted(self.prs.values(), key=lambda p: -p["number"]) if p["state"] == m[1]]
+            states = {"open": ("open",), "closed": ("closed", "merged")}[m[1]]
+            return [self._raw(p) for p in sorted(self.prs.values(), key=lambda p: -p["number"]) if p["state"] in states]
         if m := re.match(rf"repos/{REPO}/issues/(\d+)$", path):
             return {"closed_by": {"login": self.prs[int(m[1])]["closed_by"]}}
         if m := re.match(rf"repos/{REPO}/compare/(\w+)\.\.\.(\w+)$", path):
@@ -82,15 +84,33 @@ class FakeGitHub(tp.GitHub):
             return {"workflow_runs": waiting + [{"event": "workflow_dispatch", "status": "queued", "conclusion": None}] * self.runs.get(m[1], 0)}
         raise AssertionError(f"unexpected api path {path}")
 
+    def api_list(self, path):
+        return self.api(path)
+
     def _raw(self, p):
-        head = {"ref": p["ref"], "sha": p["sha"], "repo": {"full_name": REPO}}
-        return {"number": p["number"], "head": head, "auto_merge": {"merge_method": "merge"} if p["armed"] else None, "merged_at": None}
+        repo = p.get("repo", REPO)
+        head = {"ref": p["ref"], "sha": p["sha"], "repo": {"full_name": repo} if repo else None}
+        return {
+            "number": p["number"],
+            "user": {"login": p.get("author", tp.BOT_LOGIN)},
+            "head": head,
+            "auto_merge": {"merge_method": "merge"} if p["armed"] else None,
+            "merged_at": "2026-11-25T12:00:00Z" if p["state"] == "merged" else None,
+        }
+
+    def add_pr(self, ref, version_base=MAIN, **fields):
+        """A pull request opened by someone else, from `ref`."""
+        self.number += 1
+        self.prs[self.number] = dict(number=self.number, ref=ref, sha=f"{self.number:040x}", base=version_base, state="open",
+                                     armed=False, title="t", body="b", closed_by=None, **fields)  # fmt: skip
+        return self.number
 
     def asset_text(self, asset):
         self.calls.append("asset_text")
         rel = next(r for r in self.release_list if asset in r["assets"])
         version = rel["tag_name"][1:]
-        return f"{'0' * 64}  tycswap_v{version}_linux_amd64\n{asset['hex']}  {tp.windows_asset(version)}\n"
+        exe = f"{asset['hex']}  {tp.windows_asset(version)}\n" if asset["hex"] else ""
+        return f"{'0' * 64}  tycswap_v{version}_linux_amd64\n{exe}"
 
     def create_pr(self, branch, title, body):
         self._maybe_fail("create_pr")
@@ -110,7 +130,8 @@ class FakeGitHub(tp.GitHub):
 
     def dispatch_ci(self, branch):
         self._maybe_fail("dispatch_ci")
-        sha = self.branches[branch][0]
+        self.dispatched.append(branch)
+        sha = self.branches[branch][0] if branch in self.branches else next(p["sha"] for p in self.prs.values() if p["ref"] == branch)
         self.runs[sha] = self.runs.get(sha, 0) + 1
 
     def open(self):
@@ -133,13 +154,20 @@ class FakeNix:
     """Answers like nix for the pin in flake.nix: a mismatch names the true hash."""
 
     def __init__(self, repo, truth):
-        self.repo, self.truth, self.builds = repo, truth, []
-        self.broken, self.flaky = set(), set()
+        self.repo, self.truth, self.builds, self.src_builds = repo, truth, [], []
+        self.broken, self.flaky, self.store, self.misreport, self.evaluates = set(), set(), set(), {}, None
 
     def build(self, *attrs):
         self.builds.append(attrs)
         pin = tp.read_pin((self.repo / "flake.nix").read_text())
         for attr in attrs:
+            if attr == "packages.x86_64-linux.tycswap.src":
+                self.src_builds.append(pin["src"])
+            if attr in self.misreport:
+                return False, (
+                    f"error: hash mismatch in fixed-output derivation '/nix/store/abc-{self.misreport[attr]}.drv':\n"
+                    f"         specified: {pin['src']}\n            got:    sha256-OTHER{'o' * 37}=\n"
+                )
             if attr in self.flaky:
                 self.flaky.discard(attr)
                 return False, "error: unable to download: HTTP error 502"
@@ -151,7 +179,8 @@ class FakeNix:
                 "checks.x86_64-linux.tycswap-windows": ("windows", tp.windows_asset(pin["version"])),
             }.get(attr, (None, None))
             for f, d in [(field, drv)] if field else [("src", "source"), ("vendor", f"tycswap-{pin['version']}-go-modules")]:
-                if pin[f] != self.truth[f]:
+                # A source path already in the store is not fetched again, whatever version it holds.
+                if pin[f] != self.truth[f] and not (f == "src" and pin[f] in self.store):
                     return False, (
                         f"error: hash mismatch in fixed-output derivation '/nix/store/abc-{d}.drv':\n"
                         f"         specified: {pin[f]}\n            got:    {self.truth[f]}\n"
@@ -159,7 +188,7 @@ class FakeNix:
         return True, ""
 
     def pinned(self):
-        return tp.read_pin((self.repo / "flake.nix").read_text())
+        return self.evaluates or tp.read_pin((self.repo / "flake.nix").read_text())
 
     def lint_changelog(self):
         return "lint" not in self.broken, "markdownlint: MD999 broken" if "lint" in self.broken else ""
@@ -180,6 +209,7 @@ class Box:
         self.git = FakeGit(self.gh)
         self.truth = {"src": "sha256-SRC" + "s" * 39 + "=", "vendor": self.main_pin["vendor"]}
         self.nix = FakeNix(self.repo, self.truth)
+        self.nix.store.add(self.main_pin["src"])
         self.main_files = {n: (self.repo / n).read_text() for n in ("flake.nix", "CHANGELOG.md")}
 
     def tick(self):
@@ -227,14 +257,22 @@ class PureTests(unittest.TestCase):
         with self.assertRaisesRegex(tp.PinError, "one src"):
             tp.read_pin(doubled)
 
-    def test_first_paragraph(self):
+    def test_first_paragraph_of_prose_and_of_a_list(self):
         self.assertEqual(tp.first_paragraph("# Title\r\n\r\nOne\r\ntwo.\r\n\r\nRest"), "One two.")
+        notes = "- **Fixed: a move timed out.** Since v0.20.0\n  it waited.\n- **The guard lends its lock.** More.\n"
+        self.assertEqual(tp.first_paragraph(notes), "**Fixed: a move timed out.** Since v0.20.0 it waited.")
+        self.assertEqual(tp.first_paragraph("## Changed\n\n1. One\n2. Two\n"), "One")
         self.assertEqual(tp.first_paragraph(""), "")
 
     def test_changelog_gets_a_changed_section_where_keep_a_changelog_puts_it(self):
         text = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- a\n\n### Fixed\n\n- f\n\n## [1.0.0]\n"
         out = tp.add_changelog(text, ["- pin"])
         self.assertIn("### Added\n\n- a\n\n### Changed\n\n- pin\n\n### Fixed", out)
+
+    def test_main_only(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"GITHUB_REF": "refs/heads/feature"}), \
+                mock.patch.object(tp, "run", side_effect=AssertionError("ran a command off main")):  # fmt: skip
+            self.assertEqual(tp.main(["plan", "--repo-dir", tmp]), 2)
 
     def test_versions_compare_as_numbers(self):
         self.assertGreater(tp.vkey("0.10.0"), tp.vkey("0.9.9"))
@@ -335,7 +373,74 @@ class LifecycleTests(unittest.TestCase):
         box.gh.prs[number].update(state="closed", closed_by="someone")
         p, again = box.tick()
         self.assertEqual((p.action, again), ("none", None))
-        self.assertIn(f"#{number} was closed by hand", p.reason)
+        self.assertEqual(p.reason, f"v0.23.4 is held: #{number} was closed by hand; reopen it or pin by hand to take it")
+
+    def test_a_reverted_pin_holds_its_release_and_the_next_one_is_pinned(self):
+        rels = [release("0.23.4")]
+        box = Box(self, rels)
+        before = box.main_files["flake.nix"]
+        _, number = box.tick()
+        self.assertIn("reverting its pin after the merge, holds v0.23.4", box.gh.prs[number]["body"])
+        box.merge(number)
+        box.main_files["flake.nix"] = before
+        p, again = box.tick()
+        self.assertEqual((p.action, again), ("none", None))
+        self.assertEqual(p.reason, f"v0.23.4 is held: its pin #{number} was merged and main pins v0.23.3 again; pin it by hand to take it")
+        rels.append(release("0.23.5"))
+        p, newer = box.tick()
+        self.assertEqual(p.action, "pin")
+        self.assertTrue(box.gh.prs[newer]["ref"].startswith("tycswap-pin/v0.23.5-"))
+
+    def test_the_newest_release_is_chosen_by_number_not_by_text(self):
+        box = Box(self, [release("0.23.10"), release("0.23.9")], pinned="0.23.8")
+        p, number = box.tick()
+        self.assertEqual(p.target.version, "0.23.10")
+
+    def test_a_sums_file_without_the_exe_line_waits(self):
+        box = Box(self, [release("0.23.4", sums_line=False)])
+        p, number = box.tick()
+        self.assertEqual((p.action, number), ("none", None))
+        self.assertEqual(box.git.pushes, 0)
+
+    def test_empty_release_notes_leave_the_line_without_a_summary(self):
+        box = Box(self, [release("0.23.4", body="")])
+        _, number = box.tick()
+        url = "https://github.com/tyclab/tycswap/releases/tag/v0.23.4"
+        top = (box.repo / "CHANGELOG.md").read_text().split("### Changed\n\n", 1)[1].splitlines()[0]
+        self.assertEqual(top, f"- Pin tycswap and its Windows tray to v0.23.4. ([release notes]({url}))")
+        self.assertIn(f"**[v0.23.4]({url})**\n", box.gh.prs[number]["body"])
+
+    def test_notes_that_open_with_a_list_give_the_first_item(self):
+        box = Box(self, [release("0.23.4", body="- **Fixed: x.** It waited.\n- **Second.** Other.\n")])
+        box.tick()
+        top = (box.repo / "CHANGELOG.md").read_text().split("### Changed\n\n", 1)[1].splitlines()[0]
+        self.assertTrue(top.startswith("- Pin tycswap and its Windows tray to v0.23.4. **Fixed: x.** It waited. ([release"))
+
+    def test_the_source_hash_starts_from_a_placeholder_not_the_old_value(self):
+        # The old source is in this store: built under its hash, it would pass as the new release.
+        box = Box(self, [release("0.23.4")])
+        box.tick()
+        self.assertEqual(box.nix.src_builds[0], tp.FAKE_HASH)
+        self.assertEqual(tp.read_pin((box.repo / "flake.nix").read_text())["src"], box.truth["src"])
+
+    def test_a_flake_that_evaluates_to_other_values_publishes_nothing(self):
+        box = Box(self, [release("0.23.4")])
+        box.nix.evaluates = dict(box.main_pin, version="0.23.4")
+        with self.assertRaisesRegex(tp.PinError, "evaluates to"):
+            box.tick()
+        self.assertEqual((box.gh.prs, box.git.pushes), ({}, 0))
+
+    def test_a_mismatch_of_another_derivation_is_not_taken_for_this_one(self):
+        box = Box(self, [release("0.23.4")])
+        box.nix.misreport["packages.x86_64-linux.tycswap.src"] = "tycswap-0.23.4-go-modules"
+        with self.assertRaisesRegex(tp.PinError, "did not fetch"):
+            box.tick()
+        self.assertEqual(box.git.pushes, 0)
+        box = Box(self, [release("0.23.4")])
+        box.nix.misreport["packages.x86_64-linux.tycswap.goModules"] = "source"
+        _, number = box.tick()
+        self.assertIn("This pin does not build (packages.x86_64-linux.tycswap.goModules)", box.gh.prs[number]["body"])
+        self.assertEqual(tp.read_pin((box.repo / "flake.nix").read_text())["vendor"], box.main_pin["vendor"])
 
     def test_every_failed_step_is_finished_by_the_next_run(self):
         for step in ("create_pr", "close_pr", "arm_automerge", "dispatch_ci"):
@@ -381,6 +486,56 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(tp.PinError, "did not fetch"):
             box.tick()
         self.assertEqual((box.gh.prs, box.git.pushes), ({}, 0))
+
+
+class ForeignPullRequestTests(unittest.TestCase):
+    """A pull request the workflow did not open is never kept, armed, dispatched or closed, whatever its branch is called."""
+
+    FOREIGN = {
+        "fork": {"repo": "someone/flakelab"},
+        "deleted fork": {"repo": None},
+        # Isolates the repository guard: GitHub gives no fork pull request the workflow's bot as author.
+        "fork, bot as author": {"repo": "someone/flakelab", "author": tp.BOT_LOGIN},
+        "same repository, opened by a person": {"author": "someone"},
+    }
+
+    def assertUntouched(self, box, number):
+        pr = box.gh.prs[number]
+        self.assertEqual((pr["state"], pr["armed"], pr.get("comment"), box.gh.runs.get(pr["sha"], 0)), ("open", False, None, 0))
+
+    def test_one_named_like_the_newest_pin_is_not_kept_or_finished(self):
+        for name, fields in self.FOREIGN.items():
+            with self.subTest(name):
+                box = Box(self, [release("0.23.4")])
+                foreign = box.gh.add_pr("tycswap-pin/v0.23.4-abcdef12", **fields)
+                p, number = box.tick()
+                self.assertEqual(p.action, "pin")
+                self.assertNotEqual(number, foreign)
+                self.assertUntouched(box, foreign)
+
+    def test_one_named_like_an_older_pin_is_not_superseded(self):
+        for name, fields in self.FOREIGN.items():
+            with self.subTest(name):
+                box = Box(self, [release("0.23.4"), release("0.23.5")])
+                foreign = box.gh.add_pr(f"tycswap-pin/v0.23.4-{MAIN[:8]}", **fields)
+                self.assertEqual(box.tick()[0].action, "pin")
+                self.assertUntouched(box, foreign)
+
+    def test_a_branch_name_held_by_a_persons_pull_request_is_not_pushed(self):
+        box = Box(self, [release("0.23.4")])
+        foreign = box.gh.add_pr(f"tycswap-pin/v0.23.4-{MAIN[:8]}", author="someone")
+        p, number = box.tick()
+        self.assertEqual((p.action, number, box.git.pushes), ("none", None, 0))
+        self.assertIn(f"is the head of #{foreign}, which the workflow did not open", p.reason)
+        self.assertUntouched(box, foreign)
+
+    def test_one_named_like_the_pinned_release_is_not_closed(self):
+        for name, fields in self.FOREIGN.items():
+            with self.subTest(name):
+                box = Box(self, [release("0.23.4")], pinned="0.23.4")
+                foreign = box.gh.add_pr(f"tycswap-pin/v0.23.4-{MAIN[:8]}", **fields)
+                self.assertEqual(box.tick()[0].action, "none")
+                self.assertUntouched(box, foreign)
 
 
 @unittest.skipUnless(os.environ.get("FLAKELAB_TYCSWAP_PIN_LIVE") == "1", "FLAKELAB_TYCSWAP_PIN_LIVE=1 runs the real releases")

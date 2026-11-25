@@ -467,9 +467,15 @@ merges itself; each run's summary says what it decided. Where it can stop:
   `pull_request` run GitHub creates for a pull request `github-actions[bot]`
   opened. The run the workflow dispatches reports `lint`, `test` and
   `gitleaks`; the waiting one can stay as it is.
-- **Held on purpose.** Closing the pull request by hand holds that release:
-  the workflow opens nothing more for it until a newer release, or until the
-  pull request is reopened. Turning off its auto-merge holds it too.
+- **Held on purpose.** Closing the pin's pull request by hand, or reverting a
+  merged pin on `main`, holds that release: the workflow opens no other pin
+  for it and pins the next release as usual. To take a held release after all,
+  reopen its pull request and turn auto-merge on again, or pin it by hand.
+  Turning off auto-merge on an open pin pull request holds it too.
+- **Says a branch is the head of a pull request the workflow did not open.**
+  The workflow only counts pull requests its own bot opened from this
+  repository; one named like its branch is left alone, and the pin waits until
+  that pull request is closed or `main` moves on.
 
 The merge commit of a pin gets no CI run on `main`: the token that armed
 auto-merge makes the merge, and events of the workflow's `GITHUB_TOKEN` start
