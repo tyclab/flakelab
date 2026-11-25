@@ -443,6 +443,39 @@ same folders stay. To confirm that no deletion went out, count
 `<stateRoot>/claude/projects/*/*.jsonl` on a box that keeps transcripts before
 and after: the number does not drop.
 
+## A tycswap release did not reach `main`
+
+The `tycswap pin` workflow (`.github/workflows/tycswap-pin.yml`) checks for a
+new tycswap release every quarter hour and turns it into a pull request that
+merges itself; each run's summary says what it decided. Where it can stop:
+
+- **No pull request, and the run fails at its last step with "GitHub Actions is
+  not permitted to create or approve pull requests".** The token may not open
+  pull requests: turn on "Allow GitHub Actions to create and approve pull
+  requests" under Settings, Actions, General, Workflow permissions, first for
+  the organization, then for the repository.
+- **No runs at all.** GitHub disables a public repository's scheduled
+  workflows after 60 days without activity, and can delay or drop single runs
+  under load. Enable the workflow again, or start it under Actions, tycswap
+  pin, Run workflow; a run on any other branch than `main` refuses.
+- **The pull request is red.** When the pin itself did not build, its body
+  says so ("This pin does not build") with the end of nix's log; otherwise
+  read its CI run. Fix `main` (for example the Go builder a release needs);
+  the next run replaces the pull request on the new `main`. A failed CI run is
+  not started again by itself.
+- **A CI run on the pull request waits for approval.** That is the
+  `pull_request` run GitHub creates for a pull request `github-actions[bot]`
+  opened. The run the workflow dispatches reports `lint`, `test` and
+  `gitleaks`; the waiting one can stay as it is.
+- **Held on purpose.** Closing the pull request by hand holds that release:
+  the workflow opens nothing more for it until a newer release, or until the
+  pull request is reopened. Turning off its auto-merge holds it too.
+
+The merge commit of a pin gets no CI run on `main`: the token that armed
+auto-merge makes the merge, and events of the workflow's `GITHUB_TOKEN` start
+no workflow. The pull request's head is the same tree, tested on an
+up-to-date branch.
+
 ## Known limitations
 
 Not bugs — things the flake does not do yet:

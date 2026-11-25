@@ -383,6 +383,14 @@ in
   report-unswept-clones = suiteCheck "report-unswept-clones";
   nix-provision = suiteCheck "nix-provision";
   nix-tycswap-tray = suiteCheck "nix-tycswap-tray";
+  # The tycswap pin workflow's script: in .github/scripts, since files/scripts is
+  # copied whole into every box and this one runs on GitHub only.
+  tycswap-pin =
+    pkgs.runCommandLocal "flakelab-check-tycswap-pin" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        python3 ${self}/.github/scripts/test_tycswap_pin.py
+        touch $out
+      '';
   codex-config =
     let
       manifest = builtins.toFile "codex-mcp-fixture.json" (

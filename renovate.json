@@ -24,8 +24,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Track version pins in the Nix let bindings annotated with `# renovate: ...` comments: the MCP server and npm pins under nix/, and the tycswap release in flake.nix (a bump there fails checks.tycswap until its hashes follow).",
-      "managerFilePatterns": ["/^nix/.*\\.nix$/", "/^flake\\.nix$/"],
+      "description": "Track version pins in the Nix let bindings annotated with `# renovate: ...` comments: the MCP server and npm pins under nix/. Not tyclab/tycswap in flake.nix: .github/workflows/tycswap-pin.yml moves that pin with the hashes Renovate cannot compute.",
+      "managerFilePatterns": ["/^nix/.*\\.nix$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+?)(?:\\s+versioning=(?<versioning>\\S+))?(?:\\s+extractVersion=(?<extractVersion>\\S+))?\\s*\\n[^\\n]*?\"(?<currentValue>[^\"\\s]+)\""
       ]
@@ -38,7 +38,7 @@
       "automerge": true
     },
     {
-      "description": "A third-party release pin is never automerged: nothing else vouches for an unreviewed upstream release. The 14-day hold gives a fresh tag time to be pulled or re-cut.",
+      "description": "A third-party release pin is never automerged: nothing else vouches for an unreviewed upstream release. The 14-day hold gives a fresh tag time to be pulled or re-cut. tyclab/tycswap, this organisation's own, is not a Renovate dependency: its pin merges itself through .github/workflows/tycswap-pin.yml.",
       "matchDatasources": ["github-releases"],
       "automerge": false,
       "minimumReleaseAge": "14 days"

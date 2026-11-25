@@ -607,7 +607,11 @@ failed restore. Both actions are also in the terminal menu.
 
 More than one claude.ai or ChatGPT login on the box is tycswap's job: the
 account switcher for Claude Code and Codex logins in one static binary, pinned
-to a release in `flake.nix` (`installTycswap = false;` leaves it out).
+to a release in `flake.nix` (`installTycswap = false;` leaves it out). A new
+tycswap release reaches `main` by itself: the `tycswap pin` workflow
+(`.github/workflows/tycswap-pin.yml`) checks every quarter hour, computes the
+new version's hashes and opens a pull request that merges itself once CI
+passes.
 `tycswap add` stores the live login, `tycswap add --login` logs the next one in
 beside it (the tool's own login in a scratch profile, nothing logged out),
 `tycswap switch <n|email|alias>` makes another one live and a running Claude
@@ -713,8 +717,8 @@ under Switcher; a tray that is gone comes back with `flakelab tray`. The task
 is one per Windows user, so set `tycswapAppPort` in one distro per PC: a
 second distro's sync would point the task, and the tray, at itself. Nothing
 on the Windows side updates itself: the tray runs with `--no-update-check`
-and follows the pin like the distro's binary, so a tycswap bump is a
-`flakelab update` on each box.
+and follows the pin like the distro's binary, so once the pin's pull request
+has merged, a tycswap release is a `flakelab update` on each box.
 
 The app writes that token on every start and the tray reads it again by
 itself; the tray switches, toggles auto-switch and opens the distro's

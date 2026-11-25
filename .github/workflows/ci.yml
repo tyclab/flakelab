@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The tycswap pin workflow's pull requests: its token starts no pull_request run,
+  # so it dispatches this one on their branch, and these jobs report on their head.
+  workflow_dispatch:
 
 permissions:
   contents: read

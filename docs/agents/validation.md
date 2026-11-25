@@ -19,8 +19,17 @@ Read for this topic; paths below are relative to the repository root unless stat
   into the sandbox, not just `files/scripts/` — `test-nix-overlay-generate`
   asserts against the tracked `templates/overlay/` and
   `files/config/user_data.example.yaml`.
+- The tycswap pin workflow's script has its suite in `.github/scripts/`
+  (`test_tycswap_pin.py`), not in `files/scripts/`, which every box copies
+  whole; `make test` and `checks.<system>.tycswap-pin` run it.
+  `FLAKELAB_TYCSWAP_PIN_LIVE=1` adds a run against real releases with network
+  and nix.
 - CI's other jobs are `lint` (`make lint && nix fmt && git diff --exit-code`)
   and `gitleaks`. Neither `make lint` nor `nix flake check` formats, so run
   `make lint-nix` (or `nix fmt`) before pushing a `.nix` change. Run
   `make install-hooks` once per clone, inside `nix develop`. Flake outputs and
   checks exist for `x86_64-linux` only.
+- `ci.yml` also runs on `workflow_dispatch`: a pull request the tycswap pin
+  workflow opens with its `GITHUB_TOKEN` starts no `pull_request` run, so the
+  workflow dispatches `ci.yml` on the pull request's branch, and `lint`, `test`
+  and `gitleaks` report on its head commit, where main's ruleset reads them.

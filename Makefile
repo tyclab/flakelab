@@ -29,11 +29,14 @@ lint-nix: ## nix fmt must change nothing, then statix and deadnix
 	git diff --exit-code
 	nix build --no-link .#checks.x86_64-linux.statix .#checks.x86_64-linux.deadnix
 
-# The offline suites. test-provision-nix imports a distro and needs a disposable
-# session. All suites run, then the target fails if any of them did.
+# The offline suites, and the tycswap pin workflow's under .github/scripts.
+# test-provision-nix imports a distro and needs a disposable session. All suites
+# run, then the target fails if any of them did.
 test: ## Run every offline suite (the required local gate)
 	@rc=0; for suite in test-clone-repos test-gh-repos test-gitchecker test-gitcleaner test-gitpublisher test-nix-backup test-nix-overlay-generate test-flakelab-cli test-claude-start test-claude-sessions test-claude-wake-parked test-codex-threads test-notify test-questions test-web test-mcp test-codex-cleanup test-nix-update test-nix-access-tokens test-claude-plugin-orphans test-nix-doctor test-switch-result test-wsl-init-cgroup test-xdg-open test-activate-hooks test-report-stale-repos test-report-unswept-clones test-nix-provision test-nix-tycswap-tray; do \
 		echo "==> $$suite"; \
 		files/scripts/$$suite || rc=1; \
 	done; \
+	echo "==> tycswap-pin"; \
+	python3 .github/scripts/test_tycswap_pin.py || rc=1; \
 	exit $$rc
