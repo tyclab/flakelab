@@ -7,7 +7,7 @@ name: tycswap pin
 on:
   schedule:
     # Off the top of the hour, the time GitHub delays scheduled runs most.
-    - cron: "4,19,34,49 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 # GitHub holds ci.yml's pull_request run of a pull request this token opens until it
