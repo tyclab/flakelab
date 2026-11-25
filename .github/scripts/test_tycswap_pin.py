@@ -342,6 +342,18 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(box.gh.prs[first]["comment"], f"Superseded by #{second}: main moved on.")
         self.assertEqual(box.gh.prs[second]["ref"], f"tycswap-pin/v0.23.4-{NEXT_MAIN[:8]}")
 
+    def test_pull_requests_the_workflow_closed_do_not_hold_the_release(self):
+        box = Box(self, [release("0.23.4")])
+        _, first = box.tick()
+        box.gh.main = NEXT_MAIN
+        _, second = box.tick()
+        box.gh.main = "3333333333333333333333333333333333333333"
+        p, third = box.tick()
+        self.assertEqual(p.action, "pin")
+        self.assertEqual(box.gh.prs[second]["comment"], f"Superseded by #{third}: main moved on.")
+        self.assertEqual([n for n, pr in box.gh.prs.items() if pr["state"] == "open"], [third])
+        self.assertNotIn(first, (second, third))
+
     def test_a_release_without_its_windows_line_waits(self):
         for rel in (release("0.23.4", exe=False), release("0.23.4", sums=False)):
             box = Box(self, [release("0.23.3"), rel])
