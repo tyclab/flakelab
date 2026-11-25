@@ -4,8 +4,7 @@
   "labels": ["dependencies"],
   "timezone": "Europe/Berlin",
   "minimumReleaseAge": "3 days",
-  "prHourlyLimit": 2,
-  "prConcurrentLimit": 3,
+  "prHourlyLimit": 0,
   "platformAutomerge": true,
   "nix": {
     "description": "Off by default in Renovate; reads the flake inputs in flake.nix",
@@ -16,9 +15,11 @@
     "enabled": true
   },
   "lockFileMaintenance": {
-    "description": "`nix flake update` for flake.lock \u2014 the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh. It merges itself like a minor update: the PR is nixpkgs moving within its branch, and `nix flake check` on the PR is the whole gate; nothing a human would read decides it.",
+    "description": "`nix flake update` for flake.lock \u2014 the nix manager only moves inputs whose ref changed, so without this the pinned revisions never refresh. It merges itself like a minor update: the PR is nixpkgs moving within its branch, and `nix flake check` on the PR is the whole gate; nothing a human would read decides it. Nightly, not on Renovate's weekly default: flake.lock is the only way a nixpkgs security fix reaches the boxes, and it should wait a night for its PR, not up to a week. No release age: a flake input revision has no release timestamp, so the 3-day age could never pass and only left `renovate/stability-days` pending on every lock PR.",
     "enabled": true,
-    "automerge": true
+    "automerge": true,
+    "schedule": ["* 0-3 * * *"],
+    "minimumReleaseAge": null
   },
   "customManagers": [
     {
@@ -32,8 +33,8 @@
   ],
   "packageRules": [
     {
-      "description": "Digest, patch and minor updates merge themselves once the branch is green and up to date with main, after the 3-day minimumReleaseAge, as in the sibling repos. Majors stay PRs. platformAutomerge arms GitHub auto-merge, which main's ruleset holds until lint, test and gitleaks pass on an up-to-date branch.",
-      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "description": "Digest, pin, patch and minor updates merge themselves once the branch is green and up to date with main, after the 3-day minimumReleaseAge, as in the sibling repos. Majors stay PRs. platformAutomerge arms GitHub auto-merge, which main's ruleset holds until lint, test and gitleaks pass on an up-to-date branch.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
       "automerge": true
     },
     {
