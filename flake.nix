@@ -133,6 +133,24 @@
         });
       };
 
+      # 3.5.2 exits 23 when a transfer with -E creates a symlink: Linux refuses the
+      # chmod on the link and rsync reports it as a failure, so nix-backup's
+      # mirror_tree fails on any tree that holds one. Backport RsyncProject/rsync#1148,
+      # which no release carries yet. Not a pin back to 3.5.0: 3.5.2 is a security
+      # release. Only 3.5.2 is patched; remove this overlay once nixpkgs ships a later
+      # rsync, whose own fix checks.nix-backup then tests.
+      rsyncOverlay = _final: prev: {
+        rsync = prev.rsync.overrideAttrs (
+          old:
+          nixpkgs.lib.optionalAttrs (old.version == "3.5.2") {
+            patches = (old.patches or [ ]) ++ [ ./nix/rsync-symlink-chmod.patch ];
+            # No binary cache holds the patched build, so rsync's own suite would
+            # rerun on every CI job; checks.nix-backup covers the patch.
+            doCheck = false;
+          }
+        );
+      };
+
       # Used only by devShells, which must hand out the same pre-commit the distro runs.
       pkgsDev = pkgs.extend (
         nixpkgs.lib.composeManyExtensions [
@@ -360,6 +378,7 @@
                         unstableOverlay
                         preCommitOverlay
                         bubblewrapOverlay
+                        rsyncOverlay
                         tycswapOverlay
                         herdrCoreOverlay
                       ];

@@ -158,7 +158,9 @@ in
   gitchecker = suiteCheck "gitchecker";
   gitcleaner = suiteCheck "gitcleaner";
   gitpublisher = suiteCheck "gitpublisher";
-  nix-backup = suiteCheckWith [ pkgs.rsync ] "nix-backup";
+  # The rsync the boxes run, flake.nix's patch included: the suite's symlink
+  # restore fails on an unpatched 3.5.2.
+  nix-backup = suiteCheckWith [ self.nixosConfigurations.default.pkgs.rsync ] "nix-backup";
   nix-overlay-generate = suiteCheck "nix-overlay-generate";
   # The --help sweep runs `mcp`, a python3 program.
   flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
