@@ -1,5 +1,7 @@
 """tycswap_pin against a fake release list, fake pull requests and a fake nix; FLAKELAB_TYCSWAP_PIN_LIVE=1 adds the real releases."""
 
+import contextlib
+import io
 import os
 import re
 import subprocess
@@ -54,13 +56,16 @@ def release(version, body=None, exe=True, sums=True, sums_line=True, draft=False
 
 
 class FakeGitHub(tp.GitHub):
-    """The read paths go through the real GitHub methods; `api` answers from this model."""
+    """The read paths and the approval go through the real GitHub methods; `api` answers from this model."""
 
     def __init__(self, releases):
         super().__init__(REPO)
         self.release_list, self.main = releases, MAIN
         self.prs, self.runs, self.branches, self.calls = {}, {}, {}, []
-        self.number, self.fail, self.dispatched = 500, set(), []
+        self.number, self.fail = 500, set()
+        # GitHub's clock: a pull request's CI run shows `run_delay` seconds after it is opened (4 s for #450).
+        self.clock, self.run_delay, self.run_id, self.approved, self.refuse = 0, 4, 9000, [], None
+        self.held = True
 
     def _maybe_fail(self, name):
         self.calls.append(name)
@@ -79,10 +84,36 @@ class FakeGitHub(tp.GitHub):
         if m := re.match(rf"repos/{REPO}/compare/(\w+)\.\.\.(\w+)$", path):
             base = next(p["base"] for p in self.prs.values() if p["sha"] == m[2])
             return {"behind_by": 0 if base == m[1] else 1}
-        if m := re.match(rf"repos/{REPO}/actions/workflows/ci.yml/runs\?head_sha=(\w+)$", path):
-            waiting = [{"event": "pull_request", "status": "completed", "conclusion": "action_required"}]
-            return {"workflow_runs": waiting + [{"event": "workflow_dispatch", "status": "queued", "conclusion": None}] * self.runs.get(m[1], 0)}
+        if m := re.match(rf"repos/{REPO}/actions/workflows/ci.yml/runs\?head_sha=(\w+)&event=pull_request$", path):
+            return {"workflow_runs": [r for r in self.runs.get(m[1], []) if r["shown"] <= self.clock]}
+        if m := re.match(rf"repos/{REPO}/actions/runs/(\d+)/approve$", path):
+            if args != ("-X", "POST"):
+                raise AssertionError(f"approve sent as {args}, not a POST")
+            self._maybe_fail("approve")
+            if self.refuse:
+                raise tp.PinError(f"gh api {path} {' '.join(args)}: {self.refuse}")
+            (run,) = [r for runs in self.runs.values() for r in runs if r["id"] == int(m[1]) and r["shown"] <= self.clock]
+            if run["conclusion"] != "action_required":
+                raise AssertionError(f"approved run {run['id']}, which does not wait for approval")
+            run.update(status="queued", conclusion=None)
+            self.approved.append(run["id"])
+            return {}
         raise AssertionError(f"unexpected api path {path}")
+
+    def add_run(self, sha, delay, held=True):
+        """The pull_request run GitHub creates and holds for approval, as for a pull request github-actions[bot] opened."""
+        self.run_id += 1
+        state = dict(status="completed", conclusion="action_required") if held else dict(status="queued", conclusion=None)
+        run = dict(id=self.run_id, event="pull_request", shown=self.clock + delay, **state)
+        self.runs.setdefault(sha, []).append(run)
+        return run
+
+    def run_of(self, number):
+        (run,) = self.runs[self.prs[number]["sha"]]
+        return run
+
+    def sleep(self, seconds):
+        self.clock += seconds
 
     def api_list(self, path):
         return self.api(path)
@@ -103,6 +134,8 @@ class FakeGitHub(tp.GitHub):
         self.number += 1
         self.prs[self.number] = dict(number=self.number, ref=ref, sha=f"{self.number:040x}", base=version_base, state="open",
                                      armed=False, title="t", body="b", closed_by=None, **fields)  # fmt: skip
+        # Held like the workflow's own, so a guard that let this pull request through would approve its run.
+        self.add_run(self.prs[self.number]["sha"], 0)
         return self.number
 
     def asset_text(self, asset):
@@ -117,6 +150,8 @@ class FakeGitHub(tp.GitHub):
         self.number += 1
         sha, base = self.branches[branch]
         self.prs[self.number] = dict(number=self.number, ref=branch, sha=sha, base=base, state="open", armed=False, title=title, body=body, closed_by=None)
+        if self.run_delay is not None:
+            self.add_run(sha, self.run_delay, self.held)
         return self.number
 
     def close_pr(self, number, comment):
@@ -127,12 +162,6 @@ class FakeGitHub(tp.GitHub):
     def arm_automerge(self, number):
         self._maybe_fail("arm_automerge")
         self.prs[number]["armed"] = True
-
-    def dispatch_ci(self, branch):
-        self._maybe_fail("dispatch_ci")
-        self.dispatched.append(branch)
-        sha = self.branches[branch][0] if branch in self.branches else next(p["sha"] for p in self.prs.values() if p["ref"] == branch)
-        self.runs[sha] = self.runs.get(sha, 0) + 1
 
     def open(self):
         return [p for p in self.prs.values() if p["state"] == "open"]
@@ -148,6 +177,7 @@ class FakeGit:
     def commit_and_push(self, message, branch):
         self.pushes += 1
         self.gh.branches[branch] = (f"{self.pushes:040x}", self.gh.main)
+        return self.gh.branches[branch][0]
 
 
 class FakeNix:
@@ -211,17 +241,35 @@ class Box:
         self.nix = FakeNix(self.repo, self.truth)
         self.nix.store.add(self.main_pin["src"])
         self.main_files = {n: (self.repo / n).read_text() for n in ("flake.nix", "CHANGELOG.md")}
+        self.ci = None
 
-    def tick(self):
-        """One workflow run: plan, then act on a fresh checkout of main."""
+    def checkout(self):
+        """A fresh checkout of main, a quarter hour after the last run."""
+        self.gh.clock += 900
         for name, text in self.main_files.items():
             (self.repo / name).write_text(text)
+
+    def tick(self):
+        """One workflow run: plan, then act."""
+        self.checkout()
         pinned = tp.read_pin((self.repo / "flake.nix").read_text())["version"]
         p = tp.plan(pinned, self.gh, self.git.head())
         if p.target:
             self.truth["windows"] = tp.sri(p.target.windows_hex)
-        number = tp.act(p, self.repo, self.gh, self.nix, self.git, self.git.head(), "https://example.invalid/run")
+        number, self.ci = tp.act(p, self.repo, self.gh, self.nix, self.git, self.git.head(), "https://example.invalid/run")
         return p, number
+
+    def act_step(self):
+        """The workflow's act step through main(): its exit code, stdout and stderr."""
+        self.checkout()
+        self.truth["windows"] = tp.sri(hex_for(tp.published(self.gh.release_list)[-1].version))
+        out, err = io.StringIO(), io.StringIO()
+        env = {"GITHUB_REF": "refs/heads/main", "GITHUB_REPOSITORY": REPO}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(tp, "GitHub", return_value=self.gh), \
+                mock.patch.object(tp, "Git", return_value=self.git), mock.patch.object(tp, "Nix", return_value=self.nix), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):  # fmt: skip
+            rc = tp.main(["act", "--repo-dir", str(self.repo)])
+        return rc, out.getvalue(), err.getvalue()
 
     def merge(self, number):
         """Main takes the pull request's files, as the merge commit would."""
@@ -294,7 +342,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(pr["ref"], f"tycswap-pin/v0.23.4-{MAIN[:8]}")
         self.assertEqual(pr["title"], "chore(tycswap): pin tycswap and its Windows tray to v0.23.4")
         self.assertTrue(pr["armed"])
-        self.assertEqual(box.gh.runs, {pr["sha"]: 1})
+        self.assertEqual(box.gh.approved, [box.gh.run_of(number)["id"]])
         pin = tp.read_pin((box.repo / "flake.nix").read_text())
         self.assertEqual(pin, {"version": "0.23.4", "src": box.truth["src"], "vendor": box.truth["vendor"], "windows": box.truth["windows"]})
         changelog = (box.repo / "CHANGELOG.md").read_text()
@@ -455,7 +503,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(tp.read_pin((box.repo / "flake.nix").read_text())["vendor"], box.main_pin["vendor"])
 
     def test_every_failed_step_is_finished_by_the_next_run(self):
-        for step in ("create_pr", "close_pr", "arm_automerge", "dispatch_ci"):
+        for step in ("create_pr", "close_pr", "arm_automerge", "approve"):
             with self.subTest(step=step):
                 rels = [release("0.23.4")]
                 box = Box(self, rels)
@@ -468,7 +516,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(box.tick()[0].action, "none")
                 (pr,) = box.gh.open()
                 self.assertTrue(pr["ref"].startswith("tycswap-pin/v0.23.5-") and pr["armed"])
-                self.assertEqual(box.gh.runs[pr["sha"]], 1)
+                self.assertEqual(box.gh.approved.count(box.gh.run_of(pr["number"])["id"]), 1)
 
     def test_a_pin_that_does_not_build_opens_a_failing_pull_request(self):
         box = Box(self, [release("0.23.4")])
@@ -500,8 +548,104 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual((box.gh.prs, box.git.pushes), ({}, 0))
 
 
+class CIRunTests(unittest.TestCase):
+    """GitHub holds the CI run of a pull request the workflow's token opened until it is approved; the workflow approves it."""
+
+    def writes(self, box):
+        return [c for c in box.gh.calls if c != "asset_text"]
+
+    def test_the_held_run_is_approved_after_the_pull_request_is_opened_and_armed(self):
+        box = Box(self, [release("0.23.4")])
+        _, number = box.tick()
+        run = box.gh.run_of(number)
+        self.assertEqual(self.writes(box), ["create_pr", "arm_automerge", "approve"])
+        self.assertEqual((box.gh.approved, run["status"]), ([run["id"]], "queued"))
+        self.assertEqual(box.ci, f"approved CI run {run['id']}")
+
+    def test_a_run_github_creates_late_is_waited_for(self):
+        box = Box(self, [release("0.23.4")])
+        box.gh.run_delay = tp.RUN_WAIT - 1
+        start = box.gh.clock + 900
+        _, number = box.tick()
+        self.assertEqual(box.gh.approved, [box.gh.run_of(number)["id"]])
+        self.assertGreaterEqual(box.gh.clock - start, tp.RUN_WAIT - 1)
+        self.assertLessEqual(box.gh.clock - start, tp.RUN_WAIT)
+
+    def test_a_pull_request_whose_run_was_approved_or_ran_is_left_alone(self):
+        for state in ({}, {"status": "in_progress"}, {"status": "completed", "conclusion": "success"},
+                      {"status": "completed", "conclusion": "failure"}):  # fmt: skip
+            with self.subTest(state=state):
+                box = Box(self, [release("0.23.4")])
+                _, number = box.tick()
+                box.gh.run_of(number).update(state)
+                box.gh.prs[number]["armed"] = False
+                p, _ = box.tick()
+                self.assertEqual((p.action, p.reason), ("none", f"#{number} pins v0.23.4 on the current main"))
+                self.assertEqual((len(box.gh.approved), box.gh.prs[number]["armed"]), (1, False))
+
+    def test_a_run_a_person_approved_before_the_next_run_is_left_alone(self):
+        box = Box(self, [release("0.23.4")])
+        box.gh.run_delay = tp.RUN_WAIT + 1
+        _, number = box.tick()
+        box.gh.run_of(number).update(status="queued", conclusion=None)
+        self.assertEqual(box.tick()[0].action, "none")
+        self.assertEqual(box.gh.approved, [])
+
+    def test_a_run_the_first_run_did_not_find_is_approved_by_the_next(self):
+        box = Box(self, [release("0.23.4")])
+        box.gh.run_delay = tp.RUN_WAIT + 1
+        _, number = box.tick()
+        self.assertEqual((box.gh.approved, box.gh.prs[number]["armed"]), ([], True))
+        self.assertEqual(box.ci, f"GitHub created no CI run within {tp.RUN_WAIT} s, the next run approves it")
+        p, again = box.tick()
+        self.assertEqual((p.action, p.reason, again), ("finish", f"#{number}'s CI run waits for approval", None))
+        self.assertEqual(box.gh.approved, [box.gh.run_of(number)["id"]])
+        self.assertEqual(box.ci, f"approved CI run {box.gh.run_of(number)['id']}")
+        self.assertEqual(box.tick()[0].action, "none")
+
+    def test_a_run_that_starts_without_approval_is_not_approved(self):
+        box = Box(self, [release("0.23.4")])
+        box.gh.held = False
+        box.tick()
+        self.assertEqual((box.gh.approved, box.ci), ([], "its CI run needed no approval"))
+        self.assertEqual(box.tick()[0].action, "none")
+
+    def test_a_pull_request_github_created_no_run_for_says_so(self):
+        box = Box(self, [release("0.23.4")])
+        box.gh.run_delay = None
+        _, number = box.tick()
+        p, _ = box.tick()
+        self.assertEqual((p.action, p.reason), ("none", f"#{number} pins v0.23.4; GitHub has not created its CI run yet"))
+
+    def test_a_refused_approval_fails_the_run_and_says_what_a_person_does(self):
+        box = Box(self, [release("0.23.4")])
+        box.gh.refuse = "gh: Resource not accessible by integration (HTTP 403)"
+        rc, out, err = box.act_step()
+        (pr,) = box.gh.open()
+        number, run = pr["number"], box.gh.run_of(pr["number"])
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn(f"approving CI run {run['id']} of #{number} failed: ", err)
+        self.assertIn("gh: Resource not accessible by integration (HTTP 403)", err)
+        self.assertIn(f'A person approves the run with "Approve workflows to run" on #{number}', err)
+        self.assertIn("until this workflow has a token that may approve the run", err)
+        self.assertTrue(pr["armed"])
+        # Every run fails the same way while the run waits; once a person approved it, the pull request is left alone.
+        self.assertEqual(box.act_step()[0], 1)
+        run.update(status="queued", conclusion=None)
+        rc, out, err = box.act_step()
+        self.assertEqual((rc, err, box.gh.approved), (0, "", []))
+        self.assertEqual(out, f"none: #{number} pins v0.23.4 on the current main\n")
+
+    def test_the_act_step_names_the_pull_request_and_its_approved_run(self):
+        box = Box(self, [release("0.23.4")])
+        rc, out, _ = box.act_step()
+        (pr,) = box.gh.open()
+        run_id = box.gh.run_of(pr["number"])["id"]
+        self.assertEqual((rc, out), (0, f"pin: main pins v0.23.3, v0.23.4 is out; opened #{pr['number']}; approved CI run {run_id}\n"))
+
+
 class ForeignPullRequestTests(unittest.TestCase):
-    """A pull request the workflow did not open is never kept, armed, dispatched or closed, whatever its branch is called."""
+    """A pull request the workflow did not open is never kept, armed, approved or closed, whatever its branch is called."""
 
     FOREIGN = {
         "fork": {"repo": "someone/flakelab"},
@@ -512,8 +656,9 @@ class ForeignPullRequestTests(unittest.TestCase):
     }
 
     def assertUntouched(self, box, number):
-        pr = box.gh.prs[number]
-        self.assertEqual((pr["state"], pr["armed"], pr.get("comment"), box.gh.runs.get(pr["sha"], 0)), ("open", False, None, 0))
+        pr, run = box.gh.prs[number], box.gh.run_of(number)
+        self.assertEqual((pr["state"], pr["armed"], pr.get("comment"), run["conclusion"]), ("open", False, None, "action_required"))
+        self.assertNotIn(run["id"], box.gh.approved)
 
     def test_one_named_like_the_newest_pin_is_not_kept_or_finished(self):
         for name, fields in self.FOREIGN.items():

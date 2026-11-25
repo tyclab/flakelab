@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +22,11 @@ BOT_LOGIN = "github-actions[bot]"
 BOT_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com"
 CI_WORKFLOW = "ci.yml"
 LABEL = "dependencies"
+# How long `pin` waits for GitHub to create the new pull request's CI run, polling every
+# RUN_POLL seconds. GitHub created #450's CI run 4 s after the pull request (2026-11-25);
+# two minutes is thirty times that, for at most two runner minutes. A run GitHub creates
+# later is approved by the next run's `finish`.
+RUN_WAIT, RUN_POLL = 120, 5
 FAKE_HASH = "sha256-" + "A" * 43 + "="
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*)$")
@@ -88,6 +94,7 @@ class Plan:
     pending: list = field(default_factory=list)
     keep: PinPR | None = None
     close: list = field(default_factory=list)
+    waiting: list = field(default_factory=list)
 
 
 def published(releases_json):
@@ -269,9 +276,27 @@ class GitHub:
         return self.api(f"repos/{self.repo}/compare/{base_sha}...{head_sha}")["behind_by"]
 
     def ci_runs(self, head_sha):
-        """CI runs on the head, not counting a pull_request run that waits for someone's approval."""
-        runs = self.api(f"repos/{self.repo}/actions/workflows/{CI_WORKFLOW}/runs?head_sha={head_sha}")["workflow_runs"]
-        return sum("action_required" not in (r.get("status"), r.get("conclusion")) for r in runs)
+        """The pull request's own CI runs on the head: the ids of those that wait for approval, and how many do not."""
+        path = f"repos/{self.repo}/actions/workflows/{CI_WORKFLOW}/runs?head_sha={head_sha}&event=pull_request"
+        runs = self.api(path)["workflow_runs"]
+        waiting = [r["id"] for r in runs if "action_required" in (r.get("status"), r.get("conclusion"))]
+        return waiting, len(runs) - len(waiting)
+
+    def approve(self, run_id, number):
+        """Start a CI run GitHub holds for approval, as it holds the runs of a pull request this token opened."""
+        try:
+            self.api(f"repos/{self.repo}/actions/runs/{run_id}/approve", "-X", "POST")
+        except PinError as e:
+            raise PinError(
+                f"approving CI run {run_id} of #{number} failed: {e}\n"
+                f'A person approves the run with "Approve workflows to run" on #{number}; the pull request then '
+                "merges itself once lint, test and gitleaks pass. If GitHub refused the approval, every pin needs "
+                "that until this workflow has a token that may approve the run "
+                '(known-issues.md, "A tycswap release did not reach main").'
+            ) from e
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
 
     def create_pr(self, branch, title, body):
         out = run(["gh", "pr", "create", "--repo", self.repo, "--base", "main", "--head", branch,
@@ -283,9 +308,6 @@ class GitHub:
 
     def arm_automerge(self, number):
         run(["gh", "pr", "merge", str(number), "--repo", self.repo, "--auto", "--merge"])
-
-    def dispatch_ci(self, branch):
-        run(["gh", "workflow", "run", CI_WORKFLOW, "--repo", self.repo, "--ref", branch])
 
 
 class Nix:
@@ -324,6 +346,7 @@ class Git:
         run(["git", *ident, "commit", "-m", message, "--", "flake.nix", "CHANGELOG.md"], self.repo)
         # A branch of this name without a pull request is an earlier attempt from the same main.
         run(["git", "push", "--force", "origin", f"HEAD:refs/heads/{branch}"], self.repo)
+        return self.head()
 
 
 def ready(gh, rel):
@@ -370,10 +393,13 @@ def plan(pinned, gh, main_sha):
         if taken:
             return Plan("none", f"branch {branch} is the head of #{taken[0]}, which the workflow did not open")
         return Plan("pin", f"main pins v{pinned}, v{target.version} is out", target, rels, close=stale)
-    if gh.ci_runs(keep.head_sha) == 0:
-        return Plan("finish", f"#{keep.number} has no CI run yet", target, rels, keep, stale)
+    waiting, started = gh.ci_runs(keep.head_sha)
+    if waiting:
+        return Plan("finish", f"#{keep.number}'s CI run waits for approval", target, rels, keep, stale, waiting)
     if stale:
         return Plan("close", f"#{keep.number} pins v{target.version}", target, rels, keep, stale)
+    if not started:
+        return Plan("none", f"#{keep.number} pins v{target.version}; GitHub has not created its CI run yet", target, rels, keep)
     return Plan("none", f"#{keep.number} pins v{target.version} on the current main", target, rels, keep)
 
 
@@ -428,15 +454,35 @@ def compute(repo, nix, target):
     return values, None
 
 
+def await_ci(gh, head_sha):
+    """The ids of the pull request's CI runs that wait for approval: None while GitHub has created none."""
+    for attempt in range(RUN_WAIT // RUN_POLL + 1):
+        if attempt:
+            gh.sleep(RUN_POLL)
+        waiting, started = gh.ci_runs(head_sha)
+        if waiting or started:
+            return waiting
+    return None
+
+
+def approve_ci(gh, number, waiting):
+    for run_id in waiting or []:
+        gh.approve(run_id, number)
+    if waiting is None:
+        return f"GitHub created no CI run within {RUN_WAIT} s, the next run approves it"
+    return f"approved CI run {', '.join(map(str, waiting))}" if waiting else "its CI run needed no approval"
+
+
 def act(p, repo, gh, nix, git, main_sha, run_url):
+    """Take the plan; returns the pull request `pin` opened, or None, and what became of its CI run."""
     for pr, why in [] if p.action == "pin" else p.close:
         gh.close_pr(pr.number, f"Superseded by #{p.keep.number}: {why}" if p.keep else f"Closed by the tycswap pin workflow: {why}")
     if p.action == "finish":
         if not p.keep.armed:
             gh.arm_automerge(p.keep.number)
-        gh.dispatch_ci(p.keep.ref)
+        return None, approve_ci(gh, p.keep.number, p.waiting)
     if p.action != "pin":
-        return None
+        return None, ""
     before = read_pin((repo / "flake.nix").read_text())
     values, failure = compute(repo, nix, p.target)
     changelog = repo / "CHANGELOG.md"
@@ -445,13 +491,13 @@ def act(p, repo, gh, nix, git, main_sha, run_url):
         ok, out = nix.lint_changelog()
         failure = None if ok else BuildFailure("lint of CHANGELOG.md", tail(out))
     branch = pin_branch(p.target.version, main_sha)
-    git.commit_and_push(pr_title(p.target.version), branch)
+    head_sha = git.commit_and_push(pr_title(p.target.version), branch)
     number = gh.create_pr(branch, pr_title(p.target.version), pr_body(p, before, values, failure, run_url))
     for pr, why in p.close:
         gh.close_pr(pr.number, f"Superseded by #{number}: {why}")
+    # Armed before the approval: a person who approves a refused run leaves nothing else to do.
     gh.arm_automerge(number)
-    gh.dispatch_ci(branch)
-    return number
+    return number, approve_ci(gh, number, await_ci(gh, head_sha))
 
 
 def main(argv=None):
@@ -471,8 +517,9 @@ def main(argv=None):
         p = plan(read_pin((args.repo_dir / "flake.nix").read_text())["version"], gh, main_sha)
         line = f"{p.action}: {p.reason}"
         if args.command == "act":
-            number = act(p, args.repo_dir, gh, Nix(args.repo_dir), git, main_sha, run_url)
+            number, ci = act(p, args.repo_dir, gh, Nix(args.repo_dir), git, main_sha, run_url)
             line += f"; opened #{number}" if number else ""
+            line += f"; {ci}" if ci else ""
     except PinError as e:
         print(f"tycswap-pin: {e}", file=sys.stderr)
         return 1

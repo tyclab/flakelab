@@ -10,8 +10,11 @@ on:
     - cron: "4,19,34,49 * * * *"
   workflow_dispatch:
 
-# A pull request this token opens starts no pull_request run, so the script
-# dispatches ci.yml on its branch (actions: write) for lint, test and gitleaks.
+# GitHub holds ci.yml's pull_request run of a pull request this token opens until it
+# is approved; the script approves it (actions: write), and its lint, test and gitleaks
+# are what main's ruleset reads. A workflow_dispatch run of ci.yml on the branch
+# reports the same checks on the head, yet left #450 blocked. contents: write pushes
+# the pin branch; pull-requests: write opens, closes and arms the pull request.
 permissions:
   contents: write
   pull-requests: write

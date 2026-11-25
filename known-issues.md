@@ -463,24 +463,35 @@ merges itself; each run's summary says what it decided. Where it can stop:
   read its CI run. Fix `main` (for example the Go builder a release needs);
   the next run replaces the pull request on the new `main`. A failed CI run is
   not started again by itself.
-- **A CI run on the pull request waits for approval.** That is the
-  `pull_request` run GitHub creates for a pull request `github-actions[bot]`
-  opened. The run the workflow dispatches reports `lint`, `test` and
-  `gitleaks`; the waiting one can stay as it is.
+- **A CI run on the pull request waits for approval.** GitHub holds the
+  `pull_request` run of `ci.yml` for a pull request `github-actions[bot]`
+  opened, and the workflow approves it: right after it opens the pull request,
+  or on its next run when GitHub had not created the run within two minutes.
+  The pull request merges itself once that run's `lint`, `test` and
+  `gitleaks` pass.
+- **The run fails with "approving CI run … failed".** The workflow could not
+  approve the pull request's CI run; GitHub's answer follows on that line.
+  Approve the run by hand with "Approve workflows to run" on the pull request,
+  and the pull request merges itself once the checks pass. Until then every
+  run of the workflow fails the same way. When GitHub refused the approval,
+  the workflow's `GITHUB_TOKEN` may not approve the run, and every pin needs
+  that by hand until the workflow has a token that may.
 - **Held on purpose.** Closing the pin's pull request by hand, or reverting a
   merged pin on `main`, holds that release: the workflow opens no other pin
   for it and pins the next release as usual. To take a held release after all,
   reopen its pull request and turn auto-merge on again, or pin it by hand.
-  Turning off auto-merge on an open pin pull request holds it too.
+  Turning off auto-merge on an open pin pull request holds it too once its CI
+  run has started; while that run waits for approval, the workflow arms the
+  pull request again.
 - **Says a branch is the head of a pull request the workflow did not open.**
   The workflow only counts pull requests its own bot opened from this
   repository; one named like its branch is left alone, and the pin waits until
   that pull request is closed or `main` moves on.
 
-The merge commit of a pin gets no CI run on `main`: the token that armed
-auto-merge makes the merge, and events of the workflow's `GITHUB_TOKEN` start
-no workflow. The pull request's head is the same tree, tested on an
-up-to-date branch.
+The merge commit of a pin gets no CI run on `main`, not even one held for
+approval (#450's got none): auto-merge merges with the token that armed it, the
+workflow's `GITHUB_TOKEN`, and its push starts no workflow. The pull request's
+head is the same tree, tested on an up-to-date branch.
 
 ## Known limitations
 
