@@ -139,8 +139,11 @@
       # which no release carries yet. Not a pin back to 3.5.0: 3.5.2 is a security
       # release. Only 3.5.2 is patched; remove this overlay once nixpkgs ships a later
       # rsync, whose own fix checks.nix-backup then tests.
+      # An attribute of its own, for nix-backup alone, and not an override of `rsync`:
+      # the kernel build takes rsync, so the override made every plain NixOS host
+      # compile its kernel (checks.kernel-from-nixpkgs).
       rsyncOverlay = _final: prev: {
-        rsync = prev.rsync.overrideAttrs (
+        flakelab-rsync = prev.rsync.overrideAttrs (
           old:
           nixpkgs.lib.optionalAttrs (old.version == "3.5.2") {
             patches = (old.patches or [ ]) ++ [ ./nix/rsync-symlink-chmod.patch ];
