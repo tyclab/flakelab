@@ -158,9 +158,25 @@ in
   gitchecker = suiteCheck "gitchecker";
   gitcleaner = suiteCheck "gitcleaner";
   gitpublisher = suiteCheck "gitpublisher";
-  # The rsync the boxes run, flake.nix's patch included: the suite's symlink
-  # restore fails on an unpatched 3.5.2.
-  nix-backup = suiteCheckWith [ self.nixosConfigurations.default.pkgs.rsync ] "nix-backup";
+  # The rsync nix-backup runs on the boxes, flake.nix's patch included: the suite's
+  # symlink restore fails on an unpatched 3.5.2.
+  nix-backup = suiteCheckWith [
+    self.nixosConfigurations.default.pkgs.flakelab-rsync
+  ] "nix-backup";
+  # No overlay may change what the kernel is built from: a plain NixOS host then
+  # compiles its kernel on every update instead of fetching it. An override of
+  # rsync did (the kernel build takes rsync), and such a host ran out of disk
+  # compiling 6.18. Compared against the same system without any overlay.
+  kernel-from-nixpkgs =
+    let
+      vm = self.nixosConfigurations.proxmox-vm;
+      bare = vm.extendModules { modules = [ { nixpkgs.overlays = nixpkgs.lib.mkForce [ ]; } ]; };
+      kernel = vm.config.system.build.kernel.drvPath;
+    in
+    assert kernel == bare.config.system.build.kernel.drvPath;
+    pkgs.runCommandLocal "flakelab-check-kernel-from-nixpkgs" { } ''
+      touch $out
+    '';
   nix-overlay-generate = suiteCheck "nix-overlay-generate";
   # The --help sweep runs `mcp`, a python3 program.
   flakelab-cli = suiteCheckWith [ pkgs.python3 ] "flakelab-cli";
