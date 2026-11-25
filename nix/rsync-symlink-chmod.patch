@@ -1,0 +1,23 @@
+From: Zen Dodd <mail@steadytao.com>
+Subject: syscall: skip unsupported symlink chmod
+
+Backport of RsyncProject/rsync#1148, merged upstream after v3.5.2 as
+ea645201fefbba7f6b6b22b621856dba3c01cdd3. Its test is left out.
+https://github.com/RsyncProject/rsync/pull/1148
+
+Linux answers fchmodat(AT_SYMLINK_NOFOLLOW) on a symlink with EOPNOTSUPP.
+3.5.2 reports that as "failed to set permissions" and exits 23 whenever a
+transfer with -E or -p creates a link.
+
+diff --git a/syscall.c b/syscall.c
+--- a/syscall.c
++++ b/syscall.c
+@@ -1806,6 +1806,8 @@ int do_chmod(const char *path, mode_t mode)
+ 				code = 1;
+ # elif defined AT_FDCWD && defined AT_SYMLINK_NOFOLLOW
+ 			code = fchmodat(AT_FDCWD, path, mode & CHMOD_BITS, AT_SYMLINK_NOFOLLOW);
++			if (code < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP || errno == ENOSYS))
++				code = 1;
+ # else
+ 			code = 1;
+ # endif
