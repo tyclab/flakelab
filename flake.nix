@@ -172,7 +172,7 @@
       # than on a box's update.
       tycswap =
         let
-          version = "0.24.1";
+          version = "0.25.1";
         in
         pkgs.buildGo127Module {
           pname = "tycswap";
@@ -181,7 +181,7 @@
             owner = "tyclab";
             repo = "tycswap";
             tag = "v${version}";
-            hash = "sha256-5TplxpCT2jRN/Kqz5w/HGXmnzIlnxjNyVya3eIdCjwI=";
+            hash = "sha256-dTerTl59a2mxdpYJyB584CZs10Ch4ixcv3ALcHqwgy0=";
           };
           vendorHash = "sha256-EB0mzDWdoNRK0zDNA1q9uZBzGwvflQ6h0Huljr39Umc=";
           subPackages = [ "cmd/tycswap" ];
@@ -201,7 +201,7 @@
       # fixed-output fetch, so the exe a box runs is the one the hash names.
       tycswapWindows = pkgs.fetchurl {
         url = "https://github.com/tyclab/tycswap/releases/download/v${tycswap.version}/tycswap_v${tycswap.version}_windows_amd64.exe";
-        hash = "sha256-ImHuA3TD0BCsE2ow1sC2roIs7bW6OPNiAI0e08kgBtU=";
+        hash = "sha256-dZ+MRFEheYsDyKiNoXetcj7mA7F0dDUpNB+wDXI0hTQ=";
       };
       tycswapOverlay = _final: _prev: { inherit tycswap tycswapWindows; };
 
