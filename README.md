@@ -608,9 +608,9 @@ failed restore. Both actions are also in the terminal menu.
 More than one claude.ai or ChatGPT login on the box is tycswap's job: the
 account switcher for Claude Code and Codex logins in one static binary, pinned
 to a release in `flake.nix` (`installTycswap = false;` leaves it out). A new
-tycswap release reaches `main` by itself: the `tycswap pin` workflow
-(`.github/workflows/tycswap-pin.yml`) checks every quarter hour, computes the
-new version's hashes and opens a pull request that merges itself once CI
+tycswap release reaches `main` by itself: tycswap's Release workflow starts
+the `tycswap pin` workflow (`.github/workflows/tycswap-pin.yml`), which computes
+the new version's hashes and opens a pull request that merges itself once CI
 passes.
 `tycswap add` stores the live login, `tycswap add --login` logs the next one in
 beside it (the tool's own login in a scratch profile, nothing logged out),

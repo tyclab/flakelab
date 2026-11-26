@@ -445,27 +445,34 @@ and after: the number does not drop.
 
 ## A tycswap release did not reach `main`
 
-The `tycswap pin` workflow (`.github/workflows/tycswap-pin.yml`) checks for a
-new tycswap release every quarter hour and turns it into a pull request that
-merges itself; each run's summary says what it decided. Where it can stop:
+The `tycswap pin` workflow (`.github/workflows/tycswap-pin.yml`) turns a new
+tycswap release into a pull request that merges itself. tycswap's Release
+workflow starts it right after publishing, with the `tyclab-release` GitHub
+App's token; its quarter-hour schedule is a fallback that has not fired so far.
+Each run's summary says what it decided. Where it can stop:
 
 - **No pull request, and the run fails at its last step with "GitHub Actions is
   not permitted to create or approve pull requests".** The token may not open
   pull requests: turn on "Allow GitHub Actions to create and approve pull
   requests" under Settings, Actions, General, Workflow permissions, first for
   the organization, then for the repository.
-- **No runs at all.** GitHub disables a public repository's scheduled
-  workflows after 60 days without activity, and can delay or drop single runs
-  under load. Enable the workflow again, or start it under Actions, tycswap
-  pin, Run workflow; a run on any other branch than `main` refuses.
+- **No runs at all.** Read tycswap's Release run: its last job (`pin`) starts
+  this workflow with the App's token. It is skipped while the App's client ID
+  variable (`RELEASE_APP_CLIENT_ID`) is unset in tycswap, and fails when the
+  App is missing from flakelab, its private-key secret
+  (`RELEASE_APP_PRIVATE_KEY`) is unset in tycswap, or the key was revoked
+  (generate a new one in the App's settings and set it in both
+  repositories). GitHub has never run this workflow's schedule. Start it under
+  Actions, tycswap pin, Run workflow; a run on any other branch than `main`
+  refuses.
 - **The pull request is red.** When the pin itself did not build, its body
   says so ("This pin does not build") with the end of nix's log; otherwise
   read its CI run. Fix `main` (for example the Go builder a release needs);
   the next run replaces the pull request on the new `main`. A failed CI run is
   not started again by itself.
-- **A CI run on the pull request waits for approval.** GitHub holds the
-  `pull_request` run of `ci.yml` for a pull request `github-actions[bot]`
-  opened, and the workflow approves it: right after it opens the pull request,
+- **A CI run on the pull request waits for approval.** Only without the App:
+  GitHub holds the `pull_request` run of `ci.yml` for a pull request
+  `github-actions[bot]` opened, and the workflow approves it: right after it opens the pull request,
   or on its next run when GitHub had not created the run within two minutes.
   The pull request merges itself once that run's `lint`, `test` and
   `gitleaks` pass.

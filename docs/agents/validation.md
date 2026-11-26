@@ -29,8 +29,10 @@ Read for this topic; paths below are relative to the repository root unless stat
   `make lint-nix` (or `nix fmt`) before pushing a `.nix` change. Run
   `make install-hooks` once per clone, inside `nix develop`. Flake outputs and
   checks exist for `x86_64-linux` only.
-- A pull request the tycswap pin workflow opens with its `GITHUB_TOKEN` gets a
-  `pull_request` run of `ci.yml` that GitHub holds for approval; the workflow
+- The tycswap pin workflow opens its pull request with the `tyclab-release`
+  App's token, so `ci.yml` runs on it as on any pull request. Without the App,
+  a pull request it opens with its `GITHUB_TOKEN` gets a `pull_request` run of
+  `ci.yml` that GitHub holds for approval; the workflow
   approves it, and that run's `lint`, `test` and `gitleaks` are the checks
   main's ruleset reads. A `workflow_dispatch` run of `ci.yml` on the branch
   reported the same checks on #450's head and left it blocked, so `ci.yml` has
