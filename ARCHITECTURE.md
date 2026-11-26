@@ -283,7 +283,7 @@ flowchart TB
         HM["home-manager-#lt;user#gt;.service<br/>Home Manager activation;<br/>a failed health check<br/>fails the unit"]
         RESULT{"flakelab-switch-result"}
     end
-    POST["restart the Home Manager unit<br/>if the switch left failed or<br/>deferred steps alone;<br/>print the deferred steps;<br/>wsl: flakelab tray sync;<br/>refresh Claude marketplaces,<br/>update changed plugins,<br/>assert the allow and ask tiers;<br/>--all: flakelab clone"]
+    POST["restart the Home Manager unit<br/>if the switch left failed or<br/>deferred steps alone;<br/>print the deferred steps;<br/>wsl: flakelab tray sync,<br/>flakelab herdr;<br/>refresh Claude marketplaces,<br/>update changed plugins,<br/>assert the allow and ask tiers;<br/>--all: flakelab clone"]
     STOP(["exit 1"])
     CODE(["exit with the verdict's code"])
     DONE(["exit 0 applied, 4 degraded,<br/>1 when an input went unchecked"])

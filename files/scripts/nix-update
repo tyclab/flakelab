@@ -559,6 +559,12 @@ if [[ "${FLAKELAB_TARGET:-}" == wsl ]]; then
   else
     _say yellow "⚠ flakelab is not on PATH, so the Windows tray was not synced — from a new shell: flakelab tray"
   fi
+  # The same generation registers the distro with the Herdr app's core, once; it
+  # says nothing where there is nothing to do.
+  if command -v flakelab > /dev/null 2>&1; then
+    flakelab herdr --quiet \
+      || _say yellow "⚠ this distro was not registered with the Herdr app: its error precedes this line — retry: flakelab herdr"
+  fi
 fi
 
 # Marketplace clones are runtime data: replay after every switch, skipping those this run's activation fetched.

@@ -66,6 +66,7 @@ connect|connect an account over stdio|!@=Account
 import-codex|import existing Codex grants'
 actions[tray]='status|check the installed Windows tray
 sync|install or update the Windows tray|--dry-run'
+actions[herdr]='|register this distro with the Herdr app on Windows|--dry-run'
 actions[provision]='status|show provisioning status|--repo=/Flakelab_checkout --=PowerShell_argument
 generate|generate an overlay|--repo=/Flakelab_checkout --=PowerShell_argument
 init|initialize the overlay|--repo=/Flakelab_checkout --=PowerShell_argument

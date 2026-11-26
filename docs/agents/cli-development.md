@@ -115,7 +115,10 @@ Read for this topic; paths below are relative to the repository root unless stat
     and the quota hook in `claude.nix` that ticks the timer), `flakelab tray`
     (`nix-tycswap-tray` and `tycswap-tray.ps1`: the tray exe from the pin
     `tycswapWindows`, its logon task, its start; run by `nix-update` after a
-    switch on the wsl target), the `tycswap` backup
+    switch on the wsl target), `flakelab herdr` (`nix-herdr-machine`: with
+    `installHerdrCore` on the wsl target, registers the distro with the Herdr
+    app's core on Windows once, read from that core's `machines.json` so no
+    core is started to ask; run by `nix-update` after the tray), the `tycswap` backup
     category, the doctor's `Switcher` section, `claude-sessions` reading
     tycswap's session profiles, and `flakelab web` over `tycswap list --json`
     and `tycswap switch`. The store is `~/.local/share/tycswap`; nothing reads

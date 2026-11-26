@@ -802,15 +802,21 @@ PATH: the terminal runtime the Herdr app attaches to, pinned to a release in
 write, so a new release reaches a box through a bump of that pin.
 
 On a wsl box the Herdr app runs on Windows and reaches the distro through
-`wsl.exe`; no SSH server runs in the distro. Once, in a Windows terminal
-(`flakelab distro-name` prints the distro):
+`wsl.exe`; no SSH server runs in the distro. `flakelab update` registers the
+distro with the app's core after every switch, once, under the distro's name:
+`flakelab herdr` runs the same step by hand, and `--dry-run` prints the call.
+It needs the app's core on Windows (`%LOCALAPPDATA%\Programs\herdr-core`, where
+the app's installer puts it) and does nothing until that is there. What it
+runs, for a registration made by hand in a Windows terminal:
 
 ```powershell
-hc machine add --via "wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc" --name wsl
+hc machine add --via "wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc" --name <distro>
 ```
 
 The login shell is needed: the core keeps the environment of the connection
-that started it, and only the login PATH has Claude Code and Codex.
+that started it, and only the login PATH has Claude Code and Codex. A distro
+the core already knows is left alone, whatever it is called there; one that
+was registered without the login shell is named with the way to replace it.
 
 ## Proxmox VM
 

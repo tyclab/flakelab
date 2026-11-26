@@ -383,6 +383,26 @@ in
   report-unswept-clones = suiteCheck "report-unswept-clones";
   nix-provision = suiteCheck "nix-provision";
   nix-tycswap-tray = suiteCheck "nix-tycswap-tray";
+  nix-herdr-machine = suiteCheck "nix-herdr-machine";
+  # `flakelab herdr` registers only where the flake puts herdr-core on a wsl box.
+  herdr-machine-gate =
+    let
+      inherit (self.nixosConfigurations.default) pkgs;
+      wrapper =
+        attrs:
+        (import ./scripts.nix {
+          inherit pkgs;
+          cfg = self.nixosConfigurations.default.config.flakelab // attrs;
+        }).nix-herdr-machine;
+      flagged =
+        target: installHerdrCore: "${wrapper { inherit target installHerdrCore; }}/bin/nix-herdr-machine";
+    in
+    pkgs.runCommandLocal "flakelab-check-herdr-machine-gate" { } ''
+      grep -qxF 'export FLAKELAB_HERDR_MACHINE=1' ${flagged "wsl" true}
+      ! grep -qF FLAKELAB_HERDR_MACHINE ${flagged "wsl" false}
+      ! grep -qF FLAKELAB_HERDR_MACHINE ${flagged "proxmox-vm" true}
+      touch $out
+    '';
   # The tycswap pin workflow's script: in .github/scripts, since files/scripts is
   # copied whole into every box and this one runs on GitHub only.
   tycswap-pin =

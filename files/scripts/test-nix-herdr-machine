@@ -1,0 +1,210 @@
+#!/usr/bin/env zsh
+
+set -uo pipefail
+
+# Offline suite for nix-herdr-machine, which registers a wsl distro with the Herdr
+# app's core on Windows: the real script against stub `cmd.exe`, `wslpath` and
+# `hc.exe` executables, so no case needs WSL interop. What reaches hc.exe, and when
+# it is not called at all, is the contract under test.
+
+SCRIPT_DIR="${0:A:h}"
+SCRIPT="${SCRIPT_DIR}/nix-herdr-machine"
+typeset -i PASS=0 FAIL=0
+
+ok()       { print -r -- "  ok   $1"; (( PASS++ )); return 0 }
+bad()      { print -r -u2 -- "  FAIL $1"; (( FAIL++ )); return 0 }
+check()    { [[ "$2" == "$3" ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       expected: $3"; print -r -u2 -- "       actual:   $2" } }
+contains() { [[ "$2" == *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       missing: $3"; print -r -u2 -- "       in:      $2" } }
+lacks()    { [[ "$2" != *"$3"* ]] && ok "$1" || { bad "$1"; print -r -u2 -- "       unexpected: $3" } }
+
+BASE="$(mktemp -d)"
+trap 'rm -rf "${BASE}"' EXIT
+
+# cmd.exe answers `echo %LOCALAPPDATA%` as Windows does, CR included; wslpath maps
+# that answer to a directory the suite owns; hc.exe records its argv one per line
+# and exits as FAKE_HC_RC says.
+STUBS="${BASE}/bin"
+CALLS="${BASE}/calls"
+LOCAL="${BASE}/local"
+HC="${LOCAL}/Programs/herdr-core/hc.exe"
+MACHINES="${LOCAL}/herdr-core/default/machines.json"
+STATE="${BASE}/home/.local/state"
+CORE="${STATE}/herdr-core/default/core.json"
+VIA="wsl.exe -d flakelab -e /run/current-system/sw/bin/zsh -lc"
+mkdir -p "${STUBS}" "${BASE}/home" "${HC:h}" "${MACHINES:h}" "${CORE:h}"
+cat > "${STUBS}/cmd.exe" <<'STUB'
+#!/usr/bin/env zsh
+[[ -n "${FAKE_CMD_HANG:-}" ]] && sleep 30
+print -r -- "${FAKE_LOCALAPPDATA-C:\\Users\\u\\AppData\\Local}"$'\r'
+STUB
+cat > "${STUBS}/wslpath" <<STUB
+#!/usr/bin/env zsh
+[[ "\$1" == "-u" && "\$2" == 'C:\\Users\\u\\AppData\\Local' ]] || exit 1
+print -r -- "${LOCAL}"
+STUB
+cat > "${BASE}/hc-stub" <<STUB
+#!/usr/bin/env zsh
+print -rl -- "\$@" > "${CALLS}"
+print -r -- "hc-stub: \${FAKE_HC_OUT:-added}"\$'\r'
+[[ -n "\${FAKE_HC_HANG:-}" ]] && sleep 30
+exit "\${FAKE_HC_RC:-0}"
+STUB
+chmod +x "${STUBS}/cmd.exe" "${STUBS}/wslpath" "${BASE}/hc-stub"
+# The interop handler the script checks for, under a root the suite owns.
+BINFMT="${BASE}/binfmt"; mkdir -p "${BINFMT}"; : > "${BINFMT}/WSLInterop"
+NOCMD="${BASE}/nocmd"; mkdir -p "${NOCMD}"
+for tool in wslpath; do ln -s "${STUBS}/${tool}" "${NOCMD}/${tool}"; done
+for tool in zsh jq timeout tr; do ln -s "$(command -v "${tool}")" "${NOCMD}/${tool}"; done
+
+# install_hc / no_hc: the Windows core on disk, or not.
+install_hc() { cp "${BASE}/hc-stub" "${HC}" }
+no_hc()      { rm -f "${HC}" }
+# machines <json>: the Windows core's list; none: no list yet.
+machines() { print -r -- "$1" > "${MACHINES}" }
+no_machines() { rm -f "${MACHINES}" }
+
+# run_herdr [VAR=value...] -- <args...>: the script under the stubs with the
+# wrapper's environment; sets OUT (stdout+stderr), RC and ARGV (what hc.exe got,
+# empty when it never ran).
+typeset -i RC=0
+OUT=""
+typeset -a ARGV=()
+run_herdr() {
+  local -a env=(
+    PATH="${STUBS}:${PATH}" HOME="${BASE}/home" WSL_DISTRO_NAME=flakelab
+    FLAKELAB_HERDR_MACHINE=1 FLAKELAB_BINFMT_ROOT="${BINFMT}"
+  )
+  while (( $# )) && [[ "$1" != -- ]]; do env+=("$1"); shift; done
+  [[ "${1:-}" == -- ]] && shift
+  rm -f "${CALLS}"
+  OUT="$(env -i "${env[@]}" zsh "${SCRIPT}" "$@" 2>&1)"
+  RC=$?
+  ARGV=()
+  [[ -f "${CALLS}" ]] && ARGV=( "${(@f)$(<"${CALLS}")}" )
+  return 0
+}
+
+print -r -- "usage"
+install_hc; no_machines
+run_herdr -- --help
+check "--help exits 0" "${RC}" "0"
+contains "and prints the usage" "${(L)OUT}" "usage"
+run_herdr -- bogus
+check "an unknown argument exits 2" "${RC}" "2"
+check "and hc.exe never ran" "${#ARGV}" "0"
+
+print -r -- "nothing to register"
+run_herdr FLAKELAB_HERDR_MACHINE= --
+check "without the wrapper's flag it exits 0" "${RC}" "0"
+contains "and says what it needs" "${OUT}" "needs the wsl target and flakelab.installHerdrCore = true"
+check "and hc.exe never ran" "${#ARGV}" "0"
+run_herdr FLAKELAB_HERDR_MACHINE= -- --quiet
+check "--quiet says nothing there" "${OUT}" ""
+no_hc
+run_herdr --
+check "no herdr-core on Windows exits 0" "${RC}" "0"
+contains "and names where it looked" "${OUT}" "no herdr-core on Windows (${HC})"
+run_herdr -- --quiet
+check "--quiet says nothing there either" "${OUT}" ""
+check "and exits 0" "${RC}" "0"
+
+print -r -- "a distro the Windows core does not know is registered"
+install_hc; no_machines
+run_herdr --
+check "exits 0" "${RC}" "0"
+check "hc.exe gets machine add with the login-shell command, the distro as name" "${(j:|:)ARGV}" "machine|add|--via|${VIA}|--name|flakelab|--json"
+contains "and the result is said" "${OUT}" "registered this distro with the Windows herdr-core as 'flakelab'"
+lacks "without hc's own output" "${OUT}" "hc-stub"
+run_herdr -- --quiet
+contains "--quiet still reports a registration" "${OUT}" "registered this distro"
+machines '[]'
+run_herdr --
+check "an empty list registers too" "${ARGV[1]} ${ARGV[2]}" "machine add"
+machines '[{"name":"vps","target":"vps","via":false,"id":"aaaa"},{"name":"other","target":"wsl.exe -d flakelab-two -e sh -c","via":true,"id":"bbbb"}]'
+run_herdr --
+check "other machines, another distro among them, do not count" "${ARGV[1]} ${ARGV[2]}" "machine add"
+
+print -r -- "a distro it knows is left alone"
+machines "[{\"name\":\"wsl\",\"target\":\"${VIA}\",\"via\":true,\"id\":\"cccc\"}]"
+run_herdr --
+check "known by its command: exits 0" "${RC}" "0"
+check "and hc.exe never ran" "${#ARGV}" "0"
+contains "and names the machine" "${OUT}" "knows this distro as 'wsl'"
+lacks "with no hint: the command is the login shell's" "${OUT}" "without the login shell"
+run_herdr -- --quiet
+check "--quiet says nothing" "${OUT}" ""
+machines '[{"name":"box","target":"wsl.exe -d flakelab -e sh -c","via":true,"id":"cccc"}]'
+run_herdr --
+check "another spelling of the command is known too" "${#ARGV}" "0"
+contains "and gets the login-shell hint" "${OUT}" "without the login shell Claude Code and Codex are not on PATH there"
+contains "with the way to replace it" "${OUT}" "hc machine rm box"
+print -r -- '{"id":"dddd","name":"flakelab"}' > "${CORE}"
+machines '[{"name":"renamed","target":"some-wrapper.exe","via":true,"id":"dddd"}]'
+run_herdr --
+check "known by this distro's core id, whatever the command" "${#ARGV}" "0"
+contains "and names that machine" "${OUT}" "knows this distro as 'renamed'"
+machines '[{"name":"elsewhere","target":"vps","via":false,"id":"eeee"}]'
+run_herdr --
+check "another core's id does not count" "${ARGV[1]} ${ARGV[2]}" "machine add"
+rm -f "${CORE}"
+
+print -r -- "--dry-run changes nothing"
+no_machines
+run_herdr -- --dry-run
+check "exits 0" "${RC}" "0"
+check "hc.exe never ran" "${#ARGV}" "0"
+contains "and the call is printed" "${OUT}" "would register this distro: ${HC} machine add --via \"${VIA}\" --name flakelab"
+
+print -r -- "the distro name outside a WSL shell"
+mkdir -p "${STATE}/flakelab"
+print -r -- "flakelab-two" > "${STATE}/flakelab/distro-name"
+run_herdr WSL_DISTRO_NAME= --
+check "comes from the shell's record" "${(j:|:)ARGV}" "machine|add|--via|wsl.exe -d flakelab-two -e /run/current-system/sw/bin/zsh -lc|--name|flakelab-two|--json"
+rm -f "${STATE}/flakelab/distro-name"
+run_herdr WSL_DISTRO_NAME= --
+check "with neither, it exits 1" "${RC}" "1"
+contains "and says which fact is missing" "${OUT}" "distro name unknown"
+check "and hc.exe never ran" "${#ARGV}" "0"
+run_herdr WSL_DISTRO_NAME='my distro' --
+check "a name with a space exits 1" "${RC}" "1"
+contains "and says why" "${OUT}" "characters a --via command line cannot carry"
+check "and hc.exe never ran" "${#ARGV}" "0"
+
+print -r -- "failures"
+run_herdr FLAKELAB_BINFMT_ROOT="${BASE}/no-binfmt" --
+check "a missing WSLInterop handler exits 1" "${RC}" "1"
+contains "and names the observed problem" "${OUT}" "no WSLInterop handler visible"
+contains "and preserves registry protection" "${OUT}" "Do not replace WSL's handler or disable its protection"
+lacks "and prescribes no unconditional shutdown" "${OUT}" "wsl --shutdown"
+check "and hc.exe never ran" "${#ARGV}" "0"
+mv "${BINFMT}/WSLInterop" "${BINFMT}/WSLInterop-late"
+run_herdr --
+check "the late handler is accepted" "${ARGV[1]} ${ARGV[2]}" "machine add"
+mv "${BINFMT}/WSLInterop-late" "${BINFMT}/WSLInterop"
+run_herdr PATH="${NOCMD}" FLAKELAB_CMD_EXE="${BASE}/no-cmd.exe" --
+check "no cmd.exe exits 1" "${RC}" "1"
+contains "and names it" "${OUT}" "cmd.exe not found"
+run_herdr FAKE_LOCALAPPDATA='%LOCALAPPDATA%' --
+check "a cmd.exe that names no folder exits 1" "${RC}" "1"
+contains "and shows what it said" "${OUT}" "named no %LOCALAPPDATA% (got '%LOCALAPPDATA%')"
+run_herdr FAKE_CMD_HANG=1 FLAKELAB_HERDR_TIMEOUT=1 --
+check "a cmd.exe that hangs is cut off, exit 1" "${RC}" "1"
+contains "and says so" "${OUT}" "cmd.exe gave no answer within"
+machines 'not json'
+run_herdr --
+check "a list it cannot read exits 1" "${RC}" "1"
+contains "and registers nothing" "${OUT}" "registering nothing"
+check "hc.exe never ran" "${#ARGV}" "0"
+no_machines
+run_herdr FAKE_HC_RC=1 FAKE_HC_OUT='a machine named flakelab exists' --
+check "hc.exe's failure exits 1" "${RC}" "1"
+contains "with its message" "${OUT}" "a machine named flakelab exists"
+contains "and ours" "${OUT}" "could not register this distro (exit 1)"
+lacks "without Windows' CR" "${OUT}" $'\r'
+run_herdr FAKE_HC_HANG=1 FLAKELAB_HERDR_TIMEOUT=1 --
+check "an hc.exe that hangs is cut off, exit 1" "${RC}" "1"
+contains "and says so" "${OUT}" "hc.exe gave no answer within"
+
+print -r -- ""
+print -r -- "${PASS} passed, ${FAIL} failed"
+(( FAIL == 0 ))

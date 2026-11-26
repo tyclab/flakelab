@@ -227,7 +227,7 @@ in
     installHerdrCore = mkOption {
       type = types.bool;
       default = false;
-      description = "Install herdr-core (`hc`, https://herdr.dev/core/), the terminal runtime the Herdr app attaches to: programs and coding agents run in terminals that outlive the client. Pinned to a release in flake.nix as upstream's static binary; hc does not update a copy it cannot write, so the pin is the only update a box gets. No service: a client starts the core on its first connect. On wsl the Herdr app on Windows reaches the distro through wsl.exe, with no SSH server; once, in a Windows terminal: `hc machine add --via \"wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc\" --name wsl`. The login shell is needed: the core keeps the environment of the connection that started it, and only the login PATH has Claude Code and Codex.";
+      description = "Install herdr-core (`hc`, https://herdr.dev/core/), the terminal runtime the Herdr app attaches to: programs and coding agents run in terminals that outlive the client. Pinned to a release in flake.nix as upstream's static binary; hc does not update a copy it cannot write, so the pin is the only update a box gets. No service: a client starts the core on its first connect. On wsl the Herdr app on Windows reaches the distro through wsl.exe, with no SSH server; `flakelab update` registers the distro with the app's core once (`flakelab herdr`: `hc.exe machine add --via \"wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc\" --name <distro>`), where that core is installed. The login shell is needed: the core keeps the environment of the connection that started it, and only the login PATH has Claude Code and Codex.";
     };
 
     # The tiering is the whole point, and it is easy to get backwards:

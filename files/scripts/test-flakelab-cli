@@ -33,7 +33,7 @@ mkdir -p "${DISPATCH}"
 typeset -a WRAPPERS=(
   nix-update nix-update-all nix-doctor nix-backup claude-sessions notify web flakelab-mcp nix-clone-repos
   nix-provision nix-overlay-generate build-dev-wsl-nix test-provision-nix
-  get_current_wsl_distro_name nix-tycswap-tray clone-repos activate-hooks report-stale-repos
+  get_current_wsl_distro_name nix-tycswap-tray nix-herdr-machine clone-repos activate-hooks report-stale-repos
   glab-group-projects
 )
 for w in "${WRAPPERS[@]}"; do
@@ -73,10 +73,10 @@ chmod +x "${MENUDISPATCH}/flakelab-menu"
 # Mirrored, not sourced: the router's arrays are not meant to be sourced by anything.
 typeset -a ORDER=(
   update update-all doctor backup sessions notify web mcp clone provision overlay-gen build-distro
-  test-provision distro-name tray clone-repos activate-hooks stale-repos
+  test-provision distro-name tray herdr clone-repos activate-hooks stale-repos
   glab-projects tycsnap
 )
-typeset -a WSL_ONLY=( provision build-distro test-provision distro-name tray tycsnap )
+typeset -a WSL_ONLY=( provision build-distro test-provision distro-name tray herdr tycsnap )
 
 # run_router <target|""> <args...> — sets OUT and RC; an empty target leaves the env
 # var genuinely unset, which is what checkout mode looks like.
@@ -111,7 +111,7 @@ check "menu entries cover every public router command" "$listed" "$(printf '%s\n
 
 print -r -- "no FLAKELAB_TARGET (checkout mode): every verb available"
 run_router "" --help
-check "--help lists all 20 commands" "$(count_listed)" "20"
+check "--help lists all 21 commands" "$(count_listed)" "21"
 check "--help exits 0" "${RC}" "0"
 
 run_router "" mcp
@@ -125,7 +125,7 @@ check "build-distro exits 0 with no target set" "${RC}" "0"
 print -r -- ""
 print -r -- "FLAKELAB_TARGET=proxmox-vm: the six wsl-only verbs are gated"
 run_router "proxmox-vm" --help
-check "--help lists 14 commands (20 minus the six wsl-only verbs)" "$(count_listed)" "14"
+check "--help lists 14 commands (21 minus the seven wsl-only verbs)" "$(count_listed)" "14"
 for c in "${WSL_ONLY[@]}"; do
   excludes "--help does not list '${c}' on proxmox-vm" "${OUT}" $'\n'"  ${c} "
 done

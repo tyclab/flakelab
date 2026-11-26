@@ -304,6 +304,24 @@ rec {
     exec ${zsh} ${s}/nix-tycswap-tray "$@"
   '';
 
+  # This distro as a machine in the Herdr app on Windows (`flakelab herdr`): only a
+  # wsl box whose flake installs herdr-core has one to register; the script reads an
+  # unset flag as "nothing to register" and exits 0.
+  herdrMachineEnv = lib.optionalString (cfg.target == "wsl" && cfg.installHerdrCore) ''
+    export FLAKELAB_HERDR_MACHINE=1
+  '';
+  nix-herdr-machine = pkgs.writeShellScriptBin "nix-herdr-machine" ''
+    ${herdrMachineEnv}
+    export PATH=${
+      bin [
+        pkgs.zsh
+        pkgs.coreutils
+        pkgs.jq
+      ]
+    }:$PATH
+    exec ${zsh} ${s}/nix-herdr-machine "$@"
+  '';
+
   # $0 yields /nix once packaged, so FLAKELAB_REPO_ROOT carries the repo root instead.
   # `nix` and `nixos-rebuild` stay on $PATH: they must be the running system's, not a
   # second copy pinned here.

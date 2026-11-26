@@ -1,0 +1,126 @@
+#!/usr/bin/env zsh
+# This distro as a machine in the Herdr app on Windows. Where the flake puts herdr-core
+# on a wsl box (flakelab.installHerdrCore) and the app's own core is installed on
+# Windows, it registers the distro there once: `hc.exe machine add --via "wsl.exe -d
+# <distro> -e <login zsh> -lc"`. `flakelab update` runs it with --quiet after every
+# switch. Whether the distro is known is read from the Windows core's machines.json:
+# asking hc.exe would start that core, and a started core connects to its machines.
+set -uo pipefail
+_self="flakelab herdr"
+die() { print -ru2 -- "${_self}: $*"; exit 1 }
+usage_error() { print -ru2 -- "${_self}: $*"; exit 2 }
+usage() {
+  cat <<EOF
+${_self} - this distro as a machine in the Herdr app on Windows
+Usage: ${_self} [--dry-run] [--quiet]
+Registers the distro with the Windows herdr-core, once: the app then lists it
+and runs terminals in it through wsl.exe. Does nothing where the Windows core
+is not installed or already knows the distro.
+Options:
+  --dry-run   say what would be registered, change nothing
+  --quiet     say nothing when there is nothing to do
+  -h, --help  this text
+Needs the wsl target and flakelab.installHerdrCore = true.
+EOF
+}
+
+_dry=false
+_quiet=false
+while (( $# )); do
+  case "$1" in
+    --dry-run)  _dry=true ;;
+    --quiet)    _quiet=true ;;
+    -h|--help)  usage; exit 0 ;;
+    *)          usage_error "unknown argument '$1'; see --help" ;;
+  esac
+  shift
+done
+# A line that reports no change, which --quiet drops.
+note() { ${_quiet} || print -r -- "${_self}: $*" }
+
+if [[ -z "${FLAKELAB_HERDR_MACHINE:-}" ]]; then
+  note "nothing to register (needs the wsl target and flakelab.installHerdrCore = true)"
+  exit 0
+fi
+
+# wsl.exe -d's name: WSL_DISTRO_NAME, else the record the zsh init leaves for contexts
+# without it (`flakelab distro-name` reads the same file).
+_distro="${WSL_DISTRO_NAME:-}"
+if [[ -z "${_distro}" ]]; then
+  _record="${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name"
+  [[ -s "${_record}" ]] && IFS= read -r _distro < "${_record}"
+fi
+[[ -n "${_distro}" ]] || die "distro name unknown: neither WSL_DISTRO_NAME nor ${XDG_STATE_HOME:-${HOME}/.local/state}/flakelab/distro-name; open a WSL shell once, or run this from one"
+# hc.exe splits --via into a program and its arguments, and the name is the machine's.
+[[ "${_distro}" =~ '^[A-Za-z0-9._-]+$' ]] || die "distro name '${_distro}' has characters a --via command line cannot carry"
+
+# Check this process's handler view before invoking a Windows program (known-issues.md).
+_binfmt="${FLAKELAB_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
+if [[ ! -e "${_binfmt}/WSLInterop" && ! -e "${_binfmt}/WSLInterop-late" ]]; then
+  die "no WSLInterop handler visible at ${_binfmt}; the Windows herdr-core cannot be reached from here.
+  Verify host interop outside any sandbox; see known-issues.md.
+  Do not replace WSL's handler or disable its protection.
+  A WSL restart ends every session and is an operator decision, never an agent action."
+fi
+# Absolute path: PATH may lack the Windows directories; FLAKELAB_CMD_EXE names one
+# outright (the suite's hook). cwd /mnt/c: cmd.exe refuses a UNC working directory.
+_cmd="${FLAKELAB_CMD_EXE:-$(command -v cmd.exe 2> /dev/null || print -- /mnt/c/Windows/System32/cmd.exe)}"
+[[ -x "${_cmd}" ]] || die "cmd.exe not found - is /mnt/c mounted?"
+command -v wslpath > /dev/null 2>&1 || die "wslpath not found - not a WSL distro?"
+[[ -d /mnt/c ]] && cd /mnt/c
+
+# Bounded: an interop call that hangs (a distro mid-shutdown, a stuck 9P share) must
+# not hang `flakelab update`. Windows ends lines with CR LF: the CR goes.
+_limit="${FLAKELAB_HERDR_TIMEOUT:-120}"
+_win_local="$(timeout "${_limit}" "${_cmd}" /d /c 'echo %LOCALAPPDATA%' < /dev/null 2> /dev/null | tr -d '\r')"
+(( $? == 124 )) && die "cmd.exe gave no answer within ${_limit} s"
+[[ "${_win_local}" == [A-Za-z]:\\* ]] || die "cmd.exe named no %LOCALAPPDATA% (got '${_win_local}')"
+_local="$(wslpath -u "${_win_local}")" || die "wslpath -u failed for ${_win_local}"
+
+# The app's installer puts its own core here; FLAKELAB_HERDR_HC_EXE names another.
+_hc="${FLAKELAB_HERDR_HC_EXE:-${_local}/Programs/herdr-core/hc.exe}"
+if [[ ! -f "${_hc}" ]]; then
+  note "no herdr-core on Windows (${_hc}): nothing to register until the Herdr app is installed"
+  exit 0
+fi
+
+# The login shell: the core keeps the environment of the connection that started it,
+# and only the login PATH has Claude Code and Codex.
+_via="wsl.exe -d ${_distro} -e /run/current-system/sw/bin/zsh -lc"
+
+# Known already? By this distro's core id, which a registration under any spelling
+# carries, or by a command that names the distro. An unreadable list registers
+# nothing: a second entry for the same distro would be a duplicate in the app.
+_machines="${_local}/herdr-core/default/machines.json"
+_core="${XDG_STATE_HOME:-${HOME}/.local/state}/herdr-core/default/core.json"
+_id=""
+[[ -s "${_core}" ]] && _id="$(jq -r '.id // empty' "${_core}" 2> /dev/null)"
+if [[ -s "${_machines}" ]]; then
+  _known="$(jq -r --arg id "${_id}" --arg prefix "wsl.exe -d ${_distro} " '
+    [ .[] | select(($id != "" and (.id // "") == $id) or ((.target // "") | startswith($prefix))) ][0]
+    | select(. != null) | "\(.name // "")\t\(.target // "")"' "${_machines}" 2> /dev/null)" \
+    || die "cannot read ${_machines}: registering nothing"
+  if [[ -n "${_known}" ]]; then
+    _name="${_known%%$'\t'*}"
+    _target="${_known#*$'\t'}"
+    note "the Windows herdr-core knows this distro as '${_name}'"
+    [[ "${_target}" == "${_via}" ]] \
+      || note "its command is '${_target}': without the login shell Claude Code and Codex are not on PATH there. To replace it, in a Windows terminal: hc machine rm ${_name}, then here: ${_self}"
+    exit 0
+  fi
+fi
+
+if ${_dry}; then
+  print -r -- "${_self}: would register this distro: ${_hc} machine add --via \"${_via}\" --name ${_distro}"
+  exit 0
+fi
+# The call starts the Windows core, which connects through the command and starts
+# this distro's core in that login shell. stdin closed: hc asks nothing.
+_out="$(timeout "${_limit}" "${_hc}" machine add --via "${_via}" --name "${_distro}" --json < /dev/null 2>&1 | tr -d '\r')"
+_rc=$?
+(( _rc == 124 )) && die "hc.exe gave no answer within ${_limit} s"
+if (( _rc != 0 )); then
+  [[ -n "${_out}" ]] && print -ru2 -- "${_out}"
+  die "hc.exe could not register this distro (exit ${_rc})"
+fi
+print -r -- "${_self}: registered this distro with the Windows herdr-core as '${_distro}': the Herdr app lists it now"
