@@ -30,6 +30,23 @@ in
   # The shim runs this before systemd: known-issues.md, "No user manager".
   system.activationScripts.flakelab-wsl-init-cgroup.text = "${scripts.wsl-init-cgroup}/bin/flakelab-wsl-init-cgroup";
 
+  # WSLg lists what /usr/share/applications holds in the Windows Start menu,
+  # under the distro's name. Only Herdr's entry, from its store path:
+  # wsl.startMenuLaunchers would list every desktop file of the system, and reads
+  # the user's profile through an /etc that activation has not replaced yet.
+  system.activationScripts.flakelab-herdr-launcher.text =
+    let
+      desktop = "/usr/share/applications/herdr-app.desktop";
+      icon = "/usr/share/icons/hicolor/scalable/apps/herdr-app.svg";
+    in
+    if config.flakelab.installHerdrApp then
+      ''
+        ${pkgs.coreutils}/bin/install -Dm644 ${pkgs.herdr-app}/share/applications/herdr-app.desktop ${desktop}
+        ${pkgs.coreutils}/bin/install -Dm644 ${pkgs.herdr-app}/share/icons/hicolor/scalable/apps/herdr-app.svg ${icon}
+      ''
+    else
+      "${pkgs.coreutils}/bin/rm -f ${desktop} ${icon}";
+
   # Binding X0 itself pins the old socket when weston restarts. WSL already
   # mounts its directory unless a separate /tmp mount hides it.
   systemd.suppressedSystemUnits = lib.optionals (

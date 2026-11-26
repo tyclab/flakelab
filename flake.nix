@@ -249,7 +249,74 @@
             mainProgram = "hc";
           };
         };
-      herdrCoreOverlay = _final: _prev: { herdr-core = herdrCore; };
+      # The Herdr desktop app (https://herdr.dev), the client that attaches to
+      # herdr-core. Upstream ships one prebuilt binary per release, so this is a
+      # fixed-output fetch like the core's: `hash` is the sha256 that
+      # https://releases.herdr.dev/app/latest.json names for linux-x86_64. The
+      # binary links libxcb and libxkbcommon and opens Wayland, EGL and Vulkan at
+      # run time, which autoPatchelf only finds as runtimeDependencies.
+      herdrApp =
+        let
+          version = "0.1.18";
+        in
+        pkgs.stdenv.mkDerivation {
+          pname = "herdr-app";
+          inherit version;
+          src = pkgs.fetchurl {
+            url = "https://releases.herdr.dev/app/${version}/herdr-app-linux-x86_64.tar.gz";
+            hash = "sha256-ihHt153UCzSfcobPUZELYuIRNtr48DAFqf0sTcWDD4M=";
+          };
+          dontConfigure = true;
+          dontBuild = true;
+          dontStrip = true;
+          nativeBuildInputs = [
+            pkgs.autoPatchelfHook
+            pkgs.copyDesktopItems
+          ];
+          buildInputs = [
+            pkgs.libxcb
+            pkgs.libxkbcommon
+            pkgs.stdenv.cc.cc.lib
+          ];
+          runtimeDependencies = [
+            pkgs.wayland
+            pkgs.libglvnd
+            pkgs.vulkan-loader
+          ];
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = "herdr-app";
+              desktopName = "Herdr";
+              comment = "Terminals for coding agents that outlive their client";
+              exec = "herdr-app";
+              icon = "herdr-app";
+              categories = [ "Development" ];
+            })
+          ];
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 herdr-app $out/bin/herdr-app
+            install -Dm644 herdr-app.svg $out/share/icons/hicolor/scalable/apps/herdr-app.svg
+            install -Dm644 -t $out/share/licenses/herdr-app LICENSE THIRD-PARTY-NOTICES
+            runHook postInstall
+          '';
+          doInstallCheck = true;
+          installCheckPhase = ''
+            [ "$($out/bin/herdr-app --version)" = "herdr-app ${version}" ]
+          '';
+          meta = {
+            description = "Desktop app for herdr-core: terminals for coding agents that outlive their client";
+            homepage = "https://herdr.dev/";
+            license = nixpkgs.lib.licenses.asl20;
+            sourceProvenance = [ nixpkgs.lib.sourceTypes.binaryNativeCode ];
+            platforms = [ "x86_64-linux" ];
+            mainProgram = "herdr-app";
+          };
+        };
+      herdrCoreOverlay = _final: _prev: {
+        herdr-core = herdrCore;
+        herdr-app = herdrApp;
+      };
 
       # Resolves profiles before the modules see the value, so the merged effective
       # values are what reaches them.
@@ -443,6 +510,7 @@
           tycswap
           tycswapWindows
           herdrCore
+          herdrApp
           resolveUserData
           mkSystem
           ;
@@ -482,6 +550,9 @@
 
         # `nix run .#herdr-core -- --version`: the hc `installHerdrCore` puts on PATH.
         herdr-core = herdrCore;
+
+        # `nix run .#herdr-app`: the desktop app `installHerdrApp` puts on PATH.
+        herdr-app = herdrApp;
       };
 
       # The fork-and-edit path; the overlay template below is the recommended one.
