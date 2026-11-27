@@ -11,6 +11,7 @@
   tycswap,
   tycswapWindows,
   herdrCore,
+  herdrApp,
   resolveUserData,
   mkSystem,
 }:
@@ -83,6 +84,8 @@ in
   tycswap-windows = tycswapWindows;
   # The pinned hc fetches under its hash and answers with the pinned version.
   herdr-core = herdrCore;
+  # The pinned app fetches under its hash, finds its libraries and names its version.
+  herdr-app = herdrApp;
   # Build the same sandbox runtime installed on boxes; patch failures gate CI.
   inherit (pkgsDev) bubblewrap;
   # The distro's pre-commit gives a hook installer no GIT_* of the commit: npm's
@@ -1053,6 +1056,15 @@ in
       vm = self.nixosConfigurations.proxmox-vm.config;
       hasPkg =
         cfg: name: builtins.any (p: (p.pname or p.name or "") == name) cfg.environment.systemPackages;
+      hmHasPkg =
+        cfg: name:
+        builtins.any (
+          p: (p.pname or "") == name
+        ) cfg.home-manager.users.${cfg.flakelab.username}.home.packages;
+      herdrAppOn =
+        (self.nixosConfigurations.default.extendModules {
+          modules = [ { flakelab.installHerdrApp = true; } ];
+        }).config;
       webOn =
         system: bind:
         (system.extendModules {
@@ -1124,6 +1136,15 @@ in
       !(builtins.elem webOnLoopback.flakelab.web.port webOnLoopback.networking.firewall.allowedTCPPorts);
     assert
       !(builtins.elem webOnTunnelWsl.flakelab.web.port webOnTunnelWsl.networking.firewall.allowedTCPPorts);
+    # installHerdrApp brings the core the app does not open without, and on wsl
+    # the Start menu entry; off, the activation removes the entry it left.
+    assert hmHasPkg herdrAppOn "herdr-app" && hmHasPkg herdrAppOn "herdr-core";
+    assert !(hmHasPkg wsl "herdr-app");
+    assert nixpkgs.lib.hasInfix "/usr/share/applications/herdr-app.desktop"
+      herdrAppOn.system.activationScripts.flakelab-herdr-launcher.text;
+    assert nixpkgs.lib.hasPrefix "${pkgs.coreutils}/bin/rm -f /usr/share/applications/herdr-app.desktop"
+      wsl.system.activationScripts.flakelab-herdr-launcher.text;
+    assert !(vm.system.activationScripts ? flakelab-herdr-launcher);
     # A release asset cannot carry the home-manager closure.
     assert self.packages.${system}.proxmoxImage.passthru.config.home-manager.users == { };
     # Forcing the drvPath evaluates every module of both systems, and builds neither.

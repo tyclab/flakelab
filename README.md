@@ -796,21 +796,18 @@ the whole picture, the phone included.
 
 ### Herdr
 
-`installHerdrCore = true;` puts herdr-core (`hc`, <https://herdr.dev/core/>) on
-PATH: the terminal runtime the Herdr app attaches to, pinned to a release in
-`flake.nix` as upstream's static binary. hc does not update a copy it cannot
-write, so a new release reaches a box through a bump of that pin.
+`installHerdrApp = true;` puts the Herdr desktop app (`herdr-app`,
+<https://herdr.dev>) and herdr-core (`hc`, <https://herdr.dev/core/>), the
+terminal runtime it attaches to, on PATH. `installHerdrCore = true;` puts the
+core alone. Both are pinned to a release in `flake.nix` as upstream's prebuilt
+binaries; neither updates a copy it cannot write, so a new release reaches a
+box through a bump of those pins.
 
-On a wsl box the Herdr app runs on Windows and reaches the distro through
-`wsl.exe`; no SSH server runs in the distro. Once, in a Windows terminal
-(`flakelab distro-name` prints the distro):
-
-```powershell
-hc machine add --via "wsl.exe -d <distro> -e /run/current-system/sw/bin/zsh -lc" --name wsl
-```
-
-The login shell is needed: the core keeps the environment of the connection
-that started it, and only the login PATH has Claude Code and Codex.
+On a wsl box the app runs in the distro and shows through WSLg: the Windows
+Start menu lists it as Herdr under the distro's name once WSL has started
+again after the switch. The core keeps the environment of whatever started it,
+so start the app from the Start menu or a login shell, not from inside a coding
+agent's session.
 
 ## Proxmox VM
 
