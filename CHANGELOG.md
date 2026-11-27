@@ -118,6 +118,7 @@ The format is based on [Keep a Changelog], and this project adheres to
 
 ### Fixed
 
+- On wsl the clock follows the Windows time zone instead of reading UTC. WSL links `/etc/localtime` to `/usr/share/zoneinfo/<zone>` when the distro starts and when Windows reports a time zone change, and NixOS keeps the zones under `/etc/zoneinfo`, so the link was never made and every program, calendars included, showed UTC. Activation now links `/usr/share/zoneinfo` to `/etc/zoneinfo`; the zone applies from the next start of the distro, and programs read it when they start. A `time.timeZone` the overlay sets wins: WSL's `useWindowsTimezone` is then off and the link is removed.
 - The opt-in live Codex thread tests run on a private tmux socket for both launch and cleanup, including when invoked inside another tmux session.
 - In registered Windows Terminal panes, TycSnap resumes the conversation displayed by a direct local shared-server Codex TUI, including after `/new` or `/resume`. The TUI displays its thread ID in the pane title. A pane with an unidentified session restores its directory, and a surviving tmux window reattaches.
 

@@ -24,11 +24,34 @@ in
         generateHosts = true;
         generateResolvConf = true;
       };
+      time.useWindowsTimezone = config.time.timeZone == null;
     };
   };
 
   # The shim runs this before systemd: known-issues.md, "No user manager".
   system.activationScripts.flakelab-wsl-init-cgroup.text = "${scripts.wsl-init-cgroup}/bin/flakelab-wsl-init-cgroup";
+
+  # When the distro starts and when Windows reports a zone change, WSL links
+  # /etc/localtime to /usr/share/zoneinfo/<Windows zone>; NixOS keeps the zones
+  # under /etc/zoneinfo, and without this link every clock reads UTC. A zone the
+  # overlay sets wins.
+  system.activationScripts.flakelab-wsl-zoneinfo.text =
+    let
+      link = "/usr/share/zoneinfo";
+    in
+    if config.time.timeZone == null then
+      ''
+        if [ ! -e ${link} ] && [ ! -L ${link} ]; then
+          ${pkgs.coreutils}/bin/mkdir -p /usr/share
+          ${pkgs.coreutils}/bin/ln -s /etc/zoneinfo ${link}
+        fi
+      ''
+    else
+      ''
+        if [ "$(${pkgs.coreutils}/bin/readlink ${link})" = /etc/zoneinfo ]; then
+          ${pkgs.coreutils}/bin/rm ${link}
+        fi
+      '';
 
   # WSLg lists what /usr/share/applications holds in the Windows Start menu,
   # under the distro's name. Only Herdr's entry, from its store path:
