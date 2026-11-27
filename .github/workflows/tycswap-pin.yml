@@ -3,9 +3,9 @@ name: tycswap pin
 
 # .github/scripts/tycswap_pin.py moves flake.nix's pin to a new tycswap release in a
 # self-merging pull request. tycswap's Release workflow starts this run right after
-# publishing, with the tyclab-release App's token; the schedule is a fallback (it
-# has never fired for this workflow so far), and a tick with nothing to do ends
-# after the plan step.
+# publishing, with the tyclab-release App's token; the schedule is a fallback
+# (GitHub runs it hours apart, not every quarter hour), and a tick with nothing
+# to do ends after the plan step.
 on:
   schedule:
     # Off the top of the hour, the time GitHub delays scheduled runs most.

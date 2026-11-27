@@ -448,7 +448,8 @@ and after: the number does not drop.
 The `tycswap pin` workflow (`.github/workflows/tycswap-pin.yml`) turns a new
 tycswap release into a pull request that merges itself. tycswap's Release
 workflow starts it right after publishing, with the `tyclab-release` GitHub
-App's token; its quarter-hour schedule is a fallback that has not fired so far.
+App's token; its quarter-hour schedule is a fallback that GitHub runs hours
+apart (four runs in the 25 hours to 2026-11-27 04:31 UTC).
 Each run's summary says what it decided. Where it can stop:
 
 - **No pull request, and the run fails at its last step with "GitHub Actions is
@@ -462,9 +463,9 @@ Each run's summary says what it decided. Where it can stop:
   App is missing from flakelab, its private-key secret
   (`RELEASE_APP_PRIVATE_KEY`) is unset in tycswap, or the key was revoked
   (generate a new one in the App's settings and set it in both
-  repositories). GitHub has never run this workflow's schedule. Start it under
-  Actions, tycswap pin, Run workflow; a run on any other branch than `main`
-  refuses.
+  repositories). The schedule then pins the release hours later. To pin at
+  once, start it under Actions, tycswap pin, Run workflow; a run on any other
+  branch than `main` refuses.
 - **The pull request is red.** When the pin itself did not build, its body
   says so ("This pin does not build") with the end of nix's log; otherwise
   read its CI run. Fix `main` (for example the Go builder a release needs);
