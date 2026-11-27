@@ -1080,6 +1080,10 @@ in
       webOnTunnel = webOn self.nixosConfigurations.proxmox-vm "10.66.0.2";
       webOnLoopback = webOn self.nixosConfigurations.proxmox-vm "127.0.0.1";
       webOnTunnelWsl = webOn self.nixosConfigurations.default "10.66.0.2";
+      zoneSet =
+        (self.nixosConfigurations.default.extendModules {
+          modules = [ { time.timeZone = "Europe/Berlin"; } ];
+        }).config;
       xSocketMount = "tmp-.X11\\x2dunix-X0.mount";
       wslWithTmp =
         module: (self.nixosConfigurations.default.extendModules { modules = [ module ]; }).config;
@@ -1145,6 +1149,18 @@ in
     assert nixpkgs.lib.hasPrefix "${pkgs.coreutils}/bin/rm -f /usr/share/applications/herdr-app.desktop"
       wsl.system.activationScripts.flakelab-herdr-launcher.text;
     assert !(vm.system.activationScripts ? flakelab-herdr-launcher);
+    # WSL links /etc/localtime to /usr/share/zoneinfo/<Windows zone>, which NixOS
+    # keeps under /etc/zoneinfo; a time.timeZone the overlay sets wins.
+    assert wsl.time.timeZone == null;
+    assert wsl.wsl.wslConf.time.useWindowsTimezone;
+    assert nixpkgs.lib.hasInfix "/bin/ln -s /etc/zoneinfo /usr/share/zoneinfo"
+      wsl.system.activationScripts.flakelab-wsl-zoneinfo.text;
+    assert !zoneSet.wsl.wslConf.time.useWindowsTimezone;
+    assert
+      !(nixpkgs.lib.hasInfix "/bin/ln " zoneSet.system.activationScripts.flakelab-wsl-zoneinfo.text);
+    assert nixpkgs.lib.hasInfix "/bin/rm /usr/share/zoneinfo"
+      zoneSet.system.activationScripts.flakelab-wsl-zoneinfo.text;
+    assert !(vm.system.activationScripts ? flakelab-wsl-zoneinfo);
     # A release asset cannot carry the home-manager closure.
     assert self.packages.${system}.proxmoxImage.passthru.config.home-manager.users == { };
     # Forcing the drvPath evaluates every module of both systems, and builds neither.
